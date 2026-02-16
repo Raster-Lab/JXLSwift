@@ -46,7 +46,7 @@
 
 ### Acceptance Criteria
 
-- `swift build` succeeds on macOS (ARM64) and Linux (x86-64)
+- `swift build` succeeds on macOS (ARM64), macOS (x86-64) and Linux (x86-64)
 - `swift test` runs with 0 failures
 - All `Sendable` conformances compile without warnings under strict concurrency
 
@@ -108,7 +108,8 @@
 
 - [x] Lossless encoding produces non-empty output
 - [x] Compression ratio > 1.0 for gradient images
-- [ ] Round-trip test: encode → decode → pixel-perfect match (requires decoder)
+- [ ] Round-trip test: encode with JXLSwift → decode with libjxl → pixel-perfect match
+- [ ] Round-trip test: encode with libjxl → decode with JXLSwift → pixel-perfect match (requires decoder)
 - [ ] MED predictor unit tests: first pixel, first row, first column, general case
 - [ ] ZigZag encoding: 0→0, -1→1, 1→2, -2→3, 2→4
 - [ ] RCT forward and inverse produce pixel-perfect round-trip
