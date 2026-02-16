@@ -18,28 +18,18 @@ public enum AccelerateOps {
         
         var output = [Float](repeating: 0, count: size * size)
         
-        // Setup DCT for rows
-        var setupRow = vDSP_DCT_CreateSetup(
-            nil,
-            vDSP_Length(size),
-            .II
-        )
-        
-        guard let setup = setupRow else {
+        // Setup DCT using modern Swift Accelerate API
+        guard let dct = vDSP.DCT(count: size, transformType: .II) else {
             return input
         }
-        
-        defer { vDSP_DCT_DestroySetup(setup) }
         
         // Process rows
         var temp = [Float](repeating: 0, count: size * size)
         for row in 0..<size {
             let offset = row * size
-            vDSP_DCT_Execute(
-                setup,
-                Array(input[offset..<offset+size]),
-                &temp[offset]
-            )
+            let rowData = Array(input[offset..<offset+size])
+            let transformed = dct.transform(rowData)
+            temp.replaceSubrange(offset..<offset+size, with: transformed)
         }
         
         // Transpose
@@ -49,11 +39,9 @@ public enum AccelerateOps {
         // Process columns (which are now rows after transpose)
         for row in 0..<size {
             let offset = row * size
-            vDSP_DCT_Execute(
-                setup,
-                Array(transposed[offset..<offset+size]),
-                &temp[offset]
-            )
+            let rowData = Array(transposed[offset..<offset+size])
+            let transformed = dct.transform(rowData)
+            temp.replaceSubrange(offset..<offset+size, with: transformed)
         }
         
         // Transpose back
