@@ -134,15 +134,15 @@ class VarDCTEncoder {
                 // Quantize
                 let quantized = quantize(block: dctBlock, channel: channel)
                 
-                // Store DC value and compute prediction residual
+                // Compute DC prediction residual, then store DC value
                 let dc = quantized[0][0]
-                dcValues[blockY][blockX] = dc
                 let predicted = predictDC(
                     dcValues: dcValues,
                     blockX: blockX,
                     blockY: blockY
                 )
                 let dcResidual = dc - predicted
+                dcValues[blockY][blockX] = dc
                 
                 // Encode coefficients with DC prediction residual
                 encodeBlock(writer: &writer, block: quantized, dcResidual: dcResidual)

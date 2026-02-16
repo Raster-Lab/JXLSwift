@@ -438,8 +438,7 @@ final class VarDCTEncoderTests: XCTestCase {
 
     func testPredictDC_FirstRow_UsesLeftNeighbor() {
         let encoder = makeEncoder()
-        var dcValues: [[Int16]] = [[42, 0, 0]]
-        dcValues[0][1] = 50 // This value doesn't matter; prediction uses left
+        let dcValues: [[Int16]] = [[42, 50, 0]]
         let predicted = encoder.predictDC(dcValues: dcValues, blockX: 1, blockY: 0)
         XCTAssertEqual(predicted, 42,
                        "First row should predict from left neighbor")
