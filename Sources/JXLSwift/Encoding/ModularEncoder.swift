@@ -161,14 +161,269 @@ class ModularEncoder {
         return (r, g, b)
     }
     
+    // MARK: - Squeeze Transform (Multi-Resolution Decomposition)
+    
+    /// A single squeeze step descriptor.
+    ///
+    /// Each step records whether it operates horizontally or vertically,
+    /// along with the region dimensions and the buffer stride, so the
+    /// inverse can reconstruct the original layout.
+    struct SqueezeStep {
+        /// `true` for a horizontal squeeze (columns), `false` for vertical (rows).
+        let horizontal: Bool
+        /// Width of the active region before this squeeze step.
+        let width: Int
+        /// Height of the active region before this squeeze step.
+        let height: Int
+        /// Row stride of the buffer (may be larger than `width` at deeper levels).
+        let stride: Int
+    }
+    
+    /// Apply the forward squeeze transform to a single channel.
+    ///
+    /// The transform alternates horizontal and vertical squeezes,
+    /// halving the active region in each dimension per iteration.
+    /// The result is a multi-resolution decomposition where the
+    /// low-resolution approximation occupies the top-left corner and
+    /// detail (residual) coefficients fill the remainder.
+    ///
+    /// This is the Haar-like integer wavelet transform used by JPEG XL
+    /// Modular mode (ISO/IEC 18181-1 §7).  All arithmetic is integer-exact
+    /// and perfectly reversible via ``inverseSqueeze``.
+    ///
+    /// - Parameters:
+    ///   - data: Channel pixel values laid out row-major.
+    ///   - width: Channel width in pixels.
+    ///   - height: Channel height in pixels.
+    ///   - levels: Number of decomposition levels (default 3).
+    /// - Returns: Tuple of the transformed data and the squeeze steps
+    ///   recorded in application order.
+    func forwardSqueeze(
+        data: [Int32],
+        width: Int,
+        height: Int,
+        levels: Int = 3
+    ) -> (data: [Int32], steps: [SqueezeStep]) {
+        var current = data
+        let bufStride = width          // row stride never changes
+        var w = width
+        var h = height
+        var steps: [SqueezeStep] = []
+        
+        for _ in 0..<levels {
+            // Horizontal squeeze (if width > 1)
+            if w > 1 {
+                steps.append(SqueezeStep(horizontal: true, width: w, height: h, stride: bufStride))
+                squeezeHorizontal(data: &current, regionW: w, regionH: h, stride: bufStride)
+                w = (w + 1) / 2
+            }
+            
+            // Vertical squeeze (if height > 1)
+            if h > 1 {
+                steps.append(SqueezeStep(horizontal: false, width: w, height: h, stride: bufStride))
+                squeezeVertical(data: &current, regionW: w, regionH: h, stride: bufStride)
+                h = (h + 1) / 2
+            }
+            
+            // Stop if both dimensions are 1
+            if w <= 1 && h <= 1 { break }
+        }
+        
+        return (current, steps)
+    }
+    
+    /// Apply the inverse squeeze transform to reconstruct the original channel.
+    ///
+    /// The steps recorded during ``forwardSqueeze`` are replayed in reverse
+    /// order so that every split is undone in the correct sequence.
+    ///
+    /// - Parameters:
+    ///   - data: Transformed channel data (low-res + details).
+    ///   - steps: The squeeze steps returned by ``forwardSqueeze``, in
+    ///     the same (forward) order — they are reversed internally.
+    /// - Returns: Reconstructed channel data matching the original.
+    func inverseSqueeze(
+        data: [Int32],
+        steps: [SqueezeStep]
+    ) -> [Int32] {
+        var current = data
+        
+        for step in steps.reversed() {
+            if step.horizontal {
+                inverseSqueezeHorizontal(
+                    data: &current, regionW: step.width, regionH: step.height, stride: step.stride
+                )
+            } else {
+                inverseSqueezeVertical(
+                    data: &current, regionW: step.width, regionH: step.height, stride: step.stride
+                )
+            }
+        }
+        
+        return current
+    }
+    
+    // MARK: Horizontal Squeeze
+    
+    /// Forward horizontal squeeze on a sub-region of the buffer.
+    ///
+    /// For each row in `0..<regionH`, even-indexed columns within
+    /// `0..<regionW` form the low-res signal and odd columns store the
+    /// detail (residual).  The row stride of the underlying buffer is
+    /// given by `stride` (which may be larger than `regionW` at deeper
+    /// decomposition levels).
+    ///
+    ///     avg  = floor((even + odd) / 2)   (towards -∞)
+    ///     diff = even - odd
+    func squeezeHorizontal(data: inout [Int32], regionW: Int, regionH: Int, stride bufStride: Int) {
+        let lowW = (regionW + 1) / 2
+        // Temporary row buffer to avoid in-place aliasing
+        var row = [Int32](repeating: 0, count: regionW)
+        
+        for y in 0..<regionH {
+            let rowBase = y * bufStride
+            
+            // Process pairs
+            for x in Swift.stride(from: 0, to: regionW - 1, by: 2) {
+                let even = data[rowBase + x]
+                let odd  = data[rowBase + x + 1]
+                
+                let avg: Int32
+                if (even + odd) >= 0 {
+                    avg = (even + odd) / 2
+                } else {
+                    avg = (even + odd - 1) / 2
+                }
+                let diff = even - odd
+                
+                row[x / 2]        = avg
+                row[lowW + x / 2] = diff
+            }
+            // Trailing column when regionW is odd
+            if regionW % 2 == 1 {
+                row[lowW - 1] = data[rowBase + regionW - 1]
+            }
+            
+            // Write back
+            for x in 0..<regionW {
+                data[rowBase + x] = row[x]
+            }
+        }
+    }
+    
+    /// Inverse horizontal squeeze on a sub-region of the buffer.
+    func inverseSqueezeHorizontal(data: inout [Int32], regionW: Int, regionH: Int, stride bufStride: Int) {
+        let lowW = (regionW + 1) / 2
+        var row = [Int32](repeating: 0, count: regionW)
+        
+        for y in 0..<regionH {
+            let rowBase = y * bufStride
+            
+            // Read current row into temporary
+            for x in 0..<regionW {
+                row[x] = data[rowBase + x]
+            }
+            
+            for x in Swift.stride(from: 0, to: regionW - 1, by: 2) {
+                let avg  = row[x / 2]
+                let diff = row[lowW + x / 2]
+                
+                let even = avg + (diff + (diff >= 0 ? 1 : 0)) / 2
+                let odd  = even - diff
+                
+                data[rowBase + x]     = even
+                data[rowBase + x + 1] = odd
+            }
+            if regionW % 2 == 1 {
+                data[rowBase + regionW - 1] = row[lowW - 1]
+            }
+        }
+    }
+    
+    // MARK: Vertical Squeeze
+    
+    /// Forward vertical squeeze on a sub-region of the buffer.
+    ///
+    /// For each column in `0..<regionW`, even-indexed rows within
+    /// `0..<regionH` form the low-res signal and odd rows store the
+    /// detail.  Low-res rows are packed into rows `0..<(regionH+1)/2`
+    /// and details into rows `(regionH+1)/2..<regionH`.
+    func squeezeVertical(data: inout [Int32], regionW: Int, regionH: Int, stride bufStride: Int) {
+        let lowH = (regionH + 1) / 2
+        var col = [Int32](repeating: 0, count: regionH)
+        
+        for x in 0..<regionW {
+            // Read column into temporary
+            for y in 0..<regionH {
+                col[y] = data[y * bufStride + x]
+            }
+            
+            var out = [Int32](repeating: 0, count: regionH)
+            
+            for y in Swift.stride(from: 0, to: regionH - 1, by: 2) {
+                let even = col[y]
+                let odd  = col[y + 1]
+                
+                let avg: Int32
+                if (even + odd) >= 0 {
+                    avg = (even + odd) / 2
+                } else {
+                    avg = (even + odd - 1) / 2
+                }
+                let diff = even - odd
+                
+                out[y / 2]        = avg
+                out[lowH + y / 2] = diff
+            }
+            if regionH % 2 == 1 {
+                out[lowH - 1] = col[regionH - 1]
+            }
+            
+            // Write back
+            for y in 0..<regionH {
+                data[y * bufStride + x] = out[y]
+            }
+        }
+    }
+    
+    /// Inverse vertical squeeze on a sub-region of the buffer.
+    func inverseSqueezeVertical(data: inout [Int32], regionW: Int, regionH: Int, stride bufStride: Int) {
+        let lowH = (regionH + 1) / 2
+        var col = [Int32](repeating: 0, count: regionH)
+        
+        for x in 0..<regionW {
+            // Read column into temporary
+            for y in 0..<regionH {
+                col[y] = data[y * bufStride + x]
+            }
+            
+            for y in Swift.stride(from: 0, to: regionH - 1, by: 2) {
+                let avg  = col[y / 2]
+                let diff = col[lowH + y / 2]
+                
+                let even = avg + (diff + (diff >= 0 ? 1 : 0)) / 2
+                let odd  = even - diff
+                
+                data[y * bufStride + x]       = even
+                data[(y + 1) * bufStride + x] = odd
+            }
+            if regionH % 2 == 1 {
+                data[(regionH - 1) * bufStride + x] = col[lowH - 1]
+            }
+        }
+    }
+    
     // MARK: - Channel Encoding
     
     private func encodeChannel(data: [UInt16], width: Int, height: Int) throws -> Data {
         // Apply predictive coding
         let predicted = applyPrediction(data: data, width: width, height: height)
         
+        // Apply squeeze transform for multi-resolution decomposition
+        let (squeezed, _) = forwardSqueeze(data: predicted, width: width, height: height)
+        
         // Apply entropy encoding
-        let encoded = try entropyEncode(data: predicted)
+        let encoded = try entropyEncode(data: squeezed)
         
         return encoded
     }
