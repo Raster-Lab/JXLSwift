@@ -236,10 +236,6 @@ public enum ColourTransferFunction: UInt32, Sendable, Equatable {
     case dci = 5
     case hlg = 6
     case gamma = 7
-
-    // Only 3 bits used in the serialised form, but we use 2-bit selector
-    // plus additional bits for gamma. For simplicity the rawValue is the
-    // discriminator written to the bitstream.
 }
 
 /// Rendering intent per spec §11.4

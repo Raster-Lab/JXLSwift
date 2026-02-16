@@ -32,7 +32,7 @@ final class FormatTests: XCTestCase {
         header.serialise(to: &writer)
         writer.flushByte()
         // small=false (1 bit) + 2 × (2-bit selector + 9-bit value) = 23 bits → 3 bytes
-        XCTAssertGreaterThanOrEqual(writer.data.count, 3)
+        XCTAssertEqual(writer.data.count, 3)
     }
 
     func testSizeHeader_LargeDimensions() throws {

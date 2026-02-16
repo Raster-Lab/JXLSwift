@@ -159,8 +159,8 @@ public struct FrameHeader: Sendable, Equatable {
         // Encoding (1 bit: 0 = VarDCT, 1 = Modular)
         writer.writeBits(encoding.rawValue, count: 1)
 
-        // Flags
-        writer.writeBits(0, count: 2) // reserved flags
+        // Flags (2 bits reserved, §10.1.1)
+        writer.writeBits(0, count: 2)
 
         // Blend mode
         let hasBlendInfo = (blendMode != .replace)

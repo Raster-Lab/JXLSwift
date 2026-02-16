@@ -14,7 +14,7 @@
 | 1 | Core Data Structures & Bitstream I/O | Weeks 2–4 | ✅ Complete |
 | 2 | Lossless Compression (Modular Mode) | Weeks 4–7 | ✅ Complete |
 | 3 | Lossy Compression (VarDCT Mode) | Weeks 7–11 | ✅ Complete |
-| 4 | JPEG XL File Format & Container | Weeks 11–14 | ⬜ Not Started |
+| 4 | JPEG XL File Format & Container | Weeks 11–14 | ✅ Complete |
 | 5 | Hardware Acceleration — Apple Accelerate | Weeks 14–17 | ✅ Complete |
 | 6 | Hardware Acceleration — ARM NEON / SIMD | Weeks 17–20 | ⬜ Not Started |
 | 7 | Hardware Acceleration — Metal GPU | Weeks 20–23 | ⬜ Not Started |
@@ -174,23 +174,23 @@
 
 ### Deliverables
 
-- [ ] JPEG XL codestream header (SizeHeader, ImageMetadata, colour encoding)
-- [ ] Frame header serialisation
-- [ ] Section/group byte-aligned framing
-- [ ] ISOBMFF-based container format (.jxl extension)
-- [ ] Metadata boxes: EXIF, XMP, JUMBF
-- [ ] ICC colour profile embedding
-- [ ] Thumbnail box support
-- [ ] Multi-frame (animation) container framing
+- [x] JPEG XL codestream header (SizeHeader, ImageMetadata, colour encoding)
+- [x] Frame header serialisation
+- [x] Section/group byte-aligned framing
+- [x] ISOBMFF-based container format (.jxl extension)
+- [x] Metadata boxes: EXIF, XMP, JUMBF
+- [x] ICC colour profile embedding
+- [x] Thumbnail box support
+- [x] Multi-frame (animation) container framing
 
 ### Tests Required
 
 - [ ] Codestream header parses correctly with libjxl
 - [ ] Container format validates with `jxlinfo` or equivalent tool
-- [ ] ICC profile round-trip
-- [ ] EXIF metadata preserved
-- [ ] Thumbnail generation and embedding
-- [ ] File extension and MIME type correctness (`image/jxl`)
+- [x] ICC profile round-trip
+- [x] EXIF metadata preserved
+- [x] Thumbnail generation and embedding
+- [x] File extension and MIME type correctness (`image/jxl`)
 
 ### Acceptance Criteria
 

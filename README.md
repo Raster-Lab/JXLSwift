@@ -17,6 +17,8 @@ JXLSwift provides a pure Swift implementation of the JPEG XL image compression s
   - **Lossy (VarDCT Mode)** - High-quality lossy compression
 - 🎨 **Advanced Color Support** - sRGB, linear RGB, grayscale, custom color spaces
 - 🔧 **Flexible Configuration** - Quality levels, effort settings, hardware acceleration control
+- 📄 **JPEG XL Container Format** - ISOBMFF container with metadata boxes (EXIF, XMP, ICC)
+- 🎬 **Animation Support** - Multi-frame container framing with frame index for seeking
 
 ## Requirements
 
@@ -143,7 +145,10 @@ Sources/JXLSwift/
 ├── Hardware/          # Platform optimizations
 │   ├── Accelerate.swift       # Apple Silicon acceleration
 │   └── DispatchBackend.swift  # Runtime backend selection
-└── Format/            # File format support (future)
+└── Format/            # JPEG XL file format (ISO/IEC 18181-2)
+    ├── CodestreamHeader.swift # SizeHeader, ImageMetadata, ColourEncoding
+    ├── FrameHeader.swift      # Frame header, section/group framing
+    └── JXLContainer.swift     # ISOBMFF container, metadata boxes
 
 Sources/JXLTool/
 ├── JXLTool.swift              # CLI entry point
@@ -248,13 +253,13 @@ See [MILESTONES.md](MILESTONES.md) for the detailed project milestone plan.
 - [x] Apple Silicon optimization
 - [x] Accelerate framework integration — vDSP DCT, vectorized color/quantization
 - [x] Command line tool (jxl-tool) — encode, info, hardware, benchmark
+- [x] JPEG XL file format (.jxl) — ISOBMFF container, codestream/frame headers
+- [x] Metadata support (EXIF, XMP, ICC profiles)
+- [x] Animation container framing (frame index, multi-frame)
 - [ ] Full ANS entropy coding
 - [ ] ARM NEON SIMD acceleration
 - [ ] Metal GPU acceleration
 - [ ] Progressive encoding
-- [ ] JPEG XL file format (.jxl)
-- [ ] Metadata support (EXIF, XMP)
-- [ ] Animation support
 - [ ] Decoding support
 - [ ] libjxl validation & benchmarking
 
