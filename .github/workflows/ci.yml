@@ -33,6 +33,8 @@ jobs:
         uses: swift-actions/setup-swift@v3
         with:
           swift-version: ${{ matrix.swift-version }}
+          # Workaround: GPG signature verification fails on Linux due to missing public key
+          skip-verify-signature: true
 
       - name: Swift version
         run: swift --version
