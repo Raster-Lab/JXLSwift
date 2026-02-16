@@ -27,6 +27,9 @@ struct Hardware: ParsableCommand {
         print("Frameworks:")
         print("  Accelerate:     \(caps.hasAccelerate ? "✅ Available" : "❌ Not available")")
         print("  Metal GPU:      \(caps.hasMetal ? "✅ Available" : "❌ Not available")")
+        if let metalName = caps.metalDeviceName {
+            print("  Metal Device:   \(metalName)")
+        }
         print()
         print("System:")
         print("  CPU Cores:      \(caps.coreCount)")
