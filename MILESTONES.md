@@ -98,7 +98,7 @@
 - [x] Median Edge Detector (MED) predictor: `median(N, W, N+W-NW)`
 - [x] ZigZag signed-to-unsigned residual mapping
 - [x] Run-length + varint entropy coding (simplified)
-- [ ] Multi-channel decorrelation (RCT — Reversible Colour Transform)
+- [x] Multi-channel decorrelation (RCT — Reversible Colour Transform)
 - [ ] Squeeze transform (multi-resolution decomposition)
 - [ ] Context modelling for entropy coding
 - [ ] MA (Meta-Adaptive) tree-based prediction
@@ -113,7 +113,7 @@
 - [ ] Round-trip test: encode with libjxl → decode with JXLSwift → pixel-perfect match (requires decoder)
 - [x] MED predictor unit tests: first pixel, first row, first column, general case
 - [x] ZigZag encoding: 0→0, -1→1, 1→2, -2→3, 2→4
-- [ ] RCT forward and inverse produce pixel-perfect round-trip
+- [x] RCT forward and inverse produce pixel-perfect round-trip
 - [ ] Squeeze transform forward/inverse round-trip
 - [x] Edge cases: 1×1 image, single-channel, 16-bit depth, maximum dimensions
 

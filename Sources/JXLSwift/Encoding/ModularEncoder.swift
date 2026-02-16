@@ -22,9 +22,21 @@ class ModularEncoder {
         // Write modular mode indicator
         writer.writeBit(true) // Use modular mode
         
+        // Extract all channels
+        var channels = (0..<frame.channels).map { channel in
+            extractChannel(frame: frame, channel: channel)
+        }
+        
+        // Apply RCT for multi-channel (RGB) images
+        let useRCT = frame.channels >= 3
+        writer.writeBit(useRCT) // Signal whether RCT is applied
+        
+        if useRCT {
+            applyRCT(channels: &channels)
+        }
+        
         // Process each channel separately
-        for channel in 0..<frame.channels {
-            let channelData = extractChannel(frame: frame, channel: channel)
+        for channelData in channels {
             let encoded = try encodeChannel(data: channelData, 
                                            width: frame.width,
                                            height: frame.height)
@@ -48,6 +60,105 @@ class ModularEncoder {
         }
         
         return channelData
+    }
+    
+    // MARK: - Reversible Colour Transform (RCT)
+    
+    /// Apply forward RCT (YCoCg-R) to decorrelate RGB channels.
+    ///
+    /// Transforms in-place: channels[0..2] = (R, G, B) → (Y, Co, Cg).
+    /// Uses the lifting-based YCoCg-R transform from ISO/IEC 18181-1.
+    /// All arithmetic is integer-exact and perfectly reversible.
+    ///
+    /// - Parameter channels: Array of channel data; first three are R, G, B.
+    ///   After the call they hold Y, Co, Cg (stored as offset unsigned values).
+    func applyRCT(channels: inout [[UInt16]]) {
+        guard channels.count >= 3 else { return }
+        
+        let count = channels[0].count
+        let r = channels[0]
+        let g = channels[1]
+        let b = channels[2]
+        
+        var yChannel  = [UInt16](repeating: 0, count: count)
+        var coChannel = [UInt16](repeating: 0, count: count)
+        var cgChannel = [UInt16](repeating: 0, count: count)
+        
+        for i in 0..<count {
+            let (y, co, cg) = forwardRCT(r: Int32(r[i]), g: Int32(g[i]), b: Int32(b[i]))
+            
+            // Co and Cg are signed; offset by 32768 to store as UInt16
+            yChannel[i]  = UInt16(clamping: y)
+            coChannel[i] = UInt16(clamping: co + 32768)
+            cgChannel[i] = UInt16(clamping: cg + 32768)
+        }
+        
+        channels[0] = yChannel
+        channels[1] = coChannel
+        channels[2] = cgChannel
+    }
+    
+    /// Apply inverse RCT (YCoCg-R) to recover RGB from decorrelated channels.
+    ///
+    /// - Parameter channels: Array of channel data; first three are Y, Co, Cg
+    ///   (Co/Cg stored with +32768 offset). After the call they hold R, G, B.
+    func inverseRCT(channels: inout [[UInt16]]) {
+        guard channels.count >= 3 else { return }
+        
+        let count = channels[0].count
+        let yChannel  = channels[0]
+        let coChannel = channels[1]
+        let cgChannel = channels[2]
+        
+        var r = [UInt16](repeating: 0, count: count)
+        var g = [UInt16](repeating: 0, count: count)
+        var b = [UInt16](repeating: 0, count: count)
+        
+        for i in 0..<count {
+            // Remove the +32768 offset from Co and Cg
+            let co = Int32(coChannel[i]) - 32768
+            let cg = Int32(cgChannel[i]) - 32768
+            
+            let (ri, gi, bi) = inverseRCTPixel(y: Int32(yChannel[i]), co: co, cg: cg)
+            
+            r[i] = UInt16(clamping: ri)
+            g[i] = UInt16(clamping: gi)
+            b[i] = UInt16(clamping: bi)
+        }
+        
+        channels[0] = r
+        channels[1] = g
+        channels[2] = b
+    }
+    
+    /// Forward YCoCg-R transform for a single pixel.
+    ///
+    /// - Parameters:
+    ///   - r: Red channel value.
+    ///   - g: Green channel value.
+    ///   - b: Blue channel value.
+    /// - Returns: Tuple (Y, Co, Cg) where Co and Cg are signed values.
+    func forwardRCT(r: Int32, g: Int32, b: Int32) -> (y: Int32, co: Int32, cg: Int32) {
+        let co = r - b
+        let t  = b + (co >> 1)
+        let cg = g - t
+        let y  = t + (cg >> 1)
+        return (y, co, cg)
+    }
+    
+    /// Inverse YCoCg-R transform for a single pixel.
+    ///
+    /// - Parameters:
+    ///   - y: Luminance value.
+    ///   - co: Orange chroma value (signed).
+    ///   - cg: Green chroma value (signed).
+    /// - Returns: Tuple (R, G, B).
+    func inverseRCTPixel(y: Int32, co: Int32, cg: Int32) -> (r: Int32, g: Int32, b: Int32) {
+        let t = y - (cg >> 1)
+        let g = cg + t
+        let b = t - (co >> 1)
+        let r = co + b
+        return (r, g, b)
     }
     
     // MARK: - Channel Encoding

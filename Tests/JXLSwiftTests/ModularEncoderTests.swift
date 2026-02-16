@@ -235,4 +235,244 @@ final class ModularEncoderTests: XCTestCase {
         XCTAssertGreaterThan(result.stats.compressionRatio, 1.0,
                              "Gradient image should compress well with MED predictor")
     }
+
+    // MARK: - RCT Forward Transform Tests
+
+    func testForwardRCT_Black_ProducesZeroYAndOffsetChroma() {
+        let encoder = makeEncoder()
+        let (y, co, cg) = encoder.forwardRCT(r: 0, g: 0, b: 0)
+        XCTAssertEqual(y, 0, "Black Y should be 0")
+        XCTAssertEqual(co, 0, "Black Co should be 0")
+        XCTAssertEqual(cg, 0, "Black Cg should be 0")
+    }
+
+    func testForwardRCT_White_ProducesMaxY() {
+        let encoder = makeEncoder()
+        let (y, co, cg) = encoder.forwardRCT(r: 255, g: 255, b: 255)
+        XCTAssertEqual(y, 255, "White Y should be 255")
+        XCTAssertEqual(co, 0, "White Co should be 0 (R == B)")
+        XCTAssertEqual(cg, 0, "White Cg should be 0 (G == t)")
+    }
+
+    func testForwardRCT_PureRed_PositiveCo() {
+        let encoder = makeEncoder()
+        let (y, co, cg) = encoder.forwardRCT(r: 255, g: 0, b: 0)
+        // Co = R - B = 255
+        XCTAssertEqual(co, 255, "Pure red: Co = R - B = 255")
+        // t = B + (Co >> 1) = 0 + 127 = 127
+        // Cg = G - t = 0 - 127 = -127
+        XCTAssertEqual(cg, -127, "Pure red: Cg = G - t = -127")
+        // Y = t + (Cg >> 1) = 127 + (-64) = 63
+        XCTAssertEqual(y, 63, "Pure red: Y = t + (Cg >> 1) = 63")
+    }
+
+    func testForwardRCT_PureGreen_PositiveCg() {
+        let encoder = makeEncoder()
+        let (y, co, cg) = encoder.forwardRCT(r: 0, g: 255, b: 0)
+        // Co = R - B = 0
+        XCTAssertEqual(co, 0, "Pure green: Co = 0")
+        // t = B + (Co >> 1) = 0
+        // Cg = G - t = 255
+        XCTAssertEqual(cg, 255, "Pure green: Cg = 255")
+        // Y = t + (Cg >> 1) = 0 + 127 = 127
+        XCTAssertEqual(y, 127, "Pure green: Y = 127")
+    }
+
+    func testForwardRCT_PureBlue_NegativeCo() {
+        let encoder = makeEncoder()
+        let (y, co, cg) = encoder.forwardRCT(r: 0, g: 0, b: 255)
+        // Co = R - B = -255
+        XCTAssertEqual(co, -255, "Pure blue: Co = -255")
+        // t = B + (Co >> 1) = 255 + (-128) = 127
+        // Cg = G - t = 0 - 127 = -127
+        XCTAssertEqual(cg, -127, "Pure blue: Cg = -127")
+        // Y = t + (Cg >> 1) = 127 + (-64) = 63
+        XCTAssertEqual(y, 63, "Pure blue: Y = 63")
+    }
+
+    func testForwardRCT_MidGray_AllChromaZero() {
+        let encoder = makeEncoder()
+        let (y, co, cg) = encoder.forwardRCT(r: 128, g: 128, b: 128)
+        XCTAssertEqual(y, 128, "Mid-gray Y should be 128")
+        XCTAssertEqual(co, 0, "Mid-gray Co should be 0")
+        XCTAssertEqual(cg, 0, "Mid-gray Cg should be 0")
+    }
+
+    // MARK: - RCT Inverse Transform Tests
+
+    func testInverseRCT_RecoversBlack() {
+        let encoder = makeEncoder()
+        let (r, g, b) = encoder.inverseRCTPixel(y: 0, co: 0, cg: 0)
+        XCTAssertEqual(r, 0)
+        XCTAssertEqual(g, 0)
+        XCTAssertEqual(b, 0)
+    }
+
+    func testInverseRCT_RecoversWhite() {
+        let encoder = makeEncoder()
+        let (r, g, b) = encoder.inverseRCTPixel(y: 255, co: 0, cg: 0)
+        XCTAssertEqual(r, 255)
+        XCTAssertEqual(g, 255)
+        XCTAssertEqual(b, 255)
+    }
+
+    // MARK: - RCT Round-Trip Tests
+
+    func testRCT_RoundTrip_PixelPerfect_BasicColors() {
+        let encoder = makeEncoder()
+        let testColors: [(Int32, Int32, Int32)] = [
+            (0, 0, 0),       // black
+            (255, 255, 255), // white
+            (255, 0, 0),     // red
+            (0, 255, 0),     // green
+            (0, 0, 255),     // blue
+            (255, 255, 0),   // yellow
+            (0, 255, 255),   // cyan
+            (255, 0, 255),   // magenta
+            (128, 128, 128), // mid-gray
+            (1, 2, 3),       // low values
+            (253, 254, 255), // high values
+        ]
+
+        for (r, g, b) in testColors {
+            let (y, co, cg) = encoder.forwardRCT(r: r, g: g, b: b)
+            let (rr, gg, bb) = encoder.inverseRCTPixel(y: y, co: co, cg: cg)
+            XCTAssertEqual(rr, r, "Round-trip R failed for (\(r),\(g),\(b))")
+            XCTAssertEqual(gg, g, "Round-trip G failed for (\(r),\(g),\(b))")
+            XCTAssertEqual(bb, b, "Round-trip B failed for (\(r),\(g),\(b))")
+        }
+    }
+
+    func testRCT_RoundTrip_PixelPerfect_AllUInt8Values() {
+        let encoder = makeEncoder()
+        // Test a broad range of 8-bit RGB values
+        for r in stride(from: 0, through: 255, by: 17) {
+            for g in stride(from: 0, through: 255, by: 17) {
+                for b in stride(from: 0, through: 255, by: 17) {
+                    let ri = Int32(r)
+                    let gi = Int32(g)
+                    let bi = Int32(b)
+                    let (y, co, cg) = encoder.forwardRCT(r: ri, g: gi, b: bi)
+                    let (rr, gg, bb) = encoder.inverseRCTPixel(y: y, co: co, cg: cg)
+                    XCTAssertEqual(rr, ri, "Round-trip R failed for (\(r),\(g),\(b))")
+                    XCTAssertEqual(gg, gi, "Round-trip G failed for (\(r),\(g),\(b))")
+                    XCTAssertEqual(bb, bi, "Round-trip B failed for (\(r),\(g),\(b))")
+                }
+            }
+        }
+    }
+
+    // MARK: - RCT Channel-Level Tests
+
+    func testApplyRCT_ChannelLevel_RoundTrip() {
+        let encoder = makeEncoder()
+        let r: [UInt16] = [255, 0,   0, 128, 100, 200]
+        let g: [UInt16] = [0,   255, 0, 128, 150, 50]
+        let b: [UInt16] = [0,   0, 255, 128, 200, 100]
+
+        var channels: [[UInt16]] = [r, g, b]
+        encoder.applyRCT(channels: &channels)
+
+        // Channels should be transformed (not equal to original)
+        XCTAssertNotEqual(channels[1], g, "Co channel should differ from original G")
+
+        // Now apply inverse
+        encoder.inverseRCT(channels: &channels)
+
+        // Should recover original values exactly
+        XCTAssertEqual(channels[0], r, "R channel should be recovered exactly")
+        XCTAssertEqual(channels[1], g, "G channel should be recovered exactly")
+        XCTAssertEqual(channels[2], b, "B channel should be recovered exactly")
+    }
+
+    func testApplyRCT_WithAlphaChannel_PreservesAlpha() {
+        let encoder = makeEncoder()
+        let r: [UInt16]     = [100, 200]
+        let g: [UInt16]     = [150, 50]
+        let b: [UInt16]     = [200, 100]
+        let alpha: [UInt16] = [255, 128]
+
+        var channels: [[UInt16]] = [r, g, b, alpha]
+        encoder.applyRCT(channels: &channels)
+
+        // Alpha channel should be unchanged
+        XCTAssertEqual(channels[3], alpha, "Alpha channel must not be modified by RCT")
+
+        // Inverse to verify RGB round-trip
+        encoder.inverseRCT(channels: &channels)
+        XCTAssertEqual(channels[0], r, "R should be recovered")
+        XCTAssertEqual(channels[1], g, "G should be recovered")
+        XCTAssertEqual(channels[2], b, "B should be recovered")
+        XCTAssertEqual(channels[3], alpha, "Alpha should still be unchanged")
+    }
+
+    func testApplyRCT_SingleChannel_NoTransform() {
+        let encoder = makeEncoder()
+        let gray: [UInt16] = [0, 128, 255]
+        var channels: [[UInt16]] = [gray]
+        encoder.applyRCT(channels: &channels)
+        XCTAssertEqual(channels[0], gray, "Single-channel should not be transformed")
+    }
+
+    func testApplyRCT_TwoChannels_NoTransform() {
+        let encoder = makeEncoder()
+        let ch0: [UInt16] = [10, 20]
+        let ch1: [UInt16] = [30, 40]
+        var channels: [[UInt16]] = [ch0, ch1]
+        encoder.applyRCT(channels: &channels)
+        XCTAssertEqual(channels[0], ch0, "Two-channel ch0 should not be transformed")
+        XCTAssertEqual(channels[1], ch1, "Two-channel ch1 should not be transformed")
+    }
+
+    func testApplyRCT_UniformGray_ChromaZero() {
+        let encoder = makeEncoder()
+        // All pixels are the same gray value → Co and Cg should be 0 (stored as 32768)
+        let gray: UInt16 = 200
+        let count = 16
+        let ch = [UInt16](repeating: gray, count: count)
+        var channels: [[UInt16]] = [ch, ch, ch]
+        encoder.applyRCT(channels: &channels)
+
+        for i in 0..<count {
+            XCTAssertEqual(channels[0][i], gray, "Y should equal original gray value")
+            XCTAssertEqual(channels[1][i], 32768, "Co should be 32768 (offset 0) for gray")
+            XCTAssertEqual(channels[2][i], 32768, "Cg should be 32768 (offset 0) for gray")
+        }
+    }
+
+    // MARK: - RCT Integration Tests
+
+    func testEncode_WithRCT_ProducesOutput() throws {
+        let encoder = JXLEncoder(options: .lossless)
+        var frame = ImageFrame(width: 16, height: 16, channels: 3)
+        // Create a colorful image
+        for y in 0..<16 {
+            for x in 0..<16 {
+                frame.setPixel(x: x, y: y, channel: 0, value: UInt16(x * 16))
+                frame.setPixel(x: x, y: y, channel: 1, value: UInt16(y * 16))
+                frame.setPixel(x: x, y: y, channel: 2, value: UInt16((x + y) * 8))
+            }
+        }
+
+        let result = try encoder.encode(frame)
+        XCTAssertGreaterThan(result.data.count, 0,
+                             "Encoding with RCT should produce non-empty output")
+        XCTAssertGreaterThan(result.stats.compressionRatio, 1.0,
+                             "Encoding with RCT should achieve compression")
+    }
+
+    func testEncode_SingleChannel_SkipsRCT() throws {
+        // Verify that single-channel encoding still works (RCT should be skipped)
+        let encoder = JXLEncoder(options: .lossless)
+        var frame = ImageFrame(width: 8, height: 8, channels: 1)
+        for y in 0..<8 {
+            for x in 0..<8 {
+                frame.setPixel(x: x, y: y, channel: 0, value: UInt16(x * 32))
+            }
+        }
+
+        let result = try encoder.encode(frame)
+        XCTAssertGreaterThan(result.data.count, 0,
+                             "Single-channel encoding should still work without RCT")
+    }
 }
