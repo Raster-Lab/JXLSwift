@@ -142,6 +142,13 @@ Sources/JXLSwift/
 ├── Hardware/          # Platform optimizations
 │   └── Accelerate.swift       # Apple Silicon acceleration
 └── Format/            # File format support (future)
+
+Sources/JXLTool/
+├── JXLTool.swift              # CLI entry point
+├── Encode.swift               # Encode subcommand
+├── Info.swift                  # Info subcommand
+├── Hardware.swift              # Hardware subcommand
+└── Benchmark.swift             # Benchmark subcommand
 ```
 
 ## Performance
@@ -207,13 +214,37 @@ The library maintains separate code paths for different architectures:
 
 This design allows easy removal of x86-64 code in the future if desired.
 
+## Command Line Tool
+
+JXLSwift includes a command line tool `jxl-tool` for encoding and inspecting JPEG XL files:
+
+```bash
+# Encode a test image
+swift run jxl-tool encode --quality 90 --effort 7 -o output.jxl
+
+# Lossless encoding
+swift run jxl-tool encode --lossless -o output.jxl
+
+# Display hardware capabilities
+swift run jxl-tool hardware
+
+# Inspect a JPEG XL file
+swift run jxl-tool info output.jxl
+
+# Run performance benchmarks
+swift run jxl-tool benchmark --width 512 --height 512
+```
+
 ## Roadmap
+
+See [MILESTONES.md](MILESTONES.md) for the detailed project milestone plan.
 
 - [x] Core compression pipeline
 - [x] Lossless (Modular) mode
 - [x] Lossy (VarDCT) mode
 - [x] Apple Silicon optimization
 - [x] Accelerate framework integration
+- [x] Command line tool (jxl-tool)
 - [ ] Full ANS entropy coding
 - [ ] Metal GPU acceleration
 - [ ] Progressive encoding
@@ -221,6 +252,7 @@ This design allows easy removal of x86-64 code in the future if desired.
 - [ ] Metadata support (EXIF, XMP)
 - [ ] Animation support
 - [ ] Decoding support
+- [ ] libjxl validation & benchmarking
 
 ## Standards Compliance
 
