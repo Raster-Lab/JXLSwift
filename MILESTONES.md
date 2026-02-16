@@ -19,7 +19,7 @@
 | 6 | Hardware Acceleration — ARM NEON / SIMD | Weeks 17–20 | ✅ Complete |
 | 7 | Hardware Acceleration — Metal GPU | Weeks 20–23 | ✅ Complete |
 | 8 | ANS Entropy Coding | Weeks 23–27 | ✅ Complete |
-| 9 | Advanced Encoding Features | Weeks 27–31 | ⬜ Not Started |
+| 9 | Advanced Encoding Features | Weeks 27–31 | 🔶 In Progress |
 | 10 | Command Line Tool (jxl-tool) | Weeks 31–34 | ✅ Complete |
 | 11 | libjxl Validation & Performance Benchmarking | Weeks 34–38 | ⬜ Not Started |
 | 12 | Decoding Support | Weeks 38–44 | ⬜ Not Started |
@@ -344,10 +344,10 @@
 - [ ] Progressive encoding (DC → AC refinement passes)
 - [ ] Responsive encoding (progressive by quality layer)
 - [ ] Multi-frame / animation support
-- [ ] Alpha channel encoding (separate or premultiplied)
+- [x] Alpha channel encoding (separate or premultiplied)
 - [ ] Extra channels (depth, thermal, spectral)
-- [ ] HDR support: PQ and HLG transfer functions
-- [ ] Wide gamut: Display P3, Rec. 2020 colour spaces
+- [x] HDR support: PQ and HLG transfer functions
+- [x] Wide gamut: Display P3, Rec. 2020 colour spaces
 - [ ] Oriented rendering (EXIF orientation)
 - [ ] Crop/region-of-interest encoding
 - [ ] Reference frame encoding (for animation deltas)
@@ -359,9 +359,9 @@
 
 - [ ] Progressive: first pass produces viewable low-resolution image
 - [ ] Animation: multi-frame round-trip with correct timing
-- [ ] Alpha: premultiplied and straight alpha modes
-- [ ] HDR: PQ and HLG metadata preserved
-- [ ] Wide gamut: P3 and Rec.2020 primaries encoded correctly
+- [x] Alpha: premultiplied and straight alpha modes
+- [x] HDR: PQ and HLG metadata preserved
+- [x] Wide gamut: P3 and Rec.2020 primaries encoded correctly
 - [ ] Extra channels round-trip
 - [ ] Region-of-interest: only selected area is encoded at high quality
 
