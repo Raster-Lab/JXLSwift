@@ -18,6 +18,7 @@ struct JXLTool: ParsableCommand {
             Info.self,
             Hardware.self,
             Benchmark.self,
+            Batch.self,
         ],
         defaultSubcommand: Encode.self
     )
