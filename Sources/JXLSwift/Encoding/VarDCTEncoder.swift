@@ -71,6 +71,260 @@ class VarDCTEncoder {
         return convertToYCbCrScalar(frame: frame)
     }
     
+    // MARK: - XYB Colour Space Conversion
+    
+    /// Opsin absorbance bias used in the cube-root transfer function.
+    ///
+    /// Per ISO/IEC 18181-1, the transfer function is:
+    ///   `f(x) = cbrt(x + bias) - cbrt(bias)`
+    /// where `bias = 0.00379246`.
+    static let opsinBias: Float = 0.00379246
+    
+    /// Cube-root of the opsin bias, precomputed for efficiency.
+    static let cbrtBias: Float = cbrt(opsinBias)
+    
+    /// Opsin absorbance matrix mapping linear RGB to LMS-like cone responses.
+    ///
+    /// Per the JPEG XL reference implementation, this matrix converts
+    /// linear sRGB to opsin absorbance (L, M, S) values.
+    static let opsinAbsorbanceMatrix: [Float] = [
+        // L row
+        0.30078125, 0.63046875, 0.06875,
+        // M row
+        0.23046875, 0.69531250, 0.07421875,
+        // S row
+        0.24218750, 0.07812500, 0.67968750
+    ]
+    
+    /// Inverse opsin absorbance matrix (LMS → linear RGB).
+    ///
+    /// Precomputed from the opsin absorbance matrix using matrix inversion.
+    static let inverseOpsinAbsorbanceMatrix: [Float] = [
+        // R row
+         10.948393,  -9.924701,  -0.023692,
+        // G row
+         -3.252452,   4.404409,  -0.151958,
+        // B row
+         -3.527307,   3.030134,   1.497173
+    ]
+    
+    /// Apply the opsin transfer function to a single value.
+    ///
+    /// Computes `cbrt(x + bias) - cbrt(bias)`, where `bias = 0.00379246`.
+    ///
+    /// - Parameter x: Linear intensity value (≥ 0)
+    /// - Returns: Perceptually linearised value
+    static func opsinTransfer(_ x: Float) -> Float {
+        cbrt(max(0, x) + opsinBias) - cbrtBias
+    }
+    
+    /// Apply the inverse opsin transfer function to a single value.
+    ///
+    /// Computes `(v + cbrt(bias))³ - bias`.
+    ///
+    /// - Parameter v: Opsin-transferred value
+    /// - Returns: Linear intensity value
+    static func inverseOpsinTransfer(_ v: Float) -> Float {
+        let sum = v + cbrtBias
+        return sum * sum * sum - opsinBias
+    }
+    
+    /// Convert an RGB frame to the JPEG XL XYB colour space.
+    ///
+    /// The XYB transform is JPEG XL's native perceptual colour space
+    /// (ISO/IEC 18181-1 §9). The pipeline is:
+    ///
+    /// 1. Linear RGB → LMS via the opsin absorbance matrix
+    /// 2. LMS → L'M'S' via a cube-root transfer function
+    /// 3. L'M'S' → XYB via `X = (L' - M') / 2`, `Y = (L' + M') / 2`, `B = S'`
+    ///
+    /// - Parameter frame: Input image frame with ≥ 3 channels (RGB)
+    /// - Returns: A new frame with channels reinterpreted as X, Y, B
+    func convertToXYB(frame: ImageFrame) -> ImageFrame {
+        guard frame.channels >= 3 else {
+            return frame
+        }
+        
+        #if canImport(Accelerate)
+        if hardware.hasAccelerate && options.useAccelerate {
+            return convertToXYBAccelerate(frame: frame)
+        }
+        #endif
+        
+        return convertToXYBScalar(frame: frame)
+    }
+    
+    /// Scalar XYB conversion (reference implementation).
+    func convertToXYBScalar(frame: ImageFrame) -> ImageFrame {
+        var xybFrame = frame
+        for y in 0..<frame.height {
+            for x in 0..<frame.width {
+                let r = Float(frame.getPixel(x: x, y: y, channel: 0)) / 65535.0
+                let g = Float(frame.getPixel(x: x, y: y, channel: 1)) / 65535.0
+                let b = Float(frame.getPixel(x: x, y: y, channel: 2)) / 65535.0
+                
+                // Step 1: Linear RGB → LMS via opsin absorbance matrix
+                let m = VarDCTEncoder.opsinAbsorbanceMatrix
+                let lVal = m[0] * r + m[1] * g + m[2] * b
+                let mVal = m[3] * r + m[4] * g + m[5] * b
+                let sVal = m[6] * r + m[7] * g + m[8] * b
+                
+                // Step 2: Apply cube-root transfer function
+                let lPrime = VarDCTEncoder.opsinTransfer(lVal)
+                let mPrime = VarDCTEncoder.opsinTransfer(mVal)
+                let sPrime = VarDCTEncoder.opsinTransfer(sVal)
+                
+                // Step 3: LMS' → XYB
+                let xVal = (lPrime - mPrime) * 0.5
+                let yVal = (lPrime + mPrime) * 0.5
+                let bVal = sPrime
+                
+                xybFrame.setPixel(x: x, y: y, channel: 0,
+                                  value: UInt16(max(0, min(65535, xVal * 65535))))
+                xybFrame.setPixel(x: x, y: y, channel: 1,
+                                  value: UInt16(max(0, min(65535, yVal * 65535))))
+                xybFrame.setPixel(x: x, y: y, channel: 2,
+                                  value: UInt16(max(0, min(65535, bVal * 65535))))
+            }
+        }
+        return xybFrame
+    }
+    
+    /// Convert an XYB frame back to linear RGB.
+    ///
+    /// Applies the inverse of the XYB transform:
+    /// 1. XYB → L'M'S': `L' = Y + X`, `M' = Y - X`, `S' = B`
+    /// 2. Inverse opsin transfer: `LMS = inverse_transfer(L'M'S')`
+    /// 3. LMS → linear RGB via the inverse opsin absorbance matrix
+    ///
+    /// - Parameter frame: Input frame with channels interpreted as X, Y, B
+    /// - Returns: A new frame with channels as linear R, G, B
+    func convertFromXYB(frame: ImageFrame) -> ImageFrame {
+        guard frame.channels >= 3 else {
+            return frame
+        }
+        
+        #if canImport(Accelerate)
+        if hardware.hasAccelerate && options.useAccelerate {
+            return convertFromXYBAccelerate(frame: frame)
+        }
+        #endif
+        
+        return convertFromXYBScalar(frame: frame)
+    }
+    
+    /// Scalar inverse XYB conversion (reference implementation).
+    func convertFromXYBScalar(frame: ImageFrame) -> ImageFrame {
+        var rgbFrame = frame
+        for y in 0..<frame.height {
+            for x in 0..<frame.width {
+                let xVal = Float(frame.getPixel(x: x, y: y, channel: 0)) / 65535.0
+                let yVal = Float(frame.getPixel(x: x, y: y, channel: 1)) / 65535.0
+                let bVal = Float(frame.getPixel(x: x, y: y, channel: 2)) / 65535.0
+                
+                // Step 1: XYB → L'M'S'
+                let lPrime = yVal + xVal
+                let mPrime = yVal - xVal
+                let sPrime = bVal
+                
+                // Step 2: Inverse opsin transfer
+                let lVal = VarDCTEncoder.inverseOpsinTransfer(lPrime)
+                let mVal = VarDCTEncoder.inverseOpsinTransfer(mPrime)
+                let sVal = VarDCTEncoder.inverseOpsinTransfer(sPrime)
+                
+                // Step 3: LMS → linear RGB via inverse matrix
+                let im = VarDCTEncoder.inverseOpsinAbsorbanceMatrix
+                let r = im[0] * lVal + im[1] * mVal + im[2] * sVal
+                let g = im[3] * lVal + im[4] * mVal + im[5] * sVal
+                let b = im[6] * lVal + im[7] * mVal + im[8] * sVal
+                
+                rgbFrame.setPixel(x: x, y: y, channel: 0,
+                                  value: UInt16(max(0, min(65535, r * 65535))))
+                rgbFrame.setPixel(x: x, y: y, channel: 1,
+                                  value: UInt16(max(0, min(65535, g * 65535))))
+                rgbFrame.setPixel(x: x, y: y, channel: 2,
+                                  value: UInt16(max(0, min(65535, b * 65535))))
+            }
+        }
+        return rgbFrame
+    }
+    
+    #if canImport(Accelerate)
+    /// Accelerate-based XYB conversion using vectorised operations.
+    private func convertToXYBAccelerate(frame: ImageFrame) -> ImageFrame {
+        var xybFrame = frame
+        let pixelCount = frame.width * frame.height
+        
+        var rChannel = [Float](repeating: 0, count: pixelCount)
+        var gChannel = [Float](repeating: 0, count: pixelCount)
+        var bChannel = [Float](repeating: 0, count: pixelCount)
+        
+        for y in 0..<frame.height {
+            for x in 0..<frame.width {
+                let idx = y * frame.width + x
+                rChannel[idx] = Float(frame.getPixel(x: x, y: y, channel: 0)) / 65535.0
+                gChannel[idx] = Float(frame.getPixel(x: x, y: y, channel: 1)) / 65535.0
+                bChannel[idx] = Float(frame.getPixel(x: x, y: y, channel: 2)) / 65535.0
+            }
+        }
+        
+        let (xArr, yArr, bArr) = AccelerateOps.rgbToXYB(
+            r: rChannel, g: gChannel, b: bChannel
+        )
+        
+        for y in 0..<frame.height {
+            for x in 0..<frame.width {
+                let idx = y * frame.width + x
+                xybFrame.setPixel(x: x, y: y, channel: 0,
+                                  value: UInt16(max(0, min(65535, xArr[idx] * 65535))))
+                xybFrame.setPixel(x: x, y: y, channel: 1,
+                                  value: UInt16(max(0, min(65535, yArr[idx] * 65535))))
+                xybFrame.setPixel(x: x, y: y, channel: 2,
+                                  value: UInt16(max(0, min(65535, bArr[idx] * 65535))))
+            }
+        }
+        
+        return xybFrame
+    }
+    
+    /// Accelerate-based inverse XYB conversion.
+    private func convertFromXYBAccelerate(frame: ImageFrame) -> ImageFrame {
+        var rgbFrame = frame
+        let pixelCount = frame.width * frame.height
+        
+        var xChannel = [Float](repeating: 0, count: pixelCount)
+        var yChannel = [Float](repeating: 0, count: pixelCount)
+        var bChannel = [Float](repeating: 0, count: pixelCount)
+        
+        for y in 0..<frame.height {
+            for x in 0..<frame.width {
+                let idx = y * frame.width + x
+                xChannel[idx] = Float(frame.getPixel(x: x, y: y, channel: 0)) / 65535.0
+                yChannel[idx] = Float(frame.getPixel(x: x, y: y, channel: 1)) / 65535.0
+                bChannel[idx] = Float(frame.getPixel(x: x, y: y, channel: 2)) / 65535.0
+            }
+        }
+        
+        let (rArr, gArr, bArr) = AccelerateOps.xybToRGB(
+            x: xChannel, y: yChannel, b: bChannel
+        )
+        
+        for y in 0..<frame.height {
+            for x in 0..<frame.width {
+                let idx = y * frame.width + x
+                rgbFrame.setPixel(x: x, y: y, channel: 0,
+                                  value: UInt16(max(0, min(65535, rArr[idx] * 65535))))
+                rgbFrame.setPixel(x: x, y: y, channel: 1,
+                                  value: UInt16(max(0, min(65535, gArr[idx] * 65535))))
+                rgbFrame.setPixel(x: x, y: y, channel: 2,
+                                  value: UInt16(max(0, min(65535, bArr[idx] * 65535))))
+            }
+        }
+        
+        return rgbFrame
+    }
+    #endif
+    
     /// Scalar YCbCr conversion (reference implementation).
     private func convertToYCbCrScalar(frame: ImageFrame) -> ImageFrame {
         var ycbcrFrame = frame

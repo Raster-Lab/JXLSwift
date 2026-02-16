@@ -153,6 +153,139 @@ public enum AccelerateOps {
         return (yChannel, cbChannel, crChannel)
     }
     
+    // MARK: - XYB Colour Space Conversion
+    
+    /// Convert linear RGB to the JPEG XL XYB colour space using vectorised operations.
+    ///
+    /// The pipeline mirrors `VarDCTEncoder.convertToXYBScalar`:
+    /// 1. Linear RGB → LMS via opsin absorbance matrix (vectorised multiply + add)
+    /// 2. LMS → L'M'S' via cube-root transfer (element-wise)
+    /// 3. L'M'S' → XYB: X = (L' - M') / 2, Y = (L' + M') / 2, B = S'
+    ///
+    /// - Parameters:
+    ///   - r: Red channel values in [0, 1]
+    ///   - g: Green channel values in [0, 1]
+    ///   - b: Blue channel values in [0, 1]
+    /// - Returns: Tuple of (X, Y, B) arrays
+    public static func rgbToXYB(
+        r: [Float], g: [Float], b: [Float]
+    ) -> (x: [Float], y: [Float], b: [Float]) {
+        let count = r.count
+        precondition(g.count == count && b.count == count)
+        
+        let m = VarDCTEncoder.opsinAbsorbanceMatrix
+        var rScaled = [Float](repeating: 0, count: count)
+        var gScaled = [Float](repeating: 0, count: count)
+        var bScaled = [Float](repeating: 0, count: count)
+        
+        // L = m[0]*R + m[1]*G + m[2]*B
+        var lChannel = [Float](repeating: 0, count: count)
+        var k0 = m[0]; var k1 = m[1]; var k2 = m[2]
+        vDSP_vsmul(r, 1, &k0, &rScaled, 1, vDSP_Length(count))
+        vDSP_vsmul(g, 1, &k1, &gScaled, 1, vDSP_Length(count))
+        vDSP_vsmul(b, 1, &k2, &bScaled, 1, vDSP_Length(count))
+        vDSP_vadd(rScaled, 1, gScaled, 1, &lChannel, 1, vDSP_Length(count))
+        vDSP_vadd(lChannel, 1, bScaled, 1, &lChannel, 1, vDSP_Length(count))
+        
+        // M = m[3]*R + m[4]*G + m[5]*B
+        var mChannel = [Float](repeating: 0, count: count)
+        var k3 = m[3]; var k4 = m[4]; var k5 = m[5]
+        vDSP_vsmul(r, 1, &k3, &rScaled, 1, vDSP_Length(count))
+        vDSP_vsmul(g, 1, &k4, &gScaled, 1, vDSP_Length(count))
+        vDSP_vsmul(b, 1, &k5, &bScaled, 1, vDSP_Length(count))
+        vDSP_vadd(rScaled, 1, gScaled, 1, &mChannel, 1, vDSP_Length(count))
+        vDSP_vadd(mChannel, 1, bScaled, 1, &mChannel, 1, vDSP_Length(count))
+        
+        // S = m[6]*R + m[7]*G + m[8]*B
+        var sChannel = [Float](repeating: 0, count: count)
+        var k6 = m[6]; var k7 = m[7]; var k8 = m[8]
+        vDSP_vsmul(r, 1, &k6, &rScaled, 1, vDSP_Length(count))
+        vDSP_vsmul(g, 1, &k7, &gScaled, 1, vDSP_Length(count))
+        vDSP_vsmul(b, 1, &k8, &bScaled, 1, vDSP_Length(count))
+        vDSP_vadd(rScaled, 1, gScaled, 1, &sChannel, 1, vDSP_Length(count))
+        vDSP_vadd(sChannel, 1, bScaled, 1, &sChannel, 1, vDSP_Length(count))
+        
+        // Apply opsin transfer element-wise (cube root is not vectorisable via vDSP)
+        for i in 0..<count {
+            lChannel[i] = VarDCTEncoder.opsinTransfer(lChannel[i])
+            mChannel[i] = VarDCTEncoder.opsinTransfer(mChannel[i])
+            sChannel[i] = VarDCTEncoder.opsinTransfer(sChannel[i])
+        }
+        
+        // X = (L' - M') / 2, Y = (L' + M') / 2, B = S'
+        var xChannel = [Float](repeating: 0, count: count)
+        var yChannel = [Float](repeating: 0, count: count)
+        vDSP_vsub(mChannel, 1, lChannel, 1, &xChannel, 1, vDSP_Length(count))
+        var half: Float = 0.5
+        vDSP_vsmul(xChannel, 1, &half, &xChannel, 1, vDSP_Length(count))
+        vDSP_vadd(lChannel, 1, mChannel, 1, &yChannel, 1, vDSP_Length(count))
+        vDSP_vsmul(yChannel, 1, &half, &yChannel, 1, vDSP_Length(count))
+        
+        return (xChannel, yChannel, sChannel)
+    }
+    
+    /// Convert XYB colour space back to linear RGB using vectorised operations.
+    ///
+    /// - Parameters:
+    ///   - x: X channel values
+    ///   - y: Y channel values
+    ///   - b: B channel values
+    /// - Returns: Tuple of (R, G, B) linear channel arrays
+    public static func xybToRGB(
+        x: [Float], y: [Float], b: [Float]
+    ) -> (r: [Float], g: [Float], b: [Float]) {
+        let count = x.count
+        precondition(y.count == count && b.count == count)
+        
+        // L' = Y + X, M' = Y - X, S' = B
+        var lPrime = [Float](repeating: 0, count: count)
+        var mPrime = [Float](repeating: 0, count: count)
+        vDSP_vadd(y, 1, x, 1, &lPrime, 1, vDSP_Length(count))
+        vDSP_vsub(x, 1, y, 1, &mPrime, 1, vDSP_Length(count))
+        
+        // Inverse opsin transfer
+        var lChannel = [Float](repeating: 0, count: count)
+        var mChannel = [Float](repeating: 0, count: count)
+        var sChannel = [Float](repeating: 0, count: count)
+        for i in 0..<count {
+            lChannel[i] = VarDCTEncoder.inverseOpsinTransfer(lPrime[i])
+            mChannel[i] = VarDCTEncoder.inverseOpsinTransfer(mPrime[i])
+            sChannel[i] = VarDCTEncoder.inverseOpsinTransfer(b[i])
+        }
+        
+        // LMS → RGB via inverse matrix
+        let im = VarDCTEncoder.inverseOpsinAbsorbanceMatrix
+        var rScaled = [Float](repeating: 0, count: count)
+        var gScaled = [Float](repeating: 0, count: count)
+        var bScaled = [Float](repeating: 0, count: count)
+        
+        var rChannel = [Float](repeating: 0, count: count)
+        var k0 = im[0]; var k1 = im[1]; var k2 = im[2]
+        vDSP_vsmul(lChannel, 1, &k0, &rScaled, 1, vDSP_Length(count))
+        vDSP_vsmul(mChannel, 1, &k1, &gScaled, 1, vDSP_Length(count))
+        vDSP_vsmul(sChannel, 1, &k2, &bScaled, 1, vDSP_Length(count))
+        vDSP_vadd(rScaled, 1, gScaled, 1, &rChannel, 1, vDSP_Length(count))
+        vDSP_vadd(rChannel, 1, bScaled, 1, &rChannel, 1, vDSP_Length(count))
+        
+        var gOut = [Float](repeating: 0, count: count)
+        var k3 = im[3]; var k4 = im[4]; var k5 = im[5]
+        vDSP_vsmul(lChannel, 1, &k3, &rScaled, 1, vDSP_Length(count))
+        vDSP_vsmul(mChannel, 1, &k4, &gScaled, 1, vDSP_Length(count))
+        vDSP_vsmul(sChannel, 1, &k5, &bScaled, 1, vDSP_Length(count))
+        vDSP_vadd(rScaled, 1, gScaled, 1, &gOut, 1, vDSP_Length(count))
+        vDSP_vadd(gOut, 1, bScaled, 1, &gOut, 1, vDSP_Length(count))
+        
+        var bOut = [Float](repeating: 0, count: count)
+        var k6 = im[6]; var k7 = im[7]; var k8 = im[8]
+        vDSP_vsmul(lChannel, 1, &k6, &rScaled, 1, vDSP_Length(count))
+        vDSP_vsmul(mChannel, 1, &k7, &gScaled, 1, vDSP_Length(count))
+        vDSP_vsmul(sChannel, 1, &k8, &bScaled, 1, vDSP_Length(count))
+        vDSP_vadd(rScaled, 1, gScaled, 1, &bOut, 1, vDSP_Length(count))
+        vDSP_vadd(bOut, 1, bScaled, 1, &bOut, 1, vDSP_Length(count))
+        
+        return (rChannel, gOut, bOut)
+    }
+    
     // MARK: - Quantization
     
     /// Vectorised quantization: divide each element by the corresponding
