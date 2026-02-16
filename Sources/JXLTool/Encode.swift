@@ -62,7 +62,8 @@ struct Encode: ParsableCommand {
         }
 
         guard let effortLevel = EncodingEffort(rawValue: effort) else {
-            throw ValidationError("Effort must be between 1 and 9")
+            print("Error: Effort must be between 1 and 9", to: &standardError)
+            throw JXLExitCode.invalidArguments
         }
 
         let options = EncodingOptions(

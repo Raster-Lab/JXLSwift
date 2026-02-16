@@ -157,6 +157,8 @@ Sources/JXLTool/
 ├── Info.swift                  # Info subcommand
 ├── Hardware.swift              # Hardware subcommand
 ├── Benchmark.swift            # Benchmark subcommand
+├── Batch.swift                # Batch subcommand
+├── Compare.swift              # Compare subcommand
 └── Utilities.swift            # Shared CLI helpers
 ```
 
@@ -247,9 +249,28 @@ swift run jxl-tool hardware
 # Inspect a JPEG XL file
 swift run jxl-tool info output.jxl
 
+# Compare two JPEG XL files
+swift run jxl-tool compare file1.jxl file2.jxl
+
+# Compare with JSON output
+swift run jxl-tool compare file1.jxl file2.jxl --json
+
+# Compare with byte-level details
+swift run jxl-tool compare file1.jxl file2.jxl --bytes --verbose
+
 # Run performance benchmarks
 swift run jxl-tool benchmark --width 512 --height 512
 ```
+
+### Exit Codes
+
+The tool follows standard UNIX exit code conventions:
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success |
+| 1 | General error (runtime failure) |
+| 2 | Invalid arguments |
 
 ## Roadmap
 

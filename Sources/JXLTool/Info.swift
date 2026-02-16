@@ -23,15 +23,15 @@ struct Info: ParsableCommand {
 
         // Validate signature
         guard data.count >= 2 else {
-            print("Error: File too small to be a valid JPEG XL file")
-            throw ExitCode.failure
+            print("Error: File too small to be a valid JPEG XL file", to: &standardError)
+            throw JXLExitCode.generalError
         }
 
         if data[0] == 0xFF && data[1] == 0x0A {
             print("Format: JPEG XL codestream")
         } else {
-            print("Format: Unknown (expected JPEG XL signature 0xFF 0x0A)")
-            throw ExitCode.failure
+            print("Error: Unknown format (expected JPEG XL signature 0xFF 0x0A)", to: &standardError)
+            throw JXLExitCode.generalError
         }
 
         // Parse basic header (simplified)
