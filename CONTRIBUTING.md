@@ -5,7 +5,7 @@ Thank you for your interest in contributing to JXLSwift! This document provides 
 ## Development Environment
 
 ### Requirements
-- Swift 6.0 or later
+- Swift 6.2 or later
 - Xcode 16.0+ (for macOS/iOS development)
 - Access to Apple Silicon hardware recommended for testing optimizations
 
