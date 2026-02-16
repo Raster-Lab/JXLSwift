@@ -1067,4 +1067,413 @@ final class ANSEncoderTests: XCTestCase {
         // The two groups should be in different clusters
         XCTAssertNotEqual(contextMap[0], contextMap[4])
     }
+
+    // MARK: - Interleaved ANS Encoder
+
+    func testInterleaved_RoundTrip_UniformDistribution() throws {
+        let symbols = Array(0..<100).map { $0 % 4 }
+        let dist = try ANSFrequencyAnalysis.buildDistribution(
+            symbols: symbols, alphabetSize: 4
+        )
+
+        let encoder = InterleavedANSEncoder(
+            distribution: dist, streamCount: 4
+        )
+        let encoded = try encoder.encode(symbols)
+
+        let decoder = InterleavedANSDecoder(
+            distribution: dist, streamCount: 4
+        )
+        let decoded = try decoder.decode(encoded, count: symbols.count)
+
+        XCTAssertEqual(decoded, symbols)
+    }
+
+    func testInterleaved_RoundTrip_SkewedDistribution() throws {
+        let symbols = [Int](repeating: 0, count: 80)
+            + [Int](repeating: 1, count: 15)
+            + [Int](repeating: 2, count: 5)
+        let dist = try ANSFrequencyAnalysis.buildDistribution(
+            symbols: symbols, alphabetSize: 3
+        )
+
+        let encoder = InterleavedANSEncoder(
+            distribution: dist, streamCount: 2
+        )
+        let encoded = try encoder.encode(symbols)
+
+        let decoder = InterleavedANSDecoder(
+            distribution: dist, streamCount: 2
+        )
+        let decoded = try decoder.decode(encoded, count: symbols.count)
+
+        XCTAssertEqual(decoded, symbols)
+    }
+
+    func testInterleaved_RoundTrip_SingleStream() throws {
+        let symbols = [0, 1, 2, 0, 1, 2, 0, 1]
+        let dist = try ANSFrequencyAnalysis.buildDistribution(
+            symbols: symbols, alphabetSize: 3
+        )
+
+        let encoder = InterleavedANSEncoder(
+            distribution: dist, streamCount: 1
+        )
+        let encoded = try encoder.encode(symbols)
+
+        let decoder = InterleavedANSDecoder(
+            distribution: dist, streamCount: 1
+        )
+        let decoded = try decoder.decode(encoded, count: symbols.count)
+
+        XCTAssertEqual(decoded, symbols)
+    }
+
+    func testInterleaved_RoundTrip_LargeData() throws {
+        var symbols = [Int]()
+        for i in 0..<10000 {
+            symbols.append(i % 8)
+        }
+        let dist = try ANSFrequencyAnalysis.buildDistribution(
+            symbols: symbols, alphabetSize: 8
+        )
+
+        let encoder = InterleavedANSEncoder(
+            distribution: dist, streamCount: 4
+        )
+        let encoded = try encoder.encode(symbols)
+
+        let decoder = InterleavedANSDecoder(
+            distribution: dist, streamCount: 4
+        )
+        let decoded = try decoder.decode(encoded, count: symbols.count)
+
+        XCTAssertEqual(decoded, symbols)
+    }
+
+    func testInterleaved_StreamCountClamped_ToMinOne() {
+        let dist = try! ANSDistribution(rawFrequencies: [1, 1])
+        let encoder = InterleavedANSEncoder(
+            distribution: dist, streamCount: 0
+        )
+        XCTAssertEqual(encoder.streamCount, 1)
+    }
+
+    func testInterleaved_StreamCountClamped_ToMax255() {
+        let dist = try! ANSDistribution(rawFrequencies: [1, 1])
+        let encoder = InterleavedANSEncoder(
+            distribution: dist, streamCount: 300
+        )
+        XCTAssertEqual(encoder.streamCount, 255)
+    }
+
+    func testInterleaved_InvalidSymbol_Throws() throws {
+        let dist = try ANSDistribution(rawFrequencies: [100, 200])
+        let encoder = InterleavedANSEncoder(
+            distribution: dist, streamCount: 2
+        )
+
+        XCTAssertThrowsError(try encoder.encode([0, 5]))
+    }
+
+    func testInterleaved_TruncatedData_Throws() throws {
+        let dist = try ANSDistribution(rawFrequencies: [100, 200])
+        let decoder = InterleavedANSDecoder(
+            distribution: dist, streamCount: 2
+        )
+
+        XCTAssertThrowsError(try decoder.decode(Data(), count: 10))
+    }
+
+    func testInterleaved_StreamCountMismatch_Throws() throws {
+        let dist = try ANSDistribution(rawFrequencies: [100, 200])
+        let encoder = InterleavedANSEncoder(
+            distribution: dist, streamCount: 4
+        )
+        let encoded = try encoder.encode([0, 1, 0, 1, 0])
+
+        let decoder = InterleavedANSDecoder(
+            distribution: dist, streamCount: 2
+        )
+        XCTAssertThrowsError(try decoder.decode(encoded, count: 5))
+    }
+
+    func testInterleaved_EmptyInput_ProducesOutput() throws {
+        let dist = try ANSDistribution(rawFrequencies: [100, 200])
+        let encoder = InterleavedANSEncoder(
+            distribution: dist, streamCount: 2
+        )
+        let encoded = try encoder.encode([])
+
+        let decoder = InterleavedANSDecoder(
+            distribution: dist, streamCount: 2
+        )
+        let decoded = try decoder.decode(encoded, count: 0)
+
+        XCTAssertEqual(decoded, [])
+    }
+
+    func testInterleaved_NonMultipleStreamCount_RoundTrip() throws {
+        // 7 symbols across 3 streams (uneven distribution)
+        let symbols = [0, 1, 0, 1, 0, 1, 0]
+        let dist = try ANSFrequencyAnalysis.buildDistribution(
+            symbols: symbols, alphabetSize: 2
+        )
+
+        let encoder = InterleavedANSEncoder(
+            distribution: dist, streamCount: 3
+        )
+        let encoded = try encoder.encode(symbols)
+
+        let decoder = InterleavedANSDecoder(
+            distribution: dist, streamCount: 3
+        )
+        let decoded = try decoder.decode(encoded, count: symbols.count)
+
+        XCTAssertEqual(decoded, symbols)
+    }
+
+    func testInterleaved_HeaderFormat_ContainsStreamCount() throws {
+        let dist = try ANSDistribution(rawFrequencies: [100, 200])
+        let encoder = InterleavedANSEncoder(
+            distribution: dist, streamCount: 3
+        )
+        let encoded = try encoder.encode([0, 1, 0])
+
+        // First byte should be stream count
+        XCTAssertEqual(encoded[0], 3)
+    }
+
+    // MARK: - LZ77 Token
+
+    func testLZ77Token_Literal_Equatable() {
+        let a = LZ77Token.literal(symbol: 5)
+        let b = LZ77Token.literal(symbol: 5)
+        XCTAssertEqual(a, b)
+    }
+
+    func testLZ77Token_Match_Equatable() {
+        let a = LZ77Token.match(length: 3, distance: 5)
+        let b = LZ77Token.match(length: 3, distance: 5)
+        XCTAssertEqual(a, b)
+    }
+
+    func testLZ77Token_DifferentTypes_NotEqual() {
+        let a = LZ77Token.literal(symbol: 1)
+        let b = LZ77Token.match(length: 1, distance: 1)
+        XCTAssertNotEqual(a, b)
+    }
+
+    // MARK: - LZ77 Match Finding
+
+    func testLZ77_FindMatches_AllLiterals_NoRepeats() {
+        let encoder = LZ77HybridEncoder()
+        let symbols = [0, 1, 2, 3, 4]
+        let tokens = encoder.findMatches(in: symbols)
+
+        // No repeats, all should be literals
+        XCTAssertEqual(tokens.count, 5)
+        for token in tokens {
+            switch token {
+            case .literal: break
+            case .match:
+                XCTFail("Expected no matches in non-repeating sequence")
+            }
+        }
+    }
+
+    func testLZ77_FindMatches_RepeatedPattern() {
+        let encoder = LZ77HybridEncoder(
+            windowSize: 1024, minMatchLength: 3
+        )
+        // Repeated pattern should produce at least one match
+        let symbols = [0, 1, 2, 0, 1, 2, 0, 1, 2]
+        let tokens = encoder.findMatches(in: symbols)
+
+        var hasMatch = false
+        for token in tokens {
+            if case .match = token { hasMatch = true }
+        }
+        XCTAssertTrue(hasMatch, "Expected matches in repeated pattern")
+    }
+
+    func testLZ77_FindMatches_SingleSymbol_NoMatches() {
+        let encoder = LZ77HybridEncoder()
+        let symbols = [42]
+        let tokens = encoder.findMatches(in: symbols)
+
+        XCTAssertEqual(tokens.count, 1)
+        XCTAssertEqual(tokens[0], .literal(symbol: 42))
+    }
+
+    func testLZ77_FindMatches_EmptyInput_EmptyOutput() {
+        let encoder = LZ77HybridEncoder()
+        let tokens = encoder.findMatches(in: [])
+        XCTAssertTrue(tokens.isEmpty)
+    }
+
+    func testLZ77_FindMatches_RunLength_ProducesMatch() {
+        let encoder = LZ77HybridEncoder(
+            windowSize: 1024, minMatchLength: 3
+        )
+        // Long run of same symbol
+        let symbols = [Int](repeating: 7, count: 20)
+        let tokens = encoder.findMatches(in: symbols)
+
+        // Should produce fewer tokens than symbols (matches compress runs)
+        XCTAssertLessThan(tokens.count, symbols.count)
+    }
+
+    // MARK: - LZ77 Hybrid Encoder/Decoder
+
+    func testLZ77Hybrid_RoundTrip_NoRepeats() throws {
+        let encoder = LZ77HybridEncoder()
+        let symbols = [0, 1, 2, 3, 4, 5, 6, 7]
+        let encoded = try encoder.encode(symbols)
+
+        let decoder = LZ77HybridDecoder()
+        let decoded = try decoder.decode(encoded)
+
+        XCTAssertEqual(decoded, symbols)
+    }
+
+    func testLZ77Hybrid_RoundTrip_RepeatedPattern() throws {
+        let encoder = LZ77HybridEncoder()
+        let symbols = [0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2]
+        let encoded = try encoder.encode(symbols)
+
+        let decoder = LZ77HybridDecoder()
+        let decoded = try decoder.decode(encoded)
+
+        XCTAssertEqual(decoded, symbols)
+    }
+
+    func testLZ77Hybrid_RoundTrip_LongRun() throws {
+        let encoder = LZ77HybridEncoder()
+        let symbols = [Int](repeating: 5, count: 200)
+        let encoded = try encoder.encode(symbols)
+
+        let decoder = LZ77HybridDecoder()
+        let decoded = try decoder.decode(encoded)
+
+        XCTAssertEqual(decoded, symbols)
+    }
+
+    func testLZ77Hybrid_RoundTrip_MixedContent() throws {
+        let encoder = LZ77HybridEncoder()
+        // Mix of unique data and repeated patterns
+        var symbols = [Int]()
+        for i in 0..<50 { symbols.append(i % 10) }
+        for _ in 0..<3 { symbols.append(contentsOf: [99, 98, 97]) }
+        for i in 0..<30 { symbols.append(i % 5) }
+
+        let encoded = try encoder.encode(symbols)
+        let decoder = LZ77HybridDecoder()
+        let decoded = try decoder.decode(encoded)
+
+        XCTAssertEqual(decoded, symbols)
+    }
+
+    func testLZ77Hybrid_RoundTrip_SingleSymbol() throws {
+        let encoder = LZ77HybridEncoder()
+        let symbols = [42]
+        let encoded = try encoder.encode(symbols)
+
+        let decoder = LZ77HybridDecoder()
+        let decoded = try decoder.decode(encoded)
+
+        XCTAssertEqual(decoded, symbols)
+    }
+
+    func testLZ77Hybrid_RoundTrip_TwoSymbols() throws {
+        let encoder = LZ77HybridEncoder()
+        let symbols = [10, 20]
+        let encoded = try encoder.encode(symbols)
+
+        let decoder = LZ77HybridDecoder()
+        let decoded = try decoder.decode(encoded)
+
+        XCTAssertEqual(decoded, symbols)
+    }
+
+    func testLZ77Hybrid_Compression_BetterForRepetitive() throws {
+        let encoder = LZ77HybridEncoder()
+
+        // Highly repetitive data — long enough to overcome the fixed
+        // header overhead (12 bytes + distribution table)
+        let repetitive = [Int](repeating: 5, count: 5000)
+        let encodedRepetitive = try encoder.encode(repetitive)
+
+        // The compressed size should be much smaller than the raw
+        // symbol count for highly repetitive data
+        XCTAssertGreaterThan(repetitive.count, encodedRepetitive.count)
+    }
+
+    func testLZ77Hybrid_WindowSize_Clamped() {
+        let encoder1 = LZ77HybridEncoder(windowSize: 0)
+        XCTAssertEqual(encoder1.windowSize, 1)
+
+        let encoder2 = LZ77HybridEncoder(windowSize: 100000)
+        XCTAssertEqual(encoder2.windowSize, 32768)
+    }
+
+    func testLZ77Hybrid_MinMatchLength_Clamped() {
+        let encoder = LZ77HybridEncoder(minMatchLength: 1)
+        XCTAssertEqual(encoder.minMatchLength, 2)
+    }
+
+    func testLZ77Hybrid_Decoder_TruncatedData_Throws() {
+        let decoder = LZ77HybridDecoder()
+        XCTAssertThrowsError(try decoder.decode(Data([0, 0])))
+    }
+
+    func testLZ77Hybrid_TokensToFlatStream_Literal() {
+        let encoder = LZ77HybridEncoder()
+        let tokens: [LZ77Token] = [.literal(symbol: 42)]
+        let flat = encoder.tokensToFlatStream(tokens)
+
+        XCTAssertEqual(flat[0], 0)  // literal marker
+        XCTAssertEqual(flat[1], 42) // symbol value
+    }
+
+    func testLZ77Hybrid_TokensToFlatStream_Match() {
+        let encoder = LZ77HybridEncoder()
+        let tokens: [LZ77Token] = [.match(length: 5, distance: 3)]
+        let flat = encoder.tokensToFlatStream(tokens)
+
+        XCTAssertEqual(flat[0], 1) // match marker
+        // Remaining bytes are varint-encoded length and distance
+        XCTAssertGreaterThan(flat.count, 1)
+    }
+
+    func testLZ77Hybrid_RoundTrip_LargeAlphabet() throws {
+        let encoder = LZ77HybridEncoder()
+        // Use symbols from a larger alphabet with some repetition
+        var symbols = [Int]()
+        for _ in 0..<5 {
+            for j in 0..<50 { symbols.append(j) }
+        }
+
+        let encoded = try encoder.encode(symbols)
+        let decoder = LZ77HybridDecoder()
+        let decoded = try decoder.decode(encoded)
+
+        XCTAssertEqual(decoded, symbols)
+    }
+
+    func testLZ77Hybrid_RoundTrip_CustomWindowSize() throws {
+        let encoder = LZ77HybridEncoder(
+            windowSize: 64, minMatchLength: 3
+        )
+        // Pattern that repeats within the window
+        let pattern = [0, 1, 2, 3, 4]
+        var symbols = [Int]()
+        for _ in 0..<20 { symbols.append(contentsOf: pattern) }
+
+        let encoded = try encoder.encode(symbols)
+        let decoder = LZ77HybridDecoder()
+        let decoded = try decoder.decode(encoded)
+
+        XCTAssertEqual(decoded, symbols)
+    }
 }

@@ -1002,3 +1002,617 @@ enum HistogramClustering: Sendable {
         return (klAM + klBM) / 2.0
     }
 }
+
+// MARK: - ANS Interleaving
+
+/// Interleaved rANS encoder for parallel decoding.
+///
+/// Distributes symbols across multiple independent rANS streams using
+/// round-robin assignment (symbol `i` goes to stream `i % streamCount`).
+/// Each stream maintains its own rANS state and emits its own
+/// renormalisation bytes, enabling fully parallel decoding.
+///
+/// The output format is:
+/// - 1 byte: stream count
+/// - 4 bytes per stream: final rANS state (big-endian)
+/// - Concatenated renormalisation bytes from all streams
+///
+/// This follows the interleaved ANS strategy used in JPEG XL for
+/// improved throughput on multi-core hardware.
+struct InterleavedANSEncoder: Sendable {
+    /// The probability distribution used for encoding.
+    let distribution: ANSDistribution
+
+    /// Number of interleaved streams.
+    let streamCount: Int
+
+    /// Create an interleaved encoder with the given distribution.
+    ///
+    /// - Parameters:
+    ///   - distribution: The symbol probability distribution.
+    ///   - streamCount: Number of interleaved streams (default 4).
+    init(distribution: ANSDistribution, streamCount: Int = 4) {
+        self.distribution = distribution
+        self.streamCount = max(1, min(streamCount, 255))
+    }
+
+    /// Encode a sequence of symbols into an interleaved compressed byte stream.
+    ///
+    /// Symbols are distributed across streams in round-robin order.
+    /// Each stream encodes its symbols in reverse order using rANS.
+    ///
+    /// - Parameter symbols: The symbols to encode.  Each symbol must
+    ///   be in `0 ..< distribution.alphabetSize` and have non-zero
+    ///   frequency.
+    /// - Returns: The interleaved compressed byte stream.
+    /// - Throws: ``ANSError/symbolOutOfRange(symbol:alphabetSize:)``
+    ///   if a symbol is invalid.
+    func encode(_ symbols: [Int]) throws -> Data {
+        let dist = distribution
+        let tab = ANSConstants.tabSize
+        let n = streamCount
+
+        // Validate symbols
+        for s in symbols {
+            guard s >= 0 && s < dist.alphabetSize else {
+                throw ANSError.symbolOutOfRange(
+                    symbol: s, alphabetSize: dist.alphabetSize
+                )
+            }
+            guard dist.frequencies[s] > 0 else {
+                throw ANSError.symbolOutOfRange(
+                    symbol: s, alphabetSize: dist.alphabetSize
+                )
+            }
+        }
+
+        // Distribute symbols across streams (round-robin)
+        var streams = [[Int]](repeating: [], count: n)
+        for (i, s) in symbols.enumerated() {
+            streams[i % n].append(s)
+        }
+
+        // Encode each stream independently
+        var states = [UInt32](repeating: ANSConstants.stateInit, count: n)
+        var outputs = [[UInt8]](repeating: [], count: n)
+
+        for streamIdx in 0..<n {
+            let streamSymbols = streams[streamIdx]
+
+            // Encode in reverse order (rANS is stack-like)
+            for i in stride(
+                from: streamSymbols.count - 1, through: 0, by: -1
+            ) {
+                let s = streamSymbols[i]
+                let freq = dist.frequencies[s]
+                let cumStart = dist.cumulative[s]
+
+                // Renormalise: push bytes until state is small enough
+                let maxState = freq * (ANSConstants.stateUpper / tab)
+                while states[streamIdx] >= maxState {
+                    outputs[streamIdx].append(
+                        UInt8(states[streamIdx] & 0xFF)
+                    )
+                    states[streamIdx] >>= 8
+                }
+
+                // Encode symbol into state
+                states[streamIdx] = (states[streamIdx] / freq) * tab
+                    + (states[streamIdx] % freq) + cumStart
+            }
+
+            // Reverse renormalisation bytes so decoder reads forward
+            outputs[streamIdx].reverse()
+        }
+
+        // Build output: stream count, per-stream states, then bytes
+        var result = [UInt8]()
+        let totalBytes = outputs.reduce(0) { $0 + $1.count }
+        result.reserveCapacity(1 + n * 4 + totalBytes)
+
+        // Stream count
+        result.append(UInt8(n))
+
+        // Final states (big-endian, 4 bytes each)
+        for state in states {
+            result.append(UInt8((state >> 24) & 0xFF))
+            result.append(UInt8((state >> 16) & 0xFF))
+            result.append(UInt8((state >> 8) & 0xFF))
+            result.append(UInt8(state & 0xFF))
+        }
+
+        // Interleaved renormalisation bytes from all streams
+        for streamOutput in outputs {
+            result.append(contentsOf: streamOutput)
+        }
+
+        return Data(result)
+    }
+}
+
+/// Interleaved rANS decoder for parallel decoding.
+///
+/// Decodes an interleaved byte stream produced by
+/// ``InterleavedANSEncoder``.  Each stream is decoded independently
+/// using its own rANS state, and the original symbol order is
+/// reconstructed by round-robin reassembly.
+struct InterleavedANSDecoder: Sendable {
+    /// The probability distribution used for decoding.
+    let distribution: ANSDistribution
+
+    /// Number of interleaved streams.
+    let streamCount: Int
+
+    /// Create an interleaved decoder with the given distribution.
+    ///
+    /// - Parameters:
+    ///   - distribution: The same distribution used by the encoder.
+    ///   - streamCount: Number of interleaved streams (default 4).
+    init(distribution: ANSDistribution, streamCount: Int = 4) {
+        self.distribution = distribution
+        self.streamCount = max(1, min(streamCount, 255))
+    }
+
+    /// Decode an interleaved compressed byte stream into the original symbols.
+    ///
+    /// Reads the stream count and per-stream states from the header,
+    /// decodes each stream independently, then reconstructs the original
+    /// symbol order by round-robin reassembly.
+    ///
+    /// - Parameters:
+    ///   - data: The compressed byte stream produced by
+    ///     ``InterleavedANSEncoder``.
+    ///   - count: The total number of symbols to decode.
+    /// - Returns: The decoded symbols in their original order.
+    /// - Throws: ``ANSError/truncatedData`` if the data is too short,
+    ///   or ``ANSError/decodingFailed(_:)`` if the state is invalid.
+    func decode(_ data: Data, count: Int) throws -> [Int] {
+        guard data.count >= 1 else { throw ANSError.truncatedData }
+
+        let bytes = Array(data)
+        let n = Int(bytes[0])
+
+        guard n >= 1 else {
+            throw ANSError.decodingFailed("stream count must be >= 1")
+        }
+
+        guard n == streamCount else {
+            throw ANSError.decodingFailed(
+                "stream count mismatch: data has \(n), expected \(streamCount)"
+            )
+        }
+
+        let headerSize = 1 + n * 4
+        guard bytes.count >= headerSize else {
+            throw ANSError.truncatedData
+        }
+
+        let tab = ANSConstants.tabSize
+
+        // Read per-stream initial states (big-endian)
+        var states = [UInt32](repeating: 0, count: n)
+        for i in 0..<n {
+            let offset = 1 + i * 4
+            states[i] = UInt32(bytes[offset]) << 24
+                | UInt32(bytes[offset + 1]) << 16
+                | UInt32(bytes[offset + 2]) << 8
+                | UInt32(bytes[offset + 3])
+        }
+
+        // Determine how many symbols each stream must decode
+        var streamCounts = [Int](repeating: count / n, count: n)
+        for i in 0..<(count % n) {
+            streamCounts[i] += 1
+        }
+
+        // Decode each stream. The renormalisation bytes for each stream
+        // are laid out sequentially after the header.  We must figure out
+        // each stream's byte range. Since we don't know the exact sizes
+        // up front, we decode streams sequentially, each consuming bytes
+        // from a shared position cursor.
+        var pos = headerSize
+        var streamSymbols = [[Int]](repeating: [], count: n)
+
+        for streamIdx in 0..<n {
+            var state = states[streamIdx]
+            var decoded = [Int]()
+            decoded.reserveCapacity(streamCounts[streamIdx])
+
+            for _ in 0..<streamCounts[streamIdx] {
+                let slot = state % tab
+                let (symbol, freq, cumStart) = distribution.decode(
+                    slot: slot
+                )
+
+                decoded.append(symbol)
+
+                state = freq * (state / tab) + slot - cumStart
+
+                // Renormalise: read bytes while state is below lower bound
+                while state < ANSConstants.stateLower {
+                    guard pos < bytes.count else {
+                        if decoded.count == streamCounts[streamIdx] { break }
+                        throw ANSError.truncatedData
+                    }
+                    state = (state << 8) | UInt32(bytes[pos])
+                    pos += 1
+                }
+            }
+
+            streamSymbols[streamIdx] = decoded
+        }
+
+        // Reconstruct original order by round-robin reassembly
+        var result = [Int]()
+        result.reserveCapacity(count)
+
+        var streamPositions = [Int](repeating: 0, count: n)
+        for i in 0..<count {
+            let streamIdx = i % n
+            result.append(streamSymbols[streamIdx][streamPositions[streamIdx]])
+            streamPositions[streamIdx] += 1
+        }
+
+        return result
+    }
+}
+
+// MARK: - LZ77 Hybrid Mode
+
+/// A token in the LZ77 token stream.
+///
+/// The LZ77 algorithm decomposes a symbol sequence into a stream of
+/// literal symbols and back-references (matches) to previously seen
+/// data.  This enum represents both token types.
+enum LZ77Token: Sendable, Equatable {
+    /// A single literal symbol.
+    ///
+    /// - Parameter symbol: The literal symbol value.
+    case literal(symbol: Int)
+
+    /// A back-reference to repeated data.
+    ///
+    /// - Parameters:
+    ///   - length: Number of symbols to copy.
+    ///   - distance: How far back in the output to start copying.
+    case match(length: Int, distance: Int)
+}
+
+/// Hybrid LZ77 + ANS encoder.
+///
+/// Combines LZ77 back-reference matching with ANS entropy coding for
+/// improved compression.  The encoder first finds repeated patterns
+/// using a greedy LZ77 match finder, then entropy-codes the resulting
+/// token stream with rANS.
+///
+/// The encoding pipeline is:
+/// 1. Scan symbols for repeated subsequences (LZ77 matching).
+/// 2. Convert tokens to a flat symbol stream:
+///    - Literal: marker `0`, then the literal symbol value.
+///    - Match: marker `1`, then length as varint bytes, then distance
+///      as varint bytes.
+/// 3. Compress the flat symbol stream using ANS.
+///
+/// Output format:
+/// - 4 bytes: original symbol count (big-endian `UInt32`)
+/// - Remaining bytes: ANS-compressed flat symbol stream
+struct LZ77HybridEncoder: Sendable {
+    /// Maximum look-back window size in symbols.
+    let windowSize: Int
+
+    /// Minimum match length to emit a match token.
+    let minMatchLength: Int
+
+    /// Create an LZ77 hybrid encoder.
+    ///
+    /// - Parameters:
+    ///   - windowSize: Maximum look-back distance (default 1024,
+    ///     clamped to 1...32768).
+    ///   - minMatchLength: Minimum match length to consider
+    ///     (default 3, minimum 2).
+    init(windowSize: Int = 1024, minMatchLength: Int = 3) {
+        self.windowSize = max(1, min(windowSize, 32768))
+        self.minMatchLength = max(2, minMatchLength)
+    }
+
+    /// Find LZ77 matches in the given symbol sequence.
+    ///
+    /// Uses a greedy algorithm: at each position, scan backwards in
+    /// the window for the longest match of at least
+    /// ``minMatchLength`` symbols.  If found, emit a
+    /// ``LZ77Token/match(length:distance:)``; otherwise emit a
+    /// ``LZ77Token/literal(symbol:)``.
+    ///
+    /// - Parameter symbols: The input symbol sequence.
+    /// - Returns: The LZ77 token stream.
+    func findMatches(in symbols: [Int]) -> [LZ77Token] {
+        var tokens = [LZ77Token]()
+        let count = symbols.count
+        var i = 0
+
+        while i < count {
+            var bestLength = 0
+            var bestDistance = 0
+
+            // Search window: look back up to windowSize positions
+            let windowStart = max(0, i - windowSize)
+
+            for j in windowStart..<i {
+                var matchLen = 0
+                // Allow overlapping matches: compare source (starting
+                // at j) with target (starting at i).  When j + matchLen
+                // wraps past i the comparison naturally uses already-
+                // matched data, which is the standard LZ77 behaviour for
+                // run-length patterns.
+                // Safety: since j < i, we have j + matchLen < i + matchLen,
+                // so the i + matchLen < count guard also bounds j + matchLen.
+                while i + matchLen < count
+                    && symbols[j + matchLen] == symbols[i + matchLen] {
+                    matchLen += 1
+                }
+
+                if matchLen >= minMatchLength && matchLen > bestLength {
+                    bestLength = matchLen
+                    bestDistance = i - j
+                }
+            }
+
+            if bestLength >= minMatchLength {
+                tokens.append(.match(
+                    length: bestLength, distance: bestDistance
+                ))
+                i += bestLength
+            } else {
+                tokens.append(.literal(symbol: symbols[i]))
+                i += 1
+            }
+        }
+
+        return tokens
+    }
+
+    /// Encode a symbol sequence using LZ77 + ANS hybrid compression.
+    ///
+    /// - Parameter symbols: The symbols to encode.
+    /// - Returns: The compressed data (4-byte count header + ANS
+    ///   payload).
+    /// - Throws: ``ANSError`` if ANS encoding fails.
+    func encode(_ symbols: [Int]) throws -> Data {
+        let tokens = findMatches(in: symbols)
+
+        // Convert tokens to a flat symbol stream
+        let flatStream = tokensToFlatStream(tokens)
+
+        // Build distribution and ANS-encode
+        let alphabetSize = max(2, (flatStream.max() ?? 0) + 1)
+        let dist = try ANSFrequencyAnalysis.buildDistribution(
+            symbols: flatStream, alphabetSize: alphabetSize
+        )
+        let encoder = ANSEncoder(distribution: dist)
+        let ansData = try encoder.encode(flatStream)
+
+        // Serialise distribution for the decoder
+        let distData = dist.serialise()
+
+        // Output: 4-byte symbol count + 4-byte flat stream count +
+        //         4-byte dist length + distribution + ANS data
+        var result = Data()
+        let symbolCount = UInt32(symbols.count)
+        result.append(UInt8((symbolCount >> 24) & 0xFF))
+        result.append(UInt8((symbolCount >> 16) & 0xFF))
+        result.append(UInt8((symbolCount >> 8) & 0xFF))
+        result.append(UInt8(symbolCount & 0xFF))
+
+        let flatCount = UInt32(flatStream.count)
+        result.append(UInt8((flatCount >> 24) & 0xFF))
+        result.append(UInt8((flatCount >> 16) & 0xFF))
+        result.append(UInt8((flatCount >> 8) & 0xFF))
+        result.append(UInt8(flatCount & 0xFF))
+
+        let distLen = UInt32(distData.count)
+        result.append(UInt8((distLen >> 24) & 0xFF))
+        result.append(UInt8((distLen >> 16) & 0xFF))
+        result.append(UInt8((distLen >> 8) & 0xFF))
+        result.append(UInt8(distLen & 0xFF))
+
+        result.append(distData)
+        result.append(ansData)
+
+        return result
+    }
+
+    /// Convert a token stream to a flat symbol stream for ANS encoding.
+    ///
+    /// - Literal: marker `0`, then literal symbol value.
+    /// - Match: marker `1`, then length as varint bytes, then distance
+    ///   as varint bytes.
+    ///
+    /// - Parameter tokens: The LZ77 token stream.
+    /// - Returns: The flat symbol stream.
+    func tokensToFlatStream(_ tokens: [LZ77Token]) -> [Int] {
+        var flat = [Int]()
+
+        for token in tokens {
+            switch token {
+            case .literal(let symbol):
+                // Marker 0 = literal, then the symbol value
+                flat.append(0)
+                flat.append(symbol)
+            case .match(let length, let distance):
+                // Marker 1 = match, then length varint, then distance varint
+                flat.append(1)
+                appendVarint(length, to: &flat)
+                appendVarint(distance, to: &flat)
+            }
+        }
+
+        return flat
+    }
+
+    /// Append an integer as varint-encoded bytes (7 bits per byte,
+    /// MSB continuation flag) to the flat symbol stream.
+    ///
+    /// Each byte of the varint is emitted as a separate symbol.
+    ///
+    /// - Parameters:
+    ///   - value: The integer to encode.
+    ///   - stream: The symbol stream to append to.
+    private func appendVarint(_ value: Int, to stream: inout [Int]) {
+        var v = value
+        repeat {
+            var byte = v & 0x7F
+            v >>= 7
+            if v > 0 { byte |= 0x80 }
+            stream.append(byte)
+        } while v > 0
+    }
+}
+
+/// Hybrid LZ77 + ANS decoder.
+///
+/// Decodes data produced by ``LZ77HybridEncoder``.  The decoder first
+/// ANS-decodes the compressed flat symbol stream, then reconstructs
+/// the original symbol sequence by replaying literal and match tokens.
+struct LZ77HybridDecoder: Sendable {
+
+    /// Create an LZ77 hybrid decoder.
+    init() {}
+
+    /// Decode LZ77 + ANS compressed data into the original symbols.
+    ///
+    /// - Parameter data: The compressed data produced by
+    ///   ``LZ77HybridEncoder``.
+    /// - Returns: The original symbol sequence.
+    /// - Throws: ``ANSError/truncatedData`` if the data is too short,
+    ///   or ``ANSError/decodingFailed(_:)`` on invalid token data.
+    func decode(_ data: Data) throws -> [Int] {
+        guard data.count >= 12 else { throw ANSError.truncatedData }
+
+        let bytes = Array(data)
+
+        // Read original symbol count (big-endian UInt32)
+        let symbolCount = Int(
+            UInt32(bytes[0]) << 24
+            | UInt32(bytes[1]) << 16
+            | UInt32(bytes[2]) << 8
+            | UInt32(bytes[3])
+        )
+
+        // Read flat stream count (big-endian UInt32)
+        let flatCount = Int(
+            UInt32(bytes[4]) << 24
+            | UInt32(bytes[5]) << 16
+            | UInt32(bytes[6]) << 8
+            | UInt32(bytes[7])
+        )
+
+        // Read distribution length (big-endian UInt32)
+        let distLen = Int(
+            UInt32(bytes[8]) << 24
+            | UInt32(bytes[9]) << 16
+            | UInt32(bytes[10]) << 8
+            | UInt32(bytes[11])
+        )
+
+        let distStart = 12
+        let distEnd = distStart + distLen
+        guard distEnd <= bytes.count else { throw ANSError.truncatedData }
+
+        // Deserialise distribution
+        let distData = Data(bytes[distStart..<distEnd])
+        let dist = try ANSDistribution.deserialise(from: distData)
+
+        // ANS-decode the flat symbol stream using the exact count
+        let ansData = Data(bytes[distEnd...])
+        let decoder = ANSDecoder(distribution: dist)
+        let flatStream = try decoder.decode(ansData, count: flatCount)
+
+        // Reconstruct original symbols from the flat stream
+        var result = [Int]()
+        result.reserveCapacity(symbolCount)
+        var pos = 0
+
+        while result.count < symbolCount && pos < flatStream.count {
+            let marker = flatStream[pos]
+            pos += 1
+
+            switch marker {
+            case 0:
+                // Literal
+                guard pos < flatStream.count else {
+                    throw ANSError.decodingFailed(
+                        "truncated literal in LZ77 stream"
+                    )
+                }
+                result.append(flatStream[pos])
+                pos += 1
+
+            case 1:
+                // Match: read length varint, then distance varint
+                let (length, newPos1) = readVarint(
+                    from: flatStream, at: pos
+                )
+                pos = newPos1
+                let (distance, newPos2) = readVarint(
+                    from: flatStream, at: pos
+                )
+                pos = newPos2
+
+                guard distance > 0 && distance <= result.count else {
+                    throw ANSError.decodingFailed(
+                        "invalid LZ77 distance \(distance)"
+                    )
+                }
+                guard length > 0 else {
+                    throw ANSError.decodingFailed(
+                        "invalid LZ77 length \(length)"
+                    )
+                }
+
+                // Copy from the output buffer
+                let srcStart = result.count - distance
+                for k in 0..<length {
+                    result.append(result[srcStart + k])
+                }
+
+            default:
+                throw ANSError.decodingFailed(
+                    "unknown LZ77 marker \(marker)"
+                )
+            }
+        }
+
+        guard result.count == symbolCount else {
+            throw ANSError.decodingFailed(
+                "decoded \(result.count) symbols, expected \(symbolCount)"
+            )
+        }
+
+        return result
+    }
+
+    /// Read a varint from the flat symbol stream.
+    ///
+    /// - Parameters:
+    ///   - stream: The flat symbol stream.
+    ///   - start: The position to start reading from.
+    /// - Returns: A tuple of `(value, nextPosition)`.
+    private func readVarint(
+        from stream: [Int],
+        at start: Int
+    ) -> (value: Int, nextPos: Int) {
+        var value = 0
+        var shift = 0
+        var pos = start
+
+        while pos < stream.count {
+            let byte = stream[pos]
+            pos += 1
+            value |= (byte & 0x7F) << shift
+            shift += 7
+            if byte & 0x80 == 0 { break }
+        }
+
+        return (value, pos)
+    }
+}

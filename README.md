@@ -288,7 +288,7 @@ See [MILESTONES.md](MILESTONES.md) for the detailed project milestone plan.
 - [x] JPEG XL file format (.jxl) — ISOBMFF container, codestream/frame headers
 - [x] Metadata support (EXIF, XMP, ICC profiles)
 - [x] Animation container framing (frame index, multi-frame)
-- 🔶 ANS entropy coding — rANS encoder/decoder, multi-context, distribution tables, histogram clustering, integrated with Modular + VarDCT
+- 🔶 ANS entropy coding — rANS encoder/decoder, multi-context, distribution tables, histogram clustering, ANS interleaving, LZ77 hybrid mode, integrated with Modular + VarDCT
 - [ ] Metal GPU acceleration
 - [ ] Progressive encoding
 - [ ] Decoding support
