@@ -64,7 +64,7 @@ struct Compare: ParsableCommand {
 
         // Exit with code 1 if files differ
         if !result.identical {
-            throw ExitCode(1)
+            throw JXLExitCode.generalError
         }
     }
 

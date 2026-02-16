@@ -162,6 +162,7 @@ final class CLITests: XCTestCase {
 
     func testEncode_TooManyChannels_ThrowsError() {
         let encoder = JXLEncoder()
+        // Maximum supported is 4 channels (RGBA); 5 should be rejected
         let frame = ImageFrame(width: 8, height: 8, channels: 5)
         XCTAssertThrowsError(try encoder.encode(frame)) { error in
             XCTAssertTrue(error is EncoderError)
