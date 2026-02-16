@@ -887,7 +887,11 @@ enum HistogramClustering: Sendable {
         // Track which cluster IDs are still active
         var activeClusters = Set(0..<numContexts)
 
-        // Greedy agglomerative merging
+        // Greedy agglomerative merging.
+        // The loop runs while we exceed effectiveMax (forced merge) or
+        // while threshold-based merging is possible (count > 1).  The
+        // break condition inside stops threshold merging when JSD is too
+        // high.
         while activeClusters.count > effectiveMax || activeClusters.count > 1 {
             // Find the closest pair of active clusters
             var bestI = -1
@@ -938,7 +942,9 @@ enum HistogramClustering: Sendable {
             clusterRemap[oldID] = newID
         }
 
-        let contextMap = clusterAssignment.map { clusterRemap[$0]! }
+        // Every value in clusterAssignment is guaranteed to be in
+        // activeClusters because merging only redirects to active IDs.
+        let contextMap = clusterAssignment.map { clusterRemap[$0, default: 0] }
 
         // Build final distributions from merged frequencies
         var distributions = [ANSDistribution]()
