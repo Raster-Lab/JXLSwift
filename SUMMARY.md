@@ -151,8 +151,7 @@ JXLSwift/
 
 ### Test Results
 ```
-Test Suite 'All tests' passed at 2026-02-16
-Executed across 7 test suites, with 0 failures
+Test Suite 'All tests' — 7 test suites, 0 failures
 ```
 
 ---
