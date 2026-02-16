@@ -14,6 +14,12 @@ class VarDCTEncoder {
     /// DCT block size (8x8 is standard)
     private let blockSize = 8
     
+    /// Fixed-point scale factor for encoding CfL coefficients to the bitstream.
+    ///
+    /// The floating-point CfL coefficient is multiplied by this value,
+    /// rounded, and stored as an integer so the decoder can reconstruct it.
+    static let cflScaleFactor: Float = 256
+    
     init(hardware: HardwareCapabilities, options: EncodingOptions, distance: Float) {
         self.hardware = hardware
         self.options = options
@@ -611,7 +617,7 @@ class VarDCTEncoder {
                     )
                     // Write CfL coefficient to bitstream for decoder
                     writer.writeVarint(encodeSignedValue(
-                        Int32(round(cflCoeff * 256))
+                        Int32(round(cflCoeff * VarDCTEncoder.cflScaleFactor))
                     ))
                 }
                 
