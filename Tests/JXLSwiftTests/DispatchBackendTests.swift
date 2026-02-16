@@ -7,16 +7,16 @@ final class DispatchBackendTests: XCTestCase {
 
     func testDispatchBackend_Current_ReturnsNonScalar() {
         let current = DispatchBackend.current
-        #if arch(x86_64)
-        // On x86_64 Linux (CI) without Accelerate, should be .avx2
-        XCTAssertEqual(current, .avx2,
-                       "Expected .avx2 on x86_64 without Accelerate")
-        #elseif arch(arm64) && canImport(Accelerate)
+        #if canImport(Accelerate)
+        // Accelerate takes priority on any Apple platform (ARM64 or x86_64)
         XCTAssertEqual(current, .accelerate,
-                       "Expected .accelerate on Apple Silicon")
+                       "Expected .accelerate when Accelerate is available")
         #elseif arch(arm64)
         XCTAssertEqual(current, .neon,
                        "Expected .neon on ARM64 without Accelerate")
+        #elseif arch(x86_64)
+        XCTAssertEqual(current, .avx2,
+                       "Expected .avx2 on x86_64 without Accelerate")
         #else
         XCTAssertEqual(current, .scalar,
                        "Expected .scalar on unknown platform")
