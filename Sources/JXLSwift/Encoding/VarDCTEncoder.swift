@@ -14,6 +14,12 @@ class VarDCTEncoder {
     /// DCT block size (8x8 is standard)
     private let blockSize = 8
     
+    /// Fixed-point scale factor for encoding CfL coefficients to the bitstream.
+    ///
+    /// The floating-point CfL coefficient is multiplied by this value,
+    /// rounded, and stored as an integer so the decoder can reconstruct it.
+    static let cflScaleFactor: Float = 256
+    
     init(hardware: HardwareCapabilities, options: EncodingOptions, distance: Float) {
         self.hardware = hardware
         self.options = options
@@ -30,14 +36,31 @@ class VarDCTEncoder {
         // Convert to YCbCr color space for better compression
         let ycbcr = convertToYCbCr(frame: frame)
         
+        // Extract all channels as 2D float arrays
+        let channelArrays = (0..<ycbcr.channels).map { channel in
+            extractChannel(frame: ycbcr, channel: channel)
+        }
+        
+        // Compute luma DCT blocks for CfL prediction (only if we have chroma)
+        let lumaDCTBlocks: [[[[Float]]]]?
+        if ycbcr.channels >= 3 {
+            lumaDCTBlocks = computeDCTBlocks(
+                data: channelArrays[0],
+                width: ycbcr.width,
+                height: ycbcr.height
+            )
+        } else {
+            lumaDCTBlocks = nil
+        }
+        
         // Process each channel with DCT
         for channel in 0..<ycbcr.channels {
-            let channelData = extractChannel(frame: ycbcr, channel: channel)
             let encoded = try encodeChannelDCT(
-                data: channelData,
+                data: channelArrays[channel],
                 width: ycbcr.width,
                 height: ycbcr.height,
-                channel: channel
+                channel: channel,
+                lumaDCTBlocks: (channel > 0) ? lumaDCTBlocks : nil
             )
             writer.writeData(encoded)
         }
@@ -403,9 +426,160 @@ class VarDCTEncoder {
         return channelData
     }
     
+    // MARK: - Chroma-from-Luma (CfL) Prediction
+    
+    /// Compute all DCT blocks for a channel without encoding them.
+    ///
+    /// Used to pre-compute luma DCT coefficients so they can drive
+    /// Chroma-from-Luma (CfL) prediction on the chroma channels.
+    ///
+    /// - Parameters:
+    ///   - data: 2D float pixel data (row-major, value range 0–1).
+    ///   - width: Image width in pixels.
+    ///   - height: Image height in pixels.
+    /// - Returns: 2D grid of 8×8 DCT coefficient blocks indexed as
+    ///   `[blockY][blockX][row][col]`.
+    func computeDCTBlocks(
+        data: [[Float]],
+        width: Int,
+        height: Int
+    ) -> [[[[Float]]]] {
+        let blocksX = (width + blockSize - 1) / blockSize
+        let blocksY = (height + blockSize - 1) / blockSize
+        
+        var blocks = [[[[Float]]]](
+            repeating: [[[Float]]](
+                repeating: [[Float]](
+                    repeating: [Float](repeating: 0, count: blockSize),
+                    count: blockSize
+                ),
+                count: blocksX
+            ),
+            count: blocksY
+        )
+        
+        for blockY in 0..<blocksY {
+            for blockX in 0..<blocksX {
+                let block = extractBlock(
+                    data: data, blockX: blockX, blockY: blockY,
+                    width: width, height: height
+                )
+                blocks[blockY][blockX] = applyDCT(block: block)
+            }
+        }
+        
+        return blocks
+    }
+    
+    /// Compute the CfL correlation coefficient for a single block.
+    ///
+    /// Determines how well the chroma DCT coefficients can be predicted
+    /// from the luma DCT coefficients using a linear model:
+    ///
+    ///     predicted_chroma[u][v] = cflCoefficient × luma[u][v]
+    ///
+    /// The optimal coefficient minimises the sum of squared residuals
+    /// and is computed as:
+    ///
+    ///     cflCoefficient = Σ(luma × chroma) / Σ(luma × luma)
+    ///
+    /// The DC coefficient (position [0][0]) is excluded because it is
+    /// encoded separately via DC prediction.
+    ///
+    /// - Parameters:
+    ///   - lumaDCT: 8×8 luma DCT coefficients.
+    ///   - chromaDCT: 8×8 chroma DCT coefficients.
+    /// - Returns: The CfL correlation coefficient.  Returns 0 when the
+    ///   luma energy is negligible (no useful prediction possible).
+    func computeCfLCoefficient(lumaDCT: [[Float]], chromaDCT: [[Float]]) -> Float {
+        var lumaChromaSum: Float = 0
+        var lumaLumaSum: Float = 0
+        
+        for v in 0..<blockSize {
+            for u in 0..<blockSize {
+                // Skip DC coefficient (encoded separately)
+                if u == 0 && v == 0 { continue }
+                
+                let l = lumaDCT[v][u]
+                let c = chromaDCT[v][u]
+                
+                lumaChromaSum += l * c
+                lumaLumaSum += l * l
+            }
+        }
+        
+        // Avoid division by zero; if luma has no AC energy, CfL is useless
+        guard lumaLumaSum > 1e-10 else { return 0 }
+        
+        return lumaChromaSum / lumaLumaSum
+    }
+    
+    /// Apply CfL prediction to a chroma DCT block.
+    ///
+    /// Subtracts the luma-based prediction from the chroma block,
+    /// leaving only the residual to be quantized and encoded.
+    ///
+    /// - Parameters:
+    ///   - chromaDCT: 8×8 chroma DCT coefficients (modified in place conceptually).
+    ///   - lumaDCT: 8×8 luma DCT coefficients.
+    ///   - coefficient: CfL correlation coefficient from ``computeCfLCoefficient``.
+    /// - Returns: A new 8×8 block of chroma residuals after CfL prediction.
+    func applyCfLPrediction(
+        chromaDCT: [[Float]],
+        lumaDCT: [[Float]],
+        coefficient: Float
+    ) -> [[Float]] {
+        var residual = chromaDCT
+        
+        for v in 0..<blockSize {
+            for u in 0..<blockSize {
+                // Skip DC coefficient (encoded separately)
+                if u == 0 && v == 0 { continue }
+                
+                residual[v][u] = chromaDCT[v][u] - coefficient * lumaDCT[v][u]
+            }
+        }
+        
+        return residual
+    }
+    
+    /// Reconstruct chroma DCT coefficients from CfL residuals.
+    ///
+    /// This is the inverse of ``applyCfLPrediction`` and would be used
+    /// by a decoder to recover the original chroma coefficients.
+    ///
+    /// - Parameters:
+    ///   - residual: 8×8 chroma residual block.
+    ///   - lumaDCT: 8×8 luma DCT coefficients.
+    ///   - coefficient: CfL correlation coefficient.
+    /// - Returns: Reconstructed 8×8 chroma DCT coefficients.
+    func reconstructFromCfL(
+        residual: [[Float]],
+        lumaDCT: [[Float]],
+        coefficient: Float
+    ) -> [[Float]] {
+        var chroma = residual
+        
+        for v in 0..<blockSize {
+            for u in 0..<blockSize {
+                if u == 0 && v == 0 { continue }
+                
+                chroma[v][u] = residual[v][u] + coefficient * lumaDCT[v][u]
+            }
+        }
+        
+        return chroma
+    }
+    
     // MARK: - DCT Encoding
     
-    private func encodeChannelDCT(data: [[Float]], width: Int, height: Int, channel: Int) throws -> Data {
+    private func encodeChannelDCT(
+        data: [[Float]],
+        width: Int,
+        height: Int,
+        channel: Int,
+        lumaDCTBlocks: [[[[Float]]]]? = nil
+    ) throws -> Data {
         var writer = BitstreamWriter()
         
         // Process image in 8x8 blocks
@@ -430,7 +604,22 @@ class VarDCTEncoder {
                 )
                 
                 // Apply DCT
-                let dctBlock = applyDCT(block: block)
+                var dctBlock = applyDCT(block: block)
+                
+                // Apply CfL prediction for chroma channels
+                if let lumaDCT = lumaDCTBlocks?[blockY][blockX] {
+                    let cflCoeff = computeCfLCoefficient(
+                        lumaDCT: lumaDCT, chromaDCT: dctBlock
+                    )
+                    dctBlock = applyCfLPrediction(
+                        chromaDCT: dctBlock, lumaDCT: lumaDCT,
+                        coefficient: cflCoeff
+                    )
+                    // Write CfL coefficient to bitstream for decoder
+                    writer.writeVarint(encodeSignedValue(
+                        Int32(round(cflCoeff * VarDCTEncoder.cflScaleFactor))
+                    ))
+                }
                 
                 // Quantize
                 let quantized = quantize(block: dctBlock, channel: channel)

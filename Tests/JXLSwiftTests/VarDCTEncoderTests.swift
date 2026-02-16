@@ -1499,4 +1499,302 @@ final class VarDCTEncoderTests: XCTestCase {
         }
     }
     #endif
+    
+    // MARK: - Chroma-from-Luma (CfL) Prediction Tests
+    
+    func testCfLCoefficient_PerfectCorrelation_ReturnsExpectedScale() {
+        let encoder = makeEncoder()
+        
+        // Chroma = 0.5 × luma
+        var luma = [[Float]](repeating: [Float](repeating: 0, count: 8), count: 8)
+        var chroma = [[Float]](repeating: [Float](repeating: 0, count: 8), count: 8)
+        
+        for v in 0..<8 {
+            for u in 0..<8 {
+                let value = Float(u + v + 1)
+                luma[v][u] = value
+                chroma[v][u] = value * 0.5
+            }
+        }
+        // DC is excluded from correlation, so set DC to arbitrary values
+        luma[0][0] = 100
+        chroma[0][0] = 50
+        
+        let coeff = encoder.computeCfLCoefficient(lumaDCT: luma, chromaDCT: chroma)
+        XCTAssertEqual(coeff, 0.5, accuracy: 1e-5,
+                       "CfL coefficient should be 0.5 for chroma = 0.5×luma")
+    }
+    
+    func testCfLCoefficient_ZeroLuma_ReturnsZero() {
+        let encoder = makeEncoder()
+        
+        // All-zero luma (no AC energy)
+        let luma = [[Float]](repeating: [Float](repeating: 0, count: 8), count: 8)
+        var chroma = [[Float]](repeating: [Float](repeating: 0, count: 8), count: 8)
+        chroma[1][1] = 5.0
+        
+        let coeff = encoder.computeCfLCoefficient(lumaDCT: luma, chromaDCT: chroma)
+        XCTAssertEqual(coeff, 0.0,
+                       "CfL coefficient should be 0 when luma has no AC energy")
+    }
+    
+    func testCfLCoefficient_UncorrelatedData_ReturnsNearZero() {
+        let encoder = makeEncoder()
+        
+        // Luma has energy in even positions, chroma in odd positions
+        var luma = [[Float]](repeating: [Float](repeating: 0, count: 8), count: 8)
+        var chroma = [[Float]](repeating: [Float](repeating: 0, count: 8), count: 8)
+        
+        luma[0][2] = 10.0
+        luma[0][4] = 10.0
+        chroma[0][1] = 10.0
+        chroma[0][3] = 10.0
+        
+        let coeff = encoder.computeCfLCoefficient(lumaDCT: luma, chromaDCT: chroma)
+        XCTAssertEqual(coeff, 0.0, accuracy: 1e-5,
+                       "CfL coefficient should be ~0 for uncorrelated data")
+    }
+    
+    func testCfLCoefficient_NegativeCorrelation_ReturnsNegativeScale() {
+        let encoder = makeEncoder()
+        
+        // Chroma = -0.3 × luma
+        var luma = [[Float]](repeating: [Float](repeating: 0, count: 8), count: 8)
+        var chroma = [[Float]](repeating: [Float](repeating: 0, count: 8), count: 8)
+        
+        for v in 0..<8 {
+            for u in 0..<8 {
+                if u == 0 && v == 0 { continue }
+                let value = Float(u * 3 + v * 2 + 1)
+                luma[v][u] = value
+                chroma[v][u] = value * -0.3
+            }
+        }
+        
+        let coeff = encoder.computeCfLCoefficient(lumaDCT: luma, chromaDCT: chroma)
+        XCTAssertEqual(coeff, -0.3, accuracy: 1e-5,
+                       "CfL coefficient should be -0.3 for chroma = -0.3×luma")
+    }
+    
+    func testCfLCoefficient_ExcludesDC() {
+        let encoder = makeEncoder()
+        
+        // Only DC has correlation; AC coefficients are uncorrelated
+        var luma = [[Float]](repeating: [Float](repeating: 0, count: 8), count: 8)
+        var chroma = [[Float]](repeating: [Float](repeating: 0, count: 8), count: 8)
+        
+        // Large correlated DC
+        luma[0][0] = 1000.0
+        chroma[0][0] = 500.0
+        
+        // Orthogonal AC
+        luma[1][0] = 5.0
+        chroma[0][1] = 3.0
+        
+        let coeff = encoder.computeCfLCoefficient(lumaDCT: luma, chromaDCT: chroma)
+        // DC is excluded, and the AC terms are orthogonal → coeff should be 0
+        XCTAssertEqual(coeff, 0.0, accuracy: 1e-5,
+                       "CfL should exclude DC from correlation computation")
+    }
+    
+    func testCfLPrediction_ReducesResidualEnergy() {
+        let encoder = makeEncoder()
+        
+        // Create correlated luma and chroma blocks
+        var luma = [[Float]](repeating: [Float](repeating: 0, count: 8), count: 8)
+        var chroma = [[Float]](repeating: [Float](repeating: 0, count: 8), count: 8)
+        
+        for v in 0..<8 {
+            for u in 0..<8 {
+                if u == 0 && v == 0 { continue }
+                let value = Float(u + v + 1)
+                luma[v][u] = value
+                chroma[v][u] = value * 0.7 + Float(u % 2) * 0.1 // Mostly correlated
+            }
+        }
+        
+        let coeff = encoder.computeCfLCoefficient(lumaDCT: luma, chromaDCT: chroma)
+        let residual = encoder.applyCfLPrediction(
+            chromaDCT: chroma, lumaDCT: luma, coefficient: coeff
+        )
+        
+        // Compute energy of original chroma AC and residual AC
+        var chromaEnergy: Float = 0
+        var residualEnergy: Float = 0
+        for v in 0..<8 {
+            for u in 0..<8 {
+                if u == 0 && v == 0 { continue }
+                chromaEnergy += chroma[v][u] * chroma[v][u]
+                residualEnergy += residual[v][u] * residual[v][u]
+            }
+        }
+        
+        XCTAssertLessThan(residualEnergy, chromaEnergy,
+                          "CfL prediction should reduce chroma AC energy")
+    }
+    
+    func testCfLPrediction_PreservesDC() {
+        let encoder = makeEncoder()
+        
+        var luma = [[Float]](repeating: [Float](repeating: 0, count: 8), count: 8)
+        var chroma = [[Float]](repeating: [Float](repeating: 0, count: 8), count: 8)
+        
+        luma[0][0] = 42.0
+        chroma[0][0] = 17.0
+        luma[1][1] = 5.0
+        chroma[1][1] = 3.0
+        
+        let coeff = encoder.computeCfLCoefficient(lumaDCT: luma, chromaDCT: chroma)
+        let residual = encoder.applyCfLPrediction(
+            chromaDCT: chroma, lumaDCT: luma, coefficient: coeff
+        )
+        
+        XCTAssertEqual(residual[0][0], chroma[0][0],
+                       "CfL prediction must not modify the DC coefficient")
+    }
+    
+    func testCfLRoundTrip_ReconstructMatchesOriginal() {
+        let encoder = makeEncoder()
+        
+        // Create realistic DCT-like blocks
+        var luma = [[Float]](repeating: [Float](repeating: 0, count: 8), count: 8)
+        var chroma = [[Float]](repeating: [Float](repeating: 0, count: 8), count: 8)
+        
+        for v in 0..<8 {
+            for u in 0..<8 {
+                let value = Float(u * u + v) * 0.1
+                luma[v][u] = value
+                chroma[v][u] = value * 0.4 + Float(v % 3) * 0.05
+            }
+        }
+        
+        let coeff = encoder.computeCfLCoefficient(lumaDCT: luma, chromaDCT: chroma)
+        let residual = encoder.applyCfLPrediction(
+            chromaDCT: chroma, lumaDCT: luma, coefficient: coeff
+        )
+        let reconstructed = encoder.reconstructFromCfL(
+            residual: residual, lumaDCT: luma, coefficient: coeff
+        )
+        
+        for v in 0..<8 {
+            for u in 0..<8 {
+                XCTAssertEqual(reconstructed[v][u], chroma[v][u], accuracy: 1e-5,
+                               "CfL round-trip failed at (\(u),\(v))")
+            }
+        }
+    }
+    
+    func testCfLRoundTrip_ZeroCoefficient_IsIdentity() {
+        let encoder = makeEncoder()
+        
+        var luma = [[Float]](repeating: [Float](repeating: 0, count: 8), count: 8)
+        var chroma = [[Float]](repeating: [Float](repeating: 0, count: 8), count: 8)
+        
+        for v in 0..<8 {
+            for u in 0..<8 {
+                luma[v][u] = Float(u + v)
+                chroma[v][u] = Float(v * 2 + 1)
+            }
+        }
+        
+        let residual = encoder.applyCfLPrediction(
+            chromaDCT: chroma, lumaDCT: luma, coefficient: 0.0
+        )
+        
+        for v in 0..<8 {
+            for u in 0..<8 {
+                XCTAssertEqual(residual[v][u], chroma[v][u], accuracy: 1e-7,
+                               "Zero CfL coefficient should leave chroma unchanged")
+            }
+        }
+    }
+    
+    func testCfLCoefficient_UniformBlock_ReturnsFiniteValue() {
+        let encoder = makeEncoder()
+        
+        // Uniform block: all AC coefficients are zero
+        let luma = [[Float]](repeating: [Float](repeating: 5.0, count: 8), count: 8)
+        let chroma = [[Float]](repeating: [Float](repeating: 3.0, count: 8), count: 8)
+        
+        let coeff = encoder.computeCfLCoefficient(lumaDCT: luma, chromaDCT: chroma)
+        XCTAssertTrue(coeff.isFinite,
+                      "CfL coefficient must always be finite")
+    }
+    
+    func testComputeDCTBlocks_DimensionsMatchBlockGrid() {
+        let encoder = makeEncoder()
+        
+        // 16×16 image → 2×2 grid of 8×8 blocks
+        let width = 16
+        let height = 16
+        var data = [[Float]](repeating: [Float](repeating: 0, count: width), count: height)
+        for y in 0..<height {
+            for x in 0..<width {
+                data[y][x] = Float(x + y) / 30.0
+            }
+        }
+        
+        let blocks = encoder.computeDCTBlocks(data: data, width: width, height: height)
+        XCTAssertEqual(blocks.count, 2, "Should have 2 block rows")
+        XCTAssertEqual(blocks[0].count, 2, "Should have 2 block columns")
+        XCTAssertEqual(blocks[0][0].count, 8, "Each block should have 8 rows")
+        XCTAssertEqual(blocks[0][0][0].count, 8, "Each block should have 8 columns")
+    }
+    
+    func testComputeDCTBlocks_NonMultipleOfBlockSize() {
+        let encoder = makeEncoder()
+        
+        // 10×12 image → ceil(10/8) × ceil(12/8) = 2×2 grid
+        let width = 10
+        let height = 12
+        let data = [[Float]](repeating: [Float](repeating: 0.5, count: width), count: height)
+        
+        let blocks = encoder.computeDCTBlocks(data: data, width: width, height: height)
+        XCTAssertEqual(blocks.count, 2, "ceil(12/8) = 2 block rows")
+        XCTAssertEqual(blocks[0].count, 2, "ceil(10/8) = 2 block columns")
+    }
+    
+    func testCfL_IntegrationWithEncoding_ProducesValidOutput() throws {
+        // Full pipeline test: encoding an RGB image with CfL should succeed
+        let encoder = JXLEncoder(options: EncodingOptions(
+            mode: .lossy(quality: 90),
+            effort: .lightning
+        ))
+        
+        var frame = ImageFrame(width: 16, height: 16, channels: 3, pixelType: .uint8)
+        
+        // Create an image where chroma correlates with luma (natural image-like)
+        for y in 0..<16 {
+            for x in 0..<16 {
+                let base = UInt16((x + y) * 8)
+                frame.setPixel(x: x, y: y, channel: 0, value: base)       // R
+                frame.setPixel(x: x, y: y, channel: 1, value: base / 2)   // G (correlated)
+                frame.setPixel(x: x, y: y, channel: 2, value: base / 3)   // B (correlated)
+            }
+        }
+        
+        let result = try encoder.encode(frame)
+        XCTAssertGreaterThan(result.data.count, 0,
+                             "Encoded output with CfL should be non-empty")
+        XCTAssertGreaterThan(result.stats.compressionRatio, 1.0,
+                             "Should achieve compression > 1.0")
+    }
+    
+    func testCfL_SingleChannelImage_NoError() throws {
+        // Single-channel image should not trigger CfL (no chroma)
+        let encoder = JXLEncoder(options: EncodingOptions(
+            mode: .lossy(quality: 80),
+            effort: .lightning
+        ))
+        
+        var frame = ImageFrame(width: 8, height: 8, channels: 1, pixelType: .uint8)
+        for y in 0..<8 {
+            for x in 0..<8 {
+                frame.setPixel(x: x, y: y, channel: 0, value: UInt16(x * 30))
+            }
+        }
+        
+        XCTAssertNoThrow(try encoder.encode(frame),
+                         "Single-channel image should encode without CfL errors")
+    }
 }
