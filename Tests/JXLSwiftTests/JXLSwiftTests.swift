@@ -374,6 +374,124 @@ final class JXLSwiftTests: XCTestCase {
         }
     }
     
+    // MARK: - Alpha Channel Tests
+    
+    func testAlphaMode_None_IsDefaultWhenNoAlpha() {
+        let frame = ImageFrame(
+            width: 64,
+            height: 64,
+            channels: 3,
+            hasAlpha: false
+        )
+        
+        XCTAssertFalse(frame.hasAlpha)
+        if case .none = frame.alphaMode {
+            // Expected .none when hasAlpha is false
+        } else {
+            XCTFail("alphaMode should be .none when hasAlpha is false")
+        }
+    }
+    
+    func testAlphaMode_Straight_WhenHasAlpha() {
+        let frame = ImageFrame(
+            width: 64,
+            height: 64,
+            channels: 4,
+            hasAlpha: true,
+            alphaMode: .straight
+        )
+        
+        XCTAssertTrue(frame.hasAlpha)
+        if case .straight = frame.alphaMode {
+            // Expected .straight alpha mode
+        } else {
+            XCTFail("alphaMode should be .straight when specified")
+        }
+    }
+    
+    func testAlphaMode_Premultiplied_WhenHasAlpha() {
+        let frame = ImageFrame(
+            width: 64,
+            height: 64,
+            channels: 4,
+            hasAlpha: true,
+            alphaMode: .premultiplied
+        )
+        
+        XCTAssertTrue(frame.hasAlpha)
+        if case .premultiplied = frame.alphaMode {
+            // Expected .premultiplied alpha mode
+        } else {
+            XCTFail("alphaMode should be .premultiplied when specified")
+        }
+    }
+    
+    func testImageFrame_WithAlpha_AllocatesCorrectDataSize() {
+        let frame = ImageFrame(
+            width: 64,
+            height: 64,
+            channels: 4,  // RGBA
+            pixelType: .uint8,
+            hasAlpha: true
+        )
+        
+        let expectedBytes = 64 * 64 * 4 * 1  // width * height * channels * bytes_per_sample
+        XCTAssertEqual(frame.data.count, expectedBytes)
+    }
+    
+    func testImageFrame_WithAlpha_CanSetAndGetAlphaChannel() {
+        var frame = ImageFrame(
+            width: 8,
+            height: 8,
+            channels: 4,  // RGBA
+            pixelType: .uint8,
+            hasAlpha: true
+        )
+        
+        // Set alpha value for a pixel
+        frame.setPixel(x: 4, y: 4, channel: 3, value: 128)  // 50% transparent
+        
+        // Verify alpha value can be read back
+        let alphaValue = frame.getPixel(x: 4, y: 4, channel: 3)
+        XCTAssertEqual(alphaValue, 128)
+    }
+    
+    func testImageFrame_WithAlpha_uint16_CanSetAndGetAlphaChannel() {
+        var frame = ImageFrame(
+            width: 8,
+            height: 8,
+            channels: 4,  // RGBA
+            pixelType: .uint16,
+            hasAlpha: true,
+            bitsPerSample: 16
+        )
+        
+        // Set alpha value for a pixel (16-bit)
+        frame.setPixel(x: 4, y: 4, channel: 3, value: 32768)  // 50% transparent
+        
+        // Verify alpha value can be read back
+        let alphaValue = frame.getPixel(x: 4, y: 4, channel: 3)
+        XCTAssertEqual(alphaValue, 32768)
+    }
+    
+    func testImageFrame_WithAlphaFloat32_CanSetAndGetAlphaChannel() {
+        var frame = ImageFrame(
+            width: 8,
+            height: 8,
+            channels: 4,  // RGBA
+            pixelType: .float32,
+            hasAlpha: true,
+            bitsPerSample: 32
+        )
+        
+        // Set alpha value for a pixel (float, scaled to 16-bit range)
+        frame.setPixel(x: 4, y: 4, channel: 3, value: 32768)  // 50% transparent
+        
+        // Verify alpha value can be read back (may have slight precision loss)
+        let alphaValue = frame.getPixel(x: 4, y: 4, channel: 3)
+        XCTAssertEqual(alphaValue, 32768, accuracy: 100)  // Allow small tolerance for float conversion
+    }
+    
     // MARK: - Performance Tests
     
     func testEncodingPerformance() throws {

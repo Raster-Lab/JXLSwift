@@ -189,9 +189,11 @@ public struct PixelBuffer: Sendable {
     /// - Parameters:
     ///   - colorSpace: The color space to assign (default: `.sRGB`).
     ///   - hasAlpha: Whether the buffer includes an alpha channel (default: `false`).
+    ///   - alphaMode: Alpha channel mode (default: `.straight`).
     /// - Returns: An `ImageFrame` with the same pixel data.
     public func toImageFrame(colorSpace: ColorSpace = .sRGB,
-                             hasAlpha: Bool = false) -> ImageFrame {
+                             hasAlpha: Bool = false,
+                             alphaMode: AlphaMode = .straight) -> ImageFrame {
         var frame = ImageFrame(
             width: width,
             height: height,
@@ -199,6 +201,7 @@ public struct PixelBuffer: Sendable {
             pixelType: pixelType,
             colorSpace: colorSpace,
             hasAlpha: hasAlpha,
+            alphaMode: alphaMode,
             bitsPerSample: pixelType.bytesPerSample * 8
         )
         frame.data = data

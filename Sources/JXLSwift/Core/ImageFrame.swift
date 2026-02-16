@@ -100,6 +100,20 @@ public enum TransferFunction: Sendable {
     case hlg     // Hybrid Log-Gamma (HDR)
 }
 
+/// Alpha channel mode
+public enum AlphaMode: Sendable {
+    /// No alpha channel
+    case none
+    
+    /// Straight (unassociated) alpha
+    /// RGB values are independent of alpha
+    case straight
+    
+    /// Premultiplied (associated) alpha
+    /// RGB values are already multiplied by alpha
+    case premultiplied
+}
+
 /// Pixel data type
 public enum PixelType: Sendable {
     case uint8
@@ -138,6 +152,9 @@ public struct ImageFrame {
     /// Has alpha channel
     public let hasAlpha: Bool
     
+    /// Alpha channel mode (only relevant if hasAlpha is true)
+    public let alphaMode: AlphaMode
+    
     /// Bits per sample (8, 10, 12, 16, 32)
     public let bitsPerSample: Int
     
@@ -145,6 +162,7 @@ public struct ImageFrame {
                 pixelType: PixelType = .uint8,
                 colorSpace: ColorSpace = .sRGB,
                 hasAlpha: Bool = false,
+                alphaMode: AlphaMode = .straight,
                 bitsPerSample: Int = 8) {
         self.width = width
         self.height = height
@@ -152,6 +170,7 @@ public struct ImageFrame {
         self.pixelType = pixelType
         self.colorSpace = colorSpace
         self.hasAlpha = hasAlpha
+        self.alphaMode = hasAlpha ? alphaMode : .none
         self.bitsPerSample = bitsPerSample
         
         let totalSamples = width * height * channels
