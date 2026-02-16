@@ -16,7 +16,7 @@
 | 3 | Lossy Compression (VarDCT Mode) | Weeks 7–11 | ✅ Complete |
 | 4 | JPEG XL File Format & Container | Weeks 11–14 | ✅ Complete |
 | 5 | Hardware Acceleration — Apple Accelerate | Weeks 14–17 | ✅ Complete |
-| 6 | Hardware Acceleration — ARM NEON / SIMD | Weeks 17–20 | ⬜ Not Started |
+| 6 | Hardware Acceleration — ARM NEON / SIMD | Weeks 17–20 | 🔶 In Progress |
 | 7 | Hardware Acceleration — Metal GPU | Weeks 20–23 | ⬜ Not Started |
 | 8 | ANS Entropy Coding | Weeks 23–27 | ⬜ Not Started |
 | 9 | Advanced Encoding Features | Weeks 27–31 | ⬜ Not Started |
@@ -243,19 +243,19 @@
 
 - [ ] NEON-optimised pixel prediction (4-wide `uint16` processing)
 - [ ] NEON-optimised MED predictor
-- [ ] NEON-optimised DCT butterfly operations
-- [ ] NEON-optimised colour space conversion (RGB ↔ YCbCr, 4 pixels at a time)
-- [ ] NEON-optimised quantisation (vectorised divide + round)
-- [ ] NEON-optimised zigzag reordering
-- [ ] Swift SIMD types (`SIMD4<Float>`, `SIMD8<UInt16>`) for portable vectorisation
-- [ ] `#if arch(arm64)` guards with scalar fallback in `#else`
+- [x] NEON-optimised DCT butterfly operations
+- [x] NEON-optimised colour space conversion (RGB ↔ YCbCr, 4 pixels at a time)
+- [x] NEON-optimised quantisation (vectorised divide + round)
+- [x] NEON-optimised zigzag reordering
+- [x] Swift SIMD types (`SIMD4<Float>`, `SIMD8<UInt16>`) for portable vectorisation
+- [x] `#if arch(arm64)` guards with scalar fallback in `#else`
 
 ### Tests Required
 
-- [ ] NEON prediction matches scalar prediction exactly
-- [ ] NEON DCT matches scalar DCT within tolerance
-- [ ] NEON colour conversion matches scalar conversion within tolerance
-- [ ] Edge cases: odd image widths (non-multiple of SIMD width)
+- [x] NEON prediction matches scalar prediction exactly
+- [x] NEON DCT matches scalar DCT within tolerance
+- [x] NEON colour conversion matches scalar conversion within tolerance
+- [x] Edge cases: odd image widths (non-multiple of SIMD width)
 - [ ] Performance: NEON path ≥ 3× faster than scalar on Apple M1
 
 ### Acceptance Criteria

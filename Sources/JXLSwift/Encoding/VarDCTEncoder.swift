@@ -103,6 +103,12 @@ class VarDCTEncoder {
         }
         #endif
         
+        #if arch(arm64)
+        if hardware.hasNEON && options.useHardwareAcceleration {
+            return convertToYCbCrNEON(frame: frame)
+        }
+        #endif
+        
         // Scalar fallback
         return convertToYCbCrScalar(frame: frame)
     }
@@ -187,6 +193,12 @@ class VarDCTEncoder {
         }
         #endif
         
+        #if arch(arm64)
+        if hardware.hasNEON && options.useHardwareAcceleration {
+            return convertToXYBNEON(frame: frame)
+        }
+        #endif
+        
         return convertToXYBScalar(frame: frame)
     }
     
@@ -243,6 +255,12 @@ class VarDCTEncoder {
         #if canImport(Accelerate)
         if hardware.hasAccelerate && options.useAccelerate {
             return convertFromXYBAccelerate(frame: frame)
+        }
+        #endif
+        
+        #if arch(arm64)
+        if hardware.hasNEON && options.useHardwareAcceleration {
+            return convertFromXYBNEON(frame: frame)
         }
         #endif
         
@@ -840,10 +858,12 @@ class VarDCTEncoder {
     }
     
     // Placeholder for NEON-based DCT
-    // TODO: Implement using ARM NEON SIMD instructions for 8x8 block processing
     private func applyDCTNEON(block: [[Float]]) -> [[Float]] {
-        // Use NEON vector instructions for parallel computation
+        #if arch(arm64)
+        return NEONOps.dct2D(block)
+        #else
         return applyDCTScalar(block: block)
+        #endif
     }
     
     // MARK: - Adaptive Quantisation
@@ -929,6 +949,12 @@ class VarDCTEncoder {
         #if canImport(Accelerate)
         if hardware.hasAccelerate && options.useAccelerate {
             return quantizeAccelerate(block: block, qMatrix: qMatrix)
+        }
+        #endif
+        
+        #if arch(arm64)
+        if hardware.hasNEON && options.useHardwareAcceleration {
+            return NEONOps.quantize(block: block, qMatrix: qMatrix)
         }
         #endif
         
@@ -1069,4 +1095,119 @@ class VarDCTEncoder {
             return UInt64(-value * 2 - 1)
         }
     }
+    
+    // MARK: - NEON Dispatch Helpers
+    
+    #if arch(arm64)
+    /// NEON-accelerated YCbCr conversion using SIMD4 processing.
+    private func convertToYCbCrNEON(frame: ImageFrame) -> ImageFrame {
+        var ycbcrFrame = frame
+        let pixelCount = frame.width * frame.height
+        
+        var rChannel = [Float](repeating: 0, count: pixelCount)
+        var gChannel = [Float](repeating: 0, count: pixelCount)
+        var bChannel = [Float](repeating: 0, count: pixelCount)
+        
+        for y in 0..<frame.height {
+            for x in 0..<frame.width {
+                let idx = y * frame.width + x
+                rChannel[idx] = Float(frame.getPixel(x: x, y: y, channel: 0)) / 65535.0
+                gChannel[idx] = Float(frame.getPixel(x: x, y: y, channel: 1)) / 65535.0
+                bChannel[idx] = Float(frame.getPixel(x: x, y: y, channel: 2)) / 65535.0
+            }
+        }
+        
+        let (yArr, cbArr, crArr) = NEONOps.rgbToYCbCr(
+            r: rChannel, g: gChannel, b: bChannel
+        )
+        
+        for y in 0..<frame.height {
+            for x in 0..<frame.width {
+                let idx = y * frame.width + x
+                ycbcrFrame.setPixel(x: x, y: y, channel: 0,
+                                    value: UInt16(max(0, min(65535, yArr[idx] * 65535))))
+                ycbcrFrame.setPixel(x: x, y: y, channel: 1,
+                                    value: UInt16(max(0, min(65535, cbArr[idx] * 65535))))
+                ycbcrFrame.setPixel(x: x, y: y, channel: 2,
+                                    value: UInt16(max(0, min(65535, crArr[idx] * 65535))))
+            }
+        }
+        
+        return ycbcrFrame
+    }
+    
+    /// NEON-accelerated XYB conversion.
+    private func convertToXYBNEON(frame: ImageFrame) -> ImageFrame {
+        var xybFrame = frame
+        let pixelCount = frame.width * frame.height
+        
+        var rChannel = [Float](repeating: 0, count: pixelCount)
+        var gChannel = [Float](repeating: 0, count: pixelCount)
+        var bChannel = [Float](repeating: 0, count: pixelCount)
+        
+        for y in 0..<frame.height {
+            for x in 0..<frame.width {
+                let idx = y * frame.width + x
+                rChannel[idx] = Float(frame.getPixel(x: x, y: y, channel: 0)) / 65535.0
+                gChannel[idx] = Float(frame.getPixel(x: x, y: y, channel: 1)) / 65535.0
+                bChannel[idx] = Float(frame.getPixel(x: x, y: y, channel: 2)) / 65535.0
+            }
+        }
+        
+        let (xArr, yArr, bArr) = NEONOps.rgbToXYB(
+            r: rChannel, g: gChannel, b: bChannel
+        )
+        
+        for y in 0..<frame.height {
+            for x in 0..<frame.width {
+                let idx = y * frame.width + x
+                xybFrame.setPixel(x: x, y: y, channel: 0,
+                                  value: UInt16(max(0, min(65535, xArr[idx] * 65535))))
+                xybFrame.setPixel(x: x, y: y, channel: 1,
+                                  value: UInt16(max(0, min(65535, yArr[idx] * 65535))))
+                xybFrame.setPixel(x: x, y: y, channel: 2,
+                                  value: UInt16(max(0, min(65535, bArr[idx] * 65535))))
+            }
+        }
+        
+        return xybFrame
+    }
+    
+    /// NEON-accelerated inverse XYB conversion.
+    private func convertFromXYBNEON(frame: ImageFrame) -> ImageFrame {
+        var rgbFrame = frame
+        let pixelCount = frame.width * frame.height
+        
+        var xChannel = [Float](repeating: 0, count: pixelCount)
+        var yChannel = [Float](repeating: 0, count: pixelCount)
+        var bChannel = [Float](repeating: 0, count: pixelCount)
+        
+        for y in 0..<frame.height {
+            for x in 0..<frame.width {
+                let idx = y * frame.width + x
+                xChannel[idx] = Float(frame.getPixel(x: x, y: y, channel: 0)) / 65535.0
+                yChannel[idx] = Float(frame.getPixel(x: x, y: y, channel: 1)) / 65535.0
+                bChannel[idx] = Float(frame.getPixel(x: x, y: y, channel: 2)) / 65535.0
+            }
+        }
+        
+        let (rArr, gArr, bArr) = NEONOps.xybToRGB(
+            x: xChannel, y: yChannel, b: bChannel
+        )
+        
+        for y in 0..<frame.height {
+            for x in 0..<frame.width {
+                let idx = y * frame.width + x
+                rgbFrame.setPixel(x: x, y: y, channel: 0,
+                                  value: UInt16(max(0, min(65535, rArr[idx] * 65535))))
+                rgbFrame.setPixel(x: x, y: y, channel: 1,
+                                  value: UInt16(max(0, min(65535, gArr[idx] * 65535))))
+                rgbFrame.setPixel(x: x, y: y, channel: 2,
+                                  value: UInt16(max(0, min(65535, bArr[idx] * 65535))))
+            }
+        }
+        
+        return rgbFrame
+    }
+    #endif
 }

@@ -9,7 +9,7 @@ JXLSwift provides a pure Swift implementation of the JPEG XL image compression s
 ## Features
 
 - ✅ **Native Swift Implementation** - Pure Swift, no C/C++ dependencies
-- 🚀 **Apple Silicon Optimized** - Leverages ARM NEON SIMD instructions
+- 🚀 **Apple Silicon Optimized** - Leverages ARM NEON SIMD via portable Swift SIMD types
 - ⚡ **Apple Accelerate Integration** - Uses vDSP for DCT and matrix operations
 - 🎯 **Modular Architecture** - Separate x86-64 code paths for future removal
 - 📦 **Two Compression Modes**:
@@ -143,7 +143,8 @@ Sources/JXLSwift/
 │   ├── ModularEncoder.swift   # Lossless compression
 │   └── VarDCTEncoder.swift    # Lossy compression
 ├── Hardware/          # Platform optimizations
-│   ├── Accelerate.swift       # Apple Silicon acceleration
+│   ├── Accelerate.swift       # Apple Accelerate framework (vDSP)
+│   ├── NEONOps.swift          # ARM NEON SIMD via Swift SIMD types
 │   └── DispatchBackend.swift  # Runtime backend selection
 └── Format/            # JPEG XL file format (ISO/IEC 18181-2)
     ├── CodestreamHeader.swift # SizeHeader, ImageMetadata, ColourEncoding
@@ -163,7 +164,7 @@ Sources/JXLTool/
 
 JXLSwift is optimized for Apple Silicon:
 
-- **ARM NEON SIMD** - Vectorized operations for pixel processing
+- **ARM NEON SIMD** - Vectorized DCT, colour conversion, quantisation, and prediction via Swift SIMD types
 - **Apple Accelerate** - vDSP DCT transforms and matrix operations
 - **Metal GPU** - Parallel processing support (planned)
 
@@ -258,12 +259,12 @@ See [MILESTONES.md](MILESTONES.md) for the detailed project milestone plan.
 - [x] Lossy (VarDCT) mode — DCT, XYB, CfL, adaptive quantization, DC prediction
 - [x] Apple Silicon optimization
 - [x] Accelerate framework integration — vDSP DCT, vectorized color/quantization
+- [x] ARM NEON SIMD acceleration — portable Swift SIMD types, DCT, colour conversion, quantisation
 - [x] Command line tool (jxl-tool) — encode, info, hardware, benchmark
 - [x] JPEG XL file format (.jxl) — ISOBMFF container, codestream/frame headers
 - [x] Metadata support (EXIF, XMP, ICC profiles)
 - [x] Animation container framing (frame index, multi-frame)
 - [ ] Full ANS entropy coding
-- [ ] ARM NEON SIMD acceleration
 - [ ] Metal GPU acceleration
 - [ ] Progressive encoding
 - [ ] Decoding support

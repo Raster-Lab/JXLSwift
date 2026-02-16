@@ -431,45 +431,25 @@ public enum SIMDOps {
     // MARK: - ARM NEON Operations
     
     /// SIMD-accelerated pixel prediction for ARM NEON
-    /// Note: Currently uses scalar implementation. Full NEON optimization pending.
+    /// Uses NEONOps.predictMED for vectorised MED prediction.
     public static func predictPixelsNEON(
         data: UnsafePointer<UInt16>,
         predictions: UnsafeMutablePointer<Int32>,
         width: Int,
         height: Int
     ) {
-        // TODO: Implement using ARM NEON intrinsics for vectorized operations
-        // This placeholder uses scalar operations for now
-        
-        for y in 0..<height {
-            for x in 0..<width {
-                let index = y * width + x
-                let actual = Int32(data[index])
-                
-                // Simple gradient predictor
-                if x > 0 && y > 0 {
-                    let n = Int32(data[(y - 1) * width + x])
-                    let w = Int32(data[y * width + (x - 1)])
-                    let nw = Int32(data[(y - 1) * width + (x - 1)])
-                    predictions[index] = actual - (n + w - nw)
-                } else if y > 0 {
-                    let n = Int32(data[(y - 1) * width + x])
-                    predictions[index] = actual - n
-                } else if x > 0 {
-                    let w = Int32(data[y * width + (x - 1)])
-                    predictions[index] = actual - w
-                } else {
-                    predictions[index] = actual
-                }
-            }
+        // Convert to array for NEONOps
+        let dataArray = Array(UnsafeBufferPointer(start: data, count: width * height))
+        let residuals = NEONOps.predictMED(data: dataArray, width: width, height: height)
+        for i in 0..<residuals.count {
+            predictions[i] = residuals[i]
         }
     }
     
     /// SIMD-accelerated DCT for ARM NEON
+    /// Uses NEONOps.dct2D for vectorised 8×8 DCT.
     public static func dctBlockNEON(_ block: [[Float]]) -> [[Float]] {
-        // Placeholder for NEON-optimized DCT
-        // Would use ARM NEON vector instructions
-        return block
+        return NEONOps.dct2D(block)
     }
     
     #elseif arch(x86_64)
