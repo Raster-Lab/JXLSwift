@@ -108,6 +108,7 @@
 
 - [x] Lossless encoding produces non-empty output
 - [x] Compression ratio > 1.0 for gradient images
+- [ ] Round-trip test: encode → decode → pixel-perfect match (requires decoder)
 - [ ] Round-trip test: encode with JXLSwift → decode with libjxl → pixel-perfect match
 - [ ] Round-trip test: encode with libjxl → decode with JXLSwift → pixel-perfect match (requires decoder)
 - [ ] MED predictor unit tests: first pixel, first row, first column, general case
