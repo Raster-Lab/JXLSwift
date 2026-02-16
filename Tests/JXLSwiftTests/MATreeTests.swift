@@ -468,7 +468,10 @@ final class MATreeTests: XCTestCase {
     // MARK: - Boundary Handling Tests
 
     func testEvaluateProperty_FirstPixel_GradientH_IsZero() {
-        let data: [UInt16] = [32768]  // RCT-offset value
+        // 32768 is the midpoint of the 16-bit range, used as the unsigned
+        // representation of signed-zero after the Reversible Colour Transform
+        // (RCT) offsets chroma channels by +32768.
+        let data: [UInt16] = [32768]
         let residuals: [Int32] = [0]
         let value = MATree.evaluateProperty(
             .gradientH, data: data, residuals: residuals,

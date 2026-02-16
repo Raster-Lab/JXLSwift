@@ -225,19 +225,41 @@ struct MATree: Sendable {
         // When a neighbour is unavailable, use the nearest available
         // neighbour so that gradient properties reflect actual local
         // variation rather than an offset artefact (e.g. RCT bias).
-        let n:  Int32 = y > 0 ? Int32(data[(y - 1) * width + x]) : (x > 0 ? Int32(data[y * width + (x - 1)]) : 0)
-        let w:  Int32 = x > 0 ? Int32(data[y * width + (x - 1)]) : (y > 0 ? Int32(data[(y - 1) * width + x]) : 0)
+        let n: Int32
+        if y > 0 {
+            n = Int32(data[(y - 1) * width + x])
+        } else if x > 0 {
+            n = Int32(data[y * width + (x - 1)])     // fallback to W
+        } else {
+            n = 0
+        }
+        
+        let w: Int32
+        if x > 0 {
+            w = Int32(data[y * width + (x - 1)])
+        } else if y > 0 {
+            w = Int32(data[(y - 1) * width + x])     // fallback to N
+        } else {
+            w = 0
+        }
+        
         let nw: Int32
         if x > 0 && y > 0 {
             nw = Int32(data[(y - 1) * width + (x - 1)])
         } else if y > 0 {
-            nw = Int32(data[(y - 1) * width + x])       // fallback to N
+            nw = Int32(data[(y - 1) * width + x])    // fallback to N
         } else if x > 0 {
-            nw = Int32(data[y * width + (x - 1)])        // fallback to W
+            nw = Int32(data[y * width + (x - 1)])    // fallback to W
         } else {
             nw = 0
         }
-        let ne: Int32 = (y > 0 && x < width - 1) ? Int32(data[(y - 1) * width + (x + 1)]) : n
+        
+        let ne: Int32
+        if y > 0 && x < width - 1 {
+            ne = Int32(data[(y - 1) * width + (x + 1)])
+        } else {
+            ne = n                                    // fallback to N
+        }
         
         switch property {
         case .channelIndex:
