@@ -422,6 +422,25 @@ class ModularEncoder {
         let g = channels[1]
         let b = channels[2]
         
+        #if arch(arm64)
+        if hardware.hasNEON && options.useHardwareAcceleration {
+            let (yArr, coArr, cgArr) = NEONOps.forwardRCT(r: r, g: g, b: b)
+            // Convert Int32 results to UInt16, offsetting Co/Cg by 32768
+            var yChannel  = [UInt16](repeating: 0, count: count)
+            var coChannel = [UInt16](repeating: 0, count: count)
+            var cgChannel = [UInt16](repeating: 0, count: count)
+            for i in 0..<count {
+                yChannel[i]  = UInt16(clamping: yArr[i])
+                coChannel[i] = UInt16(clamping: coArr[i] + 32768)
+                cgChannel[i] = UInt16(clamping: cgArr[i] + 32768)
+            }
+            channels[0] = yChannel
+            channels[1] = coChannel
+            channels[2] = cgChannel
+            return
+        }
+        #endif
+        
         var yChannel  = [UInt16](repeating: 0, count: count)
         var coChannel = [UInt16](repeating: 0, count: count)
         var cgChannel = [UInt16](repeating: 0, count: count)
@@ -451,6 +470,33 @@ class ModularEncoder {
         let yChannel  = channels[0]
         let coChannel = channels[1]
         let cgChannel = channels[2]
+        
+        #if arch(arm64)
+        if hardware.hasNEON && options.useHardwareAcceleration {
+            // Convert to Int32, removing the +32768 offset from Co/Cg
+            var yArr  = [Int32](repeating: 0, count: count)
+            var coArr = [Int32](repeating: 0, count: count)
+            var cgArr = [Int32](repeating: 0, count: count)
+            for i in 0..<count {
+                yArr[i]  = Int32(yChannel[i])
+                coArr[i] = Int32(coChannel[i]) - 32768
+                cgArr[i] = Int32(cgChannel[i]) - 32768
+            }
+            let (rArr, gArr, bArr) = NEONOps.inverseRCT(y: yArr, co: coArr, cg: cgArr)
+            var r = [UInt16](repeating: 0, count: count)
+            var g = [UInt16](repeating: 0, count: count)
+            var b = [UInt16](repeating: 0, count: count)
+            for i in 0..<count {
+                r[i] = UInt16(clamping: rArr[i])
+                g[i] = UInt16(clamping: gArr[i])
+                b[i] = UInt16(clamping: bArr[i])
+            }
+            channels[0] = r
+            channels[1] = g
+            channels[2] = b
+            return
+        }
+        #endif
         
         var r = [UInt16](repeating: 0, count: count)
         var g = [UInt16](repeating: 0, count: count)
@@ -552,18 +598,38 @@ class ModularEncoder {
         var h = height
         var steps: [SqueezeStep] = []
         
+        #if arch(arm64)
+        let useNEON = hardware.hasNEON && options.useHardwareAcceleration
+        #endif
+        
         for _ in 0..<levels {
             // Horizontal squeeze (if width > 1)
             if w > 1 {
                 steps.append(SqueezeStep(horizontal: true, width: w, height: h, stride: bufStride))
+                #if arch(arm64)
+                if useNEON {
+                    NEONOps.squeezeHorizontal(data: &current, regionW: w, regionH: h, stride: bufStride)
+                } else {
+                    squeezeHorizontal(data: &current, regionW: w, regionH: h, stride: bufStride)
+                }
+                #else
                 squeezeHorizontal(data: &current, regionW: w, regionH: h, stride: bufStride)
+                #endif
                 w = (w + 1) / 2
             }
             
             // Vertical squeeze (if height > 1)
             if h > 1 {
                 steps.append(SqueezeStep(horizontal: false, width: w, height: h, stride: bufStride))
+                #if arch(arm64)
+                if useNEON {
+                    NEONOps.squeezeVertical(data: &current, regionW: w, regionH: h, stride: bufStride)
+                } else {
+                    squeezeVertical(data: &current, regionW: w, regionH: h, stride: bufStride)
+                }
+                #else
                 squeezeVertical(data: &current, regionW: w, regionH: h, stride: bufStride)
+                #endif
                 h = (h + 1) / 2
             }
             
@@ -775,6 +841,16 @@ class ModularEncoder {
     // MARK: - Predictive Coding
     
     private func applyPrediction(data: [UInt16], width: Int, height: Int) -> [Int32] {
+        // For lower effort levels, use NEON-accelerated MED prediction
+        // when available. At higher effort levels, use the MA tree-based
+        // prediction which adapts per-pixel but is inherently sequential.
+        #if arch(arm64)
+        if hardware.hasNEON && options.useHardwareAcceleration
+            && options.effort.rawValue < EncodingEffort.squirrel.rawValue {
+            return NEONOps.predictMED(data: data, width: width, height: height)
+        }
+        #endif
+
         return applyMAPrediction(data: data, width: width, height: height, channel: 0)
     }
     

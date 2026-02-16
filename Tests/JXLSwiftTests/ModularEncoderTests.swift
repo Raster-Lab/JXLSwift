@@ -725,4 +725,209 @@ final class ModularEncoderTests: XCTestCase {
         XCTAssertEqual(ModularEncoder.contextCount, 8,
                        "Should use 8 contexts (4 magnitude buckets × 2 orientations)")
     }
+
+    // MARK: - NEON Dispatch Integration Tests
+
+    /// Create a ModularEncoder with hardware acceleration enabled.
+    private func makeAcceleratedEncoder(effort: EncodingEffort = .falcon) -> ModularEncoder {
+        ModularEncoder(
+            hardware: HardwareCapabilities.detect(),
+            options: EncodingOptions(
+                mode: .lossless,
+                effort: effort,
+                useHardwareAcceleration: true,
+                useAccelerate: false
+            )
+        )
+    }
+
+    /// Create a ModularEncoder with hardware acceleration disabled (scalar only).
+    private func makeScalarEncoder(effort: EncodingEffort = .falcon) -> ModularEncoder {
+        ModularEncoder(
+            hardware: HardwareCapabilities.detect(),
+            options: EncodingOptions(
+                mode: .lossless,
+                effort: effort,
+                useHardwareAcceleration: false,
+                useAccelerate: false
+            )
+        )
+    }
+
+    func testNEONPrediction_MatchesScalarMED_GradientImage() {
+        // NEONOps.predictMED should match ModularEncoder.predictPixel
+        let width = 8
+        let height = 8
+        var data = [UInt16](repeating: 0, count: width * height)
+        for y in 0..<height {
+            for x in 0..<width {
+                data[y * width + x] = UInt16(y * width + x)
+            }
+        }
+
+        let encoder = makeScalarEncoder()
+        let neonResult = NEONOps.predictMED(data: data, width: width, height: height)
+
+        // Compute scalar reference using predictPixel
+        var scalarResult = [Int32](repeating: 0, count: data.count)
+        for y in 0..<height {
+            for x in 0..<width {
+                let predicted = encoder.predictPixel(data: data, x: x, y: y, width: width, height: height)
+                scalarResult[y * width + x] = Int32(data[y * width + x]) - predicted
+            }
+        }
+
+        XCTAssertEqual(neonResult.count, scalarResult.count)
+        for i in 0..<neonResult.count {
+            XCTAssertEqual(neonResult[i], scalarResult[i],
+                           "MED prediction mismatch at index \(i)")
+        }
+    }
+
+    func testNEONPrediction_MatchesScalarMED_ConstantImage() {
+        let width = 16
+        let height = 16
+        let data = [UInt16](repeating: 128, count: width * height)
+
+        let encoder = makeScalarEncoder()
+        let neonResult = NEONOps.predictMED(data: data, width: width, height: height)
+
+        var scalarResult = [Int32](repeating: 0, count: data.count)
+        for y in 0..<height {
+            for x in 0..<width {
+                let predicted = encoder.predictPixel(data: data, x: x, y: y, width: width, height: height)
+                scalarResult[y * width + x] = Int32(data[y * width + x]) - predicted
+            }
+        }
+
+        XCTAssertEqual(neonResult, scalarResult,
+                       "Constant image MED prediction should match")
+    }
+
+    func testNEONRCT_MatchesScalar_GradientData() {
+        let count = 17 // non-multiple-of-4 to test scalar tail
+        let r = (0..<count).map { UInt16($0 * 10) }
+        let g = (0..<count).map { UInt16($0 * 8) }
+        let b = (0..<count).map { UInt16($0 * 6) }
+
+        // Scalar RCT via ModularEncoder
+        let encoder = makeScalarEncoder()
+        var scalarChannels: [[UInt16]] = [r, g, b]
+        encoder.applyRCT(channels: &scalarChannels)
+
+        // NEON RCT
+        let (yArr, coArr, cgArr) = NEONOps.forwardRCT(r: r, g: g, b: b)
+        var neonChannels = [[UInt16]](repeating: [UInt16](repeating: 0, count: count), count: 3)
+        for i in 0..<count {
+            neonChannels[0][i] = UInt16(clamping: yArr[i])
+            neonChannels[1][i] = UInt16(clamping: coArr[i] + 32768)
+            neonChannels[2][i] = UInt16(clamping: cgArr[i] + 32768)
+        }
+
+        XCTAssertEqual(scalarChannels[0], neonChannels[0], "Y channel should match")
+        XCTAssertEqual(scalarChannels[1], neonChannels[1], "Co channel should match")
+        XCTAssertEqual(scalarChannels[2], neonChannels[2], "Cg channel should match")
+    }
+
+    func testNEONRCT_RoundTrip_MatchesScalar() {
+        let count = 12
+        let r = (0..<count).map { UInt16($0 * 15) }
+        let g = (0..<count).map { UInt16($0 * 12) }
+        let b = (0..<count).map { UInt16($0 * 9) }
+
+        let encoder = makeScalarEncoder()
+        var channels: [[UInt16]] = [r, g, b]
+        encoder.applyRCT(channels: &channels)
+        encoder.inverseRCT(channels: &channels)
+
+        XCTAssertEqual(channels[0], r, "R channel should round-trip perfectly")
+        XCTAssertEqual(channels[1], g, "G channel should round-trip perfectly")
+        XCTAssertEqual(channels[2], b, "B channel should round-trip perfectly")
+    }
+
+    func testNEONSqueeze_MatchesScalar_HorizontalEvenWidth() {
+        let encoder = makeScalarEncoder()
+        var scalarData: [Int32] = [10, 20, 30, 40, 50, 60, 70, 80]
+        var neonData = scalarData
+
+        encoder.squeezeHorizontal(data: &scalarData, regionW: 8, regionH: 1, stride: 8)
+        NEONOps.squeezeHorizontal(data: &neonData, regionW: 8, regionH: 1, stride: 8)
+
+        XCTAssertEqual(scalarData, neonData,
+                       "NEON horizontal squeeze should match scalar")
+    }
+
+    func testNEONSqueeze_MatchesScalar_VerticalEvenHeight() {
+        let encoder = makeScalarEncoder()
+        let width = 4
+        let height = 8
+        var scalarData = [Int32](repeating: 0, count: width * height)
+        for i in 0..<scalarData.count { scalarData[i] = Int32(i) }
+        var neonData = scalarData
+
+        encoder.squeezeVertical(data: &scalarData, regionW: width, regionH: height, stride: width)
+        NEONOps.squeezeVertical(data: &neonData, regionW: width, regionH: height, stride: width)
+
+        XCTAssertEqual(scalarData, neonData,
+                       "NEON vertical squeeze should match scalar")
+    }
+
+    func testNEONSqueeze_MatchesScalar_OddDimensions() {
+        let encoder = makeScalarEncoder()
+        let width = 7
+        let height = 5
+        var scalarData = [Int32](repeating: 0, count: width * height)
+        for i in 0..<scalarData.count { scalarData[i] = Int32(i * 3 - 10) }
+        var neonData = scalarData
+
+        encoder.squeezeHorizontal(data: &scalarData, regionW: width, regionH: height, stride: width)
+        NEONOps.squeezeHorizontal(data: &neonData, regionW: width, regionH: height, stride: width)
+
+        XCTAssertEqual(scalarData, neonData,
+                       "NEON horizontal squeeze should match scalar for odd width")
+
+        // Reset for vertical
+        scalarData = [Int32](repeating: 0, count: width * height)
+        for i in 0..<scalarData.count { scalarData[i] = Int32(i * 3 - 10) }
+        neonData = scalarData
+
+        encoder.squeezeVertical(data: &scalarData, regionW: width, regionH: height, stride: width)
+        NEONOps.squeezeVertical(data: &neonData, regionW: width, regionH: height, stride: width)
+
+        XCTAssertEqual(scalarData, neonData,
+                       "NEON vertical squeeze should match scalar for odd height")
+    }
+
+    func testNEONForwardSqueeze_MatchesScalar_FullPipeline() {
+        let scalarEncoder = makeScalarEncoder()
+        let accelEncoder = makeAcceleratedEncoder()
+        let width = 8
+        let height = 8
+        var data = [Int32](repeating: 0, count: width * height)
+        for i in 0..<data.count { data[i] = Int32(i) }
+
+        let (scalarResult, scalarSteps) = scalarEncoder.forwardSqueeze(data: data, width: width, height: height)
+        let (accelResult, accelSteps) = accelEncoder.forwardSqueeze(data: data, width: width, height: height)
+
+        XCTAssertEqual(scalarSteps.count, accelSteps.count,
+                       "Same number of squeeze steps")
+        XCTAssertEqual(scalarResult, accelResult,
+                       "Accelerated forward squeeze should match scalar")
+    }
+
+    func testModularEncoder_AcceleratedEncode_ProducesOutput() throws {
+        let encoder = makeAcceleratedEncoder()
+        var frame = ImageFrame(width: 8, height: 8, channels: 3, pixelType: .uint8)
+        for y in 0..<8 {
+            for x in 0..<8 {
+                for c in 0..<3 {
+                    frame.setPixel(x: x, y: y, channel: c, value: UInt16((y * 8 + x + c * 21) & 0xFF))
+                }
+            }
+        }
+
+        let result = try encoder.encode(frame: frame)
+        XCTAssertGreaterThan(result.count, 0,
+                             "Accelerated modular encoding should produce non-empty output")
+    }
 }
