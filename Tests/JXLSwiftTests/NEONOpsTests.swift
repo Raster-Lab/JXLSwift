@@ -671,9 +671,15 @@ final class NEONOpsTests: XCTestCase {
     func testRGBToYCbCr_SinglePixel_Correct() {
         let (y, cb, cr) = NEONOps.rgbToYCbCr(r: [0.5], g: [0.3], b: [0.1])
 
-        let yExpected:  Float = 0.299 * 0.5 + 0.587 * 0.3 + 0.114 * 0.1
-        let cbExpected: Float = -0.168736 * 0.5 - 0.331264 * 0.3 + 0.5 * 0.1 + 0.5
-        let crExpected: Float = 0.5 * 0.5 - 0.418688 * 0.3 - 0.081312 * 0.1 + 0.5
+        let yExpected:  Float = Float(0.299 * 0.5) + Float(0.587 * 0.3) + Float(0.114 * 0.1)
+        let cbR: Float = Float(-0.168736 * 0.5)
+        let cbG: Float = Float(-0.331264 * 0.3)
+        let cbB: Float = Float(0.5 * 0.1)
+        let cbExpected: Float = cbR + cbG + cbB + 0.5
+        let crR: Float = Float(0.5 * 0.5)
+        let crG: Float = Float(-0.418688 * 0.3)
+        let crB: Float = Float(-0.081312 * 0.1)
+        let crExpected: Float = crR + crG + crB + 0.5
 
         XCTAssertEqual(y[0], yExpected, accuracy: 1e-5)
         XCTAssertEqual(cb[0], cbExpected, accuracy: 1e-5)
