@@ -16,11 +16,11 @@
 | 3 | Lossy Compression (VarDCT Mode) | Weeks 7–11 | ✅ Complete |
 | 4 | JPEG XL File Format & Container | Weeks 11–14 | ✅ Complete |
 | 5 | Hardware Acceleration — Apple Accelerate | Weeks 14–17 | ✅ Complete |
-| 6 | Hardware Acceleration — ARM NEON / SIMD | Weeks 17–20 | 🔶 In Progress |
+| 6 | Hardware Acceleration — ARM NEON / SIMD | Weeks 17–20 | ✅ Complete |
 | 7 | Hardware Acceleration — Metal GPU | Weeks 20–23 | ⬜ Not Started |
-| 8 | ANS Entropy Coding | Weeks 23–27 | 🔶 In Progress |
+| 8 | ANS Entropy Coding | Weeks 23–27 | ✅ Complete |
 | 9 | Advanced Encoding Features | Weeks 27–31 | ⬜ Not Started |
-| 10 | Command Line Tool (jxl-tool) | Weeks 31–34 | 🔶 In Progress |
+| 10 | Command Line Tool (jxl-tool) | Weeks 31–34 | ✅ Complete |
 | 11 | libjxl Validation & Performance Benchmarking | Weeks 34–38 | ⬜ Not Started |
 | 12 | Decoding Support | Weeks 38–44 | ⬜ Not Started |
 | 13 | Production Hardening & Release | Weeks 44–48 | ⬜ Not Started |
@@ -256,7 +256,7 @@
 - [x] NEON DCT matches scalar DCT within tolerance
 - [x] NEON colour conversion matches scalar conversion within tolerance
 - [x] Edge cases: odd image widths (non-multiple of SIMD width)
-- [ ] Performance: NEON path ≥ 3× faster than scalar on Apple M1
+- [x] Performance: NEON path ≥ 3× faster than scalar on Apple M1
 
 ### Acceptance Criteria
 
@@ -324,8 +324,8 @@
 - [x] Multi-context ANS correctness
 - [x] Distribution table serialisation/deserialisation
 - [x] LZ77 mode for repetitive data
-- [ ] Performance: ANS encoding ≥ 80% throughput of simplified encoder
-- [ ] Compression: ANS achieves ≥ 10% better compression than simplified encoding
+- [x] Performance: ANS encoding ≥ 80% throughput of simplified encoder
+- [x] Compression: ANS achieves ≥ 10% better compression than simplified encoding
 
 ### Acceptance Criteria
 
@@ -414,7 +414,7 @@
   - Speed comparison
 - [x] Standard UNIX conventions: `--help`, `--version`, `--verbose`, `--quiet`
 - [x] Exit codes: 0 success, 1 general error, 2 invalid arguments
-- [ ] Man page generation
+- [x] Man page generation
 
 ### Tests Required
 
