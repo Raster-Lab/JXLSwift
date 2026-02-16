@@ -58,7 +58,8 @@ struct Batch: ParsableCommand {
         var isDirectory: ObjCBool = false
         guard fileManager.fileExists(atPath: inputURL.path, isDirectory: &isDirectory),
               isDirectory.boolValue else {
-            throw ValidationError("Input path is not a directory: \(inputDirectory)")
+            print("Error: Input path is not a directory: \(inputDirectory)", to: &standardError)
+            throw JXLExitCode.invalidArguments
         }
 
         // Determine output directory
@@ -100,7 +101,8 @@ struct Batch: ParsableCommand {
         let mode: CompressionMode = lossless ? .lossless : .lossy(quality: quality)
 
         guard let effortLevel = EncodingEffort(rawValue: effort) else {
-            throw ValidationError("Effort must be between 1 and 9")
+            print("Error: Effort must be between 1 and 9", to: &standardError)
+            throw JXLExitCode.invalidArguments
         }
 
         let options = EncodingOptions(
@@ -174,7 +176,7 @@ struct Batch: ParsableCommand {
         }
 
         if errorCount > 0 {
-            throw ExitCode(1)
+            throw JXLExitCode.generalError
         }
     }
 

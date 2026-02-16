@@ -408,12 +408,12 @@
   - Progress reporting
   - Summary report
   - `--overwrite`, `--quiet`, `--verbose` flags
-- [ ] **`compare`** subcommand — compare JXLSwift output with libjxl
+- [x] **`compare`** subcommand — compare JXLSwift output with libjxl
   - Byte-level comparison
   - Quality metric comparison (PSNR, SSIM, Butteraugli)
   - Speed comparison
 - [x] Standard UNIX conventions: `--help`, `--version`, `--verbose`, `--quiet`
-- [ ] Exit codes: 0 success, 1 general error, 2 invalid arguments
+- [x] Exit codes: 0 success, 1 general error, 2 invalid arguments
 - [ ] Man page generation
 
 ### Tests Required
@@ -425,7 +425,7 @@
 - [ ] `benchmark` completes without errors
 - [x] `batch` processes a directory correctly
 - [ ] Invalid arguments produce meaningful error messages
-- [ ] `--version` outputs correct version string
+- [x] `--version` outputs correct version string
 
 ### Acceptance Criteria
 

@@ -19,7 +19,19 @@ struct JXLTool: ParsableCommand {
             Hardware.self,
             Benchmark.self,
             Batch.self,
+            Compare.self,
         ],
         defaultSubcommand: Encode.self
     )
+}
+
+/// Exit codes used across jxl-tool subcommands.
+///
+/// - `success` (0): Operation completed successfully.
+/// - `generalError` (1): A runtime error occurred during execution.
+/// - `invalidArguments` (2): One or more arguments were invalid.
+enum JXLExitCode {
+    static let success = ExitCode.success           // 0
+    static let generalError = ExitCode.failure      // 1
+    static let invalidArguments = ExitCode(2)       // 2
 }

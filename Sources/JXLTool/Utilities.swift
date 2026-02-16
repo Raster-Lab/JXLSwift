@@ -12,3 +12,13 @@ func formatBytes(_ bytes: Int) -> String {
         return String(format: "%.1f MB", Double(bytes) / (1024 * 1024))
     }
 }
+
+/// A `TextOutputStream` that writes to standard error.
+struct StandardError: TextOutputStream {
+    mutating func write(_ string: String) {
+        FileHandle.standardError.write(Data(string.utf8))
+    }
+}
+
+/// Standard error output stream for error messages.
+nonisolated(unsafe) var standardError = StandardError()
