@@ -133,7 +133,7 @@ Add benchmarks for every encoding/decoding stage and record:
 
 ```swift
 func benchmarkDCT_8x8() {
-    let block = PixelBuffer.Tile(width: 8, height: 8, /* ... */)
+    let block = PixelBuffer.Tile(originX: 0, originY: 0, width: 8, height: 8)
     measure {
         for _ in 0..<10_000 {
             _ = applyDCT(block: block)

@@ -6,12 +6,21 @@ final class DispatchBackendTests: XCTestCase {
     // MARK: - Auto-Detection Tests
 
     func testDispatchBackend_Current_ReturnsNonScalar() {
-        // On any real platform, at least one optimized backend should be available
         let current = DispatchBackend.current
-        // On x86_64 Linux (CI), this should be .avx2
-        // On Apple Silicon, this should be .accelerate
-        XCTAssertNotEqual(current, .scalar,
-                          "Expected an optimized backend on a real platform")
+        #if arch(x86_64)
+        // On x86_64 Linux (CI) without Accelerate, should be .avx2
+        XCTAssertEqual(current, .avx2,
+                       "Expected .avx2 on x86_64 without Accelerate")
+        #elseif arch(arm64) && canImport(Accelerate)
+        XCTAssertEqual(current, .accelerate,
+                       "Expected .accelerate on Apple Silicon")
+        #elseif arch(arm64)
+        XCTAssertEqual(current, .neon,
+                       "Expected .neon on ARM64 without Accelerate")
+        #else
+        XCTAssertEqual(current, .scalar,
+                       "Expected .scalar on unknown platform")
+        #endif
     }
 
     func testDispatchBackend_Current_IsAvailable() {
