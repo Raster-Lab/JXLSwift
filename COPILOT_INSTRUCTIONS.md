@@ -185,3 +185,24 @@ All architecture-specific code is routed through this dispatcher. The `#if arch(
 - `Sendable` conformance for types crossing concurrency boundaries.
 - Build with `StrictConcurrency` enabled (already configured).
 - See `.github/copilot-instructions.md` for detailed Swift coding guidelines.
+
+---
+
+## Documentation Updates on Feature Changes
+
+Every feature addition, modification, or removal **must** include updates to:
+
+### README.md
+- **Features** list — add/update entries for new capabilities.
+- **Usage** section — add or revise code examples.
+- **Architecture** tree — reflect new modules or files.
+- **Roadmap** checklist — mark items as completed (`- [x]`) or add new planned items.
+- **Requirements** / **Performance** sections — update if affected.
+
+### MILESTONES.md
+- **Milestone Overview table** — update status (⬜ → 🔶 → ✅).
+- **Deliverable checklists** — check off completed items (`- [x]`).
+- **Test checklists** — check off tests that now pass.
+- Add new deliverables or tests if the feature introduces previously unlisted work.
+
+Documentation updates must ship in the **same commit or pull request** as the code change. Do not defer them to a follow-up task. Keep the README roadmap in sync with the MILESTONES.md overview table.

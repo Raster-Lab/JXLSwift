@@ -148,6 +148,35 @@ func testEncodingPerformance_SmallImage() throws {
 
 ---
 
+## Documentation Updates on Feature Changes
+
+Whenever a feature is added, modified, or removed, you **must** update the following documentation files as part of the same change:
+
+### README.md
+
+- Update the **Features** list if a new capability is added or an existing one changes.
+- Update the **Usage** section with new or modified code examples.
+- Update the **Architecture** tree if new modules or files are added.
+- Update the **Roadmap** checklist to reflect completed, in-progress, or newly planned items.
+- Update the **Requirements** section if platform or Swift version requirements change.
+- Update the **Performance** section if benchmarks change significantly.
+
+### MILESTONES.md
+
+- Update the **Milestone Overview** table status (⬜ Not Started → 🔶 In Progress → ✅ Complete) to reflect current progress.
+- Check off completed deliverables (`- [x]`) and tests (`- [x]`) within the relevant milestone.
+- Add new deliverables or tests if the feature introduces work not previously listed.
+- Update any dates, targets, or acceptance criteria that have changed.
+
+### General Rules
+
+- Documentation updates must be included in the **same commit or pull request** as the feature change.
+- Do not defer documentation updates to a follow-up task.
+- If a feature spans multiple milestones, update all affected milestone sections.
+- Keep the README roadmap checklist in sync with the MILESTONES.md overview table.
+
+---
+
 ## Code Review Checklist
 
 When reviewing or generating code, verify:
@@ -162,3 +191,5 @@ When reviewing or generating code, verify:
 - [ ] Architecture-specific code has `#if` guards and scalar fallbacks.
 - [ ] New dependencies are justified and minimal (prefer zero-dependency approach).
 - [ ] Functions are focused, short, and descriptively named.
+- [ ] README.md is updated to reflect any new or changed features.
+- [ ] MILESTONES.md is updated with completed deliverables and current status.

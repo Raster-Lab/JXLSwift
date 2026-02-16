@@ -85,7 +85,7 @@ Aim for good test coverage, especially for:
 3. **Make your changes**
    - Write clean, documented code
    - Add tests
-   - Update documentation
+   - Update `README.md` and `MILESTONES.md` (see [Documentation Updates](#documentation-updates-on-feature-changes) below)
 
 4. **Test thoroughly**
    ```bash
@@ -200,6 +200,20 @@ Update README.md when:
 - Changing API
 - Adding examples
 - Updating requirements
+
+### MILESTONES Updates
+Update MILESTONES.md when:
+- Completing a deliverable (check it off with `- [x]`)
+- Completing a required test (check it off with `- [x]`)
+- Changing a milestone status (⬜ Not Started → 🔶 In Progress → ✅ Complete)
+- Adding new deliverables or tests not previously listed
+
+### Documentation Updates on Feature Changes
+
+Every feature addition, modification, or removal **must** include updates to both `README.md` and `MILESTONES.md` in the same pull request. Do not defer documentation updates to a follow-up task. Specifically:
+
+- **README.md**: Update the Features list, Usage examples, Architecture tree, Roadmap checklist, and any other affected sections.
+- **MILESTONES.md**: Update the Milestone Overview table status, check off completed deliverables and tests, and add any new items.
 
 ## Questions?
 
