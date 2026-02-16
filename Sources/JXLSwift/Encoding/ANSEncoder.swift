@@ -1344,6 +1344,8 @@ struct LZ77HybridEncoder: Sendable {
                 // wraps past i the comparison naturally uses already-
                 // matched data, which is the standard LZ77 behaviour for
                 // run-length patterns.
+                // Safety: since j < i, we have j + matchLen < i + matchLen,
+                // so the i + matchLen < count guard also bounds j + matchLen.
                 while i + matchLen < count
                     && symbols[j + matchLen] == symbols[i + matchLen] {
                     matchLen += 1
