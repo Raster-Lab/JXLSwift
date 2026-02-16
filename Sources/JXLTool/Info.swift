@@ -57,13 +57,4 @@ struct Info: ParsableCommand {
                UInt32(data[offset + 3])
     }
 
-    private func formatBytes(_ bytes: Int) -> String {
-        if bytes < 1024 {
-            return "\(bytes) B"
-        } else if bytes < 1024 * 1024 {
-            return String(format: "%.1f KB", Double(bytes) / 1024)
-        } else {
-            return String(format: "%.1f MB", Double(bytes) / (1024 * 1024))
-        }
-    }
 }
