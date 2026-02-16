@@ -486,9 +486,9 @@ class ModularEncoder {
     /// Number of distinct contexts for entropy coding.
     ///
     /// Contexts are selected based on local gradient properties:
-    /// - Contexts 0–4: classified by gradient magnitude bucket
-    /// - Within each bucket the context is further split by gradient
-    ///   orientation (horizontal vs. vertical dominance).
+    /// - 4 gradient magnitude buckets (flat, low, medium, high)
+    /// - 2 orientation sub-contexts per bucket (horizontal vs. vertical)
+    /// - Total: contexts 0–7
     ///
     /// This follows the general idea of ISO/IEC 18181-1 §7 where the
     /// encoder selects a context from the causal neighborhood so that
@@ -593,6 +593,10 @@ class ModularEncoder {
     /// then encoded under a context selected from the local gradient properties
     /// of its causal neighbourhood.  The Golomb-Rice parameter adapts per
     /// context based on the running symbol statistics.
+    ///
+    /// - Note: This overload estimates 2D positions from a flat index via
+    ///   `sqrt(data.count)`.  Prefer ``entropyEncodeWithContext(data:width:height:)``
+    ///   when the actual image dimensions are available.
     private func entropyEncode(data: [Int32]) throws -> Data {
         var writer = BitstreamWriter()
         

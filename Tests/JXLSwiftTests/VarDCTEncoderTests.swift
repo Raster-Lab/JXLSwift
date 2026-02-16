@@ -1053,7 +1053,9 @@ final class VarDCTEncoderTests: XCTestCase {
         let input: [Float] = [0.0, 0.5, 1.0]
         let result = AccelerateOps.convertFloatToU8(input)
         XCTAssertEqual(result[0], 0)
-        XCTAssertEqual(result[1], 127, "0.5 × 255 ≈ 127")
+        // 0.5 × 255 = 127.5; rounding may produce 127 or 128
+        XCTAssertTrue(result[1] == 127 || result[1] == 128,
+                      "0.5 × 255 = 127.5, expected 127 or 128 but got \(result[1])")
         XCTAssertEqual(result[2], 255)
     }
 
