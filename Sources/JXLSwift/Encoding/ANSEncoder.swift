@@ -156,7 +156,10 @@ struct ANSDistribution: Sendable {
                     diff += 1
                 }
                 idx += 1
-                // Safety: avoid infinite loop if we can't shrink
+                // Safety: allow at most 2 full passes over the non-zero
+                // symbols.  If the deficit can't be resolved (every
+                // non-zero symbol is already at minimum 1), stop and
+                // accept the minor table imprecision.
                 if idx > sorted.count * 2 { break }
             }
         }

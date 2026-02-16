@@ -18,7 +18,7 @@
 | 5 | Hardware Acceleration — Apple Accelerate | Weeks 14–17 | ✅ Complete |
 | 6 | Hardware Acceleration — ARM NEON / SIMD | Weeks 17–20 | 🔶 In Progress |
 | 7 | Hardware Acceleration — Metal GPU | Weeks 20–23 | ⬜ Not Started |
-| 8 | ANS Entropy Coding | Weeks 23–27 | ⬜ Not Started |
+| 8 | ANS Entropy Coding | Weeks 23–27 | 🔶 In Progress |
 | 9 | Advanced Encoding Features | Weeks 27–31 | ⬜ Not Started |
 | 10 | Command Line Tool (jxl-tool) | Weeks 31–34 | 🔶 In Progress |
 | 11 | libjxl Validation & Performance Benchmarking | Weeks 34–38 | ⬜ Not Started |
@@ -305,24 +305,24 @@
 
 ### Deliverables
 
-- [ ] rANS (range ANS) encoder
-- [ ] rANS decoder (for validation)
-- [ ] Symbol frequency analysis and distribution table generation
-- [ ] Distribution encoding (compressed and uncompressed modes)
-- [ ] Multi-context ANS (context-dependent distributions)
+- [x] rANS (range ANS) encoder
+- [x] rANS decoder (for validation)
+- [x] Symbol frequency analysis and distribution table generation
+- [x] Distribution encoding (compressed and uncompressed modes)
+- [x] Multi-context ANS (context-dependent distributions)
 - [ ] Histogram clustering (merge similar distributions)
 - [ ] ANS interleaving for parallelism
 - [ ] LZ77 hybrid mode (for repeated patterns)
-- [ ] Integration with Modular mode entropy backend
-- [ ] Integration with VarDCT coefficient encoding
+- [x] Integration with Modular mode entropy backend
+- [x] Integration with VarDCT coefficient encoding
 
 ### Tests Required
 
-- [ ] ANS encode → decode round-trip for uniform distribution
-- [ ] ANS encode → decode round-trip for skewed distribution
-- [ ] ANS encode → decode round-trip for sparse data (mostly zeros)
-- [ ] Multi-context ANS correctness
-- [ ] Distribution table serialisation/deserialisation
+- [x] ANS encode → decode round-trip for uniform distribution
+- [x] ANS encode → decode round-trip for skewed distribution
+- [x] ANS encode → decode round-trip for sparse data (mostly zeros)
+- [x] Multi-context ANS correctness
+- [x] Distribution table serialisation/deserialisation
 - [ ] LZ77 mode for repetitive data
 - [ ] Performance: ANS encoding ≥ 80% throughput of simplified encoder
 - [ ] Compression: ANS achieves ≥ 10% better compression than simplified encoding

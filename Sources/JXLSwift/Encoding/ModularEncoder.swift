@@ -1072,7 +1072,9 @@ class ModularEncoder {
         let maxSym = symbols.max() ?? 0
         let alphabetSize = min(maxSym + 1, ANSConstants.maxAlphabetSize)
         
-        // Clamp symbols to alphabet range for very large residuals
+        // Clamp symbols that exceed the ANS alphabet limit (256).
+        // Large residuals are rare and occur only for extreme pixel
+        // value changes.  The decoder must apply the same clamping.
         let clampedSymbols = symbols.map { min($0, alphabetSize - 1) }
         
         // Partition symbols by context

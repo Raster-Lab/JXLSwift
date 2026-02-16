@@ -1105,7 +1105,12 @@ class VarDCTEncoder {
         allBlocks: [[[Int16]]],
         dcResiduals: [Int16]
     ) throws -> Data {
-        // Collect symbols by context: DC (ctx 0) and AC (ctx 1)
+        let maxAlpha = ANSConstants.maxAlphabetSize
+        
+        // Collect symbols by context: DC (ctx 0) and AC (ctx 1).
+        // Symbols exceeding the ANS alphabet are clamped to the maximum
+        // index.  This can happen with large quantised coefficients but
+        // is rare in practice; the decoder must apply the same clamping.
         var dcSymbols = [Int]()
         var acSymbols = [Int]()
         var pairs = [(symbol: Int, context: Int)]()
@@ -1115,28 +1120,23 @@ class VarDCTEncoder {
             
             // DC coefficient (use residual)
             let dcValue = dcResiduals[blockIdx]
-            let dcSym = Int(encodeSignedValue(Int32(dcValue)))
+            let dcSym = min(Int(encodeSignedValue(Int32(dcValue))),
+                            maxAlpha - 1)
             dcSymbols.append(dcSym)
-            pairs.append((symbol: min(dcSym, ANSConstants.maxAlphabetSize - 1),
-                          context: 0))
+            pairs.append((symbol: dcSym, context: 0))
             
             // AC coefficients
             for i in 1..<coefficients.count {
-                let acSym = Int(encodeSignedValue(Int32(coefficients[i])))
+                let acSym = min(Int(encodeSignedValue(Int32(coefficients[i]))),
+                                maxAlpha - 1)
                 acSymbols.append(acSym)
-                pairs.append((symbol: min(acSym, ANSConstants.maxAlphabetSize - 1),
-                              context: 1))
+                pairs.append((symbol: acSym, context: 1))
             }
         }
         
-        // Clamp to alphabet size
-        let maxAlpha = ANSConstants.maxAlphabetSize
-        let clampedDC = dcSymbols.map { min($0, maxAlpha - 1) }
-        let clampedAC = acSymbols.map { min($0, maxAlpha - 1) }
-        
         // Build multi-context encoder (2 contexts: DC and AC)
         let ansEncoder = try MultiContextANSEncoder.build(
-            contextSymbols: [clampedDC, clampedAC],
+            contextSymbols: [dcSymbols, acSymbols],
             alphabetSize: maxAlpha
         )
         
