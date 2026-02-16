@@ -164,7 +164,7 @@ Sources/JXLTool/
 
 JXLSwift is optimized for Apple Silicon:
 
-- **ARM NEON SIMD** - Vectorized DCT, colour conversion, quantisation, and prediction via Swift SIMD types
+- **ARM NEON SIMD** - Vectorized DCT, colour conversion, quantisation, prediction, RCT, and squeeze transforms via Swift SIMD types (both Modular and VarDCT pipelines)
 - **Apple Accelerate** - vDSP DCT transforms and matrix operations
 - **Metal GPU** - Parallel processing support (planned)
 
@@ -177,6 +177,7 @@ Benchmarks on Apple M1 (256x256 image):
 ### Modular Mode (Lossless)
 - Perfect pixel-by-pixel reproduction
 - Uses predictive coding + entropy encoding
+- NEON-accelerated MED prediction, RCT, and squeeze transforms on ARM64
 - Ideal for archival, medical imaging, scientific data
 
 ### VarDCT Mode (Lossy)
@@ -259,7 +260,7 @@ See [MILESTONES.md](MILESTONES.md) for the detailed project milestone plan.
 - [x] Lossy (VarDCT) mode — DCT, XYB, CfL, adaptive quantization, DC prediction
 - [x] Apple Silicon optimization
 - [x] Accelerate framework integration — vDSP DCT, vectorized color/quantization
-- [x] ARM NEON SIMD acceleration — portable Swift SIMD types, DCT, colour conversion, quantisation
+- [x] ARM NEON SIMD acceleration — portable Swift SIMD types, DCT, colour conversion, quantisation, MED prediction, RCT, squeeze (Modular + VarDCT)
 - [x] Command line tool (jxl-tool) — encode, info, hardware, benchmark
 - [x] JPEG XL file format (.jxl) — ISOBMFF container, codestream/frame headers
 - [x] Metadata support (EXIF, XMP, ICC profiles)

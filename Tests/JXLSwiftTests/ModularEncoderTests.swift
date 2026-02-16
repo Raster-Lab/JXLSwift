@@ -765,7 +765,7 @@ final class ModularEncoderTests: XCTestCase {
             }
         }
 
-        let encoder = makeEncoder()
+        let encoder = makeScalarEncoder()
         let neonResult = NEONOps.predictMED(data: data, width: width, height: height)
 
         // Compute scalar reference using predictPixel
@@ -789,7 +789,7 @@ final class ModularEncoderTests: XCTestCase {
         let height = 16
         let data = [UInt16](repeating: 128, count: width * height)
 
-        let encoder = makeEncoder()
+        let encoder = makeScalarEncoder()
         let neonResult = NEONOps.predictMED(data: data, width: width, height: height)
 
         var scalarResult = [Int32](repeating: 0, count: data.count)

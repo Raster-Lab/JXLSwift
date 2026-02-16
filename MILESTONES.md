@@ -241,8 +241,8 @@
 
 ### Deliverables
 
-- [ ] NEON-optimised pixel prediction (4-wide `uint16` processing)
-- [ ] NEON-optimised MED predictor
+- [x] NEON-optimised pixel prediction (4-wide `uint16` processing)
+- [x] NEON-optimised MED predictor
 - [x] NEON-optimised DCT butterfly operations
 - [x] NEON-optimised colour space conversion (RGB ↔ YCbCr, 4 pixels at a time)
 - [x] NEON-optimised quantisation (vectorised divide + round)
