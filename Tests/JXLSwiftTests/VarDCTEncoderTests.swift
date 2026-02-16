@@ -425,4 +425,129 @@ final class VarDCTEncoderTests: XCTestCase {
         XCTAssertGreaterThan(highQResult.data.count, 0)
         XCTAssertGreaterThan(fastResult.data.count, 0)
     }
+
+    // MARK: - DC Prediction Tests
+
+    func testPredictDC_FirstBlock_ReturnsZero() {
+        let encoder = makeEncoder()
+        let dcValues: [[Int16]] = [[0]]
+        let predicted = encoder.predictDC(dcValues: dcValues, blockX: 0, blockY: 0)
+        XCTAssertEqual(predicted, 0,
+                       "First block (0,0) should predict DC as 0")
+    }
+
+    func testPredictDC_FirstRow_UsesLeftNeighbor() {
+        let encoder = makeEncoder()
+        var dcValues: [[Int16]] = [[42, 0, 0]]
+        dcValues[0][1] = 50 // This value doesn't matter; prediction uses left
+        let predicted = encoder.predictDC(dcValues: dcValues, blockX: 1, blockY: 0)
+        XCTAssertEqual(predicted, 42,
+                       "First row should predict from left neighbor")
+    }
+
+    func testPredictDC_FirstColumn_UsesAboveNeighbor() {
+        let encoder = makeEncoder()
+        let dcValues: [[Int16]] = [[100], [0]]
+        let predicted = encoder.predictDC(dcValues: dcValues, blockX: 0, blockY: 1)
+        XCTAssertEqual(predicted, 100,
+                       "First column should predict from above neighbor")
+    }
+
+    func testPredictDC_GeneralCase_AveragesLeftAndAbove() {
+        let encoder = makeEncoder()
+        let dcValues: [[Int16]] = [
+            [10, 20],
+            [30,  0]
+        ]
+        // blockX=1, blockY=1 → left=30, above=20 → (30+20)/2 = 25
+        let predicted = encoder.predictDC(dcValues: dcValues, blockX: 1, blockY: 1)
+        XCTAssertEqual(predicted, 25,
+                       "General case should average left and above: (30+20)/2 = 25")
+    }
+
+    func testPredictDC_GeneralCase_TruncatesIntegerDivision() {
+        let encoder = makeEncoder()
+        let dcValues: [[Int16]] = [
+            [10, 21],
+            [30,  0]
+        ]
+        // blockX=1, blockY=1 → left=30, above=21 → (30+21)/2 = 25 (integer truncation)
+        let predicted = encoder.predictDC(dcValues: dcValues, blockX: 1, blockY: 1)
+        XCTAssertEqual(predicted, 25,
+                       "Integer division should truncate: (30+21)/2 = 25")
+    }
+
+    func testPredictDC_NegativeValues() {
+        let encoder = makeEncoder()
+        let dcValues: [[Int16]] = [
+            [10, -20],
+            [-30,  0]
+        ]
+        // blockX=1, blockY=1 → left=-30, above=-20 → (-30 + -20)/2 = -25
+        let predicted = encoder.predictDC(dcValues: dcValues, blockX: 1, blockY: 1)
+        XCTAssertEqual(predicted, -25,
+                       "Should handle negative DC values correctly")
+    }
+
+    func testPredictDC_ConstantBlocks_ZeroResidual() {
+        let encoder = makeEncoder()
+        // All blocks have the same DC → residuals should be zero after first
+        let dcValue: Int16 = 42
+        let dcValues: [[Int16]] = [
+            [dcValue, dcValue],
+            [dcValue, dcValue]
+        ]
+
+        // First block: prediction = 0, residual = 42
+        let pred00 = encoder.predictDC(dcValues: dcValues, blockX: 0, blockY: 0)
+        XCTAssertEqual(dcValue - pred00, 42)
+
+        // (1,0): prediction = 42 (left), residual = 0
+        let pred10 = encoder.predictDC(dcValues: dcValues, blockX: 1, blockY: 0)
+        XCTAssertEqual(dcValue - pred10, 0)
+
+        // (0,1): prediction = 42 (above), residual = 0
+        let pred01 = encoder.predictDC(dcValues: dcValues, blockX: 0, blockY: 1)
+        XCTAssertEqual(dcValue - pred01, 0)
+
+        // (1,1): prediction = (42+42)/2 = 42, residual = 0
+        let pred11 = encoder.predictDC(dcValues: dcValues, blockX: 1, blockY: 1)
+        XCTAssertEqual(dcValue - pred11, 0)
+    }
+
+    func testDCPrediction_GradientImage_ProducesOutput() throws {
+        // A smooth gradient image should benefit from DC prediction
+        // (adjacent blocks have similar DC values)
+        let encoder = JXLEncoder(options: .fast)
+        var frame = ImageFrame(width: 32, height: 32, channels: 3)
+        for y in 0..<32 {
+            for x in 0..<32 {
+                let value = UInt16((x + y) * 4)
+                frame.setPixel(x: x, y: y, channel: 0, value: value)
+                frame.setPixel(x: x, y: y, channel: 1, value: value)
+                frame.setPixel(x: x, y: y, channel: 2, value: value)
+            }
+        }
+
+        let result = try encoder.encode(frame)
+        XCTAssertGreaterThan(result.data.count, 0,
+                             "Encoding with DC prediction should produce valid output")
+    }
+
+    func testDCPrediction_SingleBlock_EncodesSuccessfully() throws {
+        // A single 8×8 block image has no neighbors for prediction
+        let encoder = JXLEncoder(options: .fast)
+        var frame = ImageFrame(width: 8, height: 8, channels: 3)
+        for y in 0..<8 {
+            for x in 0..<8 {
+                frame.setPixel(x: x, y: y, channel: 0, value: 128)
+                frame.setPixel(x: x, y: y, channel: 1, value: 64)
+                frame.setPixel(x: x, y: y, channel: 2, value: 200)
+            }
+        }
+
+        let result = try encoder.encode(frame)
+        XCTAssertGreaterThan(result.data.count, 0,
+                             "Single-block image should encode with DC prediction")
+    }
 }
