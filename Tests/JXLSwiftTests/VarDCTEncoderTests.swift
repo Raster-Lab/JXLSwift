@@ -1884,6 +1884,30 @@ final class VarDCTEncoderTests: XCTestCase {
                        "Activity at midpoint kappa should produce neutral scale")
     }
 
+    func testAdaptiveScale_CustomKappa_ShiftsMidpoint() {
+        let encoder = makeEncoder()
+        // With kappa = 0.1, the midpoint (scale ≈ 1.0) shifts to activity = 0.1
+        let scaleAtNewMidpoint = encoder.adaptiveQuantizationScale(
+            activity: 0.1, strength: 1.0, kappa: 0.1
+        )
+        XCTAssertEqual(scaleAtNewMidpoint, 1.0, accuracy: 1e-5,
+                       "Activity at custom kappa should produce neutral scale")
+
+        // Activity well below the new kappa should give scale < 1
+        let scaleLow = encoder.adaptiveQuantizationScale(
+            activity: 0.001, strength: 1.0, kappa: 0.1
+        )
+        XCTAssertLessThan(scaleLow, 1.0,
+                          "Activity below custom kappa should produce scale < 1")
+
+        // Activity well above the new kappa should give scale > 1
+        let scaleHigh = encoder.adaptiveQuantizationScale(
+            activity: 10.0, strength: 1.0, kappa: 0.1
+        )
+        XCTAssertGreaterThan(scaleHigh, 1.0,
+                             "Activity above custom kappa should produce scale > 1")
+    }
+
     func testAdaptiveScale_Monotonic() {
         let encoder = makeEncoder()
         var previous: Float = 0
@@ -1984,11 +2008,11 @@ final class VarDCTEncoderTests: XCTestCase {
     func testGenerateQuantizationMatrix_ActivityClampedLow() {
         let encoder = makeEncoder(distance: 1.0)
         
-        // Very high activity: scale = 1/activity clamped to 0.5
+        // Very high activity: scale = 1/activity clamped to minAdaptiveScale (0.5)
         let matrixExtreme = encoder.generateQuantizationMatrix(channel: 0, activity: 100.0)
         let matrixClamped = encoder.generateQuantizationMatrix(channel: 0, activity: 2.0)
         
-        // Both should hit the floor clamp at 0.5
+        // Both should hit the floor clamp at minAdaptiveScale
         for y in 0..<8 {
             for x in 0..<8 {
                 XCTAssertEqual(matrixExtreme[y][x], matrixClamped[y][x], accuracy: 1e-5,
@@ -2000,11 +2024,11 @@ final class VarDCTEncoderTests: XCTestCase {
     func testGenerateQuantizationMatrix_ActivityClampedHigh() {
         let encoder = makeEncoder(distance: 1.0)
         
-        // Very low activity: scale = 1/activity clamped to 2.0
+        // Very low activity: scale = 1/activity clamped to maxAdaptiveScale (2.0)
         let matrixExtreme = encoder.generateQuantizationMatrix(channel: 0, activity: 0.001)
         let matrixClamped = encoder.generateQuantizationMatrix(channel: 0, activity: 0.5)
         
-        // Both should hit the ceiling clamp at 2.0
+        // Both should hit the ceiling clamp at maxAdaptiveScale
         for y in 0..<8 {
             for x in 0..<8 {
                 XCTAssertEqual(matrixExtreme[y][x], matrixClamped[y][x], accuracy: 1e-5,

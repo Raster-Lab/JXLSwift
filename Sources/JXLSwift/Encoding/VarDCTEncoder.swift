@@ -20,6 +20,12 @@ class VarDCTEncoder {
     /// rounded, and stored as an integer so the decoder can reconstruct it.
     static let cflScaleFactor: Float = 256
     
+    /// Minimum adaptive quantisation scale (floor for high-activity blocks).
+    static let minAdaptiveScale: Float = 0.5
+    
+    /// Maximum adaptive quantisation scale (ceiling for flat blocks).
+    static let maxAdaptiveScale: Float = 2.0
+    
     /// Fixed-point scale factor for encoding per-block quantisation fields.
     ///
     /// The floating-point activity scale is multiplied by this value,
@@ -981,8 +987,12 @@ class VarDCTEncoder {
         // Adaptive scale: invert activity so that high-detail blocks
         // (activity > 1) get smaller (finer) quantisation steps and
         // flat blocks (activity < 1) get larger (coarser) steps.
-        // Clamped to [0.5, 2.0] to prevent extreme adjustments.
-        let adaptiveScale: Float = max(0.5, min(2.0, 1.0 / activity))
+        // Clamped to [minAdaptiveScale, maxAdaptiveScale] to prevent
+        // extreme adjustments.
+        let adaptiveScale: Float = max(
+            VarDCTEncoder.minAdaptiveScale,
+            min(VarDCTEncoder.maxAdaptiveScale, 1.0 / activity)
+        )
         
         // Use frequency-dependent quantization
         // Lower frequencies (top-left) get finer quantization
