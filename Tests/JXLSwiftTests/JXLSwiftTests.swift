@@ -198,6 +198,182 @@ final class JXLSwiftTests: XCTestCase {
         XCTAssertEqual(primaries.redY, 0.33, accuracy: 0.001)
     }
     
+    // MARK: - Wide Gamut Color Primaries Tests
+    
+    func testColorPrimaries_DisplayP3_HasCorrectValues() {
+        let primaries = ColorPrimaries.displayP3
+        
+        // Display P3 (DCI-P3 D65) chromaticity coordinates
+        XCTAssertEqual(primaries.redX, 0.680, accuracy: 0.001)
+        XCTAssertEqual(primaries.redY, 0.320, accuracy: 0.001)
+        XCTAssertEqual(primaries.greenX, 0.265, accuracy: 0.001)
+        XCTAssertEqual(primaries.greenY, 0.690, accuracy: 0.001)
+        XCTAssertEqual(primaries.blueX, 0.150, accuracy: 0.001)
+        XCTAssertEqual(primaries.blueY, 0.060, accuracy: 0.001)
+        XCTAssertEqual(primaries.whiteX, 0.3127, accuracy: 0.0001)  // D65 white point
+        XCTAssertEqual(primaries.whiteY, 0.3290, accuracy: 0.0001)
+    }
+    
+    func testColorPrimaries_Rec2020_HasCorrectValues() {
+        let primaries = ColorPrimaries.rec2020
+        
+        // Rec. 2020 (BT.2020) chromaticity coordinates
+        XCTAssertEqual(primaries.redX, 0.708, accuracy: 0.001)
+        XCTAssertEqual(primaries.redY, 0.292, accuracy: 0.001)
+        XCTAssertEqual(primaries.greenX, 0.170, accuracy: 0.001)
+        XCTAssertEqual(primaries.greenY, 0.797, accuracy: 0.001)
+        XCTAssertEqual(primaries.blueX, 0.131, accuracy: 0.001)
+        XCTAssertEqual(primaries.blueY, 0.046, accuracy: 0.001)
+        XCTAssertEqual(primaries.whiteX, 0.3127, accuracy: 0.0001)  // D65 white point
+        XCTAssertEqual(primaries.whiteY, 0.3290, accuracy: 0.0001)
+    }
+    
+    func testColorPrimaries_Rec2020_WiderThanDisplayP3() {
+        // Rec. 2020 should have a wider color gamut than Display P3
+        // This is verified by checking that Rec. 2020 red is more saturated (higher redX)
+        XCTAssertGreaterThan(ColorPrimaries.rec2020.redX, ColorPrimaries.displayP3.redX)
+        // And green is more saturated (higher greenY)
+        XCTAssertGreaterThan(ColorPrimaries.rec2020.greenY, ColorPrimaries.displayP3.greenY)
+    }
+    
+    func testColorPrimaries_DisplayP3_WiderThanSRGB() {
+        // Display P3 should have a wider color gamut than sRGB
+        // This is verified by checking that Display P3 red is more saturated
+        XCTAssertGreaterThan(ColorPrimaries.displayP3.redX, ColorPrimaries.sRGB.redX)
+    }
+    
+    // MARK: - HDR Color Space Tests
+    
+    func testColorSpace_DisplayP3_HasCorrectPrimaries() {
+        guard case let .custom(primaries, transferFunction) = ColorSpace.displayP3 else {
+            XCTFail("displayP3 should return custom color space")
+            return
+        }
+        
+        XCTAssertEqual(primaries.redX, ColorPrimaries.displayP3.redX, accuracy: 0.001)
+        if case .sRGB = transferFunction {
+            // Expected sRGB transfer function
+        } else {
+            XCTFail("displayP3 should use sRGB transfer function")
+        }
+    }
+    
+    func testColorSpace_DisplayP3Linear_HasLinearTransferFunction() {
+        guard case let .custom(primaries, transferFunction) = ColorSpace.displayP3Linear else {
+            XCTFail("displayP3Linear should return custom color space")
+            return
+        }
+        
+        XCTAssertEqual(primaries.redX, ColorPrimaries.displayP3.redX, accuracy: 0.001)
+        if case .linear = transferFunction {
+            // Expected linear transfer function
+        } else {
+            XCTFail("displayP3Linear should use linear transfer function")
+        }
+    }
+    
+    func testColorSpace_Rec2020PQ_HasPQTransferFunction() {
+        guard case let .custom(primaries, transferFunction) = ColorSpace.rec2020PQ else {
+            XCTFail("rec2020PQ should return custom color space")
+            return
+        }
+        
+        XCTAssertEqual(primaries.redX, ColorPrimaries.rec2020.redX, accuracy: 0.001)
+        if case .pq = transferFunction {
+            // Expected PQ transfer function (HDR10)
+        } else {
+            XCTFail("rec2020PQ should use PQ transfer function")
+        }
+    }
+    
+    func testColorSpace_Rec2020HLG_HasHLGTransferFunction() {
+        guard case let .custom(primaries, transferFunction) = ColorSpace.rec2020HLG else {
+            XCTFail("rec2020HLG should return custom color space")
+            return
+        }
+        
+        XCTAssertEqual(primaries.redX, ColorPrimaries.rec2020.redX, accuracy: 0.001)
+        if case .hlg = transferFunction {
+            // Expected HLG transfer function
+        } else {
+            XCTFail("rec2020HLG should use HLG transfer function")
+        }
+    }
+    
+    func testColorSpace_Rec2020Linear_HasLinearTransferFunction() {
+        guard case let .custom(primaries, transferFunction) = ColorSpace.rec2020Linear else {
+            XCTFail("rec2020Linear should return custom color space")
+            return
+        }
+        
+        XCTAssertEqual(primaries.redX, ColorPrimaries.rec2020.redX, accuracy: 0.001)
+        if case .linear = transferFunction {
+            // Expected linear transfer function
+        } else {
+            XCTFail("rec2020Linear should use linear transfer function")
+        }
+    }
+    
+    // MARK: - ImageFrame with HDR Color Spaces
+    
+    func testImageFrame_DisplayP3_CreatesSuccessfully() {
+        let frame = ImageFrame(
+            width: 64,
+            height: 64,
+            channels: 3,
+            pixelType: .uint16,
+            colorSpace: .displayP3
+        )
+        
+        XCTAssertEqual(frame.width, 64)
+        XCTAssertEqual(frame.height, 64)
+        if case .custom = frame.colorSpace {
+            // Expected custom color space
+        } else {
+            XCTFail("displayP3 should create custom color space")
+        }
+    }
+    
+    func testImageFrame_Rec2020PQ_CreatesSuccessfully() {
+        let frame = ImageFrame(
+            width: 64,
+            height: 64,
+            channels: 3,
+            pixelType: .float32,  // HDR typically uses float
+            colorSpace: .rec2020PQ,
+            bitsPerSample: 16
+        )
+        
+        XCTAssertEqual(frame.width, 64)
+        XCTAssertEqual(frame.height, 64)
+        XCTAssertEqual(frame.pixelType, .float32)
+        if case .custom = frame.colorSpace {
+            // Expected custom color space
+        } else {
+            XCTFail("rec2020PQ should create custom color space")
+        }
+    }
+    
+    func testImageFrame_Rec2020HLG_CreatesSuccessfully() {
+        let frame = ImageFrame(
+            width: 64,
+            height: 64,
+            channels: 3,
+            pixelType: .uint16,  // HLG can use integer types
+            colorSpace: .rec2020HLG,
+            bitsPerSample: 10
+        )
+        
+        XCTAssertEqual(frame.width, 64)
+        XCTAssertEqual(frame.height, 64)
+        XCTAssertEqual(frame.bitsPerSample, 10)
+        if case .custom = frame.colorSpace {
+            // Expected custom color space
+        } else {
+            XCTFail("rec2020HLG should create custom color space")
+        }
+    }
+    
     // MARK: - Performance Tests
     
     func testEncodingPerformance() throws {
