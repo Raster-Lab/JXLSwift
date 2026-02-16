@@ -1073,4 +1073,430 @@ final class VarDCTEncoderTests: XCTestCase {
         }
     }
     #endif
+
+    // MARK: - XYB Colour Space Tests
+
+    func testConvertToXYB_Black_ProducesExpectedValues() {
+        let encoder = makeEncoder()
+        var frame = ImageFrame(width: 1, height: 1, channels: 3, pixelType: .uint16)
+        frame.setPixel(x: 0, y: 0, channel: 0, value: 0)
+        frame.setPixel(x: 0, y: 0, channel: 1, value: 0)
+        frame.setPixel(x: 0, y: 0, channel: 2, value: 0)
+
+        let xyb = encoder.convertToXYB(frame: frame)
+
+        // For black (0,0,0), L=M=S all go through opsinTransfer(0) = cbrt(bias) - cbrt(bias) = 0
+        // So X = (0-0)/2 = 0, Y = (0+0)/2 = 0, B = 0
+        let xVal = xyb.getPixel(x: 0, y: 0, channel: 0)
+        let yVal = xyb.getPixel(x: 0, y: 0, channel: 1)
+        let bVal = xyb.getPixel(x: 0, y: 0, channel: 2)
+        XCTAssertEqual(xVal, 0, "X for black should be 0")
+        XCTAssertEqual(yVal, 0, "Y for black should be 0")
+        XCTAssertEqual(bVal, 0, "B for black should be 0")
+    }
+
+    func testConvertToXYB_White_HighYValue() {
+        let encoder = makeEncoder()
+        var frame = ImageFrame(width: 1, height: 1, channels: 3, pixelType: .uint16)
+        frame.setPixel(x: 0, y: 0, channel: 0, value: 65535)
+        frame.setPixel(x: 0, y: 0, channel: 1, value: 65535)
+        frame.setPixel(x: 0, y: 0, channel: 2, value: 65535)
+
+        let xyb = encoder.convertToXYB(frame: frame)
+
+        // For white, L and M should be similar (neutral), so X ≈ 0
+        // Y should be high (average of L' and M')
+        let yVal = xyb.getPixel(x: 0, y: 0, channel: 1)
+        XCTAssertGreaterThan(yVal, 0, "Y for white should be positive")
+    }
+
+    func testConvertToXYB_SingleChannel_ReturnsUnchanged() {
+        let encoder = makeEncoder()
+        var frame = ImageFrame(width: 2, height: 2, channels: 1)
+        frame.setPixel(x: 0, y: 0, channel: 0, value: 128)
+        frame.setPixel(x: 1, y: 0, channel: 0, value: 64)
+
+        let result = encoder.convertToXYB(frame: frame)
+
+        XCTAssertEqual(result.getPixel(x: 0, y: 0, channel: 0), 128,
+                       "Single channel should pass through unchanged")
+        XCTAssertEqual(result.getPixel(x: 1, y: 0, channel: 0), 64,
+                       "Single channel should pass through unchanged")
+    }
+
+    func testConvertToXYB_PureRed_NonZeroX() {
+        let encoder = makeEncoder()
+        var frame = ImageFrame(width: 1, height: 1, channels: 3, pixelType: .uint16)
+        frame.setPixel(x: 0, y: 0, channel: 0, value: 65535)
+        frame.setPixel(x: 0, y: 0, channel: 1, value: 0)
+        frame.setPixel(x: 0, y: 0, channel: 2, value: 0)
+
+        let xyb = encoder.convertToXYB(frame: frame)
+
+        // Red excites L more than M, so L' > M', X = (L'-M')/2 > 0
+        let xVal = xyb.getPixel(x: 0, y: 0, channel: 0)
+        XCTAssertGreaterThan(xVal, 0,
+                              "X for pure red should be positive (L > M)")
+    }
+
+    func testConvertToXYB_PureGreen_NegativeX() {
+        let encoder = makeEncoder()
+        var frame = ImageFrame(width: 1, height: 1, channels: 3, pixelType: .uint16)
+        frame.setPixel(x: 0, y: 0, channel: 0, value: 0)
+        frame.setPixel(x: 0, y: 0, channel: 1, value: 65535)
+        frame.setPixel(x: 0, y: 0, channel: 2, value: 0)
+
+        let xyb = encoder.convertToXYB(frame: frame)
+
+        // Green excites M more than L: M_coeff[4]=0.695 > L_coeff[1]=0.630
+        // So M' > L', X = (L'-M')/2 < 0, which maps to 0 after clamping
+        let xVal = xyb.getPixel(x: 0, y: 0, channel: 0)
+        // X clamps to 0 in uint16 storage since negative
+        XCTAssertEqual(xVal, 0,
+                       "X for pure green should clamp to 0 (M > L)")
+    }
+
+    func testOpsinTransfer_Zero_ReturnsZero() {
+        let result = VarDCTEncoder.opsinTransfer(0)
+        // cbrt(0 + bias) - cbrt(bias) = 0
+        XCTAssertEqual(result, 0, accuracy: 1e-6,
+                       "opsinTransfer(0) should be 0")
+    }
+
+    func testOpsinTransfer_One_ReturnsPositive() {
+        let result = VarDCTEncoder.opsinTransfer(1.0)
+        XCTAssertGreaterThan(result, 0, "opsinTransfer(1.0) should be positive")
+        // cbrt(1 + 0.00379246) - cbrt(0.00379246) ≈ 1.001264 - 0.15596 ≈ 0.845
+        XCTAssertEqual(result, 0.845, accuracy: 0.01,
+                       "opsinTransfer(1.0) should be approximately 0.845")
+    }
+
+    func testOpsinTransfer_NegativeInput_ClampsToZero() {
+        let result = VarDCTEncoder.opsinTransfer(-1.0)
+        // max(0, -1) = 0, so same as opsinTransfer(0) = 0
+        XCTAssertEqual(result, 0, accuracy: 1e-6,
+                       "Negative input should clamp to 0 via max()")
+    }
+
+    func testOpsinTransfer_Monotonic() {
+        // Transfer function should be monotonically increasing
+        var prev: Float = -1
+        for i in 0...10 {
+            let x = Float(i) / 10.0
+            let result = VarDCTEncoder.opsinTransfer(x)
+            XCTAssertGreaterThanOrEqual(result, prev,
+                                         "opsinTransfer should be monotonically increasing")
+            prev = result
+        }
+    }
+
+    func testInverseOpsinTransfer_RoundTrip() {
+        // forward → inverse should recover original value
+        let testValues: [Float] = [0, 0.1, 0.25, 0.5, 0.75, 1.0]
+        for val in testValues {
+            let transferred = VarDCTEncoder.opsinTransfer(val)
+            let recovered = VarDCTEncoder.inverseOpsinTransfer(transferred)
+            XCTAssertEqual(recovered, val, accuracy: 1e-5,
+                           "Inverse opsin transfer should recover \(val)")
+        }
+    }
+
+    func testXYBScalar_FloatPrecision_RoundTrip() {
+        // Test XYB round-trip using float arrays directly (no pixel quantization)
+        let r: Float = 0.5, g: Float = 0.3, b: Float = 0.7
+
+        let m = VarDCTEncoder.opsinAbsorbanceMatrix
+        let lVal = m[0] * r + m[1] * g + m[2] * b
+        let mVal = m[3] * r + m[4] * g + m[5] * b
+        let sVal = m[6] * r + m[7] * g + m[8] * b
+
+        let lPrime = VarDCTEncoder.opsinTransfer(lVal)
+        let mPrime = VarDCTEncoder.opsinTransfer(mVal)
+        let sPrime = VarDCTEncoder.opsinTransfer(sVal)
+
+        let xVal = (lPrime - mPrime) * 0.5
+        let yVal = (lPrime + mPrime) * 0.5
+        let bValXYB = sPrime
+
+        // Inverse
+        let lPrimeRec = yVal + xVal
+        let mPrimeRec = yVal - xVal
+        let sPrimeRec = bValXYB
+
+        let lRec = VarDCTEncoder.inverseOpsinTransfer(lPrimeRec)
+        let mRec = VarDCTEncoder.inverseOpsinTransfer(mPrimeRec)
+        let sRec = VarDCTEncoder.inverseOpsinTransfer(sPrimeRec)
+
+        let im = VarDCTEncoder.inverseOpsinAbsorbanceMatrix
+        let rRec = im[0] * lRec + im[1] * mRec + im[2] * sRec
+        let gRec = im[3] * lRec + im[4] * mRec + im[5] * sRec
+        let bRec = im[6] * lRec + im[7] * mRec + im[8] * sRec
+
+        XCTAssertEqual(rRec, r, accuracy: 1e-4, "R should round-trip through XYB")
+        XCTAssertEqual(gRec, g, accuracy: 1e-4, "G should round-trip through XYB")
+        XCTAssertEqual(bRec, b, accuracy: 1e-4, "B should round-trip through XYB")
+    }
+
+    func testXYB_OpsinAbsorbanceMatrix_RowsSumToOne() {
+        let m = VarDCTEncoder.opsinAbsorbanceMatrix
+        // Each row should sum to ≈ 1.0 (energy conservation)
+        let row0 = m[0] + m[1] + m[2]
+        let row1 = m[3] + m[4] + m[5]
+        let row2 = m[6] + m[7] + m[8]
+        XCTAssertEqual(row0, 1.0, accuracy: 1e-4, "Row 0 of opsin matrix should sum to 1.0")
+        XCTAssertEqual(row1, 1.0, accuracy: 1e-4, "Row 1 of opsin matrix should sum to 1.0")
+        XCTAssertEqual(row2, 1.0, accuracy: 1e-4, "Row 2 of opsin matrix should sum to 1.0")
+    }
+
+    func testXYB_InverseMatrix_UndoesForwardMatrix() {
+        // M * M_inv should ≈ identity
+        let m = VarDCTEncoder.opsinAbsorbanceMatrix
+        let im = VarDCTEncoder.inverseOpsinAbsorbanceMatrix
+
+        for i in 0..<3 {
+            for j in 0..<3 {
+                var sum: Float = 0
+                for k in 0..<3 {
+                    sum += m[i * 3 + k] * im[k * 3 + j]
+                }
+                let expected: Float = (i == j) ? 1.0 : 0.0
+                XCTAssertEqual(sum, expected, accuracy: 1e-3,
+                               "M * M_inv should be identity at (\(i),\(j))")
+            }
+        }
+    }
+
+    func testConvertToXYB_GradientImage_ProducesOutput() {
+        let encoder = makeEncoder()
+        var frame = ImageFrame(width: 8, height: 8, channels: 3, pixelType: .uint16)
+        for y in 0..<8 {
+            for x in 0..<8 {
+                frame.setPixel(x: x, y: y, channel: 0, value: UInt16(x * 8192))
+                frame.setPixel(x: x, y: y, channel: 1, value: UInt16(y * 8192))
+                frame.setPixel(x: x, y: y, channel: 2, value: UInt16((x + y) * 4096))
+            }
+        }
+
+        let xyb = encoder.convertToXYB(frame: frame)
+
+        // Y channel should increase with brightness
+        let y00 = xyb.getPixel(x: 0, y: 0, channel: 1)
+        let y77 = xyb.getPixel(x: 7, y: 7, channel: 1)
+        XCTAssertLessThan(y00, y77,
+                          "Brighter pixels should have higher Y")
+    }
+
+    func testConvertToXYB_NeutralGray_XNearZero() {
+        let encoder = makeEncoder()
+        var frame = ImageFrame(width: 1, height: 1, channels: 3, pixelType: .uint16)
+        let gray: UInt16 = 32768
+        frame.setPixel(x: 0, y: 0, channel: 0, value: gray)
+        frame.setPixel(x: 0, y: 0, channel: 1, value: gray)
+        frame.setPixel(x: 0, y: 0, channel: 2, value: gray)
+
+        let xyb = encoder.convertToXYB(frame: frame)
+
+        // For neutral gray, L and M are not perfectly equal due to different
+        // matrix coefficients, but X = (L'-M')/2 should be small
+        let xVal = xyb.getPixel(x: 0, y: 0, channel: 0)
+        let yVal = xyb.getPixel(x: 0, y: 0, channel: 1)
+        // X should be much smaller than Y for neutral gray
+        XCTAssertLessThan(xVal, yVal,
+                          "X should be much smaller than Y for neutral gray")
+    }
+
+    func testConvertFromXYB_SingleChannel_ReturnsUnchanged() {
+        let encoder = makeEncoder()
+        var frame = ImageFrame(width: 2, height: 2, channels: 1)
+        frame.setPixel(x: 0, y: 0, channel: 0, value: 100)
+
+        let result = encoder.convertFromXYB(frame: frame)
+        XCTAssertEqual(result.getPixel(x: 0, y: 0, channel: 0), 100,
+                       "Single channel should pass through unchanged")
+    }
+
+    func testXYBScalar_MatchesAccelerate_Black() {
+        let scalarEncoder = VarDCTEncoder(
+            hardware: HardwareCapabilities(
+                hasNEON: false, hasAVX2: false, hasAccelerate: false,
+                hasMetal: false, coreCount: 1
+            ),
+            options: EncodingOptions(useHardwareAcceleration: false, useAccelerate: false),
+            distance: 1.0
+        )
+
+        var frame = ImageFrame(width: 2, height: 2, channels: 3, pixelType: .uint16)
+        for y in 0..<2 {
+            for x in 0..<2 {
+                frame.setPixel(x: x, y: y, channel: 0, value: 0)
+                frame.setPixel(x: x, y: y, channel: 1, value: 0)
+                frame.setPixel(x: x, y: y, channel: 2, value: 0)
+            }
+        }
+
+        let scalarResult = scalarEncoder.convertToXYB(frame: frame)
+        XCTAssertEqual(scalarResult.getPixel(x: 0, y: 0, channel: 0), 0,
+                       "Scalar X for black should be 0")
+        XCTAssertEqual(scalarResult.getPixel(x: 0, y: 0, channel: 1), 0,
+                       "Scalar Y for black should be 0")
+        XCTAssertEqual(scalarResult.getPixel(x: 0, y: 0, channel: 2), 0,
+                       "Scalar B for black should be 0")
+
+        #if canImport(Accelerate)
+        let accelEncoder = VarDCTEncoder(
+            hardware: HardwareCapabilities(
+                hasNEON: false, hasAVX2: false, hasAccelerate: true,
+                hasMetal: false, coreCount: 1
+            ),
+            options: EncodingOptions(useHardwareAcceleration: true, useAccelerate: true),
+            distance: 1.0
+        )
+
+        let accelResult = accelEncoder.convertToXYB(frame: frame)
+        for ch in 0..<3 {
+            XCTAssertEqual(
+                accelResult.getPixel(x: 0, y: 0, channel: ch),
+                scalarResult.getPixel(x: 0, y: 0, channel: ch),
+                "Accelerate and scalar XYB should match for black on channel \(ch)")
+        }
+        #endif
+    }
+
+    func testXYBScalar_MatchesAccelerate_Gradient() {
+        let scalarEncoder = VarDCTEncoder(
+            hardware: HardwareCapabilities(
+                hasNEON: false, hasAVX2: false, hasAccelerate: false,
+                hasMetal: false, coreCount: 1
+            ),
+            options: EncodingOptions(useHardwareAcceleration: false, useAccelerate: false),
+            distance: 1.0
+        )
+
+        var frame = ImageFrame(width: 4, height: 4, channels: 3, pixelType: .uint16)
+        for y in 0..<4 {
+            for x in 0..<4 {
+                frame.setPixel(x: x, y: y, channel: 0, value: UInt16(x * 16000))
+                frame.setPixel(x: x, y: y, channel: 1, value: UInt16(y * 16000))
+                frame.setPixel(x: x, y: y, channel: 2, value: UInt16((x + y) * 8000))
+            }
+        }
+
+        let scalarResult = scalarEncoder.convertToXYB(frame: frame)
+
+        #if canImport(Accelerate)
+        let accelEncoder = VarDCTEncoder(
+            hardware: HardwareCapabilities(
+                hasNEON: false, hasAVX2: false, hasAccelerate: true,
+                hasMetal: false, coreCount: 1
+            ),
+            options: EncodingOptions(useHardwareAcceleration: true, useAccelerate: true),
+            distance: 1.0
+        )
+
+        let accelResult = accelEncoder.convertToXYB(frame: frame)
+        for y in 0..<4 {
+            for x in 0..<4 {
+                for ch in 0..<3 {
+                    let sv = scalarResult.getPixel(x: x, y: y, channel: ch)
+                    let av = accelResult.getPixel(x: x, y: y, channel: ch)
+                    XCTAssertEqual(sv, av,
+                                   "XYB channel \(ch) should match at (\(x),\(y)): scalar=\(sv) accel=\(av)")
+                }
+            }
+        }
+        #endif
+
+        // Verify Y increases with brightness
+        let y00 = scalarResult.getPixel(x: 0, y: 0, channel: 1)
+        let y33 = scalarResult.getPixel(x: 3, y: 3, channel: 1)
+        XCTAssertLessThanOrEqual(y00, y33,
+                                  "Brighter pixels should have higher Y")
+    }
+
+    func testXYBInverse_MatchesAccelerate_Gradient() {
+        let scalarEncoder = VarDCTEncoder(
+            hardware: HardwareCapabilities(
+                hasNEON: false, hasAVX2: false, hasAccelerate: false,
+                hasMetal: false, coreCount: 1
+            ),
+            options: EncodingOptions(useHardwareAcceleration: false, useAccelerate: false),
+            distance: 1.0
+        )
+
+        var frame = ImageFrame(width: 4, height: 4, channels: 3, pixelType: .uint16)
+        for y in 0..<4 {
+            for x in 0..<4 {
+                frame.setPixel(x: x, y: y, channel: 0, value: UInt16(x * 16000))
+                frame.setPixel(x: x, y: y, channel: 1, value: UInt16(y * 16000))
+                frame.setPixel(x: x, y: y, channel: 2, value: UInt16((x + y) * 8000))
+            }
+        }
+
+        let xybFrame = scalarEncoder.convertToXYB(frame: frame)
+        let scalarResult = scalarEncoder.convertFromXYB(frame: xybFrame)
+
+        #if canImport(Accelerate)
+        let accelEncoder = VarDCTEncoder(
+            hardware: HardwareCapabilities(
+                hasNEON: false, hasAVX2: false, hasAccelerate: true,
+                hasMetal: false, coreCount: 1
+            ),
+            options: EncodingOptions(useHardwareAcceleration: true, useAccelerate: true),
+            distance: 1.0
+        )
+
+        let accelResult = accelEncoder.convertFromXYB(frame: xybFrame)
+        for y in 0..<4 {
+            for x in 0..<4 {
+                for ch in 0..<3 {
+                    let sv = scalarResult.getPixel(x: x, y: y, channel: ch)
+                    let av = accelResult.getPixel(x: x, y: y, channel: ch)
+                    XCTAssertEqual(sv, av,
+                                   "Inverse XYB channel \(ch) should match at (\(x),\(y))")
+                }
+            }
+        }
+        #endif
+    }
+
+    #if canImport(Accelerate)
+    func testAccelerateOps_RGBToXYB_BlackPixel() {
+        let (x, y, b) = AccelerateOps.rgbToXYB(r: [0], g: [0], b: [0])
+        XCTAssertEqual(x[0], 0, accuracy: 1e-6, "X for black should be 0")
+        XCTAssertEqual(y[0], 0, accuracy: 1e-6, "Y for black should be 0")
+        XCTAssertEqual(b[0], 0, accuracy: 1e-6, "B for black should be 0")
+    }
+
+    func testAccelerateOps_RGBToXYB_WhitePixel() {
+        let (x, y, b) = AccelerateOps.rgbToXYB(r: [1], g: [1], b: [1])
+        // For white, L ≈ M so X ≈ 0
+        XCTAssertEqual(x[0], 0, accuracy: 0.02, "X for white should be near 0")
+        XCTAssertGreaterThan(y[0], 0, "Y for white should be positive")
+        XCTAssertGreaterThan(b[0], 0, "B for white should be positive")
+    }
+
+    func testAccelerateOps_RGBToXYB_PureRed() {
+        let (x, y, _) = AccelerateOps.rgbToXYB(r: [1], g: [0], b: [0])
+        XCTAssertGreaterThan(x[0], 0, "X for pure red should be positive (L > M)")
+        XCTAssertGreaterThan(y[0], 0, "Y for pure red should be positive")
+    }
+
+    func testAccelerateOps_XYBToRGB_RoundTrip() {
+        let rIn: [Float] = [0.5, 0.0, 1.0, 0.3]
+        let gIn: [Float] = [0.3, 0.0, 1.0, 0.7]
+        let bIn: [Float] = [0.7, 0.0, 1.0, 0.1]
+
+        let (x, y, b) = AccelerateOps.rgbToXYB(r: rIn, g: gIn, b: bIn)
+        let (rOut, gOut, bOut) = AccelerateOps.xybToRGB(x: x, y: y, b: b)
+
+        for i in 0..<rIn.count {
+            XCTAssertEqual(rOut[i], rIn[i], accuracy: 1e-4,
+                           "R round-trip failed at index \(i)")
+            XCTAssertEqual(gOut[i], gIn[i], accuracy: 1e-4,
+                           "G round-trip failed at index \(i)")
+            XCTAssertEqual(bOut[i], bIn[i], accuracy: 1e-4,
+                           "B round-trip failed at index \(i)")
+        }
+    }
+    #endif
 }

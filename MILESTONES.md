@@ -140,7 +140,7 @@
 - [x] DC coefficient + AC run-length encoding
 - [x] Quality-to-distance conversion formula
 - [ ] Variable block sizes (8×8, 16×16, 32×32, 16×8 etc.)
-- [ ] XYB colour space (JPEG XL native perceptual space)
+- [x] XYB colour space (JPEG XL native perceptual space)
 - [ ] Chroma-from-luma (CfL) prediction
 - [ ] Adaptive quantisation per block
 - [x] DC prediction across blocks
@@ -155,7 +155,7 @@
 - [x] Quantisation: zero distance → no quantisation loss
 - [x] Zigzag scan order covers all 64 coefficients exactly once
 - [x] Colour space conversion: RGB → YCbCr → RGB round-trip (within tolerance)
-- [ ] XYB colour space forward/inverse
+- [x] XYB colour space forward/inverse
 - [ ] Quality levels: 100 → near-lossless, 50 → high compression, 10 → maximum compression
 - [x] Block sizes: non-multiple-of-8 image dimensions handled correctly
 - [ ] Performance: 256×256 encoding completes in < 2s
