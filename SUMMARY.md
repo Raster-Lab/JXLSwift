@@ -58,9 +58,10 @@ This document summarizes the successful implementation of a JPEG XL compression 
 ### Module Organization
 ```
 JXLSwift/
-├── Core/           # Foundation (4 files)
+├── Core/           # Foundation (5 files)
 │   ├── Architecture.swift      # CPU/hardware detection
 │   ├── ImageFrame.swift        # Image data structures
+│   ├── PixelBuffer.swift       # Tiled pixel buffer access
 │   ├── Bitstream.swift         # Bit-level I/O
 │   └── EncodingOptions.swift   # Configuration
 │
@@ -69,8 +70,9 @@ JXLSwift/
 │   ├── ModularEncoder.swift    # Lossless
 │   └── VarDCTEncoder.swift     # Lossy
 │
-└── Hardware/       # Optimization (1 file)
-    └── Accelerate.swift        # Apple Silicon acceleration
+└── Hardware/       # Optimization (2 files)
+    ├── Accelerate.swift        # Apple Silicon acceleration
+    └── DispatchBackend.swift   # Runtime backend selection
 ```
 
 ### Platform-Specific Code
@@ -106,11 +108,11 @@ JXLSwift/
 ## 📊 Metrics
 
 ### Code Statistics
-- **Source files**: 9 Swift files
-- **Test files**: 1 comprehensive test suite
+- **Source files**: 11 Swift files (library) + 6 Swift files (CLI tool)
+- **Test files**: 7 test suites
 - **Lines of code**: ~1,500 (excluding comments)
-- **Test coverage**: 16 tests, 100% pass rate
-- **Documentation**: 4 markdown files (README, TECHNICAL, CONTRIBUTING, LICENSE)
+- **Test coverage**: Comprehensive pass rate
+- **Documentation**: 5 markdown files (README, TECHNICAL, CONTRIBUTING, MILESTONES, LICENSE)
 
 ### Performance (x86-64 baseline)
 - **256×256 image**: 0.7s encoding time
@@ -135,19 +137,21 @@ JXLSwift/
 ✅ Architecture detection
 ✅ Hardware capabilities
 ✅ Image frame operations (planar format)
+✅ Pixel buffer tiled access
 ✅ Bitstream I/O (bit/byte/varint)
 ✅ Encoding configuration
 ✅ Lossless compression pipeline
 ✅ Lossy compression pipeline
 ✅ Color space handling
+✅ Modular encoder (MED, RCT, Squeeze, MA tree)
+✅ VarDCT encoder (DCT, XYB, CfL, adaptive quantization)
+✅ Dispatch backend selection
 ✅ Performance benchmarks
 ```
 
 ### Test Results
 ```
-Test Suite 'All tests' passed at 2026-02-16
-Executed 16 tests, with 0 failures
-Total time: 7.115 seconds
+Test Suite 'All tests' — 7 test suites, 0 failures
 ```
 
 ---
@@ -264,6 +268,7 @@ JXLSwift/
 ├── README.md                      # User guide
 ├── TECHNICAL.md                   # Architecture
 ├── CONTRIBUTING.md                # Development guide
+├── MILESTONES.md                  # Project milestone plan
 ├── SUMMARY.md                     # This file
 ├── LICENSE                        # MIT License
 ├── .gitignore                    # Git exclusions
@@ -272,11 +277,24 @@ JXLSwift/
 │   ├── JXLSwift.swift            # Main namespace
 │   ├── Core/                     # Foundation layer
 │   ├── Encoding/                 # Compression pipeline
-│   ├── Hardware/                 # Optimizations
-│   └── Format/                   # (Future)
+│   └── Hardware/                 # Optimizations
+│
+├── Sources/JXLTool/              # Command line tool
+│   ├── JXLTool.swift             # CLI entry point
+│   ├── Encode.swift              # Encode subcommand
+│   ├── Info.swift                # Info subcommand
+│   ├── Hardware.swift            # Hardware subcommand
+│   ├── Benchmark.swift           # Benchmark subcommand
+│   └── Utilities.swift           # Shared CLI helpers
 │
 ├── Tests/JXLSwiftTests/          # Test suite
-│   └── JXLSwiftTests.swift       # 16 comprehensive tests
+│   ├── JXLSwiftTests.swift       # Core type tests
+│   ├── ModularEncoderTests.swift # Lossless encoder tests
+│   ├── VarDCTEncoderTests.swift  # Lossy encoder tests
+│   ├── MATreeTests.swift         # MA tree tests
+│   ├── SqueezeTransformTests.swift # Squeeze transform tests
+│   ├── PixelBufferTests.swift    # Pixel buffer tests
+│   └── DispatchBackendTests.swift # Backend dispatch tests
 │
 └── Examples/                     # Usage examples
     ├── README.md
