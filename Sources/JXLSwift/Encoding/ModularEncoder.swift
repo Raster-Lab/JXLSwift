@@ -5,14 +5,334 @@
 
 import Foundation
 
+// MARK: - MA (Meta-Adaptive) Tree Types
+
+/// Property identifiers used at MA tree decision nodes.
+///
+/// Each property extracts a scalar value from the causal neighbourhood of the
+/// current pixel, allowing the tree to route prediction based on local image
+/// characteristics.  These correspond to the property set defined in
+/// ISO/IEC 18181-1 §7.3.
+enum MAProperty: Int, CaseIterable, Sendable {
+    /// Channel index (0 = first channel).
+    case channelIndex = 0
+    /// Horizontal gradient: abs(W − NW).
+    case gradientH = 1
+    /// Vertical gradient: abs(N − NW).
+    case gradientV = 2
+    /// North pixel value.
+    case northValue = 3
+    /// West pixel value.
+    case westValue = 4
+    /// North-West pixel value.
+    case northWestValue = 5
+    /// West − NW difference (signed).
+    case westMinusNW = 6
+    /// North − NW difference (signed).
+    case northMinusNW = 7
+    /// North − NE difference (signed, or 0 when NE unavailable).
+    case northMinusNE = 8
+    /// Maximum absolute neighbour residual (already encoded).
+    case maxAbsResidual = 9
+}
+
+/// Predictor modes selectable at MA tree leaf nodes.
+///
+/// Each mode computes a pixel prediction from the causal neighbourhood.
+/// The tree selects the best predictor per-pixel based on the decision
+/// path, which is the core idea of Meta-Adaptive prediction.
+enum MAPredictor: Int, CaseIterable, Sendable {
+    /// Zero prediction (constant 0).
+    case zero = 0
+    /// West neighbour.
+    case west = 1
+    /// North neighbour.
+    case north = 2
+    /// Average of West and North: floor((W + N) / 2).
+    case averageWN = 3
+    /// MED (Median Edge Detector): clamp(N + W − NW).
+    case med = 4
+    /// Select between N and W based on gradient (adaptive gradient).
+    case selectGradient = 5
+    /// Average of West and North-West: floor((W + NW) / 2).
+    case averageWNW = 6
+    /// Average of North and North-West: floor((N + NW) / 2).
+    case averageNNW = 7
+}
+
+/// A single node in a Meta-Adaptive decision tree.
+///
+/// Internal (decision) nodes test ``MAProperty`` against a threshold
+/// and branch left (≤) or right (>).  Leaf nodes carry a ``MAPredictor``
+/// and an entropy-coding context index.
+enum MANode: Sendable {
+    /// Decision node: tests `property` against `threshold`.
+    ///
+    /// - Parameters:
+    ///   - property: The pixel property to evaluate.
+    ///   - threshold: Signed threshold value.
+    ///   - left: Index of the child node taken when property ≤ threshold.
+    ///   - right: Index of the child node taken when property > threshold.
+    case decision(property: MAProperty, threshold: Int32, left: Int, right: Int)
+    
+    /// Leaf node: specifies the predictor and entropy context.
+    ///
+    /// - Parameters:
+    ///   - predictor: Predictor mode to use.
+    ///   - context: Entropy coding context index for the residual.
+    case leaf(predictor: MAPredictor, context: Int)
+}
+
+/// Meta-Adaptive (MA) decision tree for per-pixel predictor selection.
+///
+/// The tree is stored as a flat array of ``MANode`` values.  Traversal
+/// starts at index 0 and follows ``MANode/decision`` branches until a
+/// ``MANode/leaf`` is reached.  The leaf supplies both the predictor to
+/// use and the entropy context for the resulting residual.
+///
+/// The default tree (``MATree/buildDefault()``) partitions pixels by
+/// gradient magnitude and orientation, selecting simpler predictors for
+/// edges and MED for smooth areas — matching the general strategy
+/// described in ISO/IEC 18181-1 §7.3.
+struct MATree: Sendable {
+    /// Flat node storage (index 0 = root).
+    let nodes: [MANode]
+    
+    /// The number of distinct leaf contexts in this tree.
+    let contextCount: Int
+    
+    /// Build the default MA tree.
+    ///
+    /// The tree layout is:
+    /// ```
+    ///                      [0] gradH ≤ 16 ?
+    ///                     /                 \
+    ///          [1] gradV ≤ 16 ?         [4] gradV ≤ 16 ?
+    ///          /              \          /              \
+    ///  [2] leaf(med,0)  [3] leaf(west,1) [5] leaf(north,2) [6] leaf(selectGrad,3)
+    /// ```
+    ///
+    /// - Returns: A tree with 7 nodes (4 leaves, 3 decisions) and 4 contexts.
+    static func buildDefault() -> MATree {
+        let nodes: [MANode] = [
+            // 0: root — split on horizontal gradient
+            .decision(property: .gradientH, threshold: 16, left: 1, right: 4),
+            // 1: low horizontal gradient — split on vertical gradient
+            .decision(property: .gradientV, threshold: 16, left: 2, right: 3),
+            // 2: smooth area → MED predictor (best for gradients)
+            .leaf(predictor: .med, context: 0),
+            // 3: vertical edge, low horizontal gradient → West predictor
+            .leaf(predictor: .west, context: 1),
+            // 4: high horizontal gradient — split on vertical gradient
+            .decision(property: .gradientV, threshold: 16, left: 5, right: 6),
+            // 5: horizontal edge → North predictor
+            .leaf(predictor: .north, context: 2),
+            // 6: textured area → adaptive gradient selector
+            .leaf(predictor: .selectGradient, context: 3),
+        ]
+        return MATree(nodes: nodes, contextCount: 4)
+    }
+    
+    /// Build an extended MA tree for higher effort levels.
+    ///
+    /// Uses finer gradient thresholds and more predictor variety.
+    /// MED remains the primary predictor for smooth areas because it
+    /// optimally handles linear gradients (N + W − NW), while
+    /// specialised predictors are used for edges and textured areas.
+    ///
+    /// - Returns: A tree with 15 nodes (8 leaves, 7 decisions) and 8 contexts.
+    static func buildExtended() -> MATree {
+        let nodes: [MANode] = [
+            // 0: root — split on horizontal gradient
+            .decision(property: .gradientH, threshold: 16, left: 1, right: 8),
+            
+            // ---- Low horizontal gradient subtree ----
+            // 1: split on vertical gradient
+            .decision(property: .gradientV, threshold: 16, left: 2, right: 5),
+            // 2: smooth area — split on max abs residual for context
+            .decision(property: .maxAbsResidual, threshold: 4, left: 3, right: 4),
+            // 3: very smooth → MED (optimal for linear gradients)
+            .leaf(predictor: .med, context: 0),
+            // 4: smooth with some residual → MED (still best, different context)
+            .leaf(predictor: .med, context: 1),
+            // 5: vertical edge subtree — split on N-NW
+            .decision(property: .northMinusNW, threshold: 0, left: 6, right: 7),
+            // 6: positive N-NW → averageWNW
+            .leaf(predictor: .averageWNW, context: 2),
+            // 7: negative N-NW → West
+            .leaf(predictor: .west, context: 3),
+            
+            // ---- High horizontal gradient subtree ----
+            // 8: split on vertical gradient
+            .decision(property: .gradientV, threshold: 16, left: 9, right: 12),
+            // 9: horizontal edge — split on W-NW
+            .decision(property: .westMinusNW, threshold: 0, left: 10, right: 11),
+            // 10: positive W-NW → averageNNW
+            .leaf(predictor: .averageNNW, context: 4),
+            // 11: negative W-NW → North
+            .leaf(predictor: .north, context: 5),
+            // 12: textured — split on max abs residual
+            .decision(property: .maxAbsResidual, threshold: 64, left: 13, right: 14),
+            // 13: moderate texture → selectGradient
+            .leaf(predictor: .selectGradient, context: 6),
+            // 14: high texture → zero predictor (entropy-only)
+            .leaf(predictor: .zero, context: 7),
+        ]
+        return MATree(nodes: nodes, contextCount: 8)
+    }
+    
+    /// Traverse the tree for a given set of property values.
+    ///
+    /// - Parameter properties: A closure that maps ``MAProperty`` to the
+    ///   scalar value at the current pixel position.
+    /// - Returns: Tuple of the selected ``MAPredictor`` and context index.
+    func traverse(properties: (MAProperty) -> Int32) -> (predictor: MAPredictor, context: Int) {
+        var index = 0
+        while true {
+            switch nodes[index] {
+            case let .decision(property, threshold, left, right):
+                let value = properties(property)
+                index = value <= threshold ? left : right
+            case let .leaf(predictor, context):
+                return (predictor, context)
+            }
+        }
+    }
+    
+    /// Evaluate a single property from the causal neighbourhood.
+    ///
+    /// - Parameters:
+    ///   - property: The property to evaluate.
+    ///   - data: Original pixel data for the channel.
+    ///   - residuals: Already-computed residuals (for ``maxAbsResidual``).
+    ///   - x: Column index.
+    ///   - y: Row index.
+    ///   - width: Row stride.
+    ///   - height: Image height.
+    ///   - channel: Current channel index.
+    /// - Returns: The scalar property value.
+    static func evaluateProperty(
+        _ property: MAProperty,
+        data: [UInt16],
+        residuals: [Int32],
+        x: Int,
+        y: Int,
+        width: Int,
+        height: Int,
+        channel: Int
+    ) -> Int32 {
+        // Fetch causal neighbours with boundary-aware fallbacks.
+        // When a neighbour is unavailable, use the nearest available
+        // neighbour so that gradient properties reflect actual local
+        // variation rather than an offset artefact (e.g. RCT bias).
+        let n:  Int32 = y > 0 ? Int32(data[(y - 1) * width + x]) : (x > 0 ? Int32(data[y * width + (x - 1)]) : 0)
+        let w:  Int32 = x > 0 ? Int32(data[y * width + (x - 1)]) : (y > 0 ? Int32(data[(y - 1) * width + x]) : 0)
+        let nw: Int32
+        if x > 0 && y > 0 {
+            nw = Int32(data[(y - 1) * width + (x - 1)])
+        } else if y > 0 {
+            nw = Int32(data[(y - 1) * width + x])       // fallback to N
+        } else if x > 0 {
+            nw = Int32(data[y * width + (x - 1)])        // fallback to W
+        } else {
+            nw = 0
+        }
+        let ne: Int32 = (y > 0 && x < width - 1) ? Int32(data[(y - 1) * width + (x + 1)]) : n
+        
+        switch property {
+        case .channelIndex:
+            return Int32(channel)
+        case .gradientH:
+            return abs(w - nw)
+        case .gradientV:
+            return abs(n - nw)
+        case .northValue:
+            return n
+        case .westValue:
+            return w
+        case .northWestValue:
+            return nw
+        case .westMinusNW:
+            return w - nw
+        case .northMinusNW:
+            return n - nw
+        case .northMinusNE:
+            return n - ne
+        case .maxAbsResidual:
+            let rn:  Int32 = y > 0 ? abs(residuals[(y - 1) * width + x]) : 0
+            let rw:  Int32 = x > 0 ? abs(residuals[y * width + (x - 1)]) : 0
+            let rnw: Int32 = (x > 0 && y > 0) ? abs(residuals[(y - 1) * width + (x - 1)]) : 0
+            return max(rn, max(rw, rnw))
+        }
+    }
+    
+    /// Compute the predicted pixel value for a given predictor mode.
+    ///
+    /// - Parameters:
+    ///   - predictor: The predictor to apply.
+    ///   - data: Original pixel data.
+    ///   - x: Column index.
+    ///   - y: Row index.
+    ///   - width: Row stride.
+    ///   - height: Image height.
+    /// - Returns: Predicted pixel value.
+    static func applyPredictor(
+        _ predictor: MAPredictor,
+        data: [UInt16],
+        x: Int,
+        y: Int,
+        width: Int,
+        height: Int
+    ) -> Int32 {
+        let n:  Int32 = y > 0 ? Int32(data[(y - 1) * width + x]) : 0
+        let w:  Int32 = x > 0 ? Int32(data[y * width + (x - 1)]) : 0
+        let nw: Int32 = (x > 0 && y > 0) ? Int32(data[(y - 1) * width + (x - 1)]) : 0
+        let maxVal: Int32 = 65535
+        
+        // For first pixel, all predictors return 0
+        if x == 0 && y == 0 { return 0 }
+        
+        switch predictor {
+        case .zero:
+            return 0
+        case .west:
+            return w
+        case .north:
+            return n
+        case .averageWN:
+            return (w + n) / 2
+        case .med:
+            let gradient = n + w - nw
+            return max(0, min(maxVal, gradient))
+        case .selectGradient:
+            // Choose between N and W based on which gradient is smaller
+            let gradH = abs(w - nw)
+            let gradV = abs(n - nw)
+            return gradV < gradH ? w : n
+        case .averageWNW:
+            return (w + nw) / 2
+        case .averageNNW:
+            return (n + nw) / 2
+        }
+    }
+}
+
 /// Modular encoder for lossless compression
 class ModularEncoder {
     private let hardware: HardwareCapabilities
     private let options: EncodingOptions
+    /// MA tree for per-pixel predictor selection.
+    let maTree: MATree
     
     init(hardware: HardwareCapabilities, options: EncodingOptions) {
         self.hardware = hardware
         self.options = options
+        // Select tree complexity based on encoding effort
+        if options.effort.rawValue >= EncodingEffort.squirrel.rawValue {
+            self.maTree = MATree.buildExtended()
+        } else {
+            self.maTree = MATree.buildDefault()
+        }
     }
     
     /// Encode frame using modular mode
@@ -433,6 +753,23 @@ class ModularEncoder {
     // MARK: - Predictive Coding
     
     private func applyPrediction(data: [UInt16], width: Int, height: Int) -> [Int32] {
+        return applyMAPrediction(data: data, width: width, height: height, channel: 0)
+    }
+    
+    /// Apply MA tree-based prediction for a single channel.
+    ///
+    /// For each pixel the MA tree selects the optimal predictor based on local
+    /// image properties (gradient magnitudes, neighbour values, etc.).  The
+    /// resulting residuals tend to be smaller than a fixed MED predictor
+    /// because the tree adapts to local edge orientation and texture.
+    ///
+    /// - Parameters:
+    ///   - data: Original channel pixel values.
+    ///   - width: Image width.
+    ///   - height: Image height.
+    ///   - channel: Channel index (used by ``MAProperty/channelIndex``).
+    /// - Returns: Array of signed residuals (actual − predicted).
+    func applyMAPrediction(data: [UInt16], width: Int, height: Int, channel: Int) -> [Int32] {
         var residuals = [Int32](repeating: 0, count: data.count)
         
         for y in 0..<height {
@@ -440,8 +777,24 @@ class ModularEncoder {
                 let index = y * width + x
                 let actual = Int32(data[index])
                 
-                // Predict based on neighbors
-                let predicted = predictPixel(data: data, x: x, y: y, width: width, height: height)
+                // Traverse the MA tree to select predictor
+                let (predictor, _) = maTree.traverse { property in
+                    MATree.evaluateProperty(
+                        property,
+                        data: data,
+                        residuals: residuals,
+                        x: x, y: y,
+                        width: width, height: height,
+                        channel: channel
+                    )
+                }
+                
+                // Apply selected predictor
+                let predicted = MATree.applyPredictor(
+                    predictor, data: data,
+                    x: x, y: y,
+                    width: width, height: height
+                )
                 
                 // Store residual
                 residuals[index] = actual - predicted
