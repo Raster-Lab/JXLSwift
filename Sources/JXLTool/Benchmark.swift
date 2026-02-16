@@ -556,6 +556,8 @@ struct Benchmark: ParsableCommand {
             // Check milestone targets
             print()
             print("Milestone 7 Target:")
+            // Target: Metal GPU should be ≥ 5× faster than CPU for large images (1080p+)
+            // This threshold is based on the Milestone 7 acceptance criteria
             let metalTarget = 5.0
             if width >= 1920 && height >= 1080 {
                 // Target is for large images (1080p or higher)

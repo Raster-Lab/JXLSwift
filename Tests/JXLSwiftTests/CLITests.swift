@@ -452,8 +452,8 @@ final class CLITests: XCTestCase {
         var frame = ImageFrame(width: 64, height: 64, channels: 3)
         for y in 0..<64 {
             for x in 0..<64 {
-                frame.setPixel(x: x, y: y, channel: 0, value: UInt16((x * 4) % 256))
-                frame.setPixel(x: x, y: y, channel: 1, value: UInt16((y * 4) % 256))
+                frame.setPixel(x: x, y: y, channel: 0, value: UInt16((x * 255) / 63))
+                frame.setPixel(x: x, y: y, channel: 1, value: UInt16((y * 255) / 63))
                 frame.setPixel(x: x, y: y, channel: 2, value: UInt16(128))
             }
         }
