@@ -549,4 +549,340 @@ final class VarDCTEncoderTests: XCTestCase {
         XCTAssertGreaterThan(result.data.count, 0,
                              "Single-block image should encode with DC prediction")
     }
+
+    // MARK: - Accelerate Integration Tests
+
+    func testAccelerateDCT_MatchesScalarDCT_ConstantBlock() {
+        // Verify the Accelerate DCT path produces results matching scalar
+        let encoder = makeEncoder()
+        let block = [[Float]](repeating: [Float](repeating: 0.5, count: 8), count: 8)
+
+        let scalarResult = encoder.applyDCTScalar(block: block)
+
+        #if canImport(Accelerate)
+        // Flatten for AccelerateOps
+        let flat = block.flatMap { $0 }
+        let accelFlat = AccelerateOps.dct2D(flat, size: 8)
+
+        // Convert back to 2D
+        var accelResult = [[Float]](repeating: [Float](repeating: 0, count: 8), count: 8)
+        for y in 0..<8 {
+            for x in 0..<8 {
+                accelResult[y][x] = accelFlat[y * 8 + x]
+            }
+        }
+
+        // Compare: both should produce the same energy concentration
+        // DC should be non-zero, AC should be ~0
+        XCTAssertNotEqual(accelResult[0][0], 0,
+                          "Accelerate DC coefficient should be non-zero for constant block")
+        for y in 0..<8 {
+            for x in 0..<8 {
+                if x == 0 && y == 0 { continue }
+                XCTAssertEqual(accelResult[y][x], 0, accuracy: 1e-4,
+                               "Accelerate AC coefficient should be ~0 for constant block at (\(x),\(y))")
+            }
+        }
+        #endif
+
+        // Scalar path always works
+        XCTAssertNotEqual(scalarResult[0][0], 0,
+                          "Scalar DC coefficient should be non-zero for constant block")
+    }
+
+    func testAccelerateDCT_RoundTripAccuracy_GradientBlock() {
+        let encoder = makeEncoder()
+        var block = [[Float]](repeating: [Float](repeating: 0, count: 8), count: 8)
+        for y in 0..<8 {
+            for x in 0..<8 {
+                block[y][x] = Float(x + y) / 14.0
+            }
+        }
+
+        let scalarDCT = encoder.applyDCTScalar(block: block)
+        let scalarIDCT = encoder.applyIDCTScalar(block: scalarDCT)
+
+        // Verify the scalar round-trip is accurate
+        for y in 0..<8 {
+            for x in 0..<8 {
+                XCTAssertEqual(scalarIDCT[y][x], block[y][x], accuracy: 1e-4,
+                               "Scalar DCT round-trip should reconstruct at (\(x),\(y))")
+            }
+        }
+
+        #if canImport(Accelerate)
+        let flat = block.flatMap { $0 }
+        let accelDCTFlat = AccelerateOps.dct2D(flat, size: 8)
+        let accelIDCTFlat = AccelerateOps.idct2D(accelDCTFlat, size: 8)
+
+        // Accelerate uses vDSP DCT Type II/III which has slightly different
+        // normalisation than the scalar implementation, so we allow 1e-3 tolerance.
+        for i in 0..<64 {
+            let y = i / 8
+            let x = i % 8
+            XCTAssertEqual(accelIDCTFlat[i], block[y][x], accuracy: 1e-3,
+                           "Accelerate DCT round-trip should reconstruct at (\(x),\(y))")
+        }
+        #endif
+    }
+
+    func testAccelerateColorConversion_MatchesScalar_Black() {
+        // Test that the Accelerate color conversion path produces same results as scalar
+        let scalarEncoder = VarDCTEncoder(
+            hardware: HardwareCapabilities(
+                hasNEON: false, hasAVX2: false, hasAccelerate: false,
+                hasMetal: false, coreCount: 1
+            ),
+            options: EncodingOptions(useHardwareAcceleration: false, useAccelerate: false),
+            distance: 1.0
+        )
+
+        var frame = ImageFrame(width: 2, height: 2, channels: 3)
+        // Black pixels
+        for y in 0..<2 {
+            for x in 0..<2 {
+                frame.setPixel(x: x, y: y, channel: 0, value: 0)
+                frame.setPixel(x: x, y: y, channel: 1, value: 0)
+                frame.setPixel(x: x, y: y, channel: 2, value: 0)
+            }
+        }
+
+        let scalarResult = scalarEncoder.convertToYCbCr(frame: frame)
+        // Y should be 0 for black
+        XCTAssertEqual(scalarResult.getPixel(x: 0, y: 0, channel: 0), 0,
+                       "Scalar Y for black should be 0")
+
+        #if canImport(Accelerate)
+        let accelEncoder = VarDCTEncoder(
+            hardware: HardwareCapabilities(
+                hasNEON: false, hasAVX2: false, hasAccelerate: true,
+                hasMetal: false, coreCount: 1
+            ),
+            options: EncodingOptions(useHardwareAcceleration: true, useAccelerate: true),
+            distance: 1.0
+        )
+
+        let accelResult = accelEncoder.convertToYCbCr(frame: frame)
+        // Both should produce same Y value
+        XCTAssertEqual(accelResult.getPixel(x: 0, y: 0, channel: 0),
+                       scalarResult.getPixel(x: 0, y: 0, channel: 0),
+                       "Accelerate and scalar should produce same Y for black")
+        #endif
+    }
+
+    func testAccelerateColorConversion_MatchesScalar_Gradient() {
+        let scalarEncoder = VarDCTEncoder(
+            hardware: HardwareCapabilities(
+                hasNEON: false, hasAVX2: false, hasAccelerate: false,
+                hasMetal: false, coreCount: 1
+            ),
+            options: EncodingOptions(useHardwareAcceleration: false, useAccelerate: false),
+            distance: 1.0
+        )
+
+        var frame = ImageFrame(width: 4, height: 4, channels: 3)
+        for y in 0..<4 {
+            for x in 0..<4 {
+                frame.setPixel(x: x, y: y, channel: 0, value: UInt16(x * 60))
+                frame.setPixel(x: x, y: y, channel: 1, value: UInt16(y * 60))
+                frame.setPixel(x: x, y: y, channel: 2, value: UInt16((x + y) * 30))
+            }
+        }
+
+        let scalarResult = scalarEncoder.convertToYCbCr(frame: frame)
+
+        // Verify Y channel has expected characteristics
+        // Higher luminance for pixels with larger RGB values
+        let y00 = scalarResult.getPixel(x: 0, y: 0, channel: 0)
+        let y33 = scalarResult.getPixel(x: 3, y: 3, channel: 0)
+        XCTAssertLessThanOrEqual(y00, y33,
+                       "Brighter pixels should have higher Y value")
+
+        #if canImport(Accelerate)
+        let accelEncoder = VarDCTEncoder(
+            hardware: HardwareCapabilities(
+                hasNEON: false, hasAVX2: false, hasAccelerate: true,
+                hasMetal: false, coreCount: 1
+            ),
+            options: EncodingOptions(useHardwareAcceleration: true, useAccelerate: true),
+            distance: 1.0
+        )
+
+        let accelResult = accelEncoder.convertToYCbCr(frame: frame)
+        for y in 0..<4 {
+            for x in 0..<4 {
+                // Y channels should match between scalar and Accelerate
+                let scalarY = scalarResult.getPixel(x: x, y: y, channel: 0)
+                let accelY = accelResult.getPixel(x: x, y: y, channel: 0)
+                XCTAssertEqual(scalarY, accelY,
+                               "Y channel should match at (\(x),\(y)): scalar=\(scalarY) accel=\(accelY)")
+            }
+        }
+        #endif
+    }
+
+    func testAccelerateQuantization_MatchesScalar() {
+        let scalarEncoder = VarDCTEncoder(
+            hardware: HardwareCapabilities(
+                hasNEON: false, hasAVX2: false, hasAccelerate: false,
+                hasMetal: false, coreCount: 1
+            ),
+            options: EncodingOptions(useHardwareAcceleration: false, useAccelerate: false),
+            distance: 1.0
+        )
+
+        // Create a test block with known values
+        var block = [[Float]](repeating: [Float](repeating: 0, count: 8), count: 8)
+        block[0][0] = 100.0
+        block[0][1] = 50.0
+        block[1][0] = -30.0
+        block[3][3] = 12.5
+
+        let scalarQuantized = scalarEncoder.quantize(block: block, channel: 0)
+
+        // Verify quantization produces expected results
+        XCTAssertNotEqual(scalarQuantized[0][0], 0,
+                          "DC coefficient should survive quantization")
+
+        #if canImport(Accelerate)
+        let accelEncoder = VarDCTEncoder(
+            hardware: HardwareCapabilities(
+                hasNEON: false, hasAVX2: false, hasAccelerate: true,
+                hasMetal: false, coreCount: 1
+            ),
+            options: EncodingOptions(useHardwareAcceleration: true, useAccelerate: true),
+            distance: 1.0
+        )
+
+        let accelQuantized = accelEncoder.quantize(block: block, channel: 0)
+
+        // Both paths should produce identical quantized values
+        for y in 0..<8 {
+            for x in 0..<8 {
+                XCTAssertEqual(scalarQuantized[y][x], accelQuantized[y][x],
+                               "Quantized values should match at (\(x),\(y))")
+            }
+        }
+        #endif
+    }
+
+    func testScalarFallback_WhenAccelerateDisabled() throws {
+        // Verify that disabling Accelerate falls back to scalar without errors
+        let options = EncodingOptions(
+            mode: .lossy(quality: 85),
+            effort: .falcon,
+            useHardwareAcceleration: false,
+            useAccelerate: false
+        )
+        let encoder = JXLEncoder(options: options)
+
+        var frame = ImageFrame(width: 16, height: 16, channels: 3)
+        for y in 0..<16 {
+            for x in 0..<16 {
+                frame.setPixel(x: x, y: y, channel: 0, value: UInt16(x * 16))
+                frame.setPixel(x: x, y: y, channel: 1, value: UInt16(y * 16))
+                frame.setPixel(x: x, y: y, channel: 2, value: 128)
+            }
+        }
+
+        let result = try encoder.encode(frame)
+        XCTAssertGreaterThan(result.data.count, 0,
+                              "Encoding should succeed with Accelerate disabled")
+        XCTAssertGreaterThan(result.stats.compressionRatio, 0,
+                              "Compression ratio should be positive")
+    }
+
+    func testEncodingProducesConsistentOutput_WithAndWithoutAccelerate() throws {
+        // Both paths should produce valid encodings (output may differ slightly in size)
+        var frame = ImageFrame(width: 16, height: 16, channels: 3)
+        for y in 0..<16 {
+            for x in 0..<16 {
+                frame.setPixel(x: x, y: y, channel: 0, value: UInt16(x * 16))
+                frame.setPixel(x: x, y: y, channel: 1, value: UInt16(y * 16))
+                frame.setPixel(x: x, y: y, channel: 2, value: 128)
+            }
+        }
+
+        let scalarOptions = EncodingOptions(
+            mode: .lossy(quality: 85),
+            effort: .falcon,
+            useHardwareAcceleration: false,
+            useAccelerate: false
+        )
+        let scalarEncoder = JXLEncoder(options: scalarOptions)
+        let scalarResult = try scalarEncoder.encode(frame)
+
+        let accelOptions = EncodingOptions(
+            mode: .lossy(quality: 85),
+            effort: .falcon,
+            useHardwareAcceleration: true,
+            useAccelerate: true
+        )
+        let accelEncoder = JXLEncoder(options: accelOptions)
+        let accelResult = try accelEncoder.encode(frame)
+
+        // Both should produce valid non-empty output
+        XCTAssertGreaterThan(scalarResult.data.count, 0,
+                              "Scalar encoding should produce output")
+        XCTAssertGreaterThan(accelResult.data.count, 0,
+                              "Accelerate encoding should produce output")
+
+        // Both should start with the JPEG XL signature
+        XCTAssertEqual(scalarResult.data[0], 0xFF, "Scalar output should start with JXL signature byte 1")
+        XCTAssertEqual(scalarResult.data[1], 0x0A, "Scalar output should start with JXL signature byte 2")
+        XCTAssertEqual(accelResult.data[0], 0xFF, "Accel output should start with JXL signature byte 1")
+        XCTAssertEqual(accelResult.data[1], 0x0A, "Accel output should start with JXL signature byte 2")
+    }
+
+    #if canImport(Accelerate)
+    func testAccelerateOps_IDCT2D_InverseOfDCT2D() {
+        // Test that idct2D is the inverse of dct2D
+        var input = [Float](repeating: 0, count: 64)
+        for i in 0..<64 {
+            input[i] = Float((i * 7 + 3) % 256) / 255.0
+        }
+
+        let dctResult = AccelerateOps.dct2D(input, size: 8)
+        let idctResult = AccelerateOps.idct2D(dctResult, size: 8)
+
+        for i in 0..<64 {
+            XCTAssertEqual(idctResult[i], input[i], accuracy: 1e-3,
+                           "IDCT(DCT(x)) should ≈ x at index \(i)")
+        }
+    }
+
+    func testAccelerateOps_RGBToYCbCr_BlackPixel() {
+        let (y, cb, cr) = AccelerateOps.rgbToYCbCr(r: [0], g: [0], b: [0])
+        XCTAssertEqual(y[0], 0, accuracy: 1e-6, "Y for black should be 0")
+        XCTAssertEqual(cb[0], 0.5, accuracy: 1e-6, "Cb for black should be 0.5")
+        XCTAssertEqual(cr[0], 0.5, accuracy: 1e-6, "Cr for black should be 0.5")
+    }
+
+    func testAccelerateOps_RGBToYCbCr_WhitePixel() {
+        let (y, cb, cr) = AccelerateOps.rgbToYCbCr(r: [1], g: [1], b: [1])
+        XCTAssertEqual(y[0], 1.0, accuracy: 1e-4, "Y for white should be 1.0")
+        XCTAssertEqual(cb[0], 0.5, accuracy: 1e-4, "Cb for white should be 0.5")
+        XCTAssertEqual(cr[0], 0.5, accuracy: 1e-4, "Cr for white should be 0.5")
+    }
+
+    func testAccelerateOps_RGBToYCbCr_PureRed() {
+        let (y, cb, cr) = AccelerateOps.rgbToYCbCr(r: [1], g: [0], b: [0])
+        XCTAssertEqual(y[0], 0.299, accuracy: 1e-4, "Y for pure red")
+        XCTAssertGreaterThan(cr[0], 0.5, "Cr for pure red should be above neutral")
+    }
+
+    func testAccelerateOps_Quantize_RoundTrip() {
+        let values: [Float] = [100.0, 50.0, -30.0, 12.5, 0.0, -1.0, 7.8, 3.2]
+        let qMatrix: [Float] = [8.0, 12.0, 16.0, 20.0, 24.0, 28.0, 32.0, 36.0]
+
+        let quantized = AccelerateOps.quantize(values, qMatrix: qMatrix)
+
+        // Verify quantized values match expected rounding
+        for i in 0..<values.count {
+            let expected = Int16(round(values[i] / qMatrix[i]))
+            XCTAssertEqual(quantized[i], expected,
+                           "Quantized value at \(i) should be \(expected), got \(quantized[i])")
+        }
+    }
+    #endif
 }

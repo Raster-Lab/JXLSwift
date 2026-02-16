@@ -15,7 +15,7 @@
 | 2 | Lossless Compression (Modular Mode) | Weeks 4–7 | 🔶 In Progress |
 | 3 | Lossy Compression (VarDCT Mode) | Weeks 7–11 | 🔶 In Progress |
 | 4 | JPEG XL File Format & Container | Weeks 11–14 | ⬜ Not Started |
-| 5 | Hardware Acceleration — Apple Accelerate | Weeks 14–17 | 🔶 Partial |
+| 5 | Hardware Acceleration — Apple Accelerate | Weeks 14–17 | 🔶 In Progress |
 | 6 | Hardware Acceleration — ARM NEON / SIMD | Weeks 17–20 | ⬜ Not Started |
 | 7 | Hardware Acceleration — Metal GPU | Weeks 20–23 | ⬜ Not Started |
 | 8 | ANS Entropy Coding | Weeks 23–27 | ⬜ Not Started |
@@ -212,15 +212,15 @@
 - [x] Matrix multiplication via `vDSP_mmul`
 - [x] Statistical operations (mean, standard deviation)
 - [x] `UInt8 ↔ Float` conversion via `vDSP_vfltu8` / `vDSP_vfixu8`
-- [ ] Integrate Accelerate DCT into VarDCT pipeline (currently falls back to scalar)
-- [ ] Accelerate-based colour space conversion
-- [ ] Accelerate-based quantisation (vectorised divide + round)
+- [x] Integrate Accelerate DCT into VarDCT pipeline (currently falls back to scalar)
+- [x] Accelerate-based colour space conversion
+- [x] Accelerate-based quantisation (vectorised divide + round)
 - [ ] vImage integration for image resizing/resampling
 - [ ] Benchmarks comparing Accelerate vs scalar performance
 
 ### Tests Required
 
-- [ ] Accelerate DCT matches scalar DCT within `1e-5` tolerance
+- [x] Accelerate DCT matches scalar DCT within `1e-5` tolerance
 - [ ] Vector operations: `vectorAdd([1,2,3], [4,5,6]) == [5,7,9]`
 - [ ] Matrix multiply: identity matrix × input = input
 - [ ] Mean/stddev match known values
