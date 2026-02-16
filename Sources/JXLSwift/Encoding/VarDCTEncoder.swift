@@ -1,0 +1,324 @@
+/// VarDCT Mode Encoder
+///
+/// Implements lossy compression using the VarDCT mode of JPEG XL.
+/// Uses DCT transforms, quantization, and entropy coding.
+
+import Foundation
+
+/// VarDCT encoder for lossy compression
+class VarDCTEncoder {
+    private let hardware: HardwareCapabilities
+    private let options: EncodingOptions
+    private let distance: Float
+    
+    /// DCT block size (8x8 is standard)
+    private let blockSize = 8
+    
+    init(hardware: HardwareCapabilities, options: EncodingOptions, distance: Float) {
+        self.hardware = hardware
+        self.options = options
+        self.distance = distance
+    }
+    
+    /// Encode frame using VarDCT mode
+    func encode(frame: ImageFrame) throws -> Data {
+        var writer = BitstreamWriter()
+        
+        // Write VarDCT mode indicator
+        writer.writeBit(false) // Use VarDCT mode
+        
+        // Convert to YCbCr color space for better compression
+        let ycbcr = convertToYCbCr(frame: frame)
+        
+        // Process each channel with DCT
+        for channel in 0..<ycbcr.channels {
+            let channelData = extractChannel(frame: ycbcr, channel: channel)
+            let encoded = try encodeChannelDCT(
+                data: channelData,
+                width: ycbcr.width,
+                height: ycbcr.height,
+                channel: channel
+            )
+            writer.writeData(encoded)
+        }
+        
+        writer.flushByte()
+        return writer.data
+    }
+    
+    // MARK: - Color Space Conversion
+    
+    private func convertToYCbCr(frame: ImageFrame) -> ImageFrame {
+        var ycbcrFrame = frame
+        
+        // Only convert RGB images
+        guard frame.channels >= 3 else {
+            return frame
+        }
+        
+        // Convert RGB to YCbCr
+        for y in 0..<frame.height {
+            for x in 0..<frame.width {
+                let r = Float(frame.getPixel(x: x, y: y, channel: 0)) / 65535.0
+                let g = Float(frame.getPixel(x: x, y: y, channel: 1)) / 65535.0
+                let b = Float(frame.getPixel(x: x, y: y, channel: 2)) / 65535.0
+                
+                // ITU-R BT.601 conversion
+                let yVal = 0.299 * r + 0.587 * g + 0.114 * b
+                let cb = -0.168736 * r - 0.331264 * g + 0.5 * b + 0.5
+                let cr = 0.5 * r - 0.418688 * g - 0.081312 * b + 0.5
+                
+                ycbcrFrame.setPixel(x: x, y: y, channel: 0, value: UInt16(yVal * 65535))
+                ycbcrFrame.setPixel(x: x, y: y, channel: 1, value: UInt16(cb * 65535))
+                ycbcrFrame.setPixel(x: x, y: y, channel: 2, value: UInt16(cr * 65535))
+            }
+        }
+        
+        return ycbcrFrame
+    }
+    
+    // MARK: - Channel Extraction
+    
+    private func extractChannel(frame: ImageFrame, channel: Int) -> [[Float]] {
+        var channelData = [[Float]](
+            repeating: [Float](repeating: 0, count: frame.width),
+            count: frame.height
+        )
+        
+        for y in 0..<frame.height {
+            for x in 0..<frame.width {
+                let value = frame.getPixel(x: x, y: y, channel: channel)
+                channelData[y][x] = Float(value) / 65535.0
+            }
+        }
+        
+        return channelData
+    }
+    
+    // MARK: - DCT Encoding
+    
+    private func encodeChannelDCT(data: [[Float]], width: Int, height: Int, channel: Int) throws -> Data {
+        var writer = BitstreamWriter()
+        
+        // Process image in 8x8 blocks
+        let blocksX = (width + blockSize - 1) / blockSize
+        let blocksY = (height + blockSize - 1) / blockSize
+        
+        for blockY in 0..<blocksY {
+            for blockX in 0..<blocksX {
+                // Extract block
+                let block = extractBlock(
+                    data: data,
+                    blockX: blockX,
+                    blockY: blockY,
+                    width: width,
+                    height: height
+                )
+                
+                // Apply DCT
+                let dctBlock = applyDCT(block: block)
+                
+                // Quantize
+                let quantized = quantize(block: dctBlock, channel: channel)
+                
+                // Encode coefficients
+                encodeBlock(writer: &writer, block: quantized)
+            }
+        }
+        
+        writer.flushByte()
+        return writer.data
+    }
+    
+    private func extractBlock(data: [[Float]], blockX: Int, blockY: Int, 
+                              width: Int, height: Int) -> [[Float]] {
+        var block = [[Float]](
+            repeating: [Float](repeating: 0, count: blockSize),
+            count: blockSize
+        )
+        
+        let startX = blockX * blockSize
+        let startY = blockY * blockSize
+        
+        for y in 0..<blockSize {
+            for x in 0..<blockSize {
+                let srcX = min(startX + x, width - 1)
+                let srcY = min(startY + y, height - 1)
+                block[y][x] = data[srcY][srcX]
+            }
+        }
+        
+        return block
+    }
+    
+    // MARK: - DCT Transform
+    
+    private func applyDCT(block: [[Float]]) -> [[Float]] {
+        // Use hardware-accelerated DCT if available
+        if hardware.hasAccelerate && options.useAccelerate {
+            return applyDCTAccelerate(block: block)
+        } else if hardware.hasNEON && options.useHardwareAcceleration {
+            return applyDCTNEON(block: block)
+        } else {
+            return applyDCTScalar(block: block)
+        }
+    }
+    
+    private func applyDCTScalar(block: [[Float]]) -> [[Float]] {
+        var dct = [[Float]](
+            repeating: [Float](repeating: 0, count: blockSize),
+            count: blockSize
+        )
+        
+        let n = Float(blockSize)
+        let normFactor = sqrt(2.0 / n)
+        
+        for u in 0..<blockSize {
+            for v in 0..<blockSize {
+                var sum: Float = 0
+                
+                for x in 0..<blockSize {
+                    for y in 0..<blockSize {
+                        let cu = u == 0 ? Float(1.0 / sqrt(2.0)) : Float(1.0)
+                        let cv = v == 0 ? Float(1.0 / sqrt(2.0)) : Float(1.0)
+                        
+                        let cosU = cos((2.0 * Float(x) + 1.0) * Float(u) * .pi / (2.0 * n))
+                        let cosV = cos((2.0 * Float(y) + 1.0) * Float(v) * .pi / (2.0 * n))
+                        
+                        let pixelValue = block[y][x]
+                        let coefficient = pixelValue * cosU * cosV * cu * cv
+                        sum += coefficient
+                    }
+                }
+                
+                dct[v][u] = sum * normFactor * normFactor
+            }
+        }
+        
+        return dct
+    }
+    
+    // Placeholder for Accelerate-based DCT
+    // TODO: Implement using Accelerate.swift's dct2D function which provides vDSP_DCT implementation
+    private func applyDCTAccelerate(block: [[Float]]) -> [[Float]] {
+        // Flatten block for Accelerate processing
+        // let flat = block.flatMap { $0 }
+        // let result = AccelerateOps.dct2D(flat, size: blockSize)
+        // Convert back to 2D array
+        return applyDCTScalar(block: block)
+    }
+    
+    // Placeholder for NEON-based DCT
+    // TODO: Implement using ARM NEON SIMD instructions for 8x8 block processing
+    private func applyDCTNEON(block: [[Float]]) -> [[Float]] {
+        // Use NEON vector instructions for parallel computation
+        return applyDCTScalar(block: block)
+    }
+    
+    // MARK: - Quantization
+    
+    private func quantize(block: [[Float]], channel: Int) -> [[Int16]] {
+        var quantized = [[Int16]](
+            repeating: [Int16](repeating: 0, count: blockSize),
+            count: blockSize
+        )
+        
+        // Generate quantization matrix based on distance
+        let qMatrix = generateQuantizationMatrix(channel: channel)
+        
+        for y in 0..<blockSize {
+            for x in 0..<blockSize {
+                let value = block[y][x]
+                let qValue = qMatrix[y][x]
+                quantized[y][x] = Int16(round(value / qValue))
+            }
+        }
+        
+        return quantized
+    }
+    
+    private func generateQuantizationMatrix(channel: Int) -> [[Float]] {
+        var matrix = [[Float]](
+            repeating: [Float](repeating: 1, count: blockSize),
+            count: blockSize
+        )
+        
+        // Base quantization on distance parameter
+        let baseQuant = max(1.0, distance * 8.0)
+        
+        // Use frequency-dependent quantization
+        // Lower frequencies (top-left) get finer quantization
+        for y in 0..<blockSize {
+            for x in 0..<blockSize {
+                let freq = Float(x + y)
+                matrix[y][x] = baseQuant * (1.0 + freq * 0.5)
+                
+                // Chroma channels can be quantized more aggressively
+                if channel > 0 {
+                    matrix[y][x] *= 1.5
+                }
+            }
+        }
+        
+        return matrix
+    }
+    
+    // MARK: - Coefficient Encoding
+    
+    private func encodeBlock(writer: inout BitstreamWriter, block: [[Int16]]) {
+        // Zigzag scan order for better compression
+        let coefficients = zigzagScan(block: block)
+        
+        // Encode DC coefficient
+        let dc = coefficients[0]
+        writer.writeVarint(encodeSignedValue(Int32(dc)))
+        
+        // Encode AC coefficients with run-length encoding
+        var zeroRun = 0
+        for i in 1..<coefficients.count {
+            let coeff = coefficients[i]
+            
+            if coeff == 0 {
+                zeroRun += 1
+            } else {
+                // Encode zero run
+                if zeroRun > 0 {
+                    writer.writeVarint(UInt64(zeroRun))
+                    zeroRun = 0
+                }
+                
+                // Encode coefficient
+                writer.writeVarint(encodeSignedValue(Int32(coeff)))
+            }
+        }
+        
+        // End of block marker if there are trailing zeros
+        if zeroRun > 0 {
+            writer.writeVarint(0xFFFF) // EOB marker
+        }
+    }
+    
+    private func zigzagScan(block: [[Int16]]) -> [Int16] {
+        // Zigzag order for 8x8 block
+        let order: [(Int, Int)] = [
+            (0,0), (0,1), (1,0), (2,0), (1,1), (0,2), (0,3), (1,2),
+            (2,1), (3,0), (4,0), (3,1), (2,2), (1,3), (0,4), (0,5),
+            (1,4), (2,3), (3,2), (4,1), (5,0), (6,0), (5,1), (4,2),
+            (3,3), (2,4), (1,5), (0,6), (0,7), (1,6), (2,5), (3,4),
+            (4,3), (5,2), (6,1), (7,0), (7,1), (6,2), (5,3), (4,4),
+            (3,5), (2,6), (1,7), (2,7), (3,6), (4,5), (5,4), (6,3),
+            (7,2), (7,3), (6,4), (5,5), (4,6), (3,7), (4,7), (5,6),
+            (6,5), (7,4), (7,5), (6,6), (5,7), (6,7), (7,6), (7,7)
+        ]
+        
+        return order.map { block[$0.0][$0.1] }
+    }
+    
+    private func encodeSignedValue(_ value: Int32) -> UInt64 {
+        if value >= 0 {
+            return UInt64(value * 2)
+        } else {
+            return UInt64(-value * 2 - 1)
+        }
+    }
+}
