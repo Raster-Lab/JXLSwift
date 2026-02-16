@@ -56,14 +56,24 @@ class VarDCTEncoder {
     ///   This is acceptable because the VarDCT pipeline reads the written
     ///   values back through `getPixel`, maintaining internal consistency.
     func convertToYCbCr(frame: ImageFrame) -> ImageFrame {
-        var ycbcrFrame = frame
-        
         // Only convert RGB images
         guard frame.channels >= 3 else {
             return frame
         }
         
-        // Convert RGB to YCbCr
+        #if canImport(Accelerate)
+        if hardware.hasAccelerate && options.useAccelerate {
+            return convertToYCbCrAccelerate(frame: frame)
+        }
+        #endif
+        
+        // Scalar fallback
+        return convertToYCbCrScalar(frame: frame)
+    }
+    
+    /// Scalar YCbCr conversion (reference implementation).
+    private func convertToYCbCrScalar(frame: ImageFrame) -> ImageFrame {
+        var ycbcrFrame = frame
         for y in 0..<frame.height {
             for x in 0..<frame.width {
                 let r = Float(frame.getPixel(x: x, y: y, channel: 0)) / 65535.0
@@ -80,9 +90,46 @@ class VarDCTEncoder {
                 ycbcrFrame.setPixel(x: x, y: y, channel: 2, value: UInt16(cr * 65535))
             }
         }
+        return ycbcrFrame
+    }
+    
+    #if canImport(Accelerate)
+    /// Accelerate-based YCbCr conversion using vectorised BT.601 operations.
+    private func convertToYCbCrAccelerate(frame: ImageFrame) -> ImageFrame {
+        var ycbcrFrame = frame
+        let pixelCount = frame.width * frame.height
+        
+        // Extract channels as float arrays
+        var rChannel = [Float](repeating: 0, count: pixelCount)
+        var gChannel = [Float](repeating: 0, count: pixelCount)
+        var bChannel = [Float](repeating: 0, count: pixelCount)
+        
+        for y in 0..<frame.height {
+            for x in 0..<frame.width {
+                let idx = y * frame.width + x
+                rChannel[idx] = Float(frame.getPixel(x: x, y: y, channel: 0)) / 65535.0
+                gChannel[idx] = Float(frame.getPixel(x: x, y: y, channel: 1)) / 65535.0
+                bChannel[idx] = Float(frame.getPixel(x: x, y: y, channel: 2)) / 65535.0
+            }
+        }
+        
+        let (yArr, cbArr, crArr) = AccelerateOps.rgbToYCbCr(
+            r: rChannel, g: gChannel, b: bChannel
+        )
+        
+        // Write back
+        for y in 0..<frame.height {
+            for x in 0..<frame.width {
+                let idx = y * frame.width + x
+                ycbcrFrame.setPixel(x: x, y: y, channel: 0, value: UInt16(yArr[idx] * 65535))
+                ycbcrFrame.setPixel(x: x, y: y, channel: 1, value: UInt16(cbArr[idx] * 65535))
+                ycbcrFrame.setPixel(x: x, y: y, channel: 2, value: UInt16(crArr[idx] * 65535))
+            }
+        }
         
         return ycbcrFrame
     }
+    #endif
     
     // MARK: - Channel Extraction
     
@@ -291,14 +338,29 @@ class VarDCTEncoder {
         return spatial
     }
     
-    // Placeholder for Accelerate-based DCT
-    // TODO: Implement using Accelerate.swift's dct2D function which provides vDSP_DCT implementation
     private func applyDCTAccelerate(block: [[Float]]) -> [[Float]] {
+        #if canImport(Accelerate)
         // Flatten block for Accelerate processing
-        // let flat = block.flatMap { $0 }
-        // let result = AccelerateOps.dct2D(flat, size: blockSize)
+        let flat = block.flatMap { $0 }
+        let result = AccelerateOps.dct2D(flat, size: blockSize)
+        
         // Convert back to 2D array
+        guard result.count == blockSize * blockSize else {
+            return applyDCTScalar(block: block)
+        }
+        var output = [[Float]](
+            repeating: [Float](repeating: 0, count: blockSize),
+            count: blockSize
+        )
+        for y in 0..<blockSize {
+            for x in 0..<blockSize {
+                output[y][x] = result[y * blockSize + x]
+            }
+        }
+        return output
+        #else
         return applyDCTScalar(block: block)
+        #endif
     }
     
     // Placeholder for NEON-based DCT
@@ -311,13 +373,24 @@ class VarDCTEncoder {
     // MARK: - Quantization
     
     func quantize(block: [[Float]], channel: Int) -> [[Int16]] {
+        // Generate quantization matrix based on distance
+        let qMatrix = generateQuantizationMatrix(channel: channel)
+        
+        #if canImport(Accelerate)
+        if hardware.hasAccelerate && options.useAccelerate {
+            return quantizeAccelerate(block: block, qMatrix: qMatrix)
+        }
+        #endif
+        
+        return quantizeScalar(block: block, qMatrix: qMatrix)
+    }
+    
+    /// Scalar quantization (reference implementation).
+    private func quantizeScalar(block: [[Float]], qMatrix: [[Float]]) -> [[Int16]] {
         var quantized = [[Int16]](
             repeating: [Int16](repeating: 0, count: blockSize),
             count: blockSize
         )
-        
-        // Generate quantization matrix based on distance
-        let qMatrix = generateQuantizationMatrix(channel: channel)
         
         for y in 0..<blockSize {
             for x in 0..<blockSize {
@@ -329,6 +402,28 @@ class VarDCTEncoder {
         
         return quantized
     }
+    
+    #if canImport(Accelerate)
+    /// Accelerate-based vectorised quantization.
+    private func quantizeAccelerate(block: [[Float]], qMatrix: [[Float]]) -> [[Int16]] {
+        let flat = block.flatMap { $0 }
+        let flatQ = qMatrix.flatMap { $0 }
+        
+        let result = AccelerateOps.quantize(flat, qMatrix: flatQ)
+        
+        // Convert back to 2D array
+        var quantized = [[Int16]](
+            repeating: [Int16](repeating: 0, count: blockSize),
+            count: blockSize
+        )
+        for y in 0..<blockSize {
+            for x in 0..<blockSize {
+                quantized[y][x] = result[y * blockSize + x]
+            }
+        }
+        return quantized
+    }
+    #endif
     
     func generateQuantizationMatrix(channel: Int) -> [[Float]] {
         var matrix = [[Float]](
