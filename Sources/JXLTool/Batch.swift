@@ -281,10 +281,12 @@ struct Batch: ParsableCommand {
         )
 
         // Fill with a simple gradient pattern
+        let widthDivisor = max(frame.width - 1, 1)
+        let heightDivisor = max(frame.height - 1, 1)
         for y in 0..<frame.height {
             for x in 0..<frame.width {
-                let r = UInt16((x * 255) / max(frame.width - 1, 1))
-                let g = UInt16((y * 255) / max(frame.height - 1, 1))
+                let r = UInt16((x * 255) / widthDivisor)
+                let g = UInt16((y * 255) / heightDivisor)
                 let b = UInt16(128)
                 frame.setPixel(x: x, y: y, channel: 0, value: r)
                 frame.setPixel(x: x, y: y, channel: 1, value: g)
