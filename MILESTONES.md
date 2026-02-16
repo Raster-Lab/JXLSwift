@@ -100,7 +100,7 @@
 - [x] Run-length + varint entropy coding (simplified)
 - [x] Multi-channel decorrelation (RCT — Reversible Colour Transform)
 - [x] Squeeze transform (multi-resolution decomposition)
-- [ ] Context modelling for entropy coding
+- [x] Context modelling for entropy coding
 - [ ] MA (Meta-Adaptive) tree-based prediction
 - [ ] Full Modular subbitstream framing per ISO/IEC 18181-1 §7
 
@@ -221,10 +221,10 @@
 ### Tests Required
 
 - [x] Accelerate DCT matches scalar DCT within `1e-5` tolerance
-- [ ] Vector operations: `vectorAdd([1,2,3], [4,5,6]) == [5,7,9]`
-- [ ] Matrix multiply: identity matrix × input = input
-- [ ] Mean/stddev match known values
-- [ ] `convertU8ToFloat` → `convertFloatToU8` round-trip
+- [x] Vector operations: `vectorAdd([1,2,3], [4,5,6]) == [5,7,9]`
+- [x] Matrix multiply: identity matrix × input = input
+- [x] Mean/stddev match known values
+- [x] `convertU8ToFloat` → `convertFloatToU8` round-trip
 - [ ] Performance: Accelerate DCT ≥ 2× faster than scalar on 256×256 image
 
 ### Acceptance Criteria

@@ -884,5 +884,191 @@ final class VarDCTEncoderTests: XCTestCase {
                            "Quantized value at \(i) should be \(expected), got \(quantized[i])")
         }
     }
+
+    // MARK: - Accelerate Vector Operations Tests
+
+    func testAccelerateOps_VectorAdd_BasicAddition() {
+        let result = AccelerateOps.vectorAdd([1, 2, 3], [4, 5, 6])
+        XCTAssertEqual(result, [5, 7, 9],
+                       "vectorAdd([1,2,3], [4,5,6]) should equal [5,7,9]")
+    }
+
+    func testAccelerateOps_VectorAdd_Zeros() {
+        let result = AccelerateOps.vectorAdd([0, 0, 0], [0, 0, 0])
+        XCTAssertEqual(result, [0, 0, 0])
+    }
+
+    func testAccelerateOps_VectorAdd_NegativeValues() {
+        let result = AccelerateOps.vectorAdd([-1, -2, -3], [1, 2, 3])
+        for i in 0..<3 {
+            XCTAssertEqual(result[i], 0, accuracy: 1e-6)
+        }
+    }
+
+    func testAccelerateOps_VectorSubtract_BasicSubtraction() {
+        let result = AccelerateOps.vectorSubtract([5, 7, 9], [4, 5, 6])
+        for i in 0..<3 {
+            XCTAssertEqual(result[i], [1, 2, 3][i], accuracy: 1e-6)
+        }
+    }
+
+    func testAccelerateOps_VectorMultiply_BasicMultiplication() {
+        let result = AccelerateOps.vectorMultiply([2, 3, 4], [5, 6, 7])
+        XCTAssertEqual(result[0], 10, accuracy: 1e-5)
+        XCTAssertEqual(result[1], 18, accuracy: 1e-5)
+        XCTAssertEqual(result[2], 28, accuracy: 1e-5)
+    }
+
+    func testAccelerateOps_DotProduct_BasicDotProduct() {
+        let result = AccelerateOps.dotProduct([1, 2, 3], [4, 5, 6])
+        // 1*4 + 2*5 + 3*6 = 4 + 10 + 18 = 32
+        XCTAssertEqual(result, 32, accuracy: 1e-5)
+    }
+
+    func testAccelerateOps_DotProduct_Orthogonal() {
+        let result = AccelerateOps.dotProduct([1, 0], [0, 1])
+        XCTAssertEqual(result, 0, accuracy: 1e-6,
+                       "Orthogonal vectors should have dot product 0")
+    }
+
+    // MARK: - Accelerate Matrix Operations Tests
+
+    func testAccelerateOps_MatrixMultiply_IdentityTimesInput() {
+        // 3×3 identity matrix
+        let identity: [Float] = [
+            1, 0, 0,
+            0, 1, 0,
+            0, 0, 1,
+        ]
+        let input: [Float] = [
+            1, 2, 3,
+            4, 5, 6,
+            7, 8, 9,
+        ]
+
+        let result = AccelerateOps.matrixMultiply(identity, rowsA: 3, colsA: 3,
+                                                   input, colsB: 3)
+        for i in 0..<9 {
+            XCTAssertEqual(result[i], input[i], accuracy: 1e-5,
+                           "Identity × input should equal input at index \(i)")
+        }
+    }
+
+    func testAccelerateOps_MatrixMultiply_InputTimesIdentity() {
+        let identity: [Float] = [
+            1, 0, 0,
+            0, 1, 0,
+            0, 0, 1,
+        ]
+        let input: [Float] = [
+            2, 4, 6,
+            8, 10, 12,
+            14, 16, 18,
+        ]
+
+        let result = AccelerateOps.matrixMultiply(input, rowsA: 3, colsA: 3,
+                                                   identity, colsB: 3)
+        for i in 0..<9 {
+            XCTAssertEqual(result[i], input[i], accuracy: 1e-5,
+                           "Input × identity should equal input at index \(i)")
+        }
+    }
+
+    func testAccelerateOps_MatrixMultiply_2x3_Times_3x2() {
+        // [1 2 3]   [7  8 ]   [1*7+2*9+3*11  1*8+2*10+3*12]   [58  64 ]
+        // [4 5 6] × [9  10] = [4*7+5*9+6*11  4*8+5*10+6*12] = [139 154]
+        //           [11 12]
+        let a: [Float] = [1, 2, 3, 4, 5, 6]
+        let b: [Float] = [7, 8, 9, 10, 11, 12]
+
+        let result = AccelerateOps.matrixMultiply(a, rowsA: 2, colsA: 3,
+                                                   b, colsB: 2)
+        XCTAssertEqual(result.count, 4)
+        XCTAssertEqual(result[0], 58, accuracy: 1e-4)
+        XCTAssertEqual(result[1], 64, accuracy: 1e-4)
+        XCTAssertEqual(result[2], 139, accuracy: 1e-4)
+        XCTAssertEqual(result[3], 154, accuracy: 1e-4)
+    }
+
+    // MARK: - Accelerate Statistical Operations Tests
+
+    func testAccelerateOps_Mean_KnownValues() {
+        let values: [Float] = [1, 2, 3, 4, 5]
+        let result = AccelerateOps.mean(values)
+        XCTAssertEqual(result, 3.0, accuracy: 1e-5,
+                       "Mean of [1,2,3,4,5] should be 3.0")
+    }
+
+    func testAccelerateOps_Mean_SingleValue() {
+        let result = AccelerateOps.mean([42.0])
+        XCTAssertEqual(result, 42.0, accuracy: 1e-5)
+    }
+
+    func testAccelerateOps_Mean_AllSame() {
+        let values: [Float] = [7, 7, 7, 7]
+        let result = AccelerateOps.mean(values)
+        XCTAssertEqual(result, 7.0, accuracy: 1e-5)
+    }
+
+    func testAccelerateOps_StandardDeviation_KnownValues() {
+        // stddev of [2, 4, 4, 4, 5, 5, 7, 9]
+        // mean = 5, variance = ((2-5)^2+(4-5)^2*3+(5-5)^2*2+(7-5)^2+(9-5)^2)/8
+        //       = (9+1+1+1+0+0+4+16)/8 = 32/8 = 4
+        // stddev = 2.0
+        let values: [Float] = [2, 4, 4, 4, 5, 5, 7, 9]
+        let result = AccelerateOps.standardDeviation(values)
+        XCTAssertEqual(result, 2.0, accuracy: 1e-4,
+                       "Stddev of [2,4,4,4,5,5,7,9] should be 2.0")
+    }
+
+    func testAccelerateOps_StandardDeviation_AllSame_ReturnsZero() {
+        let values: [Float] = [5, 5, 5, 5]
+        let result = AccelerateOps.standardDeviation(values)
+        XCTAssertEqual(result, 0.0, accuracy: 1e-6,
+                       "Stddev of identical values should be 0")
+    }
+
+    // MARK: - Accelerate Conversion Round-Trip Tests
+
+    func testAccelerateOps_ConvertU8ToFloat_RoundTrip() {
+        let original: [UInt8] = [0, 64, 128, 192, 255]
+        let floats = AccelerateOps.convertU8ToFloat(original)
+        let recovered = AccelerateOps.convertFloatToU8(floats)
+        for i in 0..<original.count {
+            XCTAssertEqual(recovered[i], original[i],
+                           "U8→Float→U8 round-trip should preserve value \(original[i])")
+        }
+    }
+
+    func testAccelerateOps_ConvertU8ToFloat_Scaling() {
+        let input: [UInt8] = [0, 255]
+        let floats = AccelerateOps.convertU8ToFloat(input)
+        XCTAssertEqual(floats[0], 0.0, accuracy: 1e-6,
+                       "UInt8(0) should convert to 0.0")
+        XCTAssertEqual(floats[1], 1.0, accuracy: 1e-4,
+                       "UInt8(255) should convert to ≈1.0")
+    }
+
+    func testAccelerateOps_ConvertFloatToU8_Scaling() {
+        let input: [Float] = [0.0, 0.5, 1.0]
+        let result = AccelerateOps.convertFloatToU8(input)
+        XCTAssertEqual(result[0], 0)
+        XCTAssertEqual(result[1], 127, "0.5 × 255 ≈ 127")
+        XCTAssertEqual(result[2], 255)
+    }
+
+    func testAccelerateOps_ConvertU8ToFloat_AllValues_RoundTrip() {
+        // Test full range: every UInt8 value should survive the round-trip
+        var original = [UInt8](repeating: 0, count: 256)
+        for i in 0..<256 {
+            original[i] = UInt8(i)
+        }
+        let floats = AccelerateOps.convertU8ToFloat(original)
+        let recovered = AccelerateOps.convertFloatToU8(floats)
+        for i in 0..<256 {
+            XCTAssertEqual(recovered[i], original[i],
+                           "Round-trip failed for value \(i)")
+        }
+    }
     #endif
 }
