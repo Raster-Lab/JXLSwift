@@ -340,7 +340,7 @@ final class NEONOpsTests: XCTestCase {
 
         XCTAssertEqual(result[0][0], 4)  // round(3.7)
         XCTAssertEqual(result[0][1], -2) // round(-2.3)
-        XCTAssertEqual(result[3][5], 1)  // round(0.5) = 1 (round away from zero)
+        XCTAssertEqual(result[3][5], 1)  // round(0.5) = 1 (round half away from zero)
     }
 
     // MARK: - Zigzag Scan Tests

@@ -507,6 +507,10 @@ public enum NEONOps {
                     )
 
                     // MED: clamp(N + W - NW, 0, 65535)
+                    // Wrapping operators (&+, &-) are used because Swift SIMD
+                    // types require them for integer arithmetic. Overflow is not
+                    // possible here since all source values fit in UInt16 and the
+                    // intermediate sum N + W - NW fits comfortably in Int32.
                     let gradient = nv &+ wv &- nwv
                     let clamped = pointwiseMin(pointwiseMax(gradient, zero4), maxVal)
 

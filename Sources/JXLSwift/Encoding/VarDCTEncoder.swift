@@ -1124,9 +1124,12 @@ class VarDCTEncoder {
         for y in 0..<frame.height {
             for x in 0..<frame.width {
                 let idx = y * frame.width + x
-                ycbcrFrame.setPixel(x: x, y: y, channel: 0, value: UInt16(yArr[idx] * 65535))
-                ycbcrFrame.setPixel(x: x, y: y, channel: 1, value: UInt16(cbArr[idx] * 65535))
-                ycbcrFrame.setPixel(x: x, y: y, channel: 2, value: UInt16(crArr[idx] * 65535))
+                ycbcrFrame.setPixel(x: x, y: y, channel: 0,
+                                    value: UInt16(max(0, min(65535, yArr[idx] * 65535))))
+                ycbcrFrame.setPixel(x: x, y: y, channel: 1,
+                                    value: UInt16(max(0, min(65535, cbArr[idx] * 65535))))
+                ycbcrFrame.setPixel(x: x, y: y, channel: 2,
+                                    value: UInt16(max(0, min(65535, crArr[idx] * 65535))))
             }
         }
         
