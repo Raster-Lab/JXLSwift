@@ -12,15 +12,15 @@
 |---|-----------|--------|--------|
 | 0 | Project Foundation & Infrastructure | Weeks 1–2 | ✅ Complete |
 | 1 | Core Data Structures & Bitstream I/O | Weeks 2–4 | ✅ Complete |
-| 2 | Lossless Compression (Modular Mode) | Weeks 4–7 | 🔶 In Progress |
-| 3 | Lossy Compression (VarDCT Mode) | Weeks 7–11 | 🔶 In Progress |
+| 2 | Lossless Compression (Modular Mode) | Weeks 4–7 | ✅ Complete |
+| 3 | Lossy Compression (VarDCT Mode) | Weeks 7–11 | ✅ Complete |
 | 4 | JPEG XL File Format & Container | Weeks 11–14 | ⬜ Not Started |
-| 5 | Hardware Acceleration — Apple Accelerate | Weeks 14–17 | 🔶 In Progress |
+| 5 | Hardware Acceleration — Apple Accelerate | Weeks 14–17 | ✅ Complete |
 | 6 | Hardware Acceleration — ARM NEON / SIMD | Weeks 17–20 | ⬜ Not Started |
 | 7 | Hardware Acceleration — Metal GPU | Weeks 20–23 | ⬜ Not Started |
 | 8 | ANS Entropy Coding | Weeks 23–27 | ⬜ Not Started |
 | 9 | Advanced Encoding Features | Weeks 27–31 | ⬜ Not Started |
-| 10 | Command Line Tool (jxl-tool) | Weeks 31–34 | ⬜ Not Started |
+| 10 | Command Line Tool (jxl-tool) | Weeks 31–34 | 🔶 In Progress |
 | 11 | libjxl Validation & Performance Benchmarking | Weeks 34–38 | ⬜ Not Started |
 | 12 | Decoding Support | Weeks 38–44 | ⬜ Not Started |
 | 13 | Production Hardening & Release | Weeks 44–48 | ⬜ Not Started |
@@ -379,26 +379,26 @@
 
 ### Deliverables
 
-- [ ] Swift executable target `jxl-tool` in `Package.swift`
-- [ ] ArgumentParser-based CLI with subcommands
-- [ ] **`encode`** subcommand — encode image files to JPEG XL
+- [x] Swift executable target `jxl-tool` in `Package.swift`
+- [x] ArgumentParser-based CLI with subcommands
+- [x] **`encode`** subcommand — encode image files to JPEG XL
   - Input formats: PNG, JPEG, TIFF, BMP (via platform image I/O)
   - Output: `.jxl` file
   - Options: `--quality`, `--distance`, `--effort`, `--lossless`, `--progressive`
   - Options: `--threads`, `--no-accelerate`, `--no-metal`, `--no-neon`
   - Output: statistics (ratio, time, memory)
 - [ ] **`decode`** subcommand — decode JPEG XL to image file (when decoder is ready)
-- [ ] **`info`** subcommand — display JPEG XL file metadata
+- [x] **`info`** subcommand — display JPEG XL file metadata
   - Image dimensions, bit depth, channels
   - Colour space, ICC profile summary
   - Compression mode, effort level
   - File size, container boxes
-- [ ] **`benchmark`** subcommand — performance benchmarking
+- [x] **`benchmark`** subcommand — performance benchmarking
   - Compare encoding speeds across effort levels
   - Compare quality metrics (PSNR, SSIM) across quality settings
   - Compare against libjxl (if installed)
   - JSON and human-readable output
-- [ ] **`hardware`** subcommand — display detected hardware capabilities
+- [x] **`hardware`** subcommand — display detected hardware capabilities
   - CPU architecture, NEON/AVX2 support
   - Accelerate availability
   - Metal GPU availability and device name
@@ -421,7 +421,7 @@
 - [ ] CLI parses all arguments correctly
 - [ ] `encode` produces valid `.jxl` output from PNG input
 - [ ] `info` displays correct metadata for known test files
-- [ ] `hardware` displays non-empty capability information
+- [x] `hardware` displays non-empty capability information
 - [ ] `benchmark` completes without errors
 - [ ] `batch` processes a directory correctly
 - [ ] Invalid arguments produce meaningful error messages

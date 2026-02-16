@@ -133,6 +133,7 @@ Sources/JXLSwift/
 ├── Core/              # Fundamental data structures
 │   ├── Architecture.swift     # CPU detection & capabilities
 │   ├── ImageFrame.swift       # Image representation
+│   ├── PixelBuffer.swift      # Tiled pixel buffer access
 │   ├── Bitstream.swift        # Bitstream I/O
 │   └── EncodingOptions.swift  # Configuration
 ├── Encoding/          # Compression pipeline
@@ -140,7 +141,8 @@ Sources/JXLSwift/
 │   ├── ModularEncoder.swift   # Lossless compression
 │   └── VarDCTEncoder.swift    # Lossy compression
 ├── Hardware/          # Platform optimizations
-│   └── Accelerate.swift       # Apple Silicon acceleration
+│   ├── Accelerate.swift       # Apple Silicon acceleration
+│   └── DispatchBackend.swift  # Runtime backend selection
 └── Format/            # File format support (future)
 
 Sources/JXLTool/
@@ -148,7 +150,8 @@ Sources/JXLTool/
 ├── Encode.swift               # Encode subcommand
 ├── Info.swift                  # Info subcommand
 ├── Hardware.swift              # Hardware subcommand
-└── Benchmark.swift             # Benchmark subcommand
+├── Benchmark.swift            # Benchmark subcommand
+└── Utilities.swift            # Shared CLI helpers
 ```
 
 ## Performance
@@ -240,12 +243,13 @@ swift run jxl-tool benchmark --width 512 --height 512
 See [MILESTONES.md](MILESTONES.md) for the detailed project milestone plan.
 
 - [x] Core compression pipeline
-- [x] Lossless (Modular) mode
-- [x] Lossy (VarDCT) mode
+- [x] Lossless (Modular) mode — MED, RCT, Squeeze, MA tree, context modeling
+- [x] Lossy (VarDCT) mode — DCT, XYB, CfL, adaptive quantization, DC prediction
 - [x] Apple Silicon optimization
-- [x] Accelerate framework integration
-- [x] Command line tool (jxl-tool)
+- [x] Accelerate framework integration — vDSP DCT, vectorized color/quantization
+- [x] Command line tool (jxl-tool) — encode, info, hardware, benchmark
 - [ ] Full ANS entropy coding
+- [ ] ARM NEON SIMD acceleration
 - [ ] Metal GPU acceleration
 - [ ] Progressive encoding
 - [ ] JPEG XL file format (.jxl)
