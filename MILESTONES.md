@@ -418,13 +418,13 @@
 
 ### Tests Required
 
-- [ ] CLI parses all arguments correctly
-- [ ] `encode` produces valid `.jxl` output from PNG input
-- [ ] `info` displays correct metadata for known test files
+- [x] CLI parses all arguments correctly
+- [x] `encode` produces valid `.jxl` output
+- [x] `info` displays correct metadata for known test files
 - [x] `hardware` displays non-empty capability information
-- [ ] `benchmark` completes without errors
+- [x] `benchmark` completes without errors
 - [x] `batch` processes a directory correctly
-- [ ] Invalid arguments produce meaningful error messages
+- [x] Invalid arguments produce meaningful error messages
 - [x] `--version` outputs correct version string
 
 ### Acceptance Criteria
