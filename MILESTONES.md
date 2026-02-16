@@ -311,8 +311,8 @@
 - [x] Distribution encoding (compressed and uncompressed modes)
 - [x] Multi-context ANS (context-dependent distributions)
 - [x] Histogram clustering (merge similar distributions)
-- [ ] ANS interleaving for parallelism
-- [ ] LZ77 hybrid mode (for repeated patterns)
+- [x] ANS interleaving for parallelism
+- [x] LZ77 hybrid mode (for repeated patterns)
 - [x] Integration with Modular mode entropy backend
 - [x] Integration with VarDCT coefficient encoding
 
@@ -323,7 +323,7 @@
 - [x] ANS encode → decode round-trip for sparse data (mostly zeros)
 - [x] Multi-context ANS correctness
 - [x] Distribution table serialisation/deserialisation
-- [ ] LZ77 mode for repetitive data
+- [x] LZ77 mode for repetitive data
 - [ ] Performance: ANS encoding ≥ 80% throughput of simplified encoder
 - [ ] Compression: ANS achieves ≥ 10% better compression than simplified encoding
 
