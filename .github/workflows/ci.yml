@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS (ARM64)
+            runner: macos-15
+            swift-version: "6.2"
+          - name: macOS (x86-64)
+            runner: macos-15-intel
+            swift-version: "6.2"
+          - name: Linux (x86-64)
+            runner: ubuntu-latest
+            swift-version: "6.2"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Swift
+        uses: swift-actions/setup-swift@v3
+        with:
+          swift-version: ${{ matrix.swift-version }}
+
+      - name: Swift version
+        run: swift --version
+
+      - name: Build
+        run: swift build
+
+      - name: Test
+        run: swift test
