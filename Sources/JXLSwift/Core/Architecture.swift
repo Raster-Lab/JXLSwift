@@ -11,6 +11,10 @@ import Darwin
 import Glibc
 #endif
 
+#if canImport(Metal)
+import Metal
+#endif
+
 /// CPU Architecture type
 public enum CPUArchitecture: String {
     case arm64
@@ -52,6 +56,9 @@ public struct HardwareCapabilities: Sendable {
     /// Metal GPU support
     public let hasMetal: Bool
     
+    /// Metal device name (if available)
+    public let metalDeviceName: String?
+    
     /// Number of CPU cores
     public let coreCount: Int
     
@@ -82,12 +89,16 @@ public struct HardwareCapabilities: Sendable {
             #endif
         }()
         
-        // Metal availability
-        let hasMetal: Bool = {
+        // Metal availability and device name
+        let (hasMetal, metalDeviceName): (Bool, String?) = {
             #if canImport(Metal)
-            return true
+            if let device = MTLCreateSystemDefaultDevice() {
+                return (true, device.name)
+            } else {
+                return (false, nil)
+            }
             #else
-            return false
+            return (false, nil)
             #endif
         }()
         
@@ -99,6 +110,7 @@ public struct HardwareCapabilities: Sendable {
             hasAVX2: hasAVX2,
             hasAccelerate: hasAccelerate,
             hasMetal: hasMetal,
+            metalDeviceName: metalDeviceName,
             coreCount: coreCount
         )
     }

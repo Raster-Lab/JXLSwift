@@ -635,7 +635,7 @@ final class VarDCTEncoderTests: XCTestCase {
         let scalarEncoder = VarDCTEncoder(
             hardware: HardwareCapabilities(
                 hasNEON: false, hasAVX2: false, hasAccelerate: false,
-                hasMetal: false, coreCount: 1
+                hasMetal: false, metalDeviceName: nil, coreCount: 1
             ),
             options: EncodingOptions(useHardwareAcceleration: false, useAccelerate: false),
             distance: 1.0
@@ -660,7 +660,7 @@ final class VarDCTEncoderTests: XCTestCase {
         let accelEncoder = VarDCTEncoder(
             hardware: HardwareCapabilities(
                 hasNEON: false, hasAVX2: false, hasAccelerate: true,
-                hasMetal: false, coreCount: 1
+                hasMetal: false, metalDeviceName: nil, coreCount: 1
             ),
             options: EncodingOptions(useHardwareAcceleration: true, useAccelerate: true),
             distance: 1.0
@@ -678,7 +678,7 @@ final class VarDCTEncoderTests: XCTestCase {
         let scalarEncoder = VarDCTEncoder(
             hardware: HardwareCapabilities(
                 hasNEON: false, hasAVX2: false, hasAccelerate: false,
-                hasMetal: false, coreCount: 1
+                hasMetal: false, metalDeviceName: nil, coreCount: 1
             ),
             options: EncodingOptions(useHardwareAcceleration: false, useAccelerate: false),
             distance: 1.0
@@ -706,7 +706,7 @@ final class VarDCTEncoderTests: XCTestCase {
         let accelEncoder = VarDCTEncoder(
             hardware: HardwareCapabilities(
                 hasNEON: false, hasAVX2: false, hasAccelerate: true,
-                hasMetal: false, coreCount: 1
+                hasMetal: false, metalDeviceName: nil, coreCount: 1
             ),
             options: EncodingOptions(useHardwareAcceleration: true, useAccelerate: true),
             distance: 1.0
@@ -729,7 +729,7 @@ final class VarDCTEncoderTests: XCTestCase {
         let scalarEncoder = VarDCTEncoder(
             hardware: HardwareCapabilities(
                 hasNEON: false, hasAVX2: false, hasAccelerate: false,
-                hasMetal: false, coreCount: 1
+                hasMetal: false, metalDeviceName: nil, coreCount: 1
             ),
             options: EncodingOptions(useHardwareAcceleration: false, useAccelerate: false),
             distance: 1.0
@@ -752,7 +752,7 @@ final class VarDCTEncoderTests: XCTestCase {
         let accelEncoder = VarDCTEncoder(
             hardware: HardwareCapabilities(
                 hasNEON: false, hasAVX2: false, hasAccelerate: true,
-                hasMetal: false, coreCount: 1
+                hasMetal: false, metalDeviceName: nil, coreCount: 1
             ),
             options: EncodingOptions(useHardwareAcceleration: true, useAccelerate: true),
             distance: 1.0
@@ -1330,7 +1330,7 @@ final class VarDCTEncoderTests: XCTestCase {
         let scalarEncoder = VarDCTEncoder(
             hardware: HardwareCapabilities(
                 hasNEON: false, hasAVX2: false, hasAccelerate: false,
-                hasMetal: false, coreCount: 1
+                hasMetal: false, metalDeviceName: nil, coreCount: 1
             ),
             options: EncodingOptions(useHardwareAcceleration: false, useAccelerate: false),
             distance: 1.0
@@ -1357,7 +1357,7 @@ final class VarDCTEncoderTests: XCTestCase {
         let accelEncoder = VarDCTEncoder(
             hardware: HardwareCapabilities(
                 hasNEON: false, hasAVX2: false, hasAccelerate: true,
-                hasMetal: false, coreCount: 1
+                hasMetal: false, metalDeviceName: nil, coreCount: 1
             ),
             options: EncodingOptions(useHardwareAcceleration: true, useAccelerate: true),
             distance: 1.0
@@ -1377,7 +1377,7 @@ final class VarDCTEncoderTests: XCTestCase {
         let scalarEncoder = VarDCTEncoder(
             hardware: HardwareCapabilities(
                 hasNEON: false, hasAVX2: false, hasAccelerate: false,
-                hasMetal: false, coreCount: 1
+                hasMetal: false, metalDeviceName: nil, coreCount: 1
             ),
             options: EncodingOptions(useHardwareAcceleration: false, useAccelerate: false),
             distance: 1.0
@@ -1398,7 +1398,7 @@ final class VarDCTEncoderTests: XCTestCase {
         let accelEncoder = VarDCTEncoder(
             hardware: HardwareCapabilities(
                 hasNEON: false, hasAVX2: false, hasAccelerate: true,
-                hasMetal: false, coreCount: 1
+                hasMetal: false, metalDeviceName: nil, coreCount: 1
             ),
             options: EncodingOptions(useHardwareAcceleration: true, useAccelerate: true),
             distance: 1.0
@@ -1428,7 +1428,7 @@ final class VarDCTEncoderTests: XCTestCase {
         let scalarEncoder = VarDCTEncoder(
             hardware: HardwareCapabilities(
                 hasNEON: false, hasAVX2: false, hasAccelerate: false,
-                hasMetal: false, coreCount: 1
+                hasMetal: false, metalDeviceName: nil, coreCount: 1
             ),
             options: EncodingOptions(useHardwareAcceleration: false, useAccelerate: false),
             distance: 1.0
@@ -1450,7 +1450,7 @@ final class VarDCTEncoderTests: XCTestCase {
         let accelEncoder = VarDCTEncoder(
             hardware: HardwareCapabilities(
                 hasNEON: false, hasAVX2: false, hasAccelerate: true,
-                hasMetal: false, coreCount: 1
+                hasMetal: false, metalDeviceName: nil, coreCount: 1
             ),
             options: EncodingOptions(useHardwareAcceleration: true, useAccelerate: true),
             distance: 1.0

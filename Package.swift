@@ -35,7 +35,10 @@ let package = Package(
         // Core compression codec (Native backend, always built)
         .target(
             name: "JXLSwift",
-            dependencies: []
+            dependencies: [],
+            resources: [
+                .process("Hardware/Metal/Shaders.metal")
+            ]
         ),
         
         // Command line tool
