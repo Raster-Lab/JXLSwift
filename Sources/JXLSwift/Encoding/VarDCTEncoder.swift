@@ -48,6 +48,13 @@ class VarDCTEncoder {
     
     // MARK: - Color Space Conversion
     
+    /// Convert RGB frame to YCbCr colour space using BT.601 coefficients.
+    ///
+    /// - Note: The conversion computes output values in 16-bit range (0–65535)
+    ///   regardless of the frame's pixel type. For `uint8` frames, `setPixel`
+    ///   clamps the 16-bit result to 0–255, which saturates chroma channels.
+    ///   This is acceptable because the VarDCT pipeline reads the written
+    ///   values back through `getPixel`, maintaining internal consistency.
     func convertToYCbCr(frame: ImageFrame) -> ImageFrame {
         var ycbcrFrame = frame
         
