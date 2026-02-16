@@ -757,4 +757,314 @@ final class ANSEncoderTests: XCTestCase {
         let options = EncodingOptions(useANS: true)
         XCTAssertTrue(options.useANS)
     }
+
+    // MARK: - Jensen-Shannon Divergence
+
+    func testJSD_IdenticalDistributions_IsZero() {
+        let a: [UInt32] = [100, 200, 300]
+        let b: [UInt32] = [100, 200, 300]
+        let jsd = HistogramClustering.jensenShannonDivergence(a, b)
+        XCTAssertEqual(jsd, 0, accuracy: 1e-10)
+    }
+
+    func testJSD_ProportionalDistributions_IsZero() {
+        let a: [UInt32] = [10, 20, 30]
+        let b: [UInt32] = [100, 200, 300]
+        let jsd = HistogramClustering.jensenShannonDivergence(a, b)
+        XCTAssertEqual(jsd, 0, accuracy: 1e-10)
+    }
+
+    func testJSD_DifferentDistributions_IsPositive() {
+        let a: [UInt32] = [1000, 1, 1]
+        let b: [UInt32] = [1, 1, 1000]
+        let jsd = HistogramClustering.jensenShannonDivergence(a, b)
+        XCTAssertGreaterThan(jsd, 0)
+    }
+
+    func testJSD_IsSymmetric() {
+        let a: [UInt32] = [500, 100, 50]
+        let b: [UInt32] = [100, 400, 200]
+        let jsdAB = HistogramClustering.jensenShannonDivergence(a, b)
+        let jsdBA = HistogramClustering.jensenShannonDivergence(b, a)
+        XCTAssertEqual(jsdAB, jsdBA, accuracy: 1e-10)
+    }
+
+    func testJSD_IsBounded() {
+        // JSD is bounded by ln(2) ≈ 0.693
+        let a: [UInt32] = [1000, 0, 0]
+        let b: [UInt32] = [0, 0, 1000]
+        let jsd = HistogramClustering.jensenShannonDivergence(a, b)
+        XCTAssertLessThanOrEqual(jsd, log(2.0) + 1e-10)
+        XCTAssertGreaterThanOrEqual(jsd, 0)
+    }
+
+    func testJSD_EmptyArrays_IsZero() {
+        let a: [UInt32] = []
+        let b: [UInt32] = []
+        let jsd = HistogramClustering.jensenShannonDivergence(a, b)
+        XCTAssertEqual(jsd, 0)
+    }
+
+    func testJSD_OneZeroTotal_IsZero() {
+        let a: [UInt32] = [0, 0]
+        let b: [UInt32] = [100, 200]
+        let jsd = HistogramClustering.jensenShannonDivergence(a, b)
+        XCTAssertEqual(jsd, 0)
+    }
+
+    func testJSD_DifferentLengths_HandlesGracefully() {
+        let a: [UInt32] = [100, 200]
+        let b: [UInt32] = [100, 200, 300]
+        let jsd = HistogramClustering.jensenShannonDivergence(a, b)
+        XCTAssertGreaterThan(jsd, 0)
+    }
+
+    // MARK: - Histogram Clustering
+
+    func testClustering_EmptyInput_ReturnsEmpty() throws {
+        let result = try HistogramClustering.cluster(
+            contextSymbols: [],
+            alphabetSize: 4
+        )
+        XCTAssertEqual(result.clusterCount, 0)
+        XCTAssertEqual(result.contextMap.count, 0)
+    }
+
+    func testClustering_SingleContext_NoMerge() throws {
+        let result = try HistogramClustering.cluster(
+            contextSymbols: [[0, 1, 2, 0, 1]],
+            alphabetSize: 3
+        )
+        XCTAssertEqual(result.clusterCount, 1)
+        XCTAssertEqual(result.contextMap, [0])
+    }
+
+    func testClustering_IdenticalContexts_MergedToOne() throws {
+        // Two contexts with identical symbol distributions should merge
+        let symbols = [0, 0, 0, 1, 1, 2]
+        let result = try HistogramClustering.cluster(
+            contextSymbols: [symbols, symbols],
+            alphabetSize: 3,
+            distanceThreshold: 0.1
+        )
+        XCTAssertEqual(result.clusterCount, 1)
+        XCTAssertEqual(result.contextMap[0], result.contextMap[1])
+    }
+
+    func testClustering_VeryDifferentContexts_NotMerged() throws {
+        // Two very different distributions should not merge at low threshold
+        let ctx0 = [Int](repeating: 0, count: 100)
+        let ctx1 = [Int](repeating: 1, count: 100)
+        let result = try HistogramClustering.cluster(
+            contextSymbols: [ctx0, ctx1],
+            alphabetSize: 2,
+            distanceThreshold: 0.01
+        )
+        XCTAssertEqual(result.clusterCount, 2)
+        XCTAssertNotEqual(result.contextMap[0], result.contextMap[1])
+    }
+
+    func testClustering_ThreeContexts_TwoSimilarMerge() throws {
+        // ctx0 and ctx1 are very similar (heavily skewed to 0)
+        let ctx0 = [Int](repeating: 0, count: 100) + [1]
+        let ctx1 = [Int](repeating: 0, count: 95) + [1, 1, 1]
+        // ctx2 is heavily skewed the other way
+        let ctx2 = [0] + [Int](repeating: 1, count: 100)
+        let result = try HistogramClustering.cluster(
+            contextSymbols: [ctx0, ctx1, ctx2],
+            alphabetSize: 2,
+            distanceThreshold: 0.1
+        )
+        // ctx0 and ctx1 should be in the same cluster
+        XCTAssertEqual(result.contextMap[0], result.contextMap[1])
+        // ctx2 should be in a different cluster
+        XCTAssertNotEqual(result.contextMap[0], result.contextMap[2])
+        XCTAssertEqual(result.clusterCount, 2)
+    }
+
+    func testClustering_MaxClusters_Respected() throws {
+        // 4 very different contexts, but limit to 2 clusters
+        let result = try HistogramClustering.cluster(
+            contextSymbols: [
+                [Int](repeating: 0, count: 100),
+                [Int](repeating: 1, count: 100),
+                [Int](repeating: 2, count: 100),
+                [Int](repeating: 3, count: 100),
+            ],
+            alphabetSize: 4,
+            maxClusters: 2,
+            distanceThreshold: 1.0
+        )
+        XCTAssertLessThanOrEqual(result.clusterCount, 2)
+        XCTAssertEqual(result.contextMap.count, 4)
+    }
+
+    func testClustering_MaxClustersZero_NoLimit() throws {
+        // 4 different contexts, maxClusters=0 means no forced merging
+        let result = try HistogramClustering.cluster(
+            contextSymbols: [
+                [Int](repeating: 0, count: 100),
+                [Int](repeating: 1, count: 100),
+                [Int](repeating: 2, count: 100),
+                [Int](repeating: 3, count: 100),
+            ],
+            alphabetSize: 4,
+            maxClusters: 0,
+            distanceThreshold: 0.001
+        )
+        // With very low threshold and no limit, all stay separate
+        XCTAssertEqual(result.clusterCount, 4)
+    }
+
+    func testClustering_ContextMapValid_AllIndicesInRange() throws {
+        let result = try HistogramClustering.cluster(
+            contextSymbols: [
+                [0, 1, 0], [1, 1, 0], [0, 0, 0],
+                [1, 0, 1], [0, 1, 1],
+            ],
+            alphabetSize: 2,
+            distanceThreshold: 0.5
+        )
+        for cluster in result.contextMap {
+            XCTAssertGreaterThanOrEqual(cluster, 0)
+            XCTAssertLessThan(cluster, result.clusterCount)
+        }
+    }
+
+    func testClustering_DistributionsSumToTabSize() throws {
+        let result = try HistogramClustering.cluster(
+            contextSymbols: [
+                [0, 0, 1], [0, 1, 1], [1, 1, 1],
+            ],
+            alphabetSize: 2,
+            distanceThreshold: 0.5
+        )
+        for dist in result.distributions {
+            let sum = dist.frequencies.reduce(UInt32(0), +)
+            XCTAssertEqual(sum, ANSConstants.tabSize)
+        }
+    }
+
+    func testClustering_EmptyContexts_HandledGracefully() throws {
+        // Mix of empty and non-empty contexts
+        let result = try HistogramClustering.cluster(
+            contextSymbols: [
+                [],        // empty → uniform
+                [0, 0, 0], // skewed toward 0
+                [],        // empty → uniform
+            ],
+            alphabetSize: 2,
+            distanceThreshold: 0.5
+        )
+        // The two empty contexts should have identical (uniform) distributions
+        // and merge together
+        XCTAssertEqual(result.contextMap[0], result.contextMap[2])
+        XCTAssertEqual(result.contextMap.count, 3)
+    }
+
+    func testClustering_HighThreshold_MergesAll() throws {
+        // With a very high threshold, all contexts should merge
+        let result = try HistogramClustering.cluster(
+            contextSymbols: [
+                [Int](repeating: 0, count: 100),
+                [Int](repeating: 1, count: 100),
+                [Int](repeating: 2, count: 100),
+            ],
+            alphabetSize: 3,
+            distanceThreshold: 1.0
+        )
+        XCTAssertEqual(result.clusterCount, 1)
+    }
+
+    // MARK: - Clustered Multi-Context Encoder
+
+    func testBuildClustered_RoundTrip_IdenticalContexts() throws {
+        let symbols = [0, 0, 1, 0, 1]
+        let (encoder, contextMap) = try MultiContextANSEncoder.buildClustered(
+            contextSymbols: [symbols, symbols],
+            alphabetSize: 2,
+            distanceThreshold: 0.5
+        )
+
+        // Both contexts map to the same cluster
+        XCTAssertEqual(contextMap[0], contextMap[1])
+
+        // Encode using mapped contexts
+        let pairs: [(symbol: Int, context: Int)] = [
+            (0, contextMap[0]), (1, contextMap[1]),
+            (0, contextMap[0]), (1, contextMap[0]),
+        ]
+        let encoded = try encoder.encode(pairs)
+        let decoded = try encoder.decode(
+            encoded, contexts: pairs.map { $0.context }
+        )
+        XCTAssertEqual(decoded, pairs.map { $0.symbol })
+    }
+
+    func testBuildClustered_RoundTrip_DifferentContexts() throws {
+        let ctx0 = [Int](repeating: 0, count: 50) + [1]
+        let ctx1 = [1, 1, 1, 1, 0]
+        let (encoder, contextMap) = try MultiContextANSEncoder.buildClustered(
+            contextSymbols: [ctx0, ctx1],
+            alphabetSize: 2,
+            distanceThreshold: 0.01
+        )
+
+        // These are very different so should stay separate
+        XCTAssertNotEqual(contextMap[0], contextMap[1])
+
+        // Encode using mapped contexts
+        let pairs: [(symbol: Int, context: Int)] = [
+            (0, contextMap[0]), (1, contextMap[1]),
+            (0, contextMap[0]), (0, contextMap[1]),
+        ]
+        let encoded = try encoder.encode(pairs)
+        let decoded = try encoder.decode(
+            encoded, contexts: pairs.map { $0.context }
+        )
+        XCTAssertEqual(decoded, pairs.map { $0.symbol })
+    }
+
+    func testBuildClustered_DefaultThreshold_Works() throws {
+        let (encoder, contextMap) = try MultiContextANSEncoder.buildClustered(
+            contextSymbols: [[0, 1, 0], [0, 0, 1]],
+            alphabetSize: 2
+        )
+        XCTAssertEqual(contextMap.count, 2)
+        XCTAssertGreaterThan(encoder.contextCount, 0)
+    }
+
+    func testBuildClustered_ManyContexts_ReducesClusters() throws {
+        // 8 contexts: 4 are similar (mostly 0), 4 are similar (mostly 1)
+        var contextSymbols = [[Int]]()
+        for _ in 0..<4 {
+            contextSymbols.append([Int](repeating: 0, count: 50) + [1, 1])
+        }
+        for _ in 0..<4 {
+            contextSymbols.append([Int](repeating: 1, count: 50) + [0, 0])
+        }
+
+        let (encoder, contextMap) = try MultiContextANSEncoder.buildClustered(
+            contextSymbols: contextSymbols,
+            alphabetSize: 2,
+            distanceThreshold: 0.1
+        )
+
+        // Should reduce to approximately 2 clusters
+        XCTAssertLessThanOrEqual(encoder.contextCount, 4)
+        XCTAssertGreaterThanOrEqual(encoder.contextCount, 2)
+
+        // First 4 contexts should map to the same cluster
+        XCTAssertEqual(contextMap[0], contextMap[1])
+        XCTAssertEqual(contextMap[1], contextMap[2])
+        XCTAssertEqual(contextMap[2], contextMap[3])
+
+        // Last 4 contexts should map to the same cluster
+        XCTAssertEqual(contextMap[4], contextMap[5])
+        XCTAssertEqual(contextMap[5], contextMap[6])
+        XCTAssertEqual(contextMap[6], contextMap[7])
+
+        // The two groups should be in different clusters
+        XCTAssertNotEqual(contextMap[0], contextMap[4])
+    }
 }

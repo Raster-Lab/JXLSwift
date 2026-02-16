@@ -765,4 +765,234 @@ struct MultiContextANSEncoder: Sendable {
 
         return symbols
     }
+
+    /// Build a multi-context encoder with histogram clustering.
+    ///
+    /// Contexts with similar probability distributions are merged into
+    /// clusters, reducing the number of distinct distribution tables that
+    /// must be transmitted.  Each original context is mapped to a cluster
+    /// ID.  The resulting encoder uses the clustered distributions.
+    ///
+    /// - Parameters:
+    ///   - contextSymbols: An array of symbol sequences, one per context.
+    ///   - alphabetSize: The shared alphabet size.
+    ///   - maxClusters: Maximum number of clusters to retain.  Pass 0 to
+    ///     use the number of input contexts (no limit).
+    ///   - distanceThreshold: Pairs with Jensen-Shannon divergence below
+    ///     this value are eligible for merging.  Default is 0.1.
+    /// - Returns: A tuple of the clustered encoder and the context-to-cluster
+    ///   mapping.
+    static func buildClustered(
+        contextSymbols: [[Int]],
+        alphabetSize: Int,
+        maxClusters: Int = 0,
+        distanceThreshold: Double = 0.1
+    ) throws -> (encoder: MultiContextANSEncoder, contextMap: [Int]) {
+        let result = try HistogramClustering.cluster(
+            contextSymbols: contextSymbols,
+            alphabetSize: alphabetSize,
+            maxClusters: maxClusters,
+            distanceThreshold: distanceThreshold
+        )
+
+        return (
+            encoder: MultiContextANSEncoder(distributions: result.distributions),
+            contextMap: result.contextMap
+        )
+    }
+}
+
+// MARK: - Histogram Clustering
+
+/// Histogram clustering for merging similar ANS probability distributions.
+///
+/// When multi-context ANS coding uses many contexts, some may have very
+/// similar frequency distributions.  Merging these into clusters reduces
+/// the number of distribution tables that must be serialised, saving
+/// header overhead while incurring only a small compression penalty.
+///
+/// The algorithm uses Jensen-Shannon divergence (JSD) as the distance
+/// metric between pairs of normalised distributions.  It greedily merges
+/// the closest pair until either the minimum distance exceeds a threshold
+/// or the target cluster count is reached.
+///
+/// This follows the general histogram clustering strategy described in
+/// ISO/IEC 18181-1 §8 for reducing entropy coding overhead.
+enum HistogramClustering: Sendable {
+
+    /// Result of histogram clustering.
+    struct ClusterResult: Sendable {
+        /// The clustered (merged) distributions, one per cluster.
+        let distributions: [ANSDistribution]
+
+        /// Maps each original context index to its cluster index.
+        /// `contextMap[i]` is the cluster that context `i` was assigned to.
+        let contextMap: [Int]
+
+        /// Number of clusters produced.
+        var clusterCount: Int { distributions.count }
+    }
+
+    /// Cluster similar distributions from per-context symbol sequences.
+    ///
+    /// - Parameters:
+    ///   - contextSymbols: Per-context symbol sequences.
+    ///   - alphabetSize: The shared alphabet size.
+    ///   - maxClusters: Maximum clusters to retain (0 = no limit).
+    ///   - distanceThreshold: JSD threshold for merging (default 0.1).
+    /// - Returns: A ``ClusterResult`` with merged distributions and a
+    ///   context mapping.
+    /// - Throws: ``ANSError`` if distribution construction fails.
+    static func cluster(
+        contextSymbols: [[Int]],
+        alphabetSize: Int,
+        maxClusters: Int = 0,
+        distanceThreshold: Double = 0.1
+    ) throws -> ClusterResult {
+        let numContexts = contextSymbols.count
+
+        guard numContexts > 0 else {
+            return ClusterResult(distributions: [], contextMap: [])
+        }
+
+        // Build raw frequency counts per context
+        var rawFreqs = [[UInt32]]()
+        for symbols in contextSymbols {
+            if symbols.isEmpty {
+                rawFreqs.append([UInt32](repeating: 1, count: alphabetSize))
+            } else {
+                let freqs = try ANSFrequencyAnalysis.countFrequencies(
+                    symbols: symbols, alphabetSize: alphabetSize
+                )
+                rawFreqs.append(freqs)
+            }
+        }
+
+        // If only one context, no clustering needed
+        if numContexts == 1 {
+            let dist = try ANSDistribution(rawFrequencies: rawFreqs[0])
+            return ClusterResult(distributions: [dist], contextMap: [0])
+        }
+
+        // Effective max clusters
+        let effectiveMax = maxClusters > 0
+            ? min(maxClusters, numContexts)
+            : numContexts
+
+        // Initialise: each context is its own cluster
+        // clusterAssignment[i] = cluster ID for context i
+        var clusterAssignment = Array(0..<numContexts)
+        // clusterFreqs[clusterID] = merged frequency array
+        var clusterFreqs = rawFreqs
+        // Track which cluster IDs are still active
+        var activeClusters = Set(0..<numContexts)
+
+        // Greedy agglomerative merging
+        while activeClusters.count > effectiveMax || activeClusters.count > 1 {
+            // Find the closest pair of active clusters
+            var bestI = -1
+            var bestJ = -1
+            var bestDist = Double.infinity
+
+            let sorted = activeClusters.sorted()
+            for ai in 0..<sorted.count {
+                for aj in (ai + 1)..<sorted.count {
+                    let d = jensenShannonDivergence(
+                        clusterFreqs[sorted[ai]],
+                        clusterFreqs[sorted[aj]]
+                    )
+                    if d < bestDist {
+                        bestDist = d
+                        bestI = sorted[ai]
+                        bestJ = sorted[aj]
+                    }
+                }
+            }
+
+            // Stop if best distance exceeds threshold and we are at or
+            // below the cluster limit
+            if bestDist > distanceThreshold
+                && activeClusters.count <= effectiveMax {
+                break
+            }
+
+            // Merge cluster bestJ into bestI
+            for k in 0..<alphabetSize {
+                clusterFreqs[bestI][k] += clusterFreqs[bestJ][k]
+            }
+            activeClusters.remove(bestJ)
+
+            // Update assignments: all contexts pointing to bestJ now
+            // point to bestI
+            for c in 0..<numContexts {
+                if clusterAssignment[c] == bestJ {
+                    clusterAssignment[c] = bestI
+                }
+            }
+        }
+
+        // Compact: renumber active clusters to 0..<N
+        let sortedActive = activeClusters.sorted()
+        var clusterRemap = [Int: Int]()
+        for (newID, oldID) in sortedActive.enumerated() {
+            clusterRemap[oldID] = newID
+        }
+
+        let contextMap = clusterAssignment.map { clusterRemap[$0]! }
+
+        // Build final distributions from merged frequencies
+        var distributions = [ANSDistribution]()
+        for oldID in sortedActive {
+            let dist = try ANSDistribution(rawFrequencies: clusterFreqs[oldID])
+            distributions.append(dist)
+        }
+
+        return ClusterResult(
+            distributions: distributions,
+            contextMap: contextMap
+        )
+    }
+
+    /// Compute Jensen-Shannon divergence between two frequency arrays.
+    ///
+    /// JSD is a symmetric, bounded (0–ln 2) divergence measure based on
+    /// the KL divergence.  It is well-suited for comparing probability
+    /// distributions because it handles zero-probability symbols
+    /// gracefully (via the averaged distribution M).
+    ///
+    /// - Parameters:
+    ///   - a: First frequency array.
+    ///   - b: Second frequency array.
+    /// - Returns: The JSD value (0 = identical, ln(2) ≈ 0.693 = maximally
+    ///   different).
+    static func jensenShannonDivergence(
+        _ a: [UInt32],
+        _ b: [UInt32]
+    ) -> Double {
+        let n = max(a.count, b.count)
+        guard n > 0 else { return 0 }
+
+        let totalA = a.reduce(Double(0)) { $0 + Double($1) }
+        let totalB = b.reduce(Double(0)) { $0 + Double($1) }
+
+        guard totalA > 0 && totalB > 0 else { return 0 }
+
+        var klAM: Double = 0
+        var klBM: Double = 0
+
+        for i in 0..<n {
+            let pA = i < a.count ? Double(a[i]) / totalA : 0
+            let pB = i < b.count ? Double(b[i]) / totalB : 0
+            let m = (pA + pB) / 2.0
+
+            if pA > 0 && m > 0 {
+                klAM += pA * log(pA / m)
+            }
+            if pB > 0 && m > 0 {
+                klBM += pB * log(pB / m)
+            }
+        }
+
+        return (klAM + klBM) / 2.0
+    }
 }

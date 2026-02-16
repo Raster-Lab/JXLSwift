@@ -310,7 +310,7 @@
 - [x] Symbol frequency analysis and distribution table generation
 - [x] Distribution encoding (compressed and uncompressed modes)
 - [x] Multi-context ANS (context-dependent distributions)
-- [ ] Histogram clustering (merge similar distributions)
+- [x] Histogram clustering (merge similar distributions)
 - [ ] ANS interleaving for parallelism
 - [ ] LZ77 hybrid mode (for repeated patterns)
 - [x] Integration with Modular mode entropy backend
