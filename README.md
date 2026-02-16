@@ -20,7 +20,7 @@ JXLSwift provides a pure Swift implementation of the JPEG XL image compression s
 
 ## Requirements
 
-- Swift 6.0 or later
+- Swift 6.2 or later
 - macOS 13.0+ / iOS 16.0+ / tvOS 16.0+ / watchOS 9.0+ / visionOS 1.0+
 - Apple Silicon (ARM64) recommended for optimal performance
 - x86-64 supported with fallback implementations

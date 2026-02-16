@@ -35,7 +35,7 @@
 
 - [x] Swift Package Manager project with `Package.swift`
 - [x] Platform targets: macOS 13+, iOS 16+, tvOS 16+, watchOS 9+, visionOS 1+
-- [x] Swift 6.0 with strict concurrency (`StrictConcurrency`) enabled
+- [x] Swift 6.2 with strict concurrency enabled by default
 - [x] Directory structure: `Core/`, `Encoding/`, `Hardware/`, `Format/`
 - [x] `.gitignore` for Swift build artifacts
 - [x] MIT License
