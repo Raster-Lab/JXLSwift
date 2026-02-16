@@ -111,11 +111,11 @@
 - [ ] Round-trip test: encode → decode → pixel-perfect match (requires decoder)
 - [ ] Round-trip test: encode with JXLSwift → decode with libjxl → pixel-perfect match
 - [ ] Round-trip test: encode with libjxl → decode with JXLSwift → pixel-perfect match (requires decoder)
-- [ ] MED predictor unit tests: first pixel, first row, first column, general case
-- [ ] ZigZag encoding: 0→0, -1→1, 1→2, -2→3, 2→4
+- [x] MED predictor unit tests: first pixel, first row, first column, general case
+- [x] ZigZag encoding: 0→0, -1→1, 1→2, -2→3, 2→4
 - [ ] RCT forward and inverse produce pixel-perfect round-trip
 - [ ] Squeeze transform forward/inverse round-trip
-- [ ] Edge cases: 1×1 image, single-channel, 16-bit depth, maximum dimensions
+- [x] Edge cases: 1×1 image, single-channel, 16-bit depth, maximum dimensions
 
 ### Acceptance Criteria
 
@@ -151,13 +151,13 @@
 
 - [x] Lossy encoding produces non-empty output
 - [x] Compression ratio > 1.0 for test images
-- [ ] DCT round-trip: DCT → IDCT ≈ original (within floating-point tolerance)
-- [ ] Quantisation: zero distance → no quantisation loss
-- [ ] Zigzag scan order covers all 64 coefficients exactly once
-- [ ] Colour space conversion: RGB → YCbCr → RGB round-trip (within tolerance)
+- [x] DCT round-trip: DCT → IDCT ≈ original (within floating-point tolerance)
+- [x] Quantisation: zero distance → no quantisation loss
+- [x] Zigzag scan order covers all 64 coefficients exactly once
+- [x] Colour space conversion: RGB → YCbCr → RGB round-trip (within tolerance)
 - [ ] XYB colour space forward/inverse
 - [ ] Quality levels: 100 → near-lossless, 50 → high compression, 10 → maximum compression
-- [ ] Block sizes: non-multiple-of-8 image dimensions handled correctly
+- [x] Block sizes: non-multiple-of-8 image dimensions handled correctly
 - [ ] Performance: 256×256 encoding completes in < 2s
 
 ### Acceptance Criteria
