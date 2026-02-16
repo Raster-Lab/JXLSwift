@@ -17,13 +17,31 @@ let package = Package(
         .library(
             name: "JXLSwift",
             targets: ["JXLSwift"]),
+        // Command line tool
+        .executable(
+            name: "jxl-tool",
+            targets: ["JXLTool"]),
     ],
-    dependencies: [],
+    dependencies: [
+        .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.5.0"),
+    ],
     targets: [
         // Core compression codec
         .target(
             name: "JXLSwift",
             dependencies: [],
+            swiftSettings: [
+                .enableExperimentalFeature("StrictConcurrency")
+            ]
+        ),
+        
+        // Command line tool
+        .executableTarget(
+            name: "JXLTool",
+            dependencies: [
+                "JXLSwift",
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+            ],
             swiftSettings: [
                 .enableExperimentalFeature("StrictConcurrency")
             ]
