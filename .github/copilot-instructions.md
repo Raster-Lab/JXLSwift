@@ -5,7 +5,7 @@
 JXLSwift is a native Swift implementation of the JPEG XL (ISO/IEC 18181) compression codec, optimized for Apple Silicon. The library provides both lossless (Modular) and lossy (VarDCT) compression modes with zero C/C++ dependencies.
 
 **Platforms:** macOS 13+, iOS 16+, tvOS 16+, watchOS 9+, visionOS 1+
-**Swift version:** 6.0+ with strict concurrency enabled
+**Swift version:** 6.2+ with strict concurrency enabled
 
 ---
 
@@ -139,7 +139,7 @@ func testEncodingPerformance_SmallImage() throws {
 - Always provide a fallback/scalar implementation for every hardware-optimized path.
 - Keep platform-specific code isolated in the `Hardware/` module.
 
-### Swift 6 Compatibility
+### Swift 6.2 Compatibility
 
 - Enable and respect strict concurrency checking.
 - Avoid using deprecated APIs.
