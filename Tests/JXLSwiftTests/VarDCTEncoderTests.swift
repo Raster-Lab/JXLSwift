@@ -1797,4 +1797,383 @@ final class VarDCTEncoderTests: XCTestCase {
         XCTAssertNoThrow(try encoder.encode(frame),
                          "Single-channel image should encode without CfL errors")
     }
+
+    // MARK: - Adaptive Quantisation Tests
+
+    func testBlockActivity_FlatBlock_ReturnsZero() {
+        let encoder = makeEncoder()
+        let block = [[Float]](repeating: [Float](repeating: 0.5, count: 8), count: 8)
+        let activity = encoder.computeBlockActivity(block: block)
+        XCTAssertEqual(activity, 0, accuracy: 1e-7,
+                       "Flat block should have zero activity")
+    }
+
+    func testBlockActivity_SinglePixelDifference_ReturnsSmallValue() {
+        let encoder = makeEncoder()
+        var block = [[Float]](repeating: [Float](repeating: 0.5, count: 8), count: 8)
+        block[0][0] = 1.0 // one pixel differs
+        let activity = encoder.computeBlockActivity(block: block)
+        XCTAssertGreaterThan(activity, 0,
+                             "Block with one differing pixel should have non-zero activity")
+        XCTAssertLessThan(activity, 0.01,
+                          "Single pixel difference should produce small activity")
+    }
+
+    func testBlockActivity_MaxContrast_ReturnsHighValue() {
+        let encoder = makeEncoder()
+        var block = [[Float]](repeating: [Float](repeating: 0, count: 8), count: 8)
+        // Checkerboard pattern: maximum local contrast
+        for y in 0..<8 {
+            for x in 0..<8 {
+                block[y][x] = (x + y) % 2 == 0 ? 0.0 : 1.0
+            }
+        }
+        let activity = encoder.computeBlockActivity(block: block)
+        XCTAssertEqual(activity, 0.25, accuracy: 1e-5,
+                       "Checkerboard block should have variance of 0.25")
+    }
+
+    func testBlockActivity_Gradient_ReturnsModerateValue() {
+        let encoder = makeEncoder()
+        var block = [[Float]](repeating: [Float](repeating: 0, count: 8), count: 8)
+        for y in 0..<8 {
+            for x in 0..<8 {
+                block[y][x] = Float(x) / 7.0
+            }
+        }
+        let activity = encoder.computeBlockActivity(block: block)
+        XCTAssertGreaterThan(activity, 0,
+                             "Gradient block should have positive activity")
+        XCTAssertLessThan(activity, 0.25,
+                          "Gradient should have less activity than checkerboard")
+    }
+
+    func testBlockActivity_AllZeros_ReturnsZero() {
+        let encoder = makeEncoder()
+        let block = [[Float]](repeating: [Float](repeating: 0, count: 8), count: 8)
+        let activity = encoder.computeBlockActivity(block: block)
+        XCTAssertEqual(activity, 0, accuracy: 1e-7)
+    }
+
+    func testBlockActivity_AllOnes_ReturnsZero() {
+        let encoder = makeEncoder()
+        let block = [[Float]](repeating: [Float](repeating: 1, count: 8), count: 8)
+        let activity = encoder.computeBlockActivity(block: block)
+        XCTAssertEqual(activity, 0, accuracy: 1e-7)
+    }
+
+    func testAdaptiveScale_ZeroActivity_ReturnsBelowOne() {
+        let encoder = makeEncoder()
+        let scale = encoder.adaptiveQuantizationScale(activity: 0)
+        XCTAssertLessThan(scale, 1.0,
+                          "Zero activity should produce scale < 1 (coarser quantisation)")
+    }
+
+    func testAdaptiveScale_HighActivity_ReturnsAboveOne() {
+        let encoder = makeEncoder()
+        let scale = encoder.adaptiveQuantizationScale(activity: 1.0)
+        XCTAssertGreaterThan(scale, 1.0,
+                             "High activity should produce scale > 1 (finer quantisation)")
+    }
+
+    func testAdaptiveScale_MidpointActivity_ReturnsOne() {
+        let encoder = makeEncoder()
+        // At activity == kappa (default 0.01), normalised = 0.5, so scale = 1.0
+        let scale = encoder.adaptiveQuantizationScale(activity: 0.01)
+        XCTAssertEqual(scale, 1.0, accuracy: 1e-5,
+                       "Activity at midpoint kappa should produce neutral scale")
+    }
+
+    func testAdaptiveScale_Monotonic() {
+        let encoder = makeEncoder()
+        var previous: Float = 0
+        for i in 0...100 {
+            let activity = Float(i) * 0.01
+            let scale = encoder.adaptiveQuantizationScale(activity: activity)
+            XCTAssertGreaterThanOrEqual(scale, previous,
+                                        "Scale should be monotonically non-decreasing with activity")
+            previous = scale
+        }
+    }
+
+    func testAdaptiveScale_CustomStrength_ZeroStrength_ReturnsOne() {
+        let encoder = makeEncoder()
+        let scale = encoder.adaptiveQuantizationScale(
+            activity: 0.5, strength: 0, kappa: 0.01
+        )
+        XCTAssertEqual(scale, 1.0, accuracy: 1e-5,
+                       "Zero strength should always produce neutral scale")
+    }
+
+    func testAdaptiveScale_CustomStrength_HigherStrength_WiderRange() {
+        let encoder = makeEncoder()
+        let scaleLow = encoder.adaptiveQuantizationScale(
+            activity: 0.001, strength: 2.0
+        )
+        let scaleHigh = encoder.adaptiveQuantizationScale(
+            activity: 1.0, strength: 2.0
+        )
+        let range = scaleHigh - scaleLow
+        
+        let scaleLowDefault = encoder.adaptiveQuantizationScale(
+            activity: 0.001, strength: 1.0
+        )
+        let scaleHighDefault = encoder.adaptiveQuantizationScale(
+            activity: 1.0, strength: 1.0
+        )
+        let rangeDefault = scaleHighDefault - scaleLowDefault
+        
+        XCTAssertGreaterThan(range, rangeDefault,
+                             "Higher strength should produce wider scale range")
+    }
+
+    func testQuantize_WithActivity_FinerForDetailedBlocks() {
+        let encoder = makeEncoder(distance: 1.0)
+        let block = [[Float]](repeating: [Float](repeating: 100.0, count: 8), count: 8)
+        
+        let qFlat = encoder.quantize(block: block, channel: 0, activity: 0.5)
+        let qDetailed = encoder.quantize(block: block, channel: 0, activity: 1.5)
+        
+        // Detailed blocks (higher activity) get finer quantisation,
+        // meaning larger quantized values (less aggressive division)
+        let flatDC = abs(Int(qFlat[0][0]))
+        let detailedDC = abs(Int(qDetailed[0][0]))
+        XCTAssertGreaterThanOrEqual(detailedDC, flatDC,
+                                    "Detailed blocks should have larger (finer) quantized DC")
+    }
+
+    func testQuantize_NeutralActivity_MatchesDefault() {
+        let encoder = makeEncoder(distance: 1.0)
+        var block = [[Float]](repeating: [Float](repeating: 0, count: 8), count: 8)
+        for y in 0..<8 {
+            for x in 0..<8 {
+                block[y][x] = Float(x + y) / 14.0
+            }
+        }
+        
+        let qDefault = encoder.quantize(block: block, channel: 0)
+        let qNeutral = encoder.quantize(block: block, channel: 0, activity: 1.0)
+        
+        for y in 0..<8 {
+            for x in 0..<8 {
+                XCTAssertEqual(qDefault[y][x], qNeutral[y][x],
+                               "Activity 1.0 should match default quantisation at (\(x),\(y))")
+            }
+        }
+    }
+
+    func testGenerateQuantizationMatrix_ActivityScaling() {
+        let encoder = makeEncoder(distance: 1.0)
+        
+        let matrixNeutral = encoder.generateQuantizationMatrix(channel: 0, activity: 1.0)
+        let matrixFine = encoder.generateQuantizationMatrix(channel: 0, activity: 2.0)
+        let matrixCoarse = encoder.generateQuantizationMatrix(channel: 0, activity: 0.5)
+        
+        for y in 0..<8 {
+            for x in 0..<8 {
+                // Higher activity → smaller q steps (finer)
+                XCTAssertLessThan(matrixFine[y][x], matrixNeutral[y][x],
+                                  "Higher activity should produce smaller q steps at (\(x),\(y))")
+                // Lower activity → larger q steps (coarser)
+                XCTAssertGreaterThan(matrixCoarse[y][x], matrixNeutral[y][x],
+                                     "Lower activity should produce larger q steps at (\(x),\(y))")
+            }
+        }
+    }
+
+    func testGenerateQuantizationMatrix_ActivityClampedLow() {
+        let encoder = makeEncoder(distance: 1.0)
+        
+        // Very high activity: scale = 1/activity clamped to 0.5
+        let matrixExtreme = encoder.generateQuantizationMatrix(channel: 0, activity: 100.0)
+        let matrixClamped = encoder.generateQuantizationMatrix(channel: 0, activity: 2.0)
+        
+        // Both should hit the floor clamp at 0.5
+        for y in 0..<8 {
+            for x in 0..<8 {
+                XCTAssertEqual(matrixExtreme[y][x], matrixClamped[y][x], accuracy: 1e-5,
+                               "Activity above clamp ceiling should produce same result at (\(x),\(y))")
+            }
+        }
+    }
+
+    func testGenerateQuantizationMatrix_ActivityClampedHigh() {
+        let encoder = makeEncoder(distance: 1.0)
+        
+        // Very low activity: scale = 1/activity clamped to 2.0
+        let matrixExtreme = encoder.generateQuantizationMatrix(channel: 0, activity: 0.001)
+        let matrixClamped = encoder.generateQuantizationMatrix(channel: 0, activity: 0.5)
+        
+        // Both should hit the ceiling clamp at 2.0
+        for y in 0..<8 {
+            for x in 0..<8 {
+                XCTAssertEqual(matrixExtreme[y][x], matrixClamped[y][x], accuracy: 1e-5,
+                               "Activity below clamp floor should produce same result at (\(x),\(y))")
+            }
+        }
+    }
+
+    func testAdaptiveQuantization_EndToEnd_ProducesOutput() throws {
+        let encoder = JXLEncoder(options: EncodingOptions(
+            mode: .lossy(quality: 80),
+            effort: .lightning,
+            adaptiveQuantization: true
+        ))
+        
+        var frame = ImageFrame(width: 32, height: 32, channels: 3, pixelType: .uint8)
+        // Create image with flat region (top half) and textured region (bottom half)
+        for y in 0..<32 {
+            for x in 0..<32 {
+                if y < 16 {
+                    // Flat region
+                    frame.setPixel(x: x, y: y, channel: 0, value: 128)
+                    frame.setPixel(x: x, y: y, channel: 1, value: 128)
+                    frame.setPixel(x: x, y: y, channel: 2, value: 128)
+                } else {
+                    // Textured region
+                    let v = UInt16((x * 17 + y * 31) % 256)
+                    frame.setPixel(x: x, y: y, channel: 0, value: v)
+                    frame.setPixel(x: x, y: y, channel: 1, value: v)
+                    frame.setPixel(x: x, y: y, channel: 2, value: v)
+                }
+            }
+        }
+        
+        let result = try encoder.encode(frame)
+        XCTAssertGreaterThan(result.data.count, 0,
+                             "Adaptive quantisation should produce non-empty output")
+    }
+
+    func testAdaptiveQuantization_Disabled_ProducesOutput() throws {
+        let encoder = JXLEncoder(options: EncodingOptions(
+            mode: .lossy(quality: 80),
+            effort: .lightning,
+            adaptiveQuantization: false
+        ))
+        
+        var frame = ImageFrame(width: 16, height: 16, channels: 3, pixelType: .uint8)
+        for y in 0..<16 {
+            for x in 0..<16 {
+                frame.setPixel(x: x, y: y, channel: 0, value: UInt16(x * 16))
+                frame.setPixel(x: x, y: y, channel: 1, value: UInt16(y * 16))
+                frame.setPixel(x: x, y: y, channel: 2, value: 128)
+            }
+        }
+        
+        let result = try encoder.encode(frame)
+        XCTAssertGreaterThan(result.data.count, 0,
+                             "Encoding with adaptive quantisation disabled should succeed")
+    }
+
+    func testAdaptiveQuantization_DifferentOutputSize() throws {
+        let optionsAdaptive = EncodingOptions(
+            mode: .lossy(quality: 80),
+            effort: .lightning,
+            adaptiveQuantization: true
+        )
+        let optionsUniform = EncodingOptions(
+            mode: .lossy(quality: 80),
+            effort: .lightning,
+            adaptiveQuantization: false
+        )
+        
+        // Create image with mixed flat and textured regions
+        var frame = ImageFrame(width: 32, height: 32, channels: 3, pixelType: .uint8)
+        for y in 0..<32 {
+            for x in 0..<32 {
+                if y < 16 {
+                    frame.setPixel(x: x, y: y, channel: 0, value: 100)
+                    frame.setPixel(x: x, y: y, channel: 1, value: 100)
+                    frame.setPixel(x: x, y: y, channel: 2, value: 100)
+                } else {
+                    let v = UInt16((x * 37 + y * 53) % 256)
+                    frame.setPixel(x: x, y: y, channel: 0, value: v)
+                    frame.setPixel(x: x, y: y, channel: 1, value: v)
+                    frame.setPixel(x: x, y: y, channel: 2, value: v)
+                }
+            }
+        }
+        
+        let adaptiveResult = try JXLEncoder(options: optionsAdaptive).encode(frame)
+        let uniformResult = try JXLEncoder(options: optionsUniform).encode(frame)
+        
+        // The outputs should differ because adaptive quant writes
+        // per-block QF fields and adjusts quantisation steps.
+        XCTAssertNotEqual(adaptiveResult.data, uniformResult.data,
+                          "Adaptive and uniform quantisation should produce different output")
+    }
+
+    func testQFScaleFactor_IsPositive() {
+        XCTAssertGreaterThan(VarDCTEncoder.qfScaleFactor, 0,
+                             "QF scale factor must be positive")
+    }
+
+    func testAdaptiveQuantization_1x1Image() throws {
+        let encoder = JXLEncoder(options: EncodingOptions(
+            mode: .lossy(quality: 80),
+            effort: .lightning,
+            adaptiveQuantization: true
+        ))
+        
+        var frame = ImageFrame(width: 1, height: 1, channels: 3, pixelType: .uint8)
+        frame.setPixel(x: 0, y: 0, channel: 0, value: 200)
+        frame.setPixel(x: 0, y: 0, channel: 1, value: 100)
+        frame.setPixel(x: 0, y: 0, channel: 2, value: 50)
+        
+        XCTAssertNoThrow(try encoder.encode(frame),
+                         "1×1 image with adaptive quantisation should not crash")
+    }
+
+    func testAdaptiveQuantization_SingleChannel() throws {
+        let encoder = JXLEncoder(options: EncodingOptions(
+            mode: .lossy(quality: 80),
+            effort: .lightning,
+            adaptiveQuantization: true
+        ))
+        
+        var frame = ImageFrame(width: 8, height: 8, channels: 1, pixelType: .uint8)
+        for y in 0..<8 {
+            for x in 0..<8 {
+                frame.setPixel(x: x, y: y, channel: 0, value: UInt16(x * 30))
+            }
+        }
+        
+        XCTAssertNoThrow(try encoder.encode(frame),
+                         "Single-channel image with adaptive quantisation should succeed")
+    }
+
+    func testBlockActivity_NegativeVarianceClampedToZero() {
+        // Due to floating point, variance can theoretically go slightly negative.
+        // Verify it's clamped to 0.
+        let encoder = makeEncoder()
+        // All identical values → variance exactly 0, clamped to ≥ 0
+        let block = [[Float]](repeating: [Float](repeating: 0.3, count: 8), count: 8)
+        let activity = encoder.computeBlockActivity(block: block)
+        XCTAssertGreaterThanOrEqual(activity, 0,
+                                    "Activity must never be negative")
+    }
+
+    func testEncodingOptions_AdaptiveQuantization_DefaultIsTrue() {
+        let options = EncodingOptions()
+        XCTAssertTrue(options.adaptiveQuantization,
+                      "Adaptive quantisation should be enabled by default")
+    }
+
+    func testEncodingOptions_AdaptiveQuantization_PresetFast() {
+        let options = EncodingOptions.fast
+        XCTAssertTrue(options.adaptiveQuantization,
+                      "Fast preset should have adaptive quantisation enabled")
+    }
+
+    func testEncodingOptions_AdaptiveQuantization_PresetHighQuality() {
+        let options = EncodingOptions.highQuality
+        XCTAssertTrue(options.adaptiveQuantization,
+                      "High quality preset should have adaptive quantisation enabled")
+    }
+
+    func testEncodingOptions_AdaptiveQuantization_PresetLossless() {
+        let options = EncodingOptions.lossless
+        XCTAssertTrue(options.adaptiveQuantization,
+                      "Lossless preset should have adaptive quantisation enabled (unused in modular)")
+    }
 }

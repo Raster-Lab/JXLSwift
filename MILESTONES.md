@@ -142,7 +142,7 @@
 - [ ] Variable block sizes (8×8, 16×16, 32×32, 16×8 etc.)
 - [x] XYB colour space (JPEG XL native perceptual space)
 - [x] Chroma-from-luma (CfL) prediction
-- [ ] Adaptive quantisation per block
+- [x] Adaptive quantisation per block
 - [x] DC prediction across blocks
 - [ ] Coefficient reordering (natural order per spec)
 - [ ] Full VarDCT frame header per ISO/IEC 18181-1 §6

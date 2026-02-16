@@ -61,6 +61,15 @@ public struct EncodingOptions: Sendable {
     /// Keep original JPEG if transcoding
     public var keepJPEG: Bool
     
+    /// Enable adaptive quantisation per block in VarDCT mode.
+    ///
+    /// When enabled, each 8×8 block's quantisation step is scaled by
+    /// the local spatial activity (variance).  High-detail blocks
+    /// receive finer quantisation to preserve edges; flat blocks are
+    /// quantised more coarsely because the human visual system is
+    /// less sensitive to noise in smooth regions.
+    public var adaptiveQuantization: Bool
+    
     public init(
         mode: CompressionMode = .lossy(quality: 90),
         effort: EncodingEffort = .squirrel,
@@ -70,7 +79,8 @@ public struct EncodingOptions: Sendable {
         useHardwareAcceleration: Bool = true,
         useAccelerate: Bool = true,
         useMetal: Bool = true,
-        keepJPEG: Bool = false
+        keepJPEG: Bool = false,
+        adaptiveQuantization: Bool = true
     ) {
         self.mode = mode
         self.effort = effort
@@ -81,6 +91,7 @@ public struct EncodingOptions: Sendable {
         self.useAccelerate = useAccelerate
         self.useMetal = useMetal
         self.keepJPEG = keepJPEG
+        self.adaptiveQuantization = adaptiveQuantization
     }
     
     /// Default high-quality encoding
