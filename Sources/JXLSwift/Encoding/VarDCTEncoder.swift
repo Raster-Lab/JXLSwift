@@ -111,6 +111,12 @@ class VarDCTEncoder {
         let blocksX = (width + blockSize - 1) / blockSize
         let blocksY = (height + blockSize - 1) / blockSize
         
+        // Track quantized DC values for inter-block prediction
+        var dcValues = [[Int16]](
+            repeating: [Int16](repeating: 0, count: blocksX),
+            count: blocksY
+        )
+        
         for blockY in 0..<blocksY {
             for blockX in 0..<blocksX {
                 // Extract block
@@ -128,13 +134,59 @@ class VarDCTEncoder {
                 // Quantize
                 let quantized = quantize(block: dctBlock, channel: channel)
                 
-                // Encode coefficients
-                encodeBlock(writer: &writer, block: quantized)
+                // Compute DC prediction residual, then store DC value
+                let dc = quantized[0][0]
+                let predicted = predictDC(
+                    dcValues: dcValues,
+                    blockX: blockX,
+                    blockY: blockY
+                )
+                let dcResidual = dc - predicted
+                dcValues[blockY][blockX] = dc
+                
+                // Encode coefficients with DC prediction residual
+                encodeBlock(writer: &writer, block: quantized, dcResidual: dcResidual)
             }
         }
         
         writer.flushByte()
         return writer.data
+    }
+    
+    // MARK: - DC Prediction
+    
+    /// Predict the DC coefficient of the current block from its left and above neighbors.
+    ///
+    /// Uses a simple predictor inspired by the MED (Median Edge Detector) approach:
+    /// - First block (0, 0): prediction is 0 (no neighbors available)
+    /// - First row: prediction is the left neighbor's DC
+    /// - First column: prediction is the above neighbor's DC
+    /// - General case: prediction is the average of left and above neighbors' DC values
+    ///
+    /// - Parameters:
+    ///   - dcValues: 2D grid of quantized DC values for already-processed blocks
+    ///   - blockX: Horizontal block index of the current block
+    ///   - blockY: Vertical block index of the current block
+    /// - Returns: The predicted DC value for the current block
+    func predictDC(dcValues: [[Int16]], blockX: Int, blockY: Int) -> Int16 {
+        let hasLeft = blockX > 0
+        let hasAbove = blockY > 0
+        
+        if hasLeft && hasAbove {
+            // General case: average of left and above
+            let left = Int(dcValues[blockY][blockX - 1])
+            let above = Int(dcValues[blockY - 1][blockX])
+            return Int16((left + above) / 2)
+        } else if hasLeft {
+            // First row: use left neighbor
+            return dcValues[blockY][blockX - 1]
+        } else if hasAbove {
+            // First column: use above neighbor
+            return dcValues[blockY - 1][blockX]
+        } else {
+            // First block: no prediction available
+            return 0
+        }
     }
     
     func extractBlock(data: [[Float]], blockX: Int, blockY: Int, 
@@ -306,13 +358,13 @@ class VarDCTEncoder {
     
     // MARK: - Coefficient Encoding
     
-    private func encodeBlock(writer: inout BitstreamWriter, block: [[Int16]]) {
+    private func encodeBlock(writer: inout BitstreamWriter, block: [[Int16]], dcResidual: Int16? = nil) {
         // Zigzag scan order for better compression
         let coefficients = zigzagScan(block: block)
         
-        // Encode DC coefficient
-        let dc = coefficients[0]
-        writer.writeVarint(encodeSignedValue(Int32(dc)))
+        // Encode DC coefficient (use prediction residual if available)
+        let dcValue = dcResidual ?? coefficients[0]
+        writer.writeVarint(encodeSignedValue(Int32(dcValue)))
         
         // Encode AC coefficients with run-length encoding
         var zeroRun = 0

@@ -143,7 +143,7 @@
 - [ ] XYB colour space (JPEG XL native perceptual space)
 - [ ] Chroma-from-luma (CfL) prediction
 - [ ] Adaptive quantisation per block
-- [ ] DC prediction across blocks
+- [x] DC prediction across blocks
 - [ ] Coefficient reordering (natural order per spec)
 - [ ] Full VarDCT frame header per ISO/IEC 18181-1 §6
 
