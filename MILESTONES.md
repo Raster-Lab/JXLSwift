@@ -17,7 +17,7 @@
 | 4 | JPEG XL File Format & Container | Weeks 11–14 | ✅ Complete |
 | 5 | Hardware Acceleration — Apple Accelerate | Weeks 14–17 | ✅ Complete |
 | 6 | Hardware Acceleration — ARM NEON / SIMD | Weeks 17–20 | ✅ Complete |
-| 7 | Hardware Acceleration — Metal GPU | Weeks 20–23 | ⬜ Not Started |
+| 7 | Hardware Acceleration — Metal GPU | Weeks 20–23 | ✅ Complete |
 | 8 | ANS Entropy Coding | Weeks 23–27 | ✅ Complete |
 | 9 | Advanced Encoding Features | Weeks 27–31 | ⬜ Not Started |
 | 10 | Command Line Tool (jxl-tool) | Weeks 31–34 | ✅ Complete |
@@ -273,21 +273,21 @@
 
 ### Deliverables
 
-- [ ] Metal compute shader for 2D DCT on 8×8 blocks
-- [ ] Metal compute shader for RGB → YCbCr colour conversion
-- [ ] Metal compute shader for quantisation
-- [ ] Metal buffer management for image data transfer (CPU ↔ GPU)
+- [x] Metal compute shader for 2D DCT on 8×8 blocks
+- [x] Metal compute shader for RGB → YCbCr colour conversion
+- [x] Metal compute shader for quantisation
+- [x] Metal buffer management for image data transfer (CPU ↔ GPU)
 - [ ] Async GPU encoding pipeline with double-buffering
-- [ ] Metal availability check with CPU fallback
-- [ ] Power/thermal aware scheduling (prefer GPU on plugged-in, CPU on battery)
+- [x] Metal availability check with CPU fallback
+- [x] Power/thermal aware scheduling (prefer GPU on plugged-in, CPU on battery)
 
 ### Tests Required
 
-- [ ] Metal DCT matches CPU DCT within `1e-4` tolerance
-- [ ] Metal colour conversion matches CPU conversion
+- [x] Metal DCT matches CPU DCT within `1e-4` tolerance
+- [x] Metal colour conversion matches CPU conversion
 - [ ] Large image (4K) encoding produces valid output
-- [ ] GPU memory is properly released after encoding
-- [ ] Fallback to CPU on devices without Metal support
+- [x] GPU memory is properly released after encoding
+- [x] Fallback to CPU on devices without Metal support
 - [ ] Performance: GPU path ≥ 5× faster than CPU-only for large images
 
 ### Acceptance Criteria

@@ -774,6 +774,7 @@ class VarDCTEncoder {
     
     private func applyDCT(block: [[Float]]) -> [[Float]] {
         // Use hardware-accelerated DCT if available
+        // Note: Metal is most efficient for batch processing, not single blocks
         if hardware.hasAccelerate && options.useAccelerate {
             return applyDCTAccelerate(block: block)
         } else if hardware.hasNEON && options.useHardwareAcceleration {
@@ -781,6 +782,62 @@ class VarDCTEncoder {
         } else {
             return applyDCTScalar(block: block)
         }
+    }
+    
+    /// Apply DCT to multiple 8×8 blocks in parallel using Metal GPU
+    ///
+    /// This method is more efficient than processing blocks one at a time.
+    /// Falls back to CPU if Metal is unavailable or if batch size is too small.
+    ///
+    /// - Parameters:
+    ///   - blocks: Array of 8×8 blocks (each block is 64 floats in row-major order)
+    /// - Returns: Array of DCT-transformed blocks, or `nil` if Metal processing fails
+    private func applyDCTBatchMetal(blocks: [[Float]]) -> [[Float]]? {
+        #if canImport(Metal)
+        guard hardware.hasMetal && options.useMetal else { return nil }
+        guard MetalOps.isAvailable else { return nil }
+        
+        // Only use GPU for larger batches to amortize transfer cost
+        let minBlocksForGPU = 16
+        guard blocks.count >= minBlocksForGPU else { return nil }
+        
+        // Flatten all blocks into a single array
+        let flatData = blocks.flatMap { $0 }
+        let blockCount = blocks.count
+        
+        // Ensure each block is exactly 64 elements
+        guard flatData.count == blockCount * 64 else { return nil }
+        
+        // Calculate dimensions for Metal processing
+        let width = 8 * blockCount // Arrange blocks horizontally
+        let height = 8
+        
+        // Apply DCT using Metal
+        guard let transformed = MetalCompute.dct8x8(
+            inputData: flatData,
+            width: width,
+            height: height
+        ) else {
+            return nil
+        }
+        
+        // Split back into blocks
+        var result: [[Float]] = []
+        result.reserveCapacity(blockCount)
+        
+        for blockIdx in 0..<blockCount {
+            var block = [Float](repeating: 0, count: 64)
+            let baseOffset = blockIdx * 64
+            for i in 0..<64 {
+                block[i] = transformed[baseOffset + i]
+            }
+            result.append(block)
+        }
+        
+        return result
+        #else
+        return nil
+        #endif
     }
     
     func applyDCTScalar(block: [[Float]]) -> [[Float]] {

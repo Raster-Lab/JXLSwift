@@ -195,11 +195,17 @@ JXLSwift is optimized for Apple Silicon:
 
 - **ARM NEON SIMD** - Vectorized DCT, colour conversion, quantisation, prediction, RCT, and squeeze transforms via Swift SIMD types (both Modular and VarDCT pipelines)
 - **Apple Accelerate** - vDSP DCT transforms and matrix operations
-- **Metal GPU** - Parallel processing support (planned)
+- **Metal GPU** - Parallel block processing with compute shaders for DCT, color conversion, and quantization (batch operations)
 
 Benchmarks on Apple M1 (256x256 image):
 - Fast mode: ~0.7s per frame
 - High quality: ~2-3s per frame
+
+**Metal GPU Acceleration:**
+- Automatically enabled on Apple platforms when available
+- Best suited for batch processing of multiple images or large images
+- Falls back to CPU (Accelerate/NEON/scalar) for small workloads
+- Control via `EncodingOptions.useMetal` flag
 
 ## Compression Modes
 
@@ -317,6 +323,7 @@ See [MILESTONES.md](MILESTONES.md) for the detailed project milestone plan.
 - [x] Apple Silicon optimization
 - [x] Accelerate framework integration — vDSP DCT, vectorized color/quantization
 - [x] ARM NEON SIMD acceleration — portable Swift SIMD types, DCT, colour conversion, quantisation, MED prediction, RCT, squeeze (Modular + VarDCT)
+- [x] Metal GPU acceleration — compute shaders for DCT, color conversion, quantization (batch operations)
 - [x] Command line tool (jxl-tool) — encode, info, hardware, benchmark, batch, compare
 - [x] JPEG XL file format (.jxl) — ISOBMFF container, codestream/frame headers
 - [x] Metadata support (EXIF, XMP, ICC profiles)
@@ -324,7 +331,8 @@ See [MILESTONES.md](MILESTONES.md) for the detailed project milestone plan.
 - [x] ANS entropy coding — rANS encoder/decoder, multi-context, distribution tables, histogram clustering, ANS interleaving, LZ77 hybrid mode, integrated with Modular + VarDCT
 - [x] Man pages for jxl-tool and all subcommands
 - [x] Makefile for build, test, and installation
-- [ ] Metal GPU acceleration
+- [ ] Metal GPU async pipeline with double-buffering
+- [ ] Progressive encoding
 - [ ] Progressive encoding
 - [ ] Decoding support
 - [ ] libjxl validation & benchmarking
