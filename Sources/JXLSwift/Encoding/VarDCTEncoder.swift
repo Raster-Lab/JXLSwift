@@ -20,6 +20,19 @@ class VarDCTEncoder {
     /// rounded, and stored as an integer so the decoder can reconstruct it.
     static let cflScaleFactor: Float = 256
     
+    /// Minimum adaptive quantisation scale (floor for high-activity blocks).
+    static let minAdaptiveScale: Float = 0.5
+    
+    /// Maximum adaptive quantisation scale (ceiling for flat blocks).
+    static let maxAdaptiveScale: Float = 2.0
+    
+    /// Fixed-point scale factor for encoding per-block quantisation fields.
+    ///
+    /// The floating-point activity scale is multiplied by this value,
+    /// rounded, and stored as a varint so the decoder can reconstruct
+    /// the adaptive quantisation matrix for each block.
+    static let qfScaleFactor: Float = 256
+    
     init(hardware: HardwareCapabilities, options: EncodingOptions, distance: Float) {
         self.hardware = hardware
         self.options = options
@@ -592,6 +605,8 @@ class VarDCTEncoder {
             count: blocksY
         )
         
+        let useAdaptive = options.adaptiveQuantization
+        
         for blockY in 0..<blocksY {
             for blockX in 0..<blocksX {
                 // Extract block
@@ -602,6 +617,15 @@ class VarDCTEncoder {
                     width: width,
                     height: height
                 )
+                
+                // Compute adaptive quantisation scale from spatial activity
+                let activity: Float
+                if useAdaptive {
+                    let rawActivity = computeBlockActivity(block: block)
+                    activity = adaptiveQuantizationScale(activity: rawActivity)
+                } else {
+                    activity = 1.0
+                }
                 
                 // Apply DCT
                 var dctBlock = applyDCT(block: block)
@@ -621,8 +645,17 @@ class VarDCTEncoder {
                     ))
                 }
                 
-                // Quantize
-                let quantized = quantize(block: dctBlock, channel: channel)
+                // Quantize with per-block activity scaling
+                let quantized = quantize(
+                    block: dctBlock, channel: channel, activity: activity
+                )
+                
+                // Write per-block quantisation field for decoder
+                if useAdaptive {
+                    writer.writeVarint(
+                        UInt64(round(activity * VarDCTEncoder.qfScaleFactor))
+                    )
+                }
                 
                 // Compute DC prediction residual, then store DC value
                 let dc = quantized[0][0]
@@ -813,11 +846,85 @@ class VarDCTEncoder {
         return applyDCTScalar(block: block)
     }
     
+    // MARK: - Adaptive Quantisation
+    
+    /// Compute the spatial activity of an 8×8 pixel block.
+    ///
+    /// Activity is defined as the variance of pixel values inside the
+    /// block.  A perfectly flat block has activity 0; a block with
+    /// complex texture or edges has high activity.
+    ///
+    /// - Parameter block: 8×8 spatial-domain pixel values (range 0–1).
+    /// - Returns: Variance of the pixel values (≥ 0).
+    func computeBlockActivity(block: [[Float]]) -> Float {
+        var sum: Float = 0
+        var sumSq: Float = 0
+        let n = Float(blockSize * blockSize)
+        
+        for y in 0..<blockSize {
+            for x in 0..<blockSize {
+                let v = block[y][x]
+                sum += v
+                sumSq += v * v
+            }
+        }
+        
+        let mean = sum / n
+        let variance = sumSq / n - mean * mean
+        return max(0, variance)
+    }
+    
+    /// Convert raw block activity (variance) into a normalised scale
+    /// factor suitable for adaptive quantisation.
+    ///
+    /// The mapping uses a simple formula inspired by the JPEG XL
+    /// reference encoder:
+    ///
+    ///     scale = 1 + strength × (activity / (activity + kappa) - 0.5)
+    ///
+    /// where `kappa` controls the midpoint (blocks with activity =
+    /// kappa get scale = 1) and `strength` controls the dynamic range.
+    ///
+    /// - Parameters:
+    ///   - activity: Raw variance from ``computeBlockActivity(block:)``.
+    ///   - strength: Dynamic range of the adjustment (default 1.0).
+    ///     Higher values produce larger differences between flat and
+    ///     detailed blocks.
+    ///   - kappa: Midpoint activity level (default 0.01).
+    /// - Returns: A scale factor typically in [0.5, 1.5].  Values > 1
+    ///   indicate a detailed block (finer quantisation); values < 1
+    ///   indicate a flat block (coarser quantisation).
+    func adaptiveQuantizationScale(
+        activity: Float,
+        strength: Float = 1.0,
+        kappa: Float = 0.01
+    ) -> Float {
+        let normalised = activity / (activity + kappa)
+        return 1.0 + strength * (normalised - 0.5)
+    }
+    
     // MARK: - Quantization
     
+    /// Quantise an 8×8 DCT block using the base quantisation matrix.
+    ///
+    /// When adaptive quantisation is disabled (or for API compatibility),
+    /// this method delegates to ``quantize(block:channel:activity:)``
+    /// with an activity of 1.0 (neutral scaling).
     func quantize(block: [[Float]], channel: Int) -> [[Int16]] {
-        // Generate quantization matrix based on distance
-        let qMatrix = generateQuantizationMatrix(channel: channel)
+        return quantize(block: block, channel: channel, activity: 1.0)
+    }
+    
+    /// Quantise an 8×8 DCT block using the base quantisation matrix
+    /// scaled by the given activity factor.
+    ///
+    /// - Parameters:
+    ///   - block: 8×8 DCT coefficient block.
+    ///   - channel: Channel index (0 = luma, >0 = chroma).
+    ///   - activity: Local spatial activity.  Values > 1 indicate a
+    ///     detailed block and produce finer quantisation; values < 1
+    ///     indicate a flat block and produce coarser quantisation.
+    func quantize(block: [[Float]], channel: Int, activity: Float) -> [[Int16]] {
+        let qMatrix = generateQuantizationMatrix(channel: channel, activity: activity)
         
         #if canImport(Accelerate)
         if hardware.hasAccelerate && options.useAccelerate {
@@ -868,7 +975,7 @@ class VarDCTEncoder {
     }
     #endif
     
-    func generateQuantizationMatrix(channel: Int) -> [[Float]] {
+    func generateQuantizationMatrix(channel: Int, activity: Float = 1.0) -> [[Float]] {
         var matrix = [[Float]](
             repeating: [Float](repeating: 1, count: blockSize),
             count: blockSize
@@ -877,12 +984,22 @@ class VarDCTEncoder {
         // Base quantization on distance parameter
         let baseQuant = max(1.0, distance * 8.0)
         
+        // Adaptive scale: invert activity so that high-detail blocks
+        // (activity > 1) get smaller (finer) quantisation steps and
+        // flat blocks (activity < 1) get larger (coarser) steps.
+        // Clamped to [minAdaptiveScale, maxAdaptiveScale] to prevent
+        // extreme adjustments.
+        let adaptiveScale: Float = max(
+            VarDCTEncoder.minAdaptiveScale,
+            min(VarDCTEncoder.maxAdaptiveScale, 1.0 / activity)
+        )
+        
         // Use frequency-dependent quantization
         // Lower frequencies (top-left) get finer quantization
         for y in 0..<blockSize {
             for x in 0..<blockSize {
                 let freq = Float(x + y)
-                matrix[y][x] = baseQuant * (1.0 + freq * 0.5)
+                matrix[y][x] = baseQuant * (1.0 + freq * 0.5) * adaptiveScale
                 
                 // Chroma channels can be quantized more aggressively
                 if channel > 0 {
