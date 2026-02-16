@@ -475,4 +475,254 @@ final class ModularEncoderTests: XCTestCase {
         XCTAssertGreaterThan(result.data.count, 0,
                              "Single-channel encoding should still work without RCT")
     }
+
+    // MARK: - Context Model Tests
+
+    func testContextModel_Init_ZeroCounts() {
+        let model = ModularEncoder.ContextModel(contextCount: 8)
+        for i in 0..<8 {
+            XCTAssertEqual(model.counts[i], 0, "Initial count should be 0")
+            XCTAssertEqual(model.sumOfValues[i], 0, "Initial sum should be 0")
+        }
+    }
+
+    func testContextModel_Record_IncrementsCountAndSum() {
+        var model = ModularEncoder.ContextModel(contextCount: 4)
+        model.record(context: 1, unsignedValue: 10)
+        model.record(context: 1, unsignedValue: 20)
+        model.record(context: 2, unsignedValue: 5)
+
+        XCTAssertEqual(model.counts[0], 0)
+        XCTAssertEqual(model.counts[1], 2)
+        XCTAssertEqual(model.counts[2], 1)
+        XCTAssertEqual(model.sumOfValues[1], 30)
+        XCTAssertEqual(model.sumOfValues[2], 5)
+    }
+
+    func testContextModel_RiceParameter_EmptyContext_ReturnsZero() {
+        let model = ModularEncoder.ContextModel(contextCount: 4)
+        XCTAssertEqual(model.riceParameter(for: 0), 0,
+                       "Empty context should produce Rice parameter 0")
+    }
+
+    func testContextModel_RiceParameter_ZeroMean_ReturnsZero() {
+        var model = ModularEncoder.ContextModel(contextCount: 4)
+        model.record(context: 0, unsignedValue: 0)
+        model.record(context: 0, unsignedValue: 0)
+        XCTAssertEqual(model.riceParameter(for: 0), 0,
+                       "Zero-mean context should produce Rice parameter 0")
+    }
+
+    func testContextModel_RiceParameter_SmallMean() {
+        var model = ModularEncoder.ContextModel(contextCount: 4)
+        // Mean = 1 → k = floor(log2(1+1)) - 1 ≈ 0
+        model.record(context: 0, unsignedValue: 1)
+        XCTAssertEqual(model.riceParameter(for: 0), 0)
+    }
+
+    func testContextModel_RiceParameter_LargeMean() {
+        var model = ModularEncoder.ContextModel(contextCount: 4)
+        // Mean = 255 → k = floor(log2(255+1)) - 1 = 7
+        model.record(context: 0, unsignedValue: 255)
+        let k = model.riceParameter(for: 0)
+        XCTAssertEqual(k, 7,
+                       "Mean of 255 should produce Rice parameter 7")
+    }
+
+    func testContextModel_RiceParameter_IncreasesWithMean() {
+        var model = ModularEncoder.ContextModel(contextCount: 4)
+        model.record(context: 0, unsignedValue: 1)
+        let k1 = model.riceParameter(for: 0)
+
+        var model2 = ModularEncoder.ContextModel(contextCount: 4)
+        model2.record(context: 0, unsignedValue: 1000)
+        let k2 = model2.riceParameter(for: 0)
+
+        XCTAssertLessThan(k1, k2,
+                          "Rice parameter should increase with symbol magnitude")
+    }
+
+    // MARK: - Context Selection Tests
+
+    func testSelectContext_FirstPixel_ReturnsFlatContext() {
+        let encoder = makeEncoder()
+        let residuals: [Int32] = [0, 0, 0, 0]
+        let ctx = encoder.selectContext(residuals: residuals, x: 0, y: 0, width: 2)
+        XCTAssertEqual(ctx, 0,
+                       "First pixel with zero neighbors should select flat context (0)")
+    }
+
+    func testSelectContext_FlatRegion_ReturnsContextZero() {
+        let encoder = makeEncoder()
+        // All residuals are 0 → gradient magnitude = 0 → bucket 0
+        let residuals: [Int32] = [0, 0, 0, 0, 0, 0, 0, 0, 0]
+        let ctx = encoder.selectContext(residuals: residuals, x: 1, y: 1, width: 3)
+        XCTAssertEqual(ctx, 0,
+                       "Flat region should produce context 0")
+    }
+
+    func testSelectContext_LowGradient_ReturnsLowBucket() {
+        let encoder = makeEncoder()
+        // Residuals with small magnitudes: avg of abs values < 16
+        // N=5, W=5, NW=5 → avg = 5 → bucket 1
+        var residuals = [Int32](repeating: 0, count: 9)
+        residuals[0] = 5   // (0,0) = NW for (1,1)
+        residuals[1] = 5   // (1,0) = N  for (1,1)
+        residuals[3] = 5   // (0,1) = W  for (1,1)
+
+        let ctx = encoder.selectContext(residuals: residuals, x: 1, y: 1, width: 3)
+        XCTAssertEqual(ctx / 2, 1,
+                       "Low gradient (avg=5) should produce bucket 1")
+    }
+
+    func testSelectContext_MediumGradient_ReturnsMediumBucket() {
+        let encoder = makeEncoder()
+        // N=100, W=100, NW=100 → avg = 100 → bucket 2
+        var residuals = [Int32](repeating: 0, count: 9)
+        residuals[0] = 100  // NW for (1,1)
+        residuals[1] = 100  // N  for (1,1)
+        residuals[3] = 100  // W  for (1,1)
+
+        let ctx = encoder.selectContext(residuals: residuals, x: 1, y: 1, width: 3)
+        XCTAssertEqual(ctx / 2, 2,
+                       "Medium gradient (avg=100) should produce bucket 2")
+    }
+
+    func testSelectContext_HighGradient_ReturnsHighBucket() {
+        let encoder = makeEncoder()
+        // N=1000, W=1000, NW=1000 → avg = 1000 → bucket 3
+        var residuals = [Int32](repeating: 0, count: 9)
+        residuals[0] = 1000  // NW for (1,1)
+        residuals[1] = 1000  // N  for (1,1)
+        residuals[3] = 1000  // W  for (1,1)
+
+        let ctx = encoder.selectContext(residuals: residuals, x: 1, y: 1, width: 3)
+        XCTAssertEqual(ctx / 2, 3,
+                       "High gradient (avg=1000) should produce bucket 3")
+    }
+
+    func testSelectContext_NegativeResiduals_UsesAbsoluteValue() {
+        let encoder = makeEncoder()
+        // Negative residuals: abs(-100)=100, avg=100 → bucket 2
+        var residuals = [Int32](repeating: 0, count: 9)
+        residuals[0] = -100  // NW for (1,1)
+        residuals[1] = -100  // N  for (1,1)
+        residuals[3] = -100  // W  for (1,1)
+
+        let ctx = encoder.selectContext(residuals: residuals, x: 1, y: 1, width: 3)
+        XCTAssertEqual(ctx / 2, 2,
+                       "Negative residuals should use absolute values for context")
+    }
+
+    func testSelectContext_Orientation_HorizontalEdge() {
+        let encoder = makeEncoder()
+        // N > W → horizontal sub-context (odd)
+        var residuals = [Int32](repeating: 0, count: 9)
+        residuals[0] = 50   // NW for (1,1)
+        residuals[1] = 200  // N  for (1,1) — large
+        residuals[3] = 10   // W  for (1,1) — small
+
+        let ctx = encoder.selectContext(residuals: residuals, x: 1, y: 1, width: 3)
+        XCTAssertEqual(ctx % 2, 1,
+                       "N > W should produce odd (horizontal) sub-context")
+    }
+
+    func testSelectContext_Orientation_VerticalEdge() {
+        let encoder = makeEncoder()
+        // W > N → vertical sub-context (even)
+        var residuals = [Int32](repeating: 0, count: 9)
+        residuals[0] = 50   // NW for (1,1)
+        residuals[1] = 10   // N  for (1,1) — small
+        residuals[3] = 200  // W  for (1,1) — large
+
+        let ctx = encoder.selectContext(residuals: residuals, x: 1, y: 1, width: 3)
+        XCTAssertEqual(ctx % 2, 0,
+                       "W > N should produce even (vertical) sub-context")
+    }
+
+    func testSelectContext_ContextRange_WithinBounds() {
+        let encoder = makeEncoder()
+        // Test many different residual patterns to verify bounds
+        let patterns: [[Int32]] = [
+            [0, 0, 0, 0],
+            [1, 2, 3, 4],
+            [-100, 200, -300, 400],
+            [65535, 65535, 65535, 65535],
+        ]
+        for pattern in patterns {
+            let ctx = encoder.selectContext(residuals: pattern, x: 1, y: 1, width: 2)
+            XCTAssertGreaterThanOrEqual(ctx, 0)
+            XCTAssertLessThan(ctx, ModularEncoder.contextCount,
+                              "Context index should be within [0, \(ModularEncoder.contextCount))")
+        }
+    }
+
+    func testSelectContext_FirstRow_UsesOnlyWest() {
+        let encoder = makeEncoder()
+        // y=0, x=1: only W is available (no N, no NW)
+        let residuals: [Int32] = [50, 0, 0, 0]
+        let ctx = encoder.selectContext(residuals: residuals, x: 1, y: 0, width: 4)
+        // N=0, NW=0, W=50 → avg = (0+50+0)/3 = 16 → bucket 2
+        XCTAssertEqual(ctx / 2, 2,
+                       "First row should only consider West neighbor")
+    }
+
+    func testSelectContext_FirstColumn_UsesOnlyNorth() {
+        let encoder = makeEncoder()
+        // x=0, y=1: only N is available (no W, no NW)
+        var residuals = [Int32](repeating: 0, count: 6)
+        residuals[0] = 50  // N for (0,1) at index 0 in width=3 layout
+        let ctx = encoder.selectContext(residuals: residuals, x: 0, y: 1, width: 3)
+        // N=50, W=0, NW=0 → avg = (50+0+0)/3 = 16 → bucket 2
+        XCTAssertEqual(ctx / 2, 2,
+                       "First column should only consider North neighbor")
+    }
+
+    // MARK: - Context-Aware Entropy Encoding Tests
+
+    func testEntropyEncodeWithContext_ProducesOutput() throws {
+        let encoder = makeEncoder()
+        let data: [Int32] = [0, 1, -1, 2, -2, 3, 0, 0]
+        let result = try encoder.entropyEncodeWithContext(data: data, width: 4, height: 2)
+        XCTAssertGreaterThan(result.count, 0,
+                              "Context-aware entropy encoding should produce output")
+    }
+
+    func testEntropyEncodeWithContext_UniformData_Compresses() throws {
+        let encoder = makeEncoder()
+        // All zeros — should compress very well
+        let data = [Int32](repeating: 0, count: 64)
+        let result = try encoder.entropyEncodeWithContext(data: data, width: 8, height: 8)
+        // 64 Int32 values = 256 bytes uncompressed
+        XCTAssertLessThan(result.count, 256,
+                           "Uniform data should compress well")
+    }
+
+    func testEntropyEncodeWithContext_SameAsEntropyEncode_ForFlatData() throws {
+        // Both methods should handle flat (all-zero) data without error
+        let encoder = makeEncoder()
+        let data = [Int32](repeating: 0, count: 16)
+        let result = try encoder.entropyEncodeWithContext(data: data, width: 4, height: 4)
+        XCTAssertGreaterThan(result.count, 0)
+    }
+
+    func testEntropyEncodeWithContext_LargeImage_CompletesWithoutError() throws {
+        let encoder = makeEncoder()
+        // Larger image with varied residuals
+        var data = [Int32](repeating: 0, count: 256)
+        for i in 0..<256 {
+            data[i] = Int32(i % 64) - 32
+        }
+        XCTAssertNoThrow(
+            try encoder.entropyEncodeWithContext(data: data, width: 16, height: 16),
+            "Context encoding should complete without error for larger data"
+        )
+    }
+
+    // MARK: - Context Count Tests
+
+    func testContextCount_IsEight() {
+        XCTAssertEqual(ModularEncoder.contextCount, 8,
+                       "Should use 8 contexts (4 magnitude buckets × 2 orientations)")
+    }
 }

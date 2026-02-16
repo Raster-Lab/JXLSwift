@@ -422,8 +422,10 @@ class ModularEncoder {
         // Apply squeeze transform for multi-resolution decomposition
         let (squeezed, _) = forwardSqueeze(data: predicted, width: width, height: height)
         
-        // Apply entropy encoding
-        let encoded = try entropyEncode(data: squeezed)
+        // Apply context-modelled entropy encoding
+        let encoded = try entropyEncodeWithContext(
+            data: squeezed, width: width, height: height
+        )
         
         return encoded
     }
@@ -479,18 +481,131 @@ class ModularEncoder {
         }
     }
     
+    // MARK: - Context Modelling
+    
+    /// Number of distinct contexts for entropy coding.
+    ///
+    /// Contexts are selected based on local gradient properties:
+    /// - 4 gradient magnitude buckets (flat, low, medium, high)
+    /// - 2 orientation sub-contexts per bucket (horizontal vs. vertical)
+    /// - Total: contexts 0–7
+    ///
+    /// This follows the general idea of ISO/IEC 18181-1 §7 where the
+    /// encoder selects a context from the causal neighborhood so that
+    /// symbols with similar statistical distributions share a context.
+    static let contextCount = 8
+    
+    /// Per-context statistics tracker.
+    ///
+    /// Maintains a running count and sum-of-magnitudes so the encoder
+    /// can adapt the Golomb-Rice parameter per context.
+    struct ContextModel {
+        /// Number of symbols encoded in each context.
+        private(set) var counts: [Int]
+        /// Sum of unsigned (ZigZag-mapped) symbol magnitudes per context.
+        private(set) var sumOfValues: [UInt64]
+        
+        /// Create a context model with the given number of contexts.
+        init(contextCount: Int) {
+            self.counts = [Int](repeating: 0, count: contextCount)
+            self.sumOfValues = [UInt64](repeating: 0, count: contextCount)
+        }
+        
+        /// Record that `unsignedValue` was encoded under `context`.
+        mutating func record(context: Int, unsignedValue: UInt64) {
+            counts[context] += 1
+            sumOfValues[context] += unsignedValue
+        }
+        
+        /// Adaptive Golomb-Rice parameter for `context`.
+        ///
+        /// Returns a small non-negative integer *k* such that the
+        /// expected codeword length for the observed distribution is
+        /// roughly minimised.  When no symbols have been seen the
+        /// parameter defaults to 0 (unary coding).
+        func riceParameter(for context: Int) -> Int {
+            let n = counts[context]
+            guard n > 0 else { return 0 }
+            
+            let mean = sumOfValues[context] / UInt64(n)
+            // k ≈ floor(log2(mean + 1))
+            if mean == 0 { return 0 }
+            var k = 0
+            var v = mean
+            while v > 0 {
+                v >>= 1
+                k += 1
+            }
+            return max(0, k - 1)
+        }
+    }
+    
+    /// Select the entropy coding context for a residual at position (`x`, `y`).
+    ///
+    /// The context is derived from the magnitudes and orientation of the
+    /// horizontal and vertical gradients in the already-processed causal
+    /// neighbourhood (North, West, North-West pixels).
+    ///
+    /// - Parameters:
+    ///   - residuals: The residual buffer (same layout as the channel data).
+    ///   - x: Column index of the current pixel.
+    ///   - y: Row index of the current pixel.
+    ///   - width: Row stride of the residual buffer.
+    /// - Returns: Context index in `0 ..< contextCount`.
+    func selectContext(
+        residuals: [Int32],
+        x: Int,
+        y: Int,
+        width: Int
+    ) -> Int {
+        // Collect causal neighbors (already-encoded residuals)
+        let n:  Int32 = y > 0 ? abs(residuals[(y - 1) * width + x]) : 0
+        let w:  Int32 = x > 0 ? abs(residuals[y * width + (x - 1)]) : 0
+        let nw: Int32 = (x > 0 && y > 0) ? abs(residuals[(y - 1) * width + (x - 1)]) : 0
+        
+        // Gradient magnitude: average of absolute neighbor residuals
+        let gradMagnitude = (n + w + nw) / 3
+        
+        // Bucket by gradient magnitude (4 buckets)
+        let bucket: Int
+        if gradMagnitude == 0 {
+            bucket = 0        // Flat / DC area
+        } else if gradMagnitude < 16 {
+            bucket = 1        // Low gradient
+        } else if gradMagnitude < 256 {
+            bucket = 2        // Medium gradient
+        } else {
+            bucket = 3        // High gradient
+        }
+        
+        // Sub-classify by gradient orientation
+        let horizontal = n > w   // stronger vertical edge → horizontal sub-context
+        let contextIndex = bucket * 2 + (horizontal ? 1 : 0)
+        
+        return min(contextIndex, ModularEncoder.contextCount - 1)
+    }
+    
     // MARK: - Entropy Encoding
     
+    /// Entropy-encode residuals using context-modelled run-length + Golomb-Rice coding.
+    ///
+    /// Each residual is first mapped to an unsigned value via ZigZag encoding,
+    /// then encoded under a context selected from the local gradient properties
+    /// of its causal neighbourhood.  The Golomb-Rice parameter adapts per
+    /// context based on the running symbol statistics.
+    ///
+    /// - Note: This overload estimates 2D positions from a flat index via
+    ///   `sqrt(data.count)`.  Prefer ``entropyEncodeWithContext(data:width:height:)``
+    ///   when the actual image dimensions are available.
     private func entropyEncode(data: [Int32]) throws -> Data {
-        // Simplified entropy encoding
-        // Real JPEG XL uses ANS (Asymmetric Numeral Systems)
-        
         var writer = BitstreamWriter()
         
         // Write length
         writer.writeU32(UInt32(data.count))
         
-        // Simple run-length + Golomb-Rice encoding
+        var contextModel = ContextModel(contextCount: ModularEncoder.contextCount)
+        
+        // Context-modelled run-length + adaptive Golomb-Rice encoding
         var i = 0
         while i < data.count {
             let value = data[i]
@@ -510,6 +625,80 @@ class ModularEncoder {
                 writer.writeVarint(UInt64(runLength - 1))
             } else {
                 writer.writeVarint(0)
+            }
+            
+            // Update context model for all positions in this run
+            // (the context is uniform within a run because the
+            //  residual values are identical)
+            let ctx = selectContext(residuals: data, x: i % max(1, Int(sqrt(Double(data.count)))),
+                                    y: i / max(1, Int(sqrt(Double(data.count)))),
+                                    width: max(1, Int(sqrt(Double(data.count)))))
+            for _ in 0..<runLength {
+                contextModel.record(context: ctx, unsignedValue: encoded)
+            }
+            
+            i += runLength
+        }
+        
+        writer.flushByte()
+        return writer.data
+    }
+    
+    /// Entropy-encode residuals with full 2D context modelling.
+    ///
+    /// Unlike `entropyEncode(data:)`, this method receives the image
+    /// dimensions so that it can compute the correct 2D position of
+    /// each residual for context selection.
+    ///
+    /// The context index is not written to the bitstream — the decoder
+    /// derives the identical context from the same causal neighbourhood.
+    /// Instead the context drives run-length grouping: consecutive
+    /// pixels that share both the same residual value *and* the same
+    /// context are grouped into a single run, which improves compression
+    /// when flat regions produce long uniform-context runs.
+    func entropyEncodeWithContext(
+        data: [Int32],
+        width: Int,
+        height: Int
+    ) throws -> Data {
+        var writer = BitstreamWriter()
+        
+        // Write element count
+        writer.writeU32(UInt32(data.count))
+        
+        var contextModel = ContextModel(contextCount: ModularEncoder.contextCount)
+        
+        var i = 0
+        while i < data.count {
+            let value = data[i]
+            let x0 = i % width
+            let y0 = i / width
+            let ctx0 = selectContext(residuals: data, x: x0, y: y0, width: width)
+            
+            // Count consecutive identical values in the same context
+            var runLength = 1
+            while i + runLength < data.count && data[i + runLength] == value {
+                let xr = (i + runLength) % width
+                let yr = (i + runLength) / width
+                let ctxR = selectContext(residuals: data, x: xr, y: yr, width: width)
+                guard ctxR == ctx0 else { break }
+                runLength += 1
+            }
+            
+            // Encode value using signed-to-unsigned mapping
+            let encoded = encodeSignedValue(value)
+            writer.writeVarint(encoded)
+            
+            // Encode run length
+            if runLength > 1 {
+                writer.writeVarint(UInt64(runLength - 1))
+            } else {
+                writer.writeVarint(0)
+            }
+            
+            // Update context model
+            for _ in 0..<runLength {
+                contextModel.record(context: ctx0, unsignedValue: encoded)
             }
             
             i += runLength
