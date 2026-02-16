@@ -29,6 +29,9 @@ struct Benchmark: ParsableCommand {
     @Flag(name: .long, help: "Compare hardware acceleration (NEON vs scalar)")
     var compareHardware: Bool = false
 
+    @Flag(name: .long, help: "Compare Metal GPU vs CPU acceleration")
+    var compareMetal: Bool = false
+
     func run() throws {
         print("=== JXLSwift Benchmark ===")
         print("Image size: \(width)×\(height)")
@@ -130,6 +133,11 @@ struct Benchmark: ParsableCommand {
         // Compare hardware acceleration if requested
         if compareHardware {
             try runHardwareComparison()
+        }
+
+        // Compare Metal GPU if requested
+        if compareMetal {
+            try runMetalComparison()
         }
 
         print()
@@ -420,5 +428,156 @@ struct Benchmark: ParsableCommand {
         print("  ℹ️  NEON benchmarks require ARM64 architecture")
         print(String(format: "  Hardware speedup (non-NEON): %.2f×", speedup))
         #endif
+    }
+
+    // MARK: - Metal GPU Comparison
+
+    private func runMetalComparison() throws {
+        print()
+        print("=== Metal GPU vs CPU Comparison ===")
+        print()
+
+        let caps = HardwareCapabilities.shared
+        print("Architecture: \(CPUArchitecture.current)")
+        print("Metal available: \(caps.hasMetal)")
+        if let deviceName = caps.metalDeviceName {
+            print("Metal device: \(deviceName)")
+        }
+        print("Accelerate available: \(caps.hasAccelerate)")
+        print()
+
+        guard caps.hasMetal else {
+            print("⚠️  Metal GPU not available on this system")
+            print("Skipping Metal comparison.")
+            return
+        }
+
+        // Generate test image
+        var frame = ImageFrame(
+            width: width,
+            height: height,
+            channels: 3,
+            pixelType: .uint8,
+            colorSpace: .sRGB
+        )
+
+        for y in 0..<frame.height {
+            for x in 0..<frame.width {
+                let r = UInt16((x * 255) / frame.width)
+                let g = UInt16((y * 255) / frame.height)
+                let b = UInt16(((x + y) * 255) / (frame.width + frame.height))
+                frame.setPixel(x: x, y: y, channel: 0, value: r)
+                frame.setPixel(x: x, y: y, channel: 1, value: g)
+                frame.setPixel(x: x, y: y, channel: 2, value: b)
+            }
+        }
+
+        print("Image: \(width)×\(height)")
+        print("Mode: Lossy (VarDCT, quality 90)")
+        print("Iterations: \(iterations)")
+        print()
+        print(String(format: "%-25s %10s %10s %10s", "Configuration", "Time (ms)", "Size (B)", "Speedup"))
+        print(String(repeating: "─", count: 60))
+
+        // Test with CPU only (Accelerate/NEON but no Metal)
+        let cpuOptions = EncodingOptions(
+            mode: .lossy(quality: 90),
+            effort: .squirrel,
+            useHardwareAcceleration: true,
+            useAccelerate: true,
+            useMetal: false,
+            useANS: false
+        )
+        let cpuEncoder = JXLEncoder(options: cpuOptions)
+
+        var cpuTime: TimeInterval = 0
+        var cpuResult: EncodedImage?
+        for _ in 0..<iterations {
+            let start = Date()
+            let result = try cpuEncoder.encode(frame)
+            cpuTime += Date().timeIntervalSince(start)
+            cpuResult = result
+        }
+        let cpuAvgTime = cpuTime / Double(iterations)
+        if let result = cpuResult {
+            print(String(format: "%-25s %10.1f %10d %10s",
+                "CPU (baseline)",
+                cpuAvgTime * 1000,
+                result.stats.compressedSize,
+                "1.00×"
+            ))
+        }
+
+        // Test with Metal GPU enabled
+        let metalOptions = EncodingOptions(
+            mode: .lossy(quality: 90),
+            effort: .squirrel,
+            useHardwareAcceleration: true,
+            useAccelerate: true,
+            useMetal: true,
+            useANS: false
+        )
+        let metalEncoder = JXLEncoder(options: metalOptions)
+
+        var metalTime: TimeInterval = 0
+        var metalResult: EncodedImage?
+        for _ in 0..<iterations {
+            let start = Date()
+            let result = try metalEncoder.encode(frame)
+            metalTime += Date().timeIntervalSince(start)
+            metalResult = result
+        }
+        let metalAvgTime = metalTime / Double(iterations)
+        if let result = metalResult {
+            let speedup = cpuAvgTime / metalAvgTime
+            print(String(format: "%-25s %10.1f %10d %10.2f×",
+                "Metal GPU",
+                metalAvgTime * 1000,
+                result.stats.compressedSize,
+                speedup
+            ))
+        }
+
+        // Verify output correctness
+        if let cpuResult = cpuResult, let metalResult = metalResult {
+            let sizeDiff = abs(cpuResult.stats.compressedSize - metalResult.stats.compressedSize)
+            let sizeDiffPct = Double(sizeDiff) / Double(cpuResult.stats.compressedSize) * 100.0
+
+            print()
+            print("Results:")
+            let speedup = cpuAvgTime / metalAvgTime
+            if speedup > 1.0 {
+                print(String(format: "  GPU is %.2f× faster than CPU", speedup))
+            } else {
+                print(String(format: "  CPU is %.2f× faster than GPU (batch too small)", 1.0 / speedup))
+            }
+            print(String(format: "  Size difference: %d bytes (%.2f%%)", sizeDiff, sizeDiffPct))
+
+            // Check milestone targets
+            print()
+            print("Milestone 7 Target:")
+            // Target: Metal GPU should be ≥ 5× faster than CPU for large images (1080p+)
+            // This threshold is based on the Milestone 7 acceptance criteria
+            let metalTarget = 5.0
+            if width >= 1920 && height >= 1080 {
+                // Target is for large images (1080p or higher)
+                if speedup >= metalTarget {
+                    print(String(format: "  ✅ Metal speedup: %.2f× ≥ %.1f× (PASS)", speedup, metalTarget))
+                } else {
+                    print(String(format: "  ⚠️  Metal speedup: %.2f× < %.1f× (needs improvement)", speedup, metalTarget))
+                }
+            } else {
+                // For smaller images, Metal may not show benefit due to transfer overhead
+                print(String(format: "  ℹ️  Image size %d×%d may be too small for GPU benefit", width, height))
+                print(String(format: "  ℹ️  Target %.1f× speedup applies to large images (1080p+)", metalTarget))
+                print(String(format: "  Current speedup: %.2f×", speedup))
+            }
+
+            if sizeDiffPct < 1.0 {
+                print("  ✅ Output size matches CPU (within 1%)")
+            } else {
+                print(String(format: "  ⚠️  Output size differs by %.2f%% (expected <1%%)", sizeDiffPct))
+            }
+        }
     }
 }

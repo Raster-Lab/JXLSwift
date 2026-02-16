@@ -445,4 +445,59 @@ final class CLITests: XCTestCase {
         XCTAssertGreaterThan(scalarResult.stats.compressionRatio, 1.0)
         XCTAssertGreaterThan(accelResult.stats.compressionRatio, 1.0)
     }
+
+    // MARK: - Metal GPU Tests
+
+    func testEncode_MetalGPUOption_ProducesValidOutput() throws {
+        var frame = ImageFrame(width: 64, height: 64, channels: 3)
+        for y in 0..<64 {
+            for x in 0..<64 {
+                frame.setPixel(x: x, y: y, channel: 0, value: UInt16((x * 255) / 63))
+                frame.setPixel(x: x, y: y, channel: 1, value: UInt16((y * 255) / 63))
+                frame.setPixel(x: x, y: y, channel: 2, value: UInt16(128))
+            }
+        }
+
+        let caps = HardwareCapabilities.shared
+
+        // Test with Metal disabled
+        let cpuOptions = EncodingOptions(
+            mode: .lossy(quality: 90),
+            effort: .falcon,
+            useMetal: false
+        )
+        let cpuEncoder = JXLEncoder(options: cpuOptions)
+        let cpuResult = try cpuEncoder.encode(frame)
+
+        XCTAssertEqual(cpuResult.data[0], 0xFF)
+        XCTAssertEqual(cpuResult.data[1], 0x0A)
+        XCTAssertGreaterThan(cpuResult.stats.compressionRatio, 1.0)
+
+        // Test with Metal enabled (should work even if Metal is unavailable)
+        let metalOptions = EncodingOptions(
+            mode: .lossy(quality: 90),
+            effort: .falcon,
+            useMetal: true
+        )
+        let metalEncoder = JXLEncoder(options: metalOptions)
+        let metalResult = try metalEncoder.encode(frame)
+
+        XCTAssertEqual(metalResult.data[0], 0xFF)
+        XCTAssertEqual(metalResult.data[1], 0x0A)
+        XCTAssertGreaterThan(metalResult.stats.compressionRatio, 1.0)
+
+        // If Metal is available, both should produce similar results
+        // If Metal is not available, Metal option should fallback to CPU
+        if caps.hasMetal {
+            // On Metal-capable systems, results should be similar
+            let sizeDiff = abs(cpuResult.stats.compressedSize - metalResult.stats.compressedSize)
+            let sizeDiffPct = Double(sizeDiff) / Double(cpuResult.stats.compressedSize) * 100.0
+            XCTAssertLessThan(sizeDiffPct, 5.0, "Metal and CPU outputs should be within 5% size")
+        } else {
+            // On non-Metal systems, should fallback gracefully
+            // Results should be identical since both use CPU path
+            XCTAssertEqual(cpuResult.stats.compressedSize, metalResult.stats.compressedSize,
+                          "Metal disabled and Metal unavailable should produce identical output")
+        }
+    }
 }

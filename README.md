@@ -290,6 +290,9 @@ swift run jxl-tool benchmark --compare-entropy
 
 # Compare hardware acceleration vs scalar
 swift run jxl-tool benchmark --compare-hardware
+
+# Compare Metal GPU vs CPU acceleration
+swift run jxl-tool benchmark --compare-metal
 ```
 
 ### Man Pages
