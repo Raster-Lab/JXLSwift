@@ -84,7 +84,7 @@ class ModularEncoder {
     }
     
     /// Predict pixel value using Median Edge Detector (MED) predictor
-    private func predictPixel(data: [UInt16], x: Int, y: Int, width: Int, height: Int) -> Int32 {
+    func predictPixel(data: [UInt16], x: Int, y: Int, width: Int, height: Int) -> Int32 {
         // MED predictor: median(N, W, N+W-NW)
         // N = North, W = West, NW = North-West
         
@@ -154,7 +154,7 @@ class ModularEncoder {
     }
     
     /// Encode signed value to unsigned for variable-length encoding
-    private func encodeSignedValue(_ value: Int32) -> UInt64 {
+    func encodeSignedValue(_ value: Int32) -> UInt64 {
         // ZigZag encoding: map signed to unsigned
         // 0 -> 0, -1 -> 1, 1 -> 2, -2 -> 3, 2 -> 4, ...
         if value >= 0 {

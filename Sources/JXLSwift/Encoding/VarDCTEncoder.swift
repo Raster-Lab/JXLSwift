@@ -48,7 +48,7 @@ class VarDCTEncoder {
     
     // MARK: - Color Space Conversion
     
-    private func convertToYCbCr(frame: ImageFrame) -> ImageFrame {
+    func convertToYCbCr(frame: ImageFrame) -> ImageFrame {
         var ycbcrFrame = frame
         
         // Only convert RGB images
@@ -130,8 +130,8 @@ class VarDCTEncoder {
         return writer.data
     }
     
-    private func extractBlock(data: [[Float]], blockX: Int, blockY: Int, 
-                              width: Int, height: Int) -> [[Float]] {
+    func extractBlock(data: [[Float]], blockX: Int, blockY: Int, 
+                      width: Int, height: Int) -> [[Float]] {
         var block = [[Float]](
             repeating: [Float](repeating: 0, count: blockSize),
             count: blockSize
@@ -164,7 +164,7 @@ class VarDCTEncoder {
         }
     }
     
-    private func applyDCTScalar(block: [[Float]]) -> [[Float]] {
+    func applyDCTScalar(block: [[Float]]) -> [[Float]] {
         var dct = [[Float]](
             repeating: [Float](repeating: 0, count: blockSize),
             count: blockSize
@@ -198,6 +198,40 @@ class VarDCTEncoder {
         return dct
     }
     
+    /// Apply inverse DCT (IDCT) to an 8×8 block using the scalar reference implementation
+    func applyIDCTScalar(block: [[Float]]) -> [[Float]] {
+        var spatial = [[Float]](
+            repeating: [Float](repeating: 0, count: blockSize),
+            count: blockSize
+        )
+        
+        let n = Float(blockSize)
+        let normFactor = sqrt(2.0 / n)
+        
+        for x in 0..<blockSize {
+            for y in 0..<blockSize {
+                var sum: Float = 0
+                
+                for u in 0..<blockSize {
+                    for v in 0..<blockSize {
+                        let cu = u == 0 ? Float(1.0 / sqrt(2.0)) : Float(1.0)
+                        let cv = v == 0 ? Float(1.0 / sqrt(2.0)) : Float(1.0)
+                        
+                        let cosU = cos((2.0 * Float(x) + 1.0) * Float(u) * .pi / (2.0 * n))
+                        let cosV = cos((2.0 * Float(y) + 1.0) * Float(v) * .pi / (2.0 * n))
+                        
+                        let coefficient = block[v][u]
+                        sum += coefficient * cosU * cosV * cu * cv
+                    }
+                }
+                
+                spatial[y][x] = sum * normFactor * normFactor
+            }
+        }
+        
+        return spatial
+    }
+    
     // Placeholder for Accelerate-based DCT
     // TODO: Implement using Accelerate.swift's dct2D function which provides vDSP_DCT implementation
     private func applyDCTAccelerate(block: [[Float]]) -> [[Float]] {
@@ -217,7 +251,7 @@ class VarDCTEncoder {
     
     // MARK: - Quantization
     
-    private func quantize(block: [[Float]], channel: Int) -> [[Int16]] {
+    func quantize(block: [[Float]], channel: Int) -> [[Int16]] {
         var quantized = [[Int16]](
             repeating: [Int16](repeating: 0, count: blockSize),
             count: blockSize
@@ -237,7 +271,7 @@ class VarDCTEncoder {
         return quantized
     }
     
-    private func generateQuantizationMatrix(channel: Int) -> [[Float]] {
+    func generateQuantizationMatrix(channel: Int) -> [[Float]] {
         var matrix = [[Float]](
             repeating: [Float](repeating: 1, count: blockSize),
             count: blockSize
@@ -298,7 +332,7 @@ class VarDCTEncoder {
         }
     }
     
-    private func zigzagScan(block: [[Int16]]) -> [Int16] {
+    func zigzagScan(block: [[Int16]]) -> [Int16] {
         // Zigzag order for 8x8 block
         let order: [(Int, Int)] = [
             (0,0), (0,1), (1,0), (2,0), (1,1), (0,2), (0,3), (1,2),
@@ -314,7 +348,7 @@ class VarDCTEncoder {
         return order.map { block[$0.0][$0.1] }
     }
     
-    private func encodeSignedValue(_ value: Int32) -> UInt64 {
+    func encodeSignedValue(_ value: Int32) -> UInt64 {
         if value >= 0 {
             return UInt64(value * 2)
         } else {
