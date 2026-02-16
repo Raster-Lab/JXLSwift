@@ -101,7 +101,7 @@
 - [x] Multi-channel decorrelation (RCT — Reversible Colour Transform)
 - [x] Squeeze transform (multi-resolution decomposition)
 - [x] Context modelling for entropy coding
-- [ ] MA (Meta-Adaptive) tree-based prediction
+- [x] MA (Meta-Adaptive) tree-based prediction
 - [ ] Full Modular subbitstream framing per ISO/IEC 18181-1 §7
 
 ### Tests Required
