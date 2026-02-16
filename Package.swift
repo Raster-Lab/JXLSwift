@@ -3,6 +3,12 @@
 
 import PackageDescription
 
+// MARK: - Feature Flags
+
+/// Enable the LibJXL reference backend (requires libjxl C library).
+/// Pass `-Xswiftc -DJXL_ENABLE_LIBJXL` to enable.
+let enableLibJXL = false
+
 let package = Package(
     name: "JXLSwift",
     platforms: [
@@ -13,7 +19,7 @@ let package = Package(
         .visionOS(.v1)
     ],
     products: [
-        // Main compression library
+        // Main compression library (backend-agnostic public API)
         .library(
             name: "JXLSwift",
             targets: ["JXLSwift"]),
@@ -26,7 +32,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.5.0"),
     ],
     targets: [
-        // Core compression codec
+        // Core compression codec (Native backend, always built)
         .target(
             name: "JXLSwift",
             dependencies: [],
