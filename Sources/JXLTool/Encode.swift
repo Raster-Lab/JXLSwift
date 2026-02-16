@@ -41,8 +41,11 @@ struct Encode: ParsableCommand {
     @Flag(name: .long, help: "Show verbose output")
     var verbose: Bool = false
 
+    @Flag(name: .long, help: "Suppress all output except errors")
+    var quiet: Bool = false
+
     func run() throws {
-        if verbose {
+        if verbose && !quiet {
             print("JXLSwift v\(JXLSwift.version)")
             print("Standard: ISO/IEC \(JXLSwift.standardVersion)")
             print()
@@ -71,7 +74,7 @@ struct Encode: ParsableCommand {
         )
 
         // Generate a test image (until file I/O is implemented)
-        if verbose {
+        if verbose && !quiet {
             print("Generating \(width)×\(height) test image...")
         }
 
@@ -103,20 +106,22 @@ struct Encode: ParsableCommand {
         try result.data.write(to: url)
 
         // Print statistics
-        print("Encoded \(width)×\(height) image to \(output)")
-        print("  Original:    \(formatBytes(result.stats.originalSize))")
-        print("  Compressed:  \(formatBytes(result.stats.compressedSize))")
-        print("  Ratio:       \(String(format: "%.2f", result.stats.compressionRatio))×")
-        print("  Time:        \(String(format: "%.3f", result.stats.encodingTime))s")
+        if !quiet {
+            print("Encoded \(width)×\(height) image to \(output)")
+            print("  Original:    \(formatBytes(result.stats.originalSize))")
+            print("  Compressed:  \(formatBytes(result.stats.compressedSize))")
+            print("  Ratio:       \(String(format: "%.2f", result.stats.compressionRatio))×")
+            print("  Time:        \(String(format: "%.3f", result.stats.encodingTime))s")
 
-        if verbose {
-            print("  Mode:        \(lossless ? "lossless" : "lossy")")
-            print("  Effort:      \(effortLevel) (\(effort))")
-            if !lossless {
-                if let d = distance {
-                    print("  Distance:    \(d)")
-                } else {
-                    print("  Quality:     \(quality)")
+            if verbose {
+                print("  Mode:        \(lossless ? "lossless" : "lossy")")
+                print("  Effort:      \(effortLevel) (\(effort))")
+                if !lossless {
+                    if let d = distance {
+                        print("  Distance:    \(d)")
+                    } else {
+                        print("  Quality:     \(quality)")
+                    }
                 }
             }
         }

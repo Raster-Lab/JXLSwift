@@ -233,6 +233,12 @@ swift run jxl-tool encode --quality 90 --effort 7 -o output.jxl
 # Lossless encoding
 swift run jxl-tool encode --lossless -o output.jxl
 
+# Batch encode a directory
+swift run jxl-tool batch /path/to/images --recursive -o /path/to/output
+
+# Batch encode with lossless mode
+swift run jxl-tool batch /path/to/images --lossless --recursive --overwrite
+
 # Display hardware capabilities
 swift run jxl-tool hardware
 

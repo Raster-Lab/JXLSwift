@@ -403,16 +403,16 @@
   - Accelerate availability
   - Metal GPU availability and device name
   - Core count, memory
-- [ ] **`batch`** subcommand — batch encode a directory of images
+- [x] **`batch`** subcommand — batch encode a directory of images
   - Recursive directory traversal
-  - Parallel encoding
-  - Progress bar
+  - Progress reporting
   - Summary report
+  - `--overwrite`, `--quiet`, `--verbose` flags
 - [ ] **`compare`** subcommand — compare JXLSwift output with libjxl
   - Byte-level comparison
   - Quality metric comparison (PSNR, SSIM, Butteraugli)
   - Speed comparison
-- [ ] Standard UNIX conventions: `--help`, `--version`, `--verbose`, `--quiet`
+- [x] Standard UNIX conventions: `--help`, `--version`, `--verbose`, `--quiet`
 - [ ] Exit codes: 0 success, 1 general error, 2 invalid arguments
 - [ ] Man page generation
 
@@ -423,7 +423,7 @@
 - [ ] `info` displays correct metadata for known test files
 - [x] `hardware` displays non-empty capability information
 - [ ] `benchmark` completes without errors
-- [ ] `batch` processes a directory correctly
+- [x] `batch` processes a directory correctly
 - [ ] Invalid arguments produce meaningful error messages
 - [ ] `--version` outputs correct version string
 
