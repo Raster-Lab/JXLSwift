@@ -99,7 +99,7 @@
 - [x] ZigZag signed-to-unsigned residual mapping
 - [x] Run-length + varint entropy coding (simplified)
 - [x] Multi-channel decorrelation (RCT — Reversible Colour Transform)
-- [ ] Squeeze transform (multi-resolution decomposition)
+- [x] Squeeze transform (multi-resolution decomposition)
 - [ ] Context modelling for entropy coding
 - [ ] MA (Meta-Adaptive) tree-based prediction
 - [ ] Full Modular subbitstream framing per ISO/IEC 18181-1 §7
@@ -114,7 +114,7 @@
 - [x] MED predictor unit tests: first pixel, first row, first column, general case
 - [x] ZigZag encoding: 0→0, -1→1, 1→2, -2→3, 2→4
 - [x] RCT forward and inverse produce pixel-perfect round-trip
-- [ ] Squeeze transform forward/inverse round-trip
+- [x] Squeeze transform forward/inverse round-trip
 - [x] Edge cases: 1×1 image, single-channel, 16-bit depth, maximum dimensions
 
 ### Acceptance Criteria
