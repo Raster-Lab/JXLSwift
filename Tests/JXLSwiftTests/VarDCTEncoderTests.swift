@@ -590,7 +590,7 @@ final class VarDCTEncoderTests: XCTestCase {
                           "Scalar DC coefficient should be non-zero for constant block")
     }
 
-    func testAccelerateDCT_MatchesScalarDCT_GradientBlock() {
+    func testAccelerateDCT_RoundTripAccuracy_GradientBlock() {
         let encoder = makeEncoder()
         var block = [[Float]](repeating: [Float](repeating: 0, count: 8), count: 8)
         for y in 0..<8 {
@@ -615,7 +615,8 @@ final class VarDCTEncoderTests: XCTestCase {
         let accelDCTFlat = AccelerateOps.dct2D(flat, size: 8)
         let accelIDCTFlat = AccelerateOps.idct2D(accelDCTFlat, size: 8)
 
-        // Accelerate round-trip should also reconstruct accurately
+        // Accelerate uses vDSP DCT Type II/III which has slightly different
+        // normalisation than the scalar implementation, so we allow 1e-3 tolerance.
         for i in 0..<64 {
             let y = i / 8
             let x = i % 8

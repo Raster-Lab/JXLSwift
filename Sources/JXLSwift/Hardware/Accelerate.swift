@@ -169,7 +169,7 @@ public enum AccelerateOps {
         var divided = [Float](repeating: 0, count: count)
         vDSP_vdiv(qMatrix, 1, values, 1, &divided, 1, vDSP_Length(count))
         
-        // Round to nearest integer
+        // Round to nearest integer (vvnintf provides vectorised round-to-nearest)
         var rounded = [Float](repeating: 0, count: count)
         vvnintf(&rounded, divided, [Int32(count)])
         
