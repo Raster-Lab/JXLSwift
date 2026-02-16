@@ -624,6 +624,11 @@ class VarDCTEncoder {
         )
         
         let useAdaptive = options.adaptiveQuantization
+        let useANS = options.useANS
+        
+        // ANS mode: collect all blocks and DC residuals for batch encoding
+        var allBlocks = [[[Int16]]]()
+        var allDCResiduals = [Int16]()
         
         for blockY in 0..<blocksY {
             for blockX in 0..<blocksX {
@@ -685,9 +690,23 @@ class VarDCTEncoder {
                 let dcResidual = dc - predicted
                 dcValues[blockY][blockX] = dc
                 
-                // Encode coefficients with DC prediction residual
-                encodeBlock(writer: &writer, block: quantized, dcResidual: dcResidual)
+                if useANS {
+                    // Collect for batch ANS encoding
+                    allBlocks.append(quantized)
+                    allDCResiduals.append(dcResidual)
+                } else {
+                    // Encode coefficients with DC prediction residual
+                    encodeBlock(writer: &writer, block: quantized, dcResidual: dcResidual)
+                }
             }
+        }
+        
+        if useANS && !allBlocks.isEmpty {
+            // Batch-encode all coefficients with ANS
+            let ansData = try encodeBlocksANS(
+                allBlocks: allBlocks, dcResiduals: allDCResiduals
+            )
+            writer.writeData(ansData)
         }
         
         writer.flushByte()
@@ -1070,6 +1089,81 @@ class VarDCTEncoder {
         if zeroRun > 0 {
             writer.writeVarint(0xFFFF) // EOB marker
         }
+    }
+    
+    /// Encode all coefficients of a channel using ANS entropy coding.
+    ///
+    /// Collects all DC and AC coefficients from the block grid, maps them
+    /// to unsigned symbols via ZigZag encoding, and compresses using a
+    /// two-context rANS encoder (context 0 = DC, context 1 = AC).
+    ///
+    /// - Parameters:
+    ///   - allBlocks: All quantised 8×8 blocks in raster order.
+    ///   - dcResiduals: DC prediction residuals for each block.
+    /// - Returns: ANS-compressed coefficient data.
+    func encodeBlocksANS(
+        allBlocks: [[[Int16]]],
+        dcResiduals: [Int16]
+    ) throws -> Data {
+        // Collect symbols by context: DC (ctx 0) and AC (ctx 1)
+        var dcSymbols = [Int]()
+        var acSymbols = [Int]()
+        var pairs = [(symbol: Int, context: Int)]()
+        
+        for (blockIdx, block) in allBlocks.enumerated() {
+            let coefficients = zigzagScan(block: block)
+            
+            // DC coefficient (use residual)
+            let dcValue = dcResiduals[blockIdx]
+            let dcSym = Int(encodeSignedValue(Int32(dcValue)))
+            dcSymbols.append(dcSym)
+            pairs.append((symbol: min(dcSym, ANSConstants.maxAlphabetSize - 1),
+                          context: 0))
+            
+            // AC coefficients
+            for i in 1..<coefficients.count {
+                let acSym = Int(encodeSignedValue(Int32(coefficients[i])))
+                acSymbols.append(acSym)
+                pairs.append((symbol: min(acSym, ANSConstants.maxAlphabetSize - 1),
+                              context: 1))
+            }
+        }
+        
+        // Clamp to alphabet size
+        let maxAlpha = ANSConstants.maxAlphabetSize
+        let clampedDC = dcSymbols.map { min($0, maxAlpha - 1) }
+        let clampedAC = acSymbols.map { min($0, maxAlpha - 1) }
+        
+        // Build multi-context encoder (2 contexts: DC and AC)
+        let ansEncoder = try MultiContextANSEncoder.build(
+            contextSymbols: [clampedDC, clampedAC],
+            alphabetSize: maxAlpha
+        )
+        
+        let encoded = try ansEncoder.encode(pairs)
+        
+        // Build output with header
+        var writer = BitstreamWriter()
+        
+        // ANS marker
+        writer.writeByte(0x02)  // VarDCT ANS mode
+        
+        // Block count
+        writer.writeU32(UInt32(allBlocks.count))
+        
+        // Serialise distributions
+        for dist in ansEncoder.distributions {
+            let table = dist.serialise()
+            writer.writeVarint(UInt64(table.count))
+            writer.writeData(table)
+        }
+        
+        // Write encoded data
+        writer.writeU32(UInt32(encoded.count))
+        writer.writeData(encoded)
+        
+        writer.flushByte()
+        return writer.data
     }
     
     func zigzagScan(block: [[Int16]]) -> [Int16] {

@@ -830,7 +830,14 @@ class ModularEncoder {
         // Apply squeeze transform for multi-resolution decomposition
         let (squeezed, _) = forwardSqueeze(data: predicted, width: width, height: height)
         
-        // Apply context-modelled entropy encoding
+        // Select entropy coding backend
+        if options.useANS {
+            return try entropyEncodeANS(
+                data: squeezed, width: width, height: height
+            )
+        }
+        
+        // Apply context-modelled entropy encoding (default)
         let encoded = try entropyEncodeWithContext(
             data: squeezed, width: width, height: height
         )
@@ -1037,6 +1044,101 @@ class ModularEncoder {
     }
     
     // MARK: - Entropy Encoding
+    
+    /// Entropy-encode residuals using ANS (Asymmetric Numeral Systems).
+    ///
+    /// This method maps signed residuals to unsigned symbols via ZigZag
+    /// encoding, partitions them by context (gradient-based), builds
+    /// per-context ANS distributions, and encodes using the multi-context
+    /// rANS encoder.  The distribution tables are serialised as a header
+    /// so the decoder can reconstruct them.
+    ///
+    /// - Parameters:
+    ///   - data: Signed residual values.
+    ///   - width: Image width (for 2D context selection).
+    ///   - height: Image height.
+    /// - Returns: Compressed data with embedded distribution tables.
+    func entropyEncodeANS(
+        data: [Int32],
+        width: Int,
+        height: Int
+    ) throws -> Data {
+        // Map signed residuals → unsigned symbols via ZigZag
+        let symbols = data.map { v -> Int in
+            Int(encodeSignedValue(v))
+        }
+        
+        // Determine alphabet size (max symbol + 1, clamped to 256)
+        let maxSym = symbols.max() ?? 0
+        let alphabetSize = min(maxSym + 1, ANSConstants.maxAlphabetSize)
+        
+        // Clamp symbols to alphabet range for very large residuals
+        let clampedSymbols = symbols.map { min($0, alphabetSize - 1) }
+        
+        // Partition symbols by context
+        var contextSymbols = [[Int]](
+            repeating: [], count: ModularEncoder.contextCount
+        )
+        for i in 0..<clampedSymbols.count {
+            let x = i % width
+            let y = i / width
+            let ctx = selectContext(
+                residuals: data, x: x, y: y, width: width
+            )
+            contextSymbols[ctx].append(clampedSymbols[i])
+        }
+        
+        // Build multi-context ANS encoder
+        let ansEncoder = try MultiContextANSEncoder.build(
+            contextSymbols: contextSymbols,
+            alphabetSize: alphabetSize
+        )
+        
+        // Build (symbol, context) pairs in order
+        var pairs = [(symbol: Int, context: Int)]()
+        pairs.reserveCapacity(clampedSymbols.count)
+        for i in 0..<clampedSymbols.count {
+            let x = i % width
+            let y = i / width
+            let ctx = selectContext(
+                residuals: data, x: x, y: y, width: width
+            )
+            pairs.append((symbol: clampedSymbols[i], context: ctx))
+        }
+        
+        // Encode symbols
+        let encoded = try ansEncoder.encode(pairs)
+        
+        // Build output: header + distribution tables + encoded data
+        var writer = BitstreamWriter()
+        
+        // Write element count
+        writer.writeU32(UInt32(data.count))
+        
+        // Write ANS mode marker (1 byte: 0x01 = ANS)
+        writer.writeByte(0x01)
+        
+        // Write alphabet size (2 bytes LE)
+        writer.writeByte(UInt8(alphabetSize & 0xFF))
+        writer.writeByte(UInt8((alphabetSize >> 8) & 0xFF))
+        
+        // Write context count
+        writer.writeByte(UInt8(ModularEncoder.contextCount))
+        
+        // Serialise each distribution table
+        for dist in ansEncoder.distributions {
+            let table = dist.serialise()
+            writer.writeVarint(UInt64(table.count))
+            writer.writeData(table)
+        }
+        
+        // Write encoded data length and data
+        writer.writeU32(UInt32(encoded.count))
+        writer.writeData(encoded)
+        
+        writer.flushByte()
+        return writer.data
+    }
     
     /// Entropy-encode residuals using context-modelled run-length + Golomb-Rice coding.
     ///

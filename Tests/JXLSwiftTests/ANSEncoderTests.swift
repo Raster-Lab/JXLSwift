@@ -679,4 +679,82 @@ final class ANSEncoderTests: XCTestCase {
             let _ = try! decoder.decode(encoded, count: symbols.count)
         }
     }
+
+    // MARK: - Encoder Integration (ANS Mode)
+
+    func testModularEncoder_ANSMode_ProducesOutput() throws {
+        var options = EncodingOptions.lossless
+        options.useANS = true
+        let encoder = JXLEncoder(options: options)
+
+        var frame = ImageFrame(width: 8, height: 8, channels: 3)
+        for y in 0..<8 {
+            for x in 0..<8 {
+                for c in 0..<3 {
+                    frame.setPixel(x: x, y: y, channel: c, value: UInt16(x * 32 + y * 16 + c * 64))
+                }
+            }
+        }
+
+        let result = try encoder.encode(frame)
+        XCTAssertGreaterThan(result.data.count, 0)
+        XCTAssertGreaterThan(result.stats.compressionRatio, 0)
+    }
+
+    func testVarDCTEncoder_ANSMode_ProducesOutput() throws {
+        var options = EncodingOptions(mode: .lossy(quality: 90))
+        options.useANS = true
+        let encoder = JXLEncoder(options: options)
+
+        var frame = ImageFrame(width: 16, height: 16, channels: 3)
+        for y in 0..<16 {
+            for x in 0..<16 {
+                for c in 0..<3 {
+                    frame.setPixel(x: x, y: y, channel: c, value: UInt16(x * 16 + y * 8 + c * 32))
+                }
+            }
+        }
+
+        let result = try encoder.encode(frame)
+        XCTAssertGreaterThan(result.data.count, 0)
+        XCTAssertGreaterThan(result.stats.compressionRatio, 0)
+    }
+
+    func testModularEncoder_ANSMode_1x1Image() throws {
+        var options = EncodingOptions.lossless
+        options.useANS = true
+        let encoder = JXLEncoder(options: options)
+
+        var frame = ImageFrame(width: 1, height: 1, channels: 1)
+        frame.setPixel(x: 0, y: 0, channel: 0, value: UInt16(128))
+
+        let result = try encoder.encode(frame)
+        XCTAssertGreaterThan(result.data.count, 0)
+    }
+
+    func testVarDCTEncoder_ANSMode_SingleChannel() throws {
+        var options = EncodingOptions(mode: .lossy(quality: 85))
+        options.useANS = true
+        let encoder = JXLEncoder(options: options)
+
+        var frame = ImageFrame(width: 8, height: 8, channels: 1)
+        for y in 0..<8 {
+            for x in 0..<8 {
+                frame.setPixel(x: x, y: y, channel: 0, value: UInt16(x * 32))
+            }
+        }
+
+        let result = try encoder.encode(frame)
+        XCTAssertGreaterThan(result.data.count, 0)
+    }
+
+    func testEncodingOptions_UseANS_DefaultIsFalse() {
+        let options = EncodingOptions()
+        XCTAssertFalse(options.useANS)
+    }
+
+    func testEncodingOptions_UseANS_CanBeEnabled() {
+        let options = EncodingOptions(useANS: true)
+        XCTAssertTrue(options.useANS)
+    }
 }
