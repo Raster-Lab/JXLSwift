@@ -141,7 +141,7 @@
 - [x] Quality-to-distance conversion formula
 - [ ] Variable block sizes (8×8, 16×16, 32×32, 16×8 etc.)
 - [x] XYB colour space (JPEG XL native perceptual space)
-- [ ] Chroma-from-luma (CfL) prediction
+- [x] Chroma-from-luma (CfL) prediction
 - [ ] Adaptive quantisation per block
 - [x] DC prediction across blocks
 - [ ] Coefficient reordering (natural order per spec)
