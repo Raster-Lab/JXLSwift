@@ -107,7 +107,8 @@ let options = EncodingOptions(
     useHardwareAcceleration: true,
     useAccelerate: true,
     useMetal: true,
-    numThreads: 0                 // Auto-detect
+    numThreads: 0,                // Auto-detect
+    useANS: true                  // Use rANS entropy coding
 )
 
 let encoder = JXLEncoder(options: options)
@@ -141,7 +142,8 @@ Sources/JXLSwift/
 ├── Encoding/          # Compression pipeline
 │   ├── Encoder.swift          # Main encoder interface
 │   ├── ModularEncoder.swift   # Lossless compression
-│   └── VarDCTEncoder.swift    # Lossy compression
+│   ├── VarDCTEncoder.swift    # Lossy compression
+│   └── ANSEncoder.swift       # rANS entropy coding (ISO/IEC 18181-1 Annex A)
 ├── Hardware/          # Platform optimizations
 │   ├── Accelerate.swift       # Apple Accelerate framework (vDSP)
 │   ├── NEONOps.swift          # ARM NEON SIMD via Swift SIMD types
@@ -286,7 +288,7 @@ See [MILESTONES.md](MILESTONES.md) for the detailed project milestone plan.
 - [x] JPEG XL file format (.jxl) — ISOBMFF container, codestream/frame headers
 - [x] Metadata support (EXIF, XMP, ICC profiles)
 - [x] Animation container framing (frame index, multi-frame)
-- [ ] Full ANS entropy coding
+- 🔶 ANS entropy coding — rANS encoder/decoder, multi-context, distribution tables, integrated with Modular + VarDCT
 - [ ] Metal GPU acceleration
 - [ ] Progressive encoding
 - [ ] Decoding support

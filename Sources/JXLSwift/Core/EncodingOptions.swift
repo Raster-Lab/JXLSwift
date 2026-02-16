@@ -70,6 +70,14 @@ public struct EncodingOptions: Sendable {
     /// less sensitive to noise in smooth regions.
     public var adaptiveQuantization: Bool
     
+    /// Use ANS (Asymmetric Numeral Systems) entropy coding.
+    ///
+    /// When enabled, the encoder uses rANS entropy coding instead of
+    /// the simplified run-length + Golomb-Rice encoding.  ANS provides
+    /// near-optimal compression at a modest increase in encoding time.
+    /// This follows ISO/IEC 18181-1 Annex A.
+    public var useANS: Bool
+    
     public init(
         mode: CompressionMode = .lossy(quality: 90),
         effort: EncodingEffort = .squirrel,
@@ -80,7 +88,8 @@ public struct EncodingOptions: Sendable {
         useAccelerate: Bool = true,
         useMetal: Bool = true,
         keepJPEG: Bool = false,
-        adaptiveQuantization: Bool = true
+        adaptiveQuantization: Bool = true,
+        useANS: Bool = false
     ) {
         self.mode = mode
         self.effort = effort
@@ -92,6 +101,7 @@ public struct EncodingOptions: Sendable {
         self.useMetal = useMetal
         self.keepJPEG = keepJPEG
         self.adaptiveQuantization = adaptiveQuantization
+        self.useANS = useANS
     }
     
     /// Default high-quality encoding
