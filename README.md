@@ -39,6 +39,31 @@ dependencies: [
 ]
 ```
 
+### Command Line Tool Installation
+
+To install the `jxl-tool` command-line tool:
+
+```bash
+# Build and install to /usr/local (requires sudo)
+sudo make install
+
+# Or install to a custom location
+make PREFIX=~/.local install
+
+# Install man pages (requires sudo for system-wide installation)
+sudo make install-man
+```
+
+The Makefile provides several targets:
+- `make build` - Build the project in release mode
+- `make test` - Run all tests
+- `make man` - Generate man pages
+- `make install` - Install jxl-tool binary
+- `make install-man` - Install man pages
+- `make uninstall` - Remove installed files
+- `make clean` - Clean build artifacts
+- `make help` - Show help message
+
 ## Usage
 
 ### Basic Encoding
@@ -242,9 +267,6 @@ swift run jxl-tool encode --lossless -o output.jxl
 # Batch encode a directory
 swift run jxl-tool batch /path/to/images --recursive -o /path/to/output
 
-# Batch encode with lossless mode
-swift run jxl-tool batch /path/to/images --lossless --recursive --overwrite
-
 # Display hardware capabilities
 swift run jxl-tool hardware
 
@@ -254,14 +276,25 @@ swift run jxl-tool info output.jxl
 # Compare two JPEG XL files
 swift run jxl-tool compare file1.jxl file2.jxl
 
-# Compare with JSON output
-swift run jxl-tool compare file1.jxl file2.jxl --json
-
-# Compare with byte-level details
-swift run jxl-tool compare file1.jxl file2.jxl --bytes --verbose
-
 # Run performance benchmarks
 swift run jxl-tool benchmark --width 512 --height 512
+
+# Compare ANS vs simplified entropy encoding
+swift run jxl-tool benchmark --compare-entropy
+
+# Compare hardware acceleration vs scalar
+swift run jxl-tool benchmark --compare-hardware
+```
+
+### Man Pages
+
+After installation, comprehensive man pages are available:
+
+```bash
+man jxl-tool               # Main tool overview
+man jxl-tool-encode        # Encode subcommand
+man jxl-tool-benchmark     # Benchmark subcommand
+# ... and more
 ```
 
 ### Exit Codes
@@ -284,11 +317,13 @@ See [MILESTONES.md](MILESTONES.md) for the detailed project milestone plan.
 - [x] Apple Silicon optimization
 - [x] Accelerate framework integration — vDSP DCT, vectorized color/quantization
 - [x] ARM NEON SIMD acceleration — portable Swift SIMD types, DCT, colour conversion, quantisation, MED prediction, RCT, squeeze (Modular + VarDCT)
-- [x] Command line tool (jxl-tool) — encode, info, hardware, benchmark
+- [x] Command line tool (jxl-tool) — encode, info, hardware, benchmark, batch, compare
 - [x] JPEG XL file format (.jxl) — ISOBMFF container, codestream/frame headers
 - [x] Metadata support (EXIF, XMP, ICC profiles)
 - [x] Animation container framing (frame index, multi-frame)
-- 🔶 ANS entropy coding — rANS encoder/decoder, multi-context, distribution tables, histogram clustering, ANS interleaving, LZ77 hybrid mode, integrated with Modular + VarDCT
+- [x] ANS entropy coding — rANS encoder/decoder, multi-context, distribution tables, histogram clustering, ANS interleaving, LZ77 hybrid mode, integrated with Modular + VarDCT
+- [x] Man pages for jxl-tool and all subcommands
+- [x] Makefile for build, test, and installation
 - [ ] Metal GPU acceleration
 - [ ] Progressive encoding
 - [ ] Decoding support
