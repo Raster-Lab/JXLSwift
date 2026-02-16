@@ -199,14 +199,19 @@ class VarDCTEncoder {
     }
     
     // Placeholder for Accelerate-based DCT
+    // TODO: Implement using Accelerate.swift's dct2D function which provides vDSP_DCT implementation
     private func applyDCTAccelerate(block: [[Float]]) -> [[Float]] {
-        // TODO: Implement using vDSP_DCT
+        // Flatten block for Accelerate processing
+        // let flat = block.flatMap { $0 }
+        // let result = AccelerateOps.dct2D(flat, size: blockSize)
+        // Convert back to 2D array
         return applyDCTScalar(block: block)
     }
     
     // Placeholder for NEON-based DCT
+    // TODO: Implement using ARM NEON SIMD instructions for 8x8 block processing
     private func applyDCTNEON(block: [[Float]]) -> [[Float]] {
-        // TODO: Implement using ARM NEON intrinsics
+        // Use NEON vector instructions for parallel computation
         return applyDCTScalar(block: block)
     }
     

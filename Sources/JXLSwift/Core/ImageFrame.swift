@@ -115,7 +115,8 @@ public struct ImageFrame {
     
     /// Get pixel value at specific location and channel
     public func getPixel(x: Int, y: Int, channel: Int) -> UInt16 {
-        let index = (y * width + x) * channels + channel
+        // Planar format: channel * (width * height) + (y * width + x)
+        let index = channel * (width * height) + (y * width + x)
         
         switch pixelType {
         case .uint8:
@@ -137,7 +138,8 @@ public struct ImageFrame {
     
     /// Set pixel value at specific location and channel
     public mutating func setPixel(x: Int, y: Int, channel: Int, value: UInt16) {
-        let index = (y * width + x) * channels + channel
+        // Planar format: channel * (width * height) + (y * width + x)
+        let index = channel * (width * height) + (y * width + x)
         
         switch pixelType {
         case .uint8:

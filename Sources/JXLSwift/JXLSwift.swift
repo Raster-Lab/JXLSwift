@@ -7,7 +7,7 @@
 /// - Native Swift implementation
 /// - Apple Silicon optimizations (ARM NEON, SIMD)
 /// - Apple Accelerate framework integration
-/// - Metal GPU acceleration support
+/// - Metal GPU acceleration support (planned)
 /// - Modular (lossless) and VarDCT (lossy) compression modes
 ///
 /// # Architecture
@@ -15,7 +15,7 @@
 /// - Core: Fundamental data structures and types
 /// - Encoding: Compression pipeline implementation
 /// - Hardware: Platform-specific optimizations
-/// - Format: JPEG XL file format support
+/// - Format: JPEG XL file format support (future)
 
 /// JXLSwift main namespace
 public enum JXLSwift {

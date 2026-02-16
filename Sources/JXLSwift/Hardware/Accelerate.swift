@@ -184,14 +184,15 @@ public enum SIMDOps {
     // MARK: - ARM NEON Operations
     
     /// SIMD-accelerated pixel prediction for ARM NEON
+    /// Note: Currently uses scalar implementation. Full NEON optimization pending.
     public static func predictPixelsNEON(
         data: UnsafePointer<UInt16>,
         predictions: UnsafeMutablePointer<Int32>,
         width: Int,
         height: Int
     ) {
-        // NEON implementation would use ARM NEON intrinsics
-        // This is a placeholder for the actual NEON code
+        // TODO: Implement using ARM NEON intrinsics for vectorized operations
+        // This placeholder uses scalar operations for now
         
         for y in 0..<height {
             for x in 0..<width {
