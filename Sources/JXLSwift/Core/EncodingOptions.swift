@@ -582,6 +582,16 @@ public struct EncodingOptions: Sendable {
     /// - Matching noise characteristics of original content
     public var noiseConfig: NoiseConfig?
     
+    /// Spline encoding configuration for vector overlay rendering.
+    ///
+    /// When set, detects and encodes smooth curves, edges, and lines as vector
+    /// splines rather than rasterized pixels. This provides:
+    /// - Better compression for line art, diagrams, and illustrations
+    /// - Sharp rendering at any resolution (resolution-independent)
+    /// - Efficient representation of text overlays
+    /// - Improved quality for smooth edges and contours
+    public var splineConfig: SplineConfig?
+    
     public init(
         mode: CompressionMode = .lossy(quality: 90),
         effort: EncodingEffort = .squirrel,
@@ -600,7 +610,8 @@ public struct EncodingOptions: Sendable {
         regionOfInterest: RegionOfInterest? = nil,
         referenceFrameConfig: ReferenceFrameConfig? = nil,
         patchConfig: PatchConfig? = nil,
-        noiseConfig: NoiseConfig? = nil
+        noiseConfig: NoiseConfig? = nil,
+        splineConfig: SplineConfig? = nil
     ) {
         self.mode = mode
         self.effort = effort
@@ -620,6 +631,7 @@ public struct EncodingOptions: Sendable {
         self.referenceFrameConfig = referenceFrameConfig
         self.patchConfig = patchConfig
         self.noiseConfig = noiseConfig
+        self.splineConfig = splineConfig
     }
     
     /// Default high-quality encoding

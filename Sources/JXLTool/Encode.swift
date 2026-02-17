@@ -79,6 +79,12 @@ struct Encode: ParsableCommand {
     
     @Option(name: .long, help: "Noise preset: subtle, moderate, heavy, film (default: moderate)")
     var noisePreset: String?
+    
+    @Flag(name: .long, help: "Enable spline encoding for vector overlays (line art, edges, diagrams)")
+    var splines: Bool = false
+    
+    @Option(name: .long, help: "Spline preset: subtle, moderate, artistic (default: moderate)")
+    var splinePreset: String?
 
     @Flag(name: .long, help: "Show verbose output")
     var verbose: Bool = false
@@ -230,6 +236,29 @@ struct Encode: ParsableCommand {
         } else {
             noiseConfig = nil
         }
+        
+        // Build spline config if enabled
+        let splineConfig: SplineConfig?
+        if splines {
+            if let preset = splinePreset {
+                switch preset.lowercased() {
+                case "subtle":
+                    splineConfig = .subtle
+                case "moderate":
+                    splineConfig = .moderate
+                case "artistic":
+                    splineConfig = .artistic
+                default:
+                    print("Error: Unknown spline preset '\(preset)'. Use: subtle, moderate, or artistic", to: &standardError)
+                    throw JXLExitCode.invalidArguments
+                }
+            } else {
+                // Default to moderate preset
+                splineConfig = .moderate
+            }
+        } else {
+            splineConfig = nil
+        }
 
         let options = EncodingOptions(
             mode: mode,
@@ -243,7 +272,8 @@ struct Encode: ParsableCommand {
             regionOfInterest: regionOfInterest,
             referenceFrameConfig: referenceFrameConfig,
             patchConfig: patchConfig,
-            noiseConfig: noiseConfig
+            noiseConfig: noiseConfig,
+            splineConfig: splineConfig
         )
 
         // Generate a test image (until file I/O is implemented)
