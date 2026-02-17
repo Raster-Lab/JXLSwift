@@ -144,6 +144,38 @@ let encoder = JXLEncoder(options: options)
 let result = try encoder.encode(frame)
 ```
 
+### Progressive Encoding
+
+Progressive encoding allows images to be rendered incrementally as data arrives, showing a low-resolution preview first that gradually refines to full quality. This is particularly useful for web delivery and streaming scenarios.
+
+```swift
+// Enable progressive encoding
+let progressiveOptions = EncodingOptions(
+    mode: .lossy(quality: 90),
+    effort: .squirrel,
+    progressive: true  // Enable multi-pass encoding
+)
+
+let encoder = JXLEncoder(options: progressiveOptions)
+let result = try encoder.encode(frame)
+```
+
+#### How Progressive Encoding Works
+
+Progressive encoding splits DCT coefficients into multiple passes:
+1. **Pass 0 (DC-only)**: Encodes only DC coefficients, providing a low-resolution 8×8 preview
+2. **Pass 1 (Low-frequency AC)**: Adds low-frequency details (coefficients 1-15)
+3. **Pass 2 (High-frequency AC)**: Adds high-frequency details (coefficients 16-63)
+
+This allows decoders to render a usable image after receiving just the first pass, then progressively refine it as more data arrives.
+
+#### Trade-offs
+
+- **Pros**: Faster perceived loading, better user experience for slow connections
+- **Cons**: Slightly larger file size (typically 5-15% overhead) due to pass structure
+- **Best for**: Web delivery, progressive image loading, streaming scenarios
+- **Avoid for**: Archival storage where file size is critical
+
 ### Hardware Capabilities Detection
 
 ```swift
@@ -407,7 +439,7 @@ See [MILESTONES.md](MILESTONES.md) for the detailed project milestone plan.
 - [x] Makefile for build, test, and installation
 - [x] **Advanced features** — HDR support (PQ, HLG), wide gamut (Display P3, Rec. 2020), alpha channels (straight, premultiplied)
 - [x] **Metal GPU async pipeline with double-buffering** — overlapping CPU and GPU work for improved performance
-- [ ] Progressive encoding
+- [x] Progressive encoding
 - [ ] Decoding support
 - [ ] libjxl validation & benchmarking
 
