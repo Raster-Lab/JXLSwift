@@ -86,6 +86,9 @@ public enum EncodingEffort: Int, Sendable {
 
 /// Region of Interest (ROI) configuration for selective quality encoding
 public struct RegionOfInterest: Sendable, Equatable {
+    /// Maximum allowed quality boost value
+    public static let maxQualityBoost: Float = 50.0
+    
     /// X coordinate of the top-left corner of the ROI (in pixels)
     public var x: Int
     
@@ -114,7 +117,7 @@ public struct RegionOfInterest: Sendable, Equatable {
     ///   - y: Y coordinate of top-left corner
     ///   - width: Width of the region
     ///   - height: Height of the region
-    ///   - qualityBoost: Quality improvement in points (0-50, default 10)
+    ///   - qualityBoost: Quality improvement in points (0-maxQualityBoost, default 10)
     ///   - featherWidth: Transition width in pixels (default 16)
     public init(
         x: Int,
@@ -128,7 +131,7 @@ public struct RegionOfInterest: Sendable, Equatable {
         self.y = y
         self.width = width
         self.height = height
-        self.qualityBoost = max(0, min(50, qualityBoost))
+        self.qualityBoost = max(0, min(Self.maxQualityBoost, qualityBoost))
         self.featherWidth = max(0, featherWidth)
     }
     

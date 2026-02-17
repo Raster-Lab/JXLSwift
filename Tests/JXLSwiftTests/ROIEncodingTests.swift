@@ -404,7 +404,7 @@ final class ROIEncodingTests: XCTestCase {
     }
     
     func testROI_Encoding_InvalidROI_ThrowsError() throws {
-        var frame = ImageFrame(width: 64, height: 64, channels: 3, pixelType: .uint8)
+        let frame = ImageFrame(width: 64, height: 64, channels: 3, pixelType: .uint8)
         
         // ROI extends beyond image bounds
         let roi = RegionOfInterest(x: 50, y: 50, width: 30, height: 30)
