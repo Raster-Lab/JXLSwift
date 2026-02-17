@@ -226,6 +226,11 @@ public struct PatchDetector {
             let expandedHeight = min(height + initialSize, maxExpansion,
                                     currentFrame.height - destY, referenceFrame.height - sourceY)
             
+            // Stop if no growth is possible in either dimension
+            if expandedWidth == width && expandedHeight == height {
+                break
+            }
+            
             let expandedSimilarity = computeRegionSimilarity(
                 currentFrame: currentFrame,
                 referenceFrame: referenceFrame,
@@ -244,11 +249,6 @@ public struct PatchDetector {
             
             width = expandedWidth
             height = expandedHeight
-            
-            // If we can't expand further, stop
-            if width >= maxExpansion && height >= maxExpansion {
-                break
-            }
         }
         
         // Calculate final similarity for the chosen size

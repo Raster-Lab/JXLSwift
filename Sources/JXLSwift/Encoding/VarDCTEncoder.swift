@@ -709,12 +709,9 @@ class VarDCTEncoder {
         
         // Thread-safety synchronization:
         // - DispatchGroup: Coordinates completion of all async operations
-        // - resultsLock (NSLock): Protects shared mutable state (processedResults, hasError)
-        // - All modifications to processedResults/hasError must be within resultsLock critical sections
+        // - DCTBatchState (lock-protected): Protects shared mutable state (processedResults, hasError)
         let dispatchGroup = DispatchGroup()
-        var processedResults: [[Float]?] = Array(repeating: nil, count: flatBlocks.count)
-        let resultsLock = NSLock()
-        var hasError = false
+        let batchState = DCTBatchState(count: flatBlocks.count)
         
         // Process batches with double-buffering via async pipeline
         for batchStart in stride(from: 0, to: flatBlocks.count, by: Self.metalBatchSize) {
@@ -739,9 +736,7 @@ class VarDCTEncoder {
                 defer { dispatchGroup.leave() }
                 
                 guard let transformed = result else {
-                    resultsLock.lock()
-                    hasError = true
-                    resultsLock.unlock()
+                    batchState.setError()
                     return
                 }
                 
@@ -757,11 +752,7 @@ class VarDCTEncoder {
                 }
                 
                 // Store results
-                resultsLock.lock()
-                for (idx, blockResult) in batchResults.enumerated() {
-                    processedResults[batchStart + idx] = blockResult
-                }
-                resultsLock.unlock()
+                batchState.setResults(batchResults, startingAt: batchStart)
             }
         }
         
@@ -769,9 +760,11 @@ class VarDCTEncoder {
         dispatchGroup.wait()
         
         // Check for errors
-        if hasError {
+        if batchState.hadError {
             return nil
         }
+        
+        let processedResults = batchState.getResults()
         
         // Reconstruct 4D block structure from flat results
         var blocks = [[[[Float]]]](
@@ -808,6 +801,50 @@ class VarDCTEncoder {
         }
         
         return blocks
+    }
+    
+    /// Thread-safe state container for DCT batch processing results
+    ///
+    /// Thread Safety: Uses `@unchecked Sendable` with `NSLock` protection for
+    /// mutable `results` and `hasError`. All mutations go through the lock.
+    private final class DCTBatchState: @unchecked Sendable {
+        private var results: [[Float]?]
+        private var _hasError: Bool = false
+        private let lock = NSLock()
+        
+        init(count: Int) {
+            self.results = Array(repeating: nil, count: count)
+        }
+        
+        /// Mark that an error occurred
+        func setError() {
+            lock.lock()
+            defer { lock.unlock() }
+            _hasError = true
+        }
+        
+        /// Set batch results starting at the given index
+        func setResults(_ batchResults: [[Float]], startingAt offset: Int) {
+            lock.lock()
+            defer { lock.unlock() }
+            for (idx, blockResult) in batchResults.enumerated() {
+                results[offset + idx] = blockResult
+            }
+        }
+        
+        /// Whether an error occurred during processing
+        var hadError: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return _hasError
+        }
+        
+        /// Get the final results array
+        func getResults() -> [[Float]?] {
+            lock.lock()
+            defer { lock.unlock() }
+            return results
+        }
     }
     #endif
     
