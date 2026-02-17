@@ -495,16 +495,7 @@ public class JXLDecoder {
     /// Advance the reader past any remaining bits in the current byte
     /// to reach the next byte boundary. Mirrors the encoder's `flushByte()`.
     private func flushReaderToByte(_ reader: inout BitstreamReader) {
-        // The BitstreamReader processes individual bits within each byte.
-        // After reading some bits, there may be remaining bits in the
-        // current byte. We skip those to reach the next byte boundary.
-        // Since BitstreamReader.readBit() auto-advances when 8 bits
-        // are consumed, we just need to consume bits until we're aligned.
-        // We can detect alignment by trying to read bits and checking
-        // if we've completed a byte. The simplest approach: read up to
-        // 7 bits to reach the next byte boundary.
-        // Note: This is a best-effort approach since BitstreamReader
-        // doesn't expose its internal bit position.
+        reader.skipToByteAlignment()
     }
 
     /// Estimate the current byte position of the reader.

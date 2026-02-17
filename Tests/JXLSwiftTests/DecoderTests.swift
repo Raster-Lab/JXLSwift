@@ -48,6 +48,28 @@ final class DecoderTests: XCTestCase {
         }
     }
 
+    /// Create a frame filled with pseudo-random data using xorshift64*.
+    private func makeRandomFrame(
+        width: Int, height: Int, channels: Int, seed: UInt64 = 42
+    ) -> ImageFrame {
+        var frame = ImageFrame(
+            width: width, height: height, channels: channels
+        )
+        var state = seed
+        for c in 0..<channels {
+            for y in 0..<height {
+                for x in 0..<width {
+                    state ^= state >> 12
+                    state ^= state << 25
+                    state ^= state >> 27
+                    let value = UInt16((state &* 0x2545F4914F6CDD1D) >> 56)
+                    frame.setPixel(x: x, y: y, channel: c, value: value)
+                }
+            }
+        }
+        return frame
+    }
+
     /// Encode a frame with JXLEncoder (lossless).
     private func encodeLossless(_ frame: ImageFrame) throws -> Data {
         let encoder = JXLEncoder(options: .lossless)
@@ -260,6 +282,26 @@ final class DecoderTests: XCTestCase {
         XCTAssertEqual(parsed.numPasses, 3)
     }
 
+    func testParseFrameHeader_WithName() throws {
+        let fh = FrameHeader(
+            frameType: .regularFrame,
+            encoding: .modular,
+            blendMode: .replace,
+            isLast: true,
+            name: "test"
+        )
+        var writer = BitstreamWriter()
+        fh.serialise(to: &writer)
+        writer.flushByte()
+
+        let decoder = JXLDecoder()
+        let parsed = try decoder.parseFrameHeader(writer.data)
+
+        XCTAssertEqual(parsed.name, "test")
+        XCTAssertTrue(parsed.isLast)
+        XCTAssertEqual(parsed.encoding, .modular)
+    }
+
     func testParseFrameHeader_TruncatedData() {
         let decoder = JXLDecoder()
         XCTAssertThrowsError(try decoder.parseFrameHeader(Data()))
@@ -346,19 +388,7 @@ final class DecoderTests: XCTestCase {
     }
 
     func testDecode_32x32_Random() throws {
-        var frame = ImageFrame(width: 32, height: 32, channels: 3)
-        var state: UInt64 = 42
-        for c in 0..<3 {
-            for y in 0..<32 {
-                for x in 0..<32 {
-                    state ^= state >> 12
-                    state ^= state << 25
-                    state ^= state >> 27
-                    let value = UInt16((state &* 0x2545F4914F6CDD1D) >> 56)
-                    frame.setPixel(x: x, y: y, channel: c, value: value)
-                }
-            }
-        }
+        let frame = makeRandomFrame(width: 32, height: 32, channels: 3)
         let encoded = try encodeLossless(frame)
         let decoder = JXLDecoder()
         let decoded = try decoder.decode(encoded)
