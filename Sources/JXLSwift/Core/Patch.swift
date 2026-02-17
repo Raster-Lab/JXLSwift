@@ -220,14 +220,14 @@ public struct PatchDetector {
         let maxExpansion = min(config.maxPatchSize, 
                               min(currentFrame.width - destX, currentFrame.height - destY))
         
-        while width < maxExpansion && height < maxExpansion {
+        while width < maxExpansion || height < maxExpansion {
             let expandedWidth = min(width + initialSize, maxExpansion, 
                                    currentFrame.width - destX, referenceFrame.width - sourceX)
             let expandedHeight = min(height + initialSize, maxExpansion,
                                     currentFrame.height - destY, referenceFrame.height - sourceY)
             
-            // Stop if no growth is possible
-            if expandedWidth <= width && expandedHeight <= height {
+            // Stop if no growth is possible in either dimension
+            if expandedWidth == width && expandedHeight == height {
                 break
             }
             
