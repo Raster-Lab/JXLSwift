@@ -265,7 +265,7 @@ JXLSwift is optimized for Apple Silicon:
 
 - **ARM NEON SIMD** - Vectorized DCT, colour conversion, quantisation, prediction, RCT, and squeeze transforms via Swift SIMD types (both Modular and VarDCT pipelines)
 - **Apple Accelerate** - vDSP DCT transforms and matrix operations
-- **Metal GPU** - Parallel block processing with compute shaders for DCT, color conversion, and quantization (batch operations)
+- **Metal GPU** - Parallel block processing with compute shaders for DCT, color conversion, and quantization (batch operations with async pipeline)
 
 Benchmarks on Apple M1 (256x256 image):
 - Fast mode: ~0.7s per frame
@@ -273,7 +273,8 @@ Benchmarks on Apple M1 (256x256 image):
 
 **Metal GPU Acceleration:**
 - Automatically enabled on Apple platforms when available
-- Best suited for batch processing of multiple images or large images
+- Async pipeline with double-buffering overlaps CPU and GPU work for improved throughput
+- Best suited for batch processing of multiple images or large images (32+ blocks)
 - Falls back to CPU (Accelerate/NEON/scalar) for small workloads
 - Control via `EncodingOptions.useMetal` flag
 
@@ -405,7 +406,7 @@ See [MILESTONES.md](MILESTONES.md) for the detailed project milestone plan.
 - [x] Man pages for jxl-tool and all subcommands
 - [x] Makefile for build, test, and installation
 - [x] **Advanced features** — HDR support (PQ, HLG), wide gamut (Display P3, Rec. 2020), alpha channels (straight, premultiplied)
-- [ ] Metal GPU async pipeline with double-buffering
+- [x] **Metal GPU async pipeline with double-buffering** — overlapping CPU and GPU work for improved performance
 - [ ] Progressive encoding
 - [ ] Decoding support
 - [ ] libjxl validation & benchmarking

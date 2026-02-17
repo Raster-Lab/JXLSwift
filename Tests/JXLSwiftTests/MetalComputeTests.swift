@@ -278,6 +278,260 @@ final class MetalComputeTests: XCTestCase {
             _ = MetalCompute.rgbToYCbCr(rgbData: rgbData, width: 256, height: 256)
         }
     }
+    
+    // MARK: - Async Operations Tests
+    
+    func testDCT8x8Async_CompletesSuccessfully() throws {
+        guard MetalOps.isAvailable else {
+            throw XCTSkip("Metal not available on this platform")
+        }
+        
+        // Create simple test data: 64×8 (8 blocks horizontally)
+        let width = 64
+        let height = 8
+        let inputData = [Float](repeating: 0.5, count: width * height)
+        
+        let expectation = XCTestExpectation(description: "Async DCT completes")
+        
+        MetalCompute.dct8x8Async(inputData: inputData, width: width, height: height) { result in
+            XCTAssertNotNil(result, "Async DCT should return result")
+            if let result = result {
+                XCTAssertEqual(result.count, width * height)
+            }
+            expectation.fulfill()
+        }
+        
+        wait(for: [expectation], timeout: 5.0)
+    }
+    
+    func testDCT8x8Async_MatchesSyncVersion() throws {
+        guard MetalOps.isAvailable else {
+            throw XCTSkip("Metal not available on this platform")
+        }
+        
+        // Create test pattern
+        let width = 16
+        let height = 8
+        let inputData: [Float] = (0..<(width * height)).map { Float($0) / Float(width * height) }
+        
+        // Get sync result
+        guard let syncResult = MetalCompute.dct8x8(inputData: inputData, width: width, height: height) else {
+            XCTFail("Sync DCT failed")
+            return
+        }
+        
+        // Get async result
+        let expectation = XCTestExpectation(description: "Async DCT matches sync")
+        
+        MetalCompute.dct8x8Async(inputData: inputData, width: width, height: height) { asyncResult in
+            XCTAssertNotNil(asyncResult)
+            if let asyncResult = asyncResult {
+                XCTAssertEqual(asyncResult.count, syncResult.count)
+                // Compare results
+                for i in 0..<syncResult.count {
+                    XCTAssertEqual(asyncResult[i], syncResult[i], accuracy: 1e-5, "Mismatch at index \(i)")
+                }
+            }
+            expectation.fulfill()
+        }
+        
+        wait(for: [expectation], timeout: 5.0)
+    }
+    
+    func testDCT8x8Async_InvalidDimensions_ReturnsNil() throws {
+        guard MetalOps.isAvailable else {
+            throw XCTSkip("Metal not available on this platform")
+        }
+        
+        // Test with non-multiple-of-8 dimensions
+        let width = 15  // Not multiple of 8
+        let height = 8
+        let inputData = [Float](repeating: 0.5, count: width * height)
+        
+        let expectation = XCTestExpectation(description: "Async DCT handles invalid input")
+        
+        MetalCompute.dct8x8Async(inputData: inputData, width: width, height: height) { result in
+            XCTAssertNil(result, "Should return nil for invalid dimensions")
+            expectation.fulfill()
+        }
+        
+        wait(for: [expectation], timeout: 5.0)
+    }
+    
+    // MARK: - Buffer Pool Tests
+    
+    func testMetalBufferPool_AcquireAndRelease() throws {
+        guard MetalOps.isAvailable else {
+            throw XCTSkip("Metal not available on this platform")
+        }
+        
+        guard let device = MetalOps.device() else {
+            XCTFail("Could not get Metal device")
+            return
+        }
+        
+        let pool = MetalBufferPool(device: device)
+        
+        // Acquire buffer
+        guard let buffer1 = pool.acquireBuffer(length: 1024) else {
+            XCTFail("Failed to acquire buffer")
+            return
+        }
+        
+        XCTAssertGreaterThanOrEqual(buffer1.length, 1024)
+        
+        // Return to pool
+        pool.releaseBuffer(buffer1)
+        XCTAssertEqual(pool.totalBuffers, 1, "Buffer should be in pool")
+        
+        // Acquire again - should reuse
+        guard let buffer2 = pool.acquireBuffer(length: 1024) else {
+            XCTFail("Failed to reacquire buffer")
+            return
+        }
+        
+        XCTAssertEqual(pool.totalBuffers, 0, "Buffer should be taken from pool")
+        
+        pool.releaseBuffer(buffer2)
+    }
+    
+    func testMetalBufferPool_DifferentSizes_NoIncorrectReuse() throws {
+        guard MetalOps.isAvailable else {
+            throw XCTSkip("Metal not available on this platform")
+        }
+        
+        guard let device = MetalOps.device() else {
+            XCTFail("Could not get Metal device")
+            return
+        }
+        
+        let pool = MetalBufferPool(device: device)
+        
+        // Acquire and release buffers of different sizes
+        guard let buffer1K = pool.acquireBuffer(length: 1024) else {
+            XCTFail("Failed to acquire 1KB buffer")
+            return
+        }
+        guard let buffer2K = pool.acquireBuffer(length: 2048) else {
+            XCTFail("Failed to acquire 2KB buffer")
+            return
+        }
+        
+        XCTAssertGreaterThanOrEqual(buffer1K.length, 1024)
+        XCTAssertGreaterThanOrEqual(buffer2K.length, 2048)
+        
+        // Return to pool
+        pool.releaseBuffer(buffer1K)
+        pool.releaseBuffer(buffer2K)
+        XCTAssertEqual(pool.totalBuffers, 2, "Should have 2 buffers cached")
+        
+        // Request 1KB again - should get the 1KB buffer, not the 2KB one
+        guard let reused1K = pool.acquireBuffer(length: 1024) else {
+            XCTFail("Failed to reacquire 1KB buffer")
+            return
+        }
+        XCTAssertEqual(reused1K.length, buffer1K.length, "Should reuse exact size match")
+        XCTAssertEqual(pool.totalBuffers, 1, "Should have 1 buffer remaining in pool")
+        
+        // Request 2KB - should get the 2KB buffer
+        guard let reused2K = pool.acquireBuffer(length: 2048) else {
+            XCTFail("Failed to reacquire 2KB buffer")
+            return
+        }
+        XCTAssertEqual(reused2K.length, buffer2K.length, "Should reuse exact size match")
+        XCTAssertEqual(pool.totalBuffers, 0, "Pool should be empty")
+        
+        pool.releaseBuffer(reused1K)
+        pool.releaseBuffer(reused2K)
+    }
+    
+    func testMetalBufferPool_Clear() throws {
+        guard MetalOps.isAvailable else {
+            throw XCTSkip("Metal not available on this platform")
+        }
+        
+        guard let device = MetalOps.device() else {
+            XCTFail("Could not get Metal device")
+            return
+        }
+        
+        let pool = MetalBufferPool(device: device)
+        
+        // Add some buffers
+        if let buffer1 = pool.acquireBuffer(length: 1024) {
+            pool.releaseBuffer(buffer1)
+        }
+        if let buffer2 = pool.acquireBuffer(length: 2048) {
+            pool.releaseBuffer(buffer2)
+        }
+        
+        XCTAssertGreaterThan(pool.totalBuffers, 0)
+        
+        pool.clear()
+        XCTAssertEqual(pool.totalBuffers, 0, "Pool should be empty after clear")
+    }
+    
+    // MARK: - Async Pipeline Tests
+    
+    func testMetalAsyncPipeline_ProcessMultipleBatches() throws {
+        guard MetalOps.isAvailable else {
+            throw XCTSkip("Metal not available on this platform")
+        }
+        
+        guard let pipeline = MetalAsyncPipeline() else {
+            XCTFail("Failed to create async pipeline")
+            return
+        }
+        
+        // Create 3 batches of test data
+        let batch1 = (data: [Float](repeating: 0.2, count: 64), width: 8, height: 8)
+        let batch2 = (data: [Float](repeating: 0.5, count: 64), width: 8, height: 8)
+        let batch3 = (data: [Float](repeating: 0.8, count: 64), width: 8, height: 8)
+        let batches = [batch1, batch2, batch3]
+        
+        let expectation = XCTestExpectation(description: "Pipeline processes all batches")
+        
+        pipeline.processDCTBatches(batches: batches) { results in
+            XCTAssertEqual(results.count, 3, "Should have 3 results")
+            XCTAssertNotNil(results[0], "Batch 1 should succeed")
+            XCTAssertNotNil(results[1], "Batch 2 should succeed")
+            XCTAssertNotNil(results[2], "Batch 3 should succeed")
+            
+            if let result0 = results[0] {
+                XCTAssertEqual(result0.count, 64)
+            }
+            
+            expectation.fulfill()
+        }
+        
+        wait(for: [expectation], timeout: 10.0)
+        
+        pipeline.cleanup()
+    }
+    
+    func testMetalAsyncPipeline_EmptyBatches() throws {
+        guard MetalOps.isAvailable else {
+            throw XCTSkip("Metal not available on this platform")
+        }
+        
+        guard let pipeline = MetalAsyncPipeline() else {
+            XCTFail("Failed to create async pipeline")
+            return
+        }
+        
+        let batches: [(data: [Float], width: Int, height: Int)] = []
+        
+        let expectation = XCTestExpectation(description: "Pipeline handles empty batches")
+        
+        pipeline.processDCTBatches(batches: batches) { results in
+            XCTAssertEqual(results.count, 0, "Empty input should give empty output")
+            expectation.fulfill()
+        }
+        
+        wait(for: [expectation], timeout: 5.0)
+        
+        pipeline.cleanup()
+    }
 }
 #else
 // Metal not available - provide empty test suite

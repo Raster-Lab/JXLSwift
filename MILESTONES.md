@@ -277,7 +277,7 @@
 - [x] Metal compute shader for RGB → YCbCr colour conversion
 - [x] Metal compute shader for quantisation
 - [x] Metal buffer management for image data transfer (CPU ↔ GPU)
-- [ ] Async GPU encoding pipeline with double-buffering
+- [x] Async GPU encoding pipeline with double-buffering
 - [x] Metal availability check with CPU fallback
 - [x] Power/thermal aware scheduling (prefer GPU on plugged-in, CPU on battery)
 
