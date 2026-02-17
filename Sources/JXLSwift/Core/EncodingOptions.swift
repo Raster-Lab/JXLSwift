@@ -294,6 +294,78 @@ public struct AnimationConfig: Sendable {
     public static let fps60 = AnimationConfig(fps: 60, loopCount: 0)
 }
 
+/// Reference frame configuration for animation delta encoding
+///
+/// Enables efficient compression of animations by encoding frames as deltas
+/// from previous reference frames, significantly reducing file size for
+/// video-like content with temporal coherence.
+public struct ReferenceFrameConfig: Sendable {
+    /// Minimum keyframe interval in frames
+    /// Keyframes are full frames that can be used as reference points
+    /// Default: 30 frames (1 second at 30fps)
+    public var keyframeInterval: Int
+    
+    /// Maximum number of consecutive delta frames before forcing a keyframe
+    /// Default: 120 frames (4 seconds at 30fps)
+    public var maxDeltaFrames: Int
+    
+    /// Similarity threshold for using reference frame encoding (0.0-1.0)
+    /// Higher values = stricter requirements for using delta encoding
+    /// 0.0 = always use delta encoding
+    /// 1.0 = never use delta encoding (perfect match required)
+    /// Default: 0.7 (70% similarity required)
+    public var similarityThreshold: Float
+    
+    /// Maximum number of reference frames to keep in memory
+    /// Default: 4 frames
+    public var maxReferenceFrames: Int
+    
+    /// Initialize reference frame configuration
+    /// - Parameters:
+    ///   - keyframeInterval: Minimum interval between keyframes in frames
+    ///   - maxDeltaFrames: Maximum consecutive delta frames
+    ///   - similarityThreshold: Similarity threshold for using delta encoding
+    ///   - maxReferenceFrames: Maximum reference frames to keep
+    public init(
+        keyframeInterval: Int = 30,
+        maxDeltaFrames: Int = 120,
+        similarityThreshold: Float = 0.7,
+        maxReferenceFrames: Int = 4
+    ) {
+        self.keyframeInterval = max(1, keyframeInterval)
+        self.maxDeltaFrames = max(1, maxDeltaFrames)
+        self.similarityThreshold = max(0.0, min(1.0, similarityThreshold))
+        self.maxReferenceFrames = max(1, min(8, maxReferenceFrames))
+    }
+    
+    /// Common preset: Aggressive delta encoding (smaller files, more CPU)
+    /// Keyframe every 60 frames, up to 240 consecutive deltas, 60% similarity
+    public static let aggressive = ReferenceFrameConfig(
+        keyframeInterval: 60,
+        maxDeltaFrames: 240,
+        similarityThreshold: 0.6,
+        maxReferenceFrames: 4
+    )
+    
+    /// Common preset: Balanced delta encoding (default)
+    /// Keyframe every 30 frames, up to 120 consecutive deltas, 70% similarity
+    public static let balanced = ReferenceFrameConfig(
+        keyframeInterval: 30,
+        maxDeltaFrames: 120,
+        similarityThreshold: 0.7,
+        maxReferenceFrames: 4
+    )
+    
+    /// Common preset: Conservative delta encoding (more keyframes, faster seeking)
+    /// Keyframe every 15 frames, up to 60 consecutive deltas, 80% similarity
+    public static let conservative = ReferenceFrameConfig(
+        keyframeInterval: 15,
+        maxDeltaFrames: 60,
+        similarityThreshold: 0.8,
+        maxReferenceFrames: 2
+    )
+}
+
 /// Encoding options
 public struct EncodingOptions: Sendable {
     /// Compression mode
@@ -364,6 +436,14 @@ public struct EncodingOptions: Sendable {
     /// while reducing file size by compressing less important regions.
     public var regionOfInterest: RegionOfInterest?
     
+    /// Reference frame configuration for animation delta encoding.
+    ///
+    /// When set and used with animation encoding, frames will be encoded
+    /// as deltas from previous reference frames when beneficial, significantly
+    /// reducing file size for video-like content. Only applies to multi-frame
+    /// animations (requires animationConfig to be set).
+    public var referenceFrameConfig: ReferenceFrameConfig?
+    
     public init(
         mode: CompressionMode = .lossy(quality: 90),
         effort: EncodingEffort = .squirrel,
@@ -379,7 +459,8 @@ public struct EncodingOptions: Sendable {
         adaptiveQuantization: Bool = true,
         useANS: Bool = false,
         animationConfig: AnimationConfig? = nil,
-        regionOfInterest: RegionOfInterest? = nil
+        regionOfInterest: RegionOfInterest? = nil,
+        referenceFrameConfig: ReferenceFrameConfig? = nil
     ) {
         self.mode = mode
         self.effort = effort
@@ -396,6 +477,7 @@ public struct EncodingOptions: Sendable {
         self.useANS = useANS
         self.animationConfig = animationConfig
         self.regionOfInterest = regionOfInterest
+        self.referenceFrameConfig = referenceFrameConfig
     }
     
     /// Default high-quality encoding

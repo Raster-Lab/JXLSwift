@@ -243,10 +243,36 @@ public class JXLEncoder {
         writer = BitstreamWriter() // Reset writer since header includes signature
         writer.writeData(headerData)
         
+        // Initialize reference frame tracker if configured
+        let refTracker: ReferenceFrameTracker? = options.referenceFrameConfig.map { 
+            ReferenceFrameTracker(config: $0) 
+        }
+        
         // Encode each frame
         for (index, frame) in frames.enumerated() {
             let isLast = (index == frames.count - 1)
             let duration = config.duration(for: index)
+            
+            // Determine if this should be a keyframe or use reference
+            let isKeyframe: Bool
+            let saveAsReference: UInt32
+            
+            if let tracker = refTracker {
+                isKeyframe = tracker.shouldBeKeyframe(frameIndex: index)
+                
+                if isKeyframe {
+                    // Mark this frame as a reference (slot 0, 1, 2, or 3)
+                    saveAsReference = UInt32((index % 4) + 1)
+                    tracker.recordKeyframe(frameIndex: index)
+                } else {
+                    saveAsReference = 0
+                    tracker.recordDeltaFrame()
+                }
+            } else {
+                // No reference frame encoding
+                isKeyframe = true
+                saveAsReference = 0
+            }
             
             // Write frame header
             try writeFrameHeader(
@@ -254,7 +280,8 @@ public class JXLEncoder {
                 frame: frame,
                 duration: duration,
                 isLast: isLast,
-                index: index
+                index: index,
+                saveAsReference: saveAsReference
             )
             
             // Encode frame data
@@ -270,7 +297,8 @@ public class JXLEncoder {
         frame: ImageFrame,
         duration: UInt32,
         isLast: Bool,
-        index: Int
+        index: Int,
+        saveAsReference: UInt32 = 0
     ) throws {
         let encoding: FrameEncoding
         switch options.mode {
@@ -286,7 +314,7 @@ public class JXLEncoder {
             blendMode: .blend,
             duration: duration,
             isLast: isLast,
-            saveAsReference: 0,
+            saveAsReference: saveAsReference,
             name: "",
             cropX0: 0,
             cropY0: 0,
@@ -340,5 +368,54 @@ public class JXLEncoder {
         } else {
             return 7.0 + (30 - clampedQuality) / 3.75
         }
+    }
+}
+
+// MARK: - Reference Frame Management
+
+/// Helper class for managing reference frames during animation encoding
+private class ReferenceFrameTracker {
+    /// Configuration
+    private let config: ReferenceFrameConfig
+    
+    /// Number of consecutive delta frames since last keyframe
+    private var deltaFrameCount: Int = 0
+    
+    /// Last keyframe index
+    private var lastKeyframeIndex: Int = -1
+    
+    init(config: ReferenceFrameConfig) {
+        self.config = config
+    }
+    
+    /// Determine if a frame should be a keyframe
+    func shouldBeKeyframe(frameIndex: Int) -> Bool {
+        // First frame is always a keyframe
+        if frameIndex == 0 {
+            return true
+        }
+        
+        // Force keyframe if we've exceeded max delta frames
+        if deltaFrameCount >= config.maxDeltaFrames {
+            return true
+        }
+        
+        // Force keyframe if we've exceeded the keyframe interval
+        if frameIndex - lastKeyframeIndex >= config.keyframeInterval {
+            return true
+        }
+        
+        return false
+    }
+    
+    /// Record that a frame was encoded as a keyframe
+    func recordKeyframe(frameIndex: Int) {
+        deltaFrameCount = 0
+        lastKeyframeIndex = frameIndex
+    }
+    
+    /// Record that a frame was encoded as a delta frame
+    func recordDeltaFrame() {
+        deltaFrameCount += 1
     }
 }

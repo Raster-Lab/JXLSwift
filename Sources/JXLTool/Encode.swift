@@ -58,6 +58,12 @@ struct Encode: ParsableCommand {
     
     @Option(name: .long, help: "Feathering width for ROI edges in pixels (default 16)")
     var roiFeather: Int = 16
+    
+    @Flag(name: .long, help: "Enable reference frame encoding for animations (reduces file size for video-like content)")
+    var referenceFrames: Bool = false
+    
+    @Option(name: .long, help: "Keyframe interval for reference encoding (default 30 frames)")
+    var keyframeInterval: Int?
 
     @Flag(name: .long, help: "Show verbose output")
     var verbose: Bool = false
@@ -131,6 +137,22 @@ struct Encode: ParsableCommand {
         } else {
             regionOfInterest = nil
         }
+        
+        // Build reference frame config if enabled
+        let referenceFrameConfig: ReferenceFrameConfig?
+        if referenceFrames {
+            if let interval = keyframeInterval {
+                guard interval >= 1 else {
+                    print("Error: Keyframe interval must be at least 1", to: &standardError)
+                    throw JXLExitCode.invalidArguments
+                }
+                referenceFrameConfig = ReferenceFrameConfig(keyframeInterval: interval)
+            } else {
+                referenceFrameConfig = .balanced  // Default
+            }
+        } else {
+            referenceFrameConfig = nil
+        }
 
         let options = EncodingOptions(
             mode: mode,
@@ -141,7 +163,8 @@ struct Encode: ParsableCommand {
             useHardwareAcceleration: !noAccelerate,
             useAccelerate: !noAccelerate,
             useMetal: !noMetal,
-            regionOfInterest: regionOfInterest
+            regionOfInterest: regionOfInterest,
+            referenceFrameConfig: referenceFrameConfig
         )
 
         // Generate a test image (until file I/O is implemented)

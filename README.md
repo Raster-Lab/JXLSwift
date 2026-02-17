@@ -24,6 +24,7 @@ JXLSwift provides a pure Swift implementation of the JPEG XL image compression s
 - 🎬 **Animation Support** - Multi-frame encoding with frame timing and loop control
 - 🔄 **EXIF Orientation** - Full support for all 8 EXIF orientation values (rotation/flip metadata)
 - 🎯 **Region-of-Interest (ROI)** - Selective quality encoding with configurable feathering for smooth transitions
+- 🎞️ **Reference Frame Encoding** - Delta encoding for animations with configurable keyframe intervals to reduce file size for video-like content
 - 🔧 **Flexible Configuration** - Quality levels, effort settings, hardware acceleration control
 - 📄 **JPEG XL Container Format** - ISOBMFF container with metadata boxes (EXIF, XMP, ICC)
 - 🌊 **Progressive Encoding** - Incremental rendering for faster perceived loading
@@ -778,6 +779,7 @@ See [MILESTONES.md](MILESTONES.md) for the detailed project milestone plan.
 - [x] Multi-frame animation encoding — frame timing, loop control, custom durations
 - [x] EXIF orientation support — reading, encoding, and CLI integration
 - [x] Region-of-Interest (ROI) encoding — selective quality with configurable feathering
+- [x] Reference frame encoding — delta encoding for animations with configurable keyframe intervals
 - [ ] Decoding support
 - [ ] libjxl validation & benchmarking
 

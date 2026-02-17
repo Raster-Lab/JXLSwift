@@ -350,7 +350,7 @@
 - [x] Wide gamut: Display P3, Rec. 2020 colour spaces
 - [x] Oriented rendering (EXIF orientation) — **All 8 values supported**
 - [x] Crop/region-of-interest encoding — **Complete with feathering support**
-- [ ] Reference frame encoding (for animation deltas)
+- [x] Reference frame encoding (for animation deltas) — **Complete with keyframe-based approach**
 - [ ] Noise synthesis parameters
 - [ ] Splines (vector overlay feature)
 - [ ] Patches (copy from reference)
