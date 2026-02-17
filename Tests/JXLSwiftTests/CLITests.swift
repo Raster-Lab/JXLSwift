@@ -608,4 +608,141 @@ final class CLITests: XCTestCase {
         XCTAssertGreaterThan(highQualityResult.data.count, 0)
         XCTAssertGreaterThan(lowQualityResult.data.count, 0)
     }
+    
+    // MARK: - Responsive Encoding CLI Tests
+    
+    func testEncode_ResponsiveEncoding_TwoLayers_ProducesValidOutput() throws {
+        let options = EncodingOptions(
+            mode: .lossy(quality: 90),
+            responsiveEncoding: true,
+            responsiveConfig: .twoLayers
+        )
+        let encoder = JXLEncoder(options: options)
+        
+        var frame = ImageFrame(width: 64, height: 64, channels: 3)
+        for y in 0..<64 {
+            for x in 0..<64 {
+                frame.setPixel(x: x, y: y, channel: 0, value: UInt16(x * 1024))
+                frame.setPixel(x: x, y: y, channel: 1, value: UInt16(y * 1024))
+                frame.setPixel(x: x, y: y, channel: 2, value: UInt16(32768))
+            }
+        }
+        
+        let result = try encoder.encode(frame)
+        
+        // Verify valid JXL signature
+        XCTAssertGreaterThanOrEqual(result.data.count, 2)
+        XCTAssertEqual(result.data[0], 0xFF)
+        XCTAssertEqual(result.data[1], 0x0A)
+        XCTAssertGreaterThan(result.stats.compressionRatio, 0)
+    }
+    
+    func testEncode_ResponsiveEncoding_ThreeLayers_ProducesValidOutput() throws {
+        let options = EncodingOptions(
+            mode: .lossy(quality: 85),
+            responsiveEncoding: true,
+            responsiveConfig: .threeLayers
+        )
+        let encoder = JXLEncoder(options: options)
+        
+        var frame = ImageFrame(width: 128, height: 128, channels: 3)
+        for y in 0..<128 {
+            for x in 0..<128 {
+                frame.setPixel(x: x, y: y, channel: 0, value: UInt16(x * 512))
+                frame.setPixel(x: x, y: y, channel: 1, value: UInt16(y * 512))
+                frame.setPixel(x: x, y: y, channel: 2, value: UInt16((x + y) * 256))
+            }
+        }
+        
+        let result = try encoder.encode(frame)
+        
+        // Verify valid JXL signature
+        XCTAssertGreaterThanOrEqual(result.data.count, 2)
+        XCTAssertEqual(result.data[0], 0xFF)
+        XCTAssertEqual(result.data[1], 0x0A)
+        XCTAssertGreaterThan(result.stats.compressionRatio, 0)
+    }
+    
+    func testEncode_ResponsiveEncoding_FourLayers_ProducesValidOutput() throws {
+        let options = EncodingOptions(
+            mode: .lossy(quality: 95),
+            responsiveEncoding: true,
+            responsiveConfig: .fourLayers
+        )
+        let encoder = JXLEncoder(options: options)
+        
+        var frame = ImageFrame(width: 256, height: 256, channels: 3)
+        // Fill with pattern (sparse to save test time)
+        for y in stride(from: 0, to: 256, by: 4) {
+            for x in stride(from: 0, to: 256, by: 4) {
+                let value = UInt16((x + y) * 128)
+                frame.setPixel(x: x, y: y, channel: 0, value: value)
+                frame.setPixel(x: x, y: y, channel: 1, value: UInt16(x * 256))
+                frame.setPixel(x: x, y: y, channel: 2, value: UInt16(y * 256))
+            }
+        }
+        
+        let result = try encoder.encode(frame)
+        
+        // Verify valid JXL signature
+        XCTAssertGreaterThanOrEqual(result.data.count, 2)
+        XCTAssertEqual(result.data[0], 0xFF)
+        XCTAssertEqual(result.data[1], 0x0A)
+        XCTAssertGreaterThan(result.stats.compressionRatio, 0)
+    }
+    
+    func testEncode_ResponsiveEncoding_CustomLayerCount_ProducesValidOutput() throws {
+        let config = ResponsiveConfig(layerCount: 5)
+        let options = EncodingOptions(
+            mode: .lossy(quality: 90),
+            responsiveEncoding: true,
+            responsiveConfig: config
+        )
+        let encoder = JXLEncoder(options: options)
+        
+        var frame = ImageFrame(width: 128, height: 128, channels: 3)
+        for y in 0..<128 {
+            for x in 0..<128 {
+                frame.setPixel(x: x, y: y, channel: 0, value: UInt16(x * 512))
+                frame.setPixel(x: x, y: y, channel: 1, value: UInt16(y * 512))
+                frame.setPixel(x: x, y: y, channel: 2, value: UInt16(32768))
+            }
+        }
+        
+        let result = try encoder.encode(frame)
+        
+        // Verify valid JXL signature
+        XCTAssertGreaterThanOrEqual(result.data.count, 2)
+        XCTAssertEqual(result.data[0], 0xFF)
+        XCTAssertEqual(result.data[1], 0x0A)
+        XCTAssertGreaterThan(result.stats.compressionRatio, 0)
+    }
+    
+    func testEncode_ResponsiveAndProgressive_ProducesValidOutput() throws {
+        // Test combination of responsive (quality layers) and progressive (frequency layers)
+        let options = EncodingOptions(
+            mode: .lossy(quality: 90),
+            progressive: true,
+            responsiveEncoding: true,
+            responsiveConfig: .threeLayers
+        )
+        let encoder = JXLEncoder(options: options)
+        
+        var frame = ImageFrame(width: 128, height: 128, channels: 3)
+        for y in 0..<128 {
+            for x in 0..<128 {
+                frame.setPixel(x: x, y: y, channel: 0, value: UInt16(x * 512))
+                frame.setPixel(x: x, y: y, channel: 1, value: UInt16(y * 512))
+                frame.setPixel(x: x, y: y, channel: 2, value: UInt16((x + y) * 256))
+            }
+        }
+        
+        let result = try encoder.encode(frame)
+        
+        // Verify valid JXL signature
+        XCTAssertGreaterThanOrEqual(result.data.count, 2)
+        XCTAssertEqual(result.data[0], 0xFF)
+        XCTAssertEqual(result.data[1], 0x0A)
+        XCTAssertGreaterThan(result.stats.compressionRatio, 0)
+    }
 }

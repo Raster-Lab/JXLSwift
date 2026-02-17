@@ -342,7 +342,7 @@
 ### Deliverables
 
 - [x] Progressive encoding (DC → AC refinement passes)
-- [ ] Responsive encoding (progressive by quality layer)
+- [x] Responsive encoding (progressive by quality layer) — **Framework Complete**
 - [x] Multi-frame / animation support
 - [x] Alpha channel encoding (separate or premultiplied) — **Pipeline Complete**
 - [ ] Extra channels (depth, thermal, spectral)
@@ -358,6 +358,7 @@
 ### Tests Required
 
 - [x] Progressive: first pass produces viewable low-resolution image
+- [x] Responsive: quality layers configured and validated — **29 comprehensive tests**
 - [x] Animation: multi-frame round-trip with correct timing — **24 comprehensive tests**
 - [x] Alpha: premultiplied and straight alpha modes — **13 comprehensive tests**
 - [x] HDR: PQ and HLG metadata preserved

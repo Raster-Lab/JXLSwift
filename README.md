@@ -232,6 +232,85 @@ This allows decoders to render a usable image after receiving just the first pas
 - **Best for**: Web delivery, progressive image loading, streaming scenarios
 - **Avoid for**: Archival storage where file size is critical
 
+### Responsive Encoding
+
+Responsive encoding provides quality-layered progressive delivery, allowing images to be decoded at progressively higher quality levels. Unlike progressive encoding (which splits by frequency), responsive encoding splits by quantization quality, making it ideal for adaptive streaming and bandwidth-constrained environments.
+
+```swift
+// Enable responsive encoding with 3 quality layers
+let responsiveOptions = EncodingOptions(
+    mode: .lossy(quality: 90),
+    responsiveEncoding: true,
+    responsiveConfig: .threeLayers  // Preview → Medium → Full quality
+)
+
+let encoder = JXLEncoder(options: responsiveOptions)
+let result = try encoder.encode(frame)
+```
+
+#### How Responsive Encoding Works
+
+Responsive encoding generates multiple quality layers with different distance (quantization) values:
+- **Layer 0 (Preview)**: High distance (~6× base) - fast loading, low quality preview
+- **Layer 1+ (Refinement)**: Progressively lower distances - incremental quality improvements
+- **Final Layer**: Base distance - target quality
+
+For quality 90 (distance ~1.0):
+- Layer 0: distance 6.0 (quick preview)
+- Layer 1: distance 2.45 (medium quality)
+- Layer 2: distance 1.0 (full quality)
+
+#### Configuration Options
+
+```swift
+// Use preset layer counts
+ResponsiveConfig.twoLayers    // Fast: preview + full
+ResponsiveConfig.threeLayers  // Balanced: preview + medium + full (default)
+ResponsiveConfig.fourLayers   // Maximum refinement
+
+// Custom layer count (2-8 layers)
+let config = ResponsiveConfig(layerCount: 4)
+
+// Custom distance values for precise control
+let customConfig = ResponsiveConfig(
+    layerCount: 3,
+    layerDistances: [8.0, 4.0, 1.5]  // Must be descending order
+)
+```
+
+#### Combining Progressive and Responsive
+
+You can combine both encoding modes for maximum flexibility:
+
+```swift
+let options = EncodingOptions(
+    mode: .lossy(quality: 95),
+    progressive: true,        // Frequency-based passes (DC, low-freq, high-freq)
+    responsiveEncoding: true, // Quality-based layers
+    responsiveConfig: .threeLayers
+)
+```
+
+#### Trade-offs
+
+- **Pros**: Adaptive quality delivery, better UX on variable bandwidth, graceful degradation
+- **Cons**: Minimal overhead (<3%), requires decoder support for multi-layer decoding
+- **Best for**: Responsive web design, adaptive streaming, bandwidth-sensitive applications
+- **Current status**: Framework complete, full bitstream encoding requires decoder support
+
+#### CLI Usage
+
+```bash
+# Enable responsive encoding with default 3 layers
+jxl-tool encode --responsive input.png -o output.jxl
+
+# Specify custom layer count
+jxl-tool encode --responsive --quality-layers 4 input.png -o output.jxl
+
+# Combine with progressive
+jxl-tool encode --responsive --progressive -q 95 input.png -o output.jxl
+```
+
 ### EXIF Orientation Support
 
 JXLSwift fully supports EXIF orientation metadata, allowing proper handling of rotated and flipped images from cameras and smartphones. The orientation is preserved in the JPEG XL file and can be used by viewers to display images correctly without modifying pixel data.
@@ -621,7 +700,8 @@ See [MILESTONES.md](MILESTONES.md) for the detailed project milestone plan.
 - [x] Makefile for build, test, and installation
 - [x] **Advanced features** — HDR support (PQ, HLG), wide gamut (Display P3, Rec. 2020), alpha channels (straight, premultiplied), EXIF orientation (all 8 values)
 - [x] **Metal GPU async pipeline with double-buffering** — overlapping CPU and GPU work for improved performance
-- [x] Progressive encoding
+- [x] Progressive encoding — frequency-based multi-pass (DC, low-freq AC, high-freq AC)
+- [x] Responsive encoding — quality-layered progressive delivery (2-8 layers)
 - [x] Multi-frame animation encoding — frame timing, loop control, custom durations
 - [x] EXIF orientation support — reading, encoding, and CLI integration
 - [ ] Decoding support

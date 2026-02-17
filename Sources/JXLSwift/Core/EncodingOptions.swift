@@ -4,6 +4,58 @@
 
 import Foundation
 
+/// Responsive encoding configuration for quality-layered progressive delivery
+public struct ResponsiveConfig: Sendable {
+    /// Number of quality layers (2-8)
+    public var layerCount: Int
+    
+    /// Custom distance values for each layer (must match layerCount)
+    /// If empty, layers are automatically calculated from base quality/distance
+    /// Layers should be ordered from lowest quality (highest distance) to highest quality (lowest distance)
+    public var layerDistances: [Float]
+    
+    /// Initialize responsive encoding configuration
+    /// - Parameters:
+    ///   - layerCount: Number of quality layers (default 3)
+    ///   - layerDistances: Custom distance values per layer (empty = auto-calculate)
+    public init(layerCount: Int = 3, layerDistances: [Float] = []) {
+        self.layerCount = max(2, min(8, layerCount))
+        self.layerDistances = layerDistances
+    }
+    
+    /// Validate configuration
+    /// - Throws: Error if configuration is invalid
+    func validate() throws {
+        if !layerDistances.isEmpty && layerDistances.count != layerCount {
+            throw NSError(
+                domain: "ResponsiveConfig",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "layerDistances count (\(layerDistances.count)) must match layerCount (\(layerCount))"]
+            )
+        }
+        
+        // Verify layers are in descending order (highest distance first)
+        for i in 1..<layerDistances.count {
+            if layerDistances[i] >= layerDistances[i-1] {
+                throw NSError(
+                    domain: "ResponsiveConfig",
+                    code: 2,
+                    userInfo: [NSLocalizedDescriptionKey: "layerDistances must be in descending order (highest distance/lowest quality first)"]
+                )
+            }
+        }
+    }
+    
+    /// Common preset: 2-layer responsive encoding (fast preview + full quality)
+    public static let twoLayers = ResponsiveConfig(layerCount: 2)
+    
+    /// Common preset: 3-layer responsive encoding (preview, medium, full)
+    public static let threeLayers = ResponsiveConfig(layerCount: 3)
+    
+    /// Common preset: 4-layer responsive encoding (maximum progressive refinement)
+    public static let fourLayers = ResponsiveConfig(layerCount: 4)
+}
+
 /// Compression mode
 public enum CompressionMode: Sendable {
     /// Lossless compression using Modular mode
@@ -96,8 +148,17 @@ public struct EncodingOptions: Sendable {
     /// Encoding effort
     public var effort: EncodingEffort
     
-    /// Enable progressive encoding
+    /// Enable progressive encoding (frequency-based: DC, low-freq AC, high-freq AC)
     public var progressive: Bool
+    
+    /// Enable responsive encoding (quality-based layers)
+    /// When enabled, encodes multiple quality layers for progressive quality refinement
+    /// Note: Can be combined with progressive for both frequency and quality layering
+    public var responsiveEncoding: Bool
+    
+    /// Responsive encoding configuration
+    /// Only used when responsiveEncoding is enabled
+    public var responsiveConfig: ResponsiveConfig?
     
     /// Use modular mode even for lossy (forces lossless for some operations)
     public var modularMode: Bool
@@ -145,6 +206,8 @@ public struct EncodingOptions: Sendable {
         mode: CompressionMode = .lossy(quality: 90),
         effort: EncodingEffort = .squirrel,
         progressive: Bool = false,
+        responsiveEncoding: Bool = false,
+        responsiveConfig: ResponsiveConfig? = nil,
         modularMode: Bool = false,
         numThreads: Int = 0,
         useHardwareAcceleration: Bool = true,
@@ -158,6 +221,8 @@ public struct EncodingOptions: Sendable {
         self.mode = mode
         self.effort = effort
         self.progressive = progressive
+        self.responsiveEncoding = responsiveEncoding
+        self.responsiveConfig = responsiveConfig
         self.modularMode = modularMode
         self.numThreads = numThreads
         self.useHardwareAcceleration = useHardwareAcceleration
