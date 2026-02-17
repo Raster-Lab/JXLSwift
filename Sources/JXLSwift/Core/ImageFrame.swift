@@ -114,6 +114,103 @@ public enum AlphaMode: Sendable {
     case premultiplied
 }
 
+/// Extra channel type (per ISO/IEC 18181-1 §11.3.6)
+///
+/// Defines the semantic meaning of non-color channels.
+/// These channels are stored separately from the main color channels.
+public enum ExtraChannelType: UInt32, Sendable, Equatable {
+    /// Alpha transparency channel
+    case alpha = 0
+    
+    /// Depth map (distance from camera)
+    case depth = 1
+    
+    /// Spot color (for printing)
+    case spotColor = 2
+    
+    /// Selection mask
+    case selectionMask = 3
+    
+    /// Black channel (for CMYK)
+    case black = 4
+    
+    /// CFA (Color Filter Array) channel
+    case cfa = 5
+    
+    /// Thermal/infrared data
+    case thermal = 6
+    
+    /// Reserved for future use
+    case reserved = 7
+    
+    /// Optional/application-specific channel
+    case optional = 8
+}
+
+/// Extra channel information
+///
+/// Describes an additional channel beyond the main color channels.
+/// Each extra channel has its own type, bit depth, and optional metadata.
+public struct ExtraChannelInfo: Sendable, Equatable {
+    /// Type of the extra channel
+    public let type: ExtraChannelType
+    
+    /// Bits per sample for this channel (1-32)
+    public let bitsPerSample: UInt32
+    
+    /// Dimension shift (for sub-sampled channels)
+    /// 0 = full resolution, 1 = half resolution, etc.
+    public let dimShift: UInt32
+    
+    /// Optional name for the channel (e.g., "Depth", "Thermal")
+    public let name: String
+    
+    /// For alpha channels: whether it's premultiplied
+    public let alphaPremultiplied: Bool
+    
+    /// For spot color channels: optional spot color values
+    public let spotColor: [Float]
+    
+    /// Creates an extra channel info descriptor
+    /// - Parameters:
+    ///   - type: The semantic type of this channel
+    ///   - bitsPerSample: Bits per sample (1-32), defaults to 8
+    ///   - dimShift: Dimension shift for sub-sampling, defaults to 0 (full resolution)
+    ///   - name: Optional descriptive name
+    ///   - alphaPremultiplied: For alpha channels, whether RGB is premultiplied
+    ///   - spotColor: For spot color channels, the color values [C, M, Y, K]
+    public init(
+        type: ExtraChannelType,
+        bitsPerSample: UInt32 = 8,
+        dimShift: UInt32 = 0,
+        name: String = "",
+        alphaPremultiplied: Bool = false,
+        spotColor: [Float] = []
+    ) {
+        self.type = type
+        self.bitsPerSample = max(1, min(32, bitsPerSample))
+        self.dimShift = dimShift
+        self.name = name
+        self.alphaPremultiplied = alphaPremultiplied
+        self.spotColor = spotColor
+    }
+    
+    /// Creates a depth channel with default settings
+    public static func depth(bitsPerSample: UInt32 = 16, name: String = "Depth") -> ExtraChannelInfo {
+        return ExtraChannelInfo(type: .depth, bitsPerSample: bitsPerSample, name: name)
+    }
+    
+    /// Creates a thermal channel with default settings
+    public static func thermal(bitsPerSample: UInt32 = 16, name: String = "Thermal") -> ExtraChannelInfo {
+        return ExtraChannelInfo(type: .thermal, bitsPerSample: bitsPerSample, name: name)
+    }
+    
+    /// Creates an optional/application-specific channel
+    public static func optional(bitsPerSample: UInt32 = 8, name: String) -> ExtraChannelInfo {
+        return ExtraChannelInfo(type: .optional, bitsPerSample: bitsPerSample, name: name)
+    }
+}
+
 /// Pixel data type
 public enum PixelType: Sendable {
     case uint8
@@ -165,13 +262,23 @@ public struct ImageFrame {
     /// 7 = rotate 90° + flip horizontal, 8 = rotate 270° CW
     public let orientation: UInt32
     
+    /// Extra channels beyond the main color and alpha channels
+    /// These can include depth maps, thermal data, spectral bands, etc.
+    public let extraChannels: [ExtraChannelInfo]
+    
+    /// Extra channel data (separate from main image data)
+    /// Format: planar, one plane per extra channel
+    /// Each plane has width * height samples in the channel's bit depth
+    public var extraChannelData: [UInt8]
+    
     public init(width: Int, height: Int, channels: Int, 
                 pixelType: PixelType = .uint8,
                 colorSpace: ColorSpace = .sRGB,
                 hasAlpha: Bool = false,
                 alphaMode: AlphaMode = .straight,
                 bitsPerSample: Int = 8,
-                orientation: UInt32 = 1) {
+                orientation: UInt32 = 1,
+                extraChannels: [ExtraChannelInfo] = []) {
         self.width = width
         self.height = height
         self.channels = channels
@@ -181,10 +288,20 @@ public struct ImageFrame {
         self.alphaMode = hasAlpha ? alphaMode : .none
         self.bitsPerSample = bitsPerSample
         self.orientation = min(8, max(1, orientation)) // Clamp to valid range
+        self.extraChannels = extraChannels
         
         let totalSamples = width * height * channels
         let bytesPerSample = pixelType.bytesPerSample
         self.data = [UInt8](repeating: 0, count: totalSamples * bytesPerSample)
+        
+        // Allocate space for extra channel data
+        var extraDataSize = 0
+        for channelInfo in extraChannels {
+            let samplesPerChannel = width * height
+            let bytesPerSample = (Int(channelInfo.bitsPerSample) + 7) / 8
+            extraDataSize += samplesPerChannel * bytesPerSample
+        }
+        self.extraChannelData = [UInt8](repeating: 0, count: extraDataSize)
     }
     
     /// Get pixel value at specific location and channel
@@ -230,6 +347,91 @@ public struct ImageFrame {
             data[offset + 1] = UInt8((floatBits >> 8) & 0xFF)
             data[offset + 2] = UInt8((floatBits >> 16) & 0xFF)
             data[offset + 3] = UInt8((floatBits >> 24) & 0xFF)
+        }
+    }
+    
+    /// Get extra channel value at specific location
+    /// - Parameters:
+    ///   - x: X coordinate
+    ///   - y: Y coordinate
+    ///   - extraChannelIndex: Index in the extraChannels array (0-based)
+    /// - Returns: The sample value scaled to UInt16 range
+    public func getExtraChannelValue(x: Int, y: Int, extraChannelIndex: Int) -> UInt16 {
+        guard extraChannelIndex < extraChannels.count else { return 0 }
+        
+        let channelInfo = extraChannels[extraChannelIndex]
+        let samplesPerChannel = width * height
+        
+        // Calculate offset to this channel's data
+        var offset = 0
+        for i in 0..<extraChannelIndex {
+            let prevChannelInfo = extraChannels[i]
+            let bytesPerSample = (Int(prevChannelInfo.bitsPerSample) + 7) / 8
+            offset += samplesPerChannel * bytesPerSample
+        }
+        
+        // Add offset to pixel within this channel
+        let pixelIndex = y * width + x
+        let bytesPerSample = (Int(channelInfo.bitsPerSample) + 7) / 8
+        offset += pixelIndex * bytesPerSample
+        
+        // Read value based on bit depth
+        if channelInfo.bitsPerSample <= 8 {
+            return UInt16(extraChannelData[offset])
+        } else if channelInfo.bitsPerSample <= 16 {
+            let lo = UInt16(extraChannelData[offset])
+            let hi = UInt16(extraChannelData[offset + 1])
+            return lo | (hi << 8)
+        } else {
+            // For >16 bits, scale down to 16-bit range
+            let value = UInt32(extraChannelData[offset]) |
+                       (UInt32(extraChannelData[offset + 1]) << 8) |
+                       (UInt32(extraChannelData[offset + 2]) << 16) |
+                       (UInt32(extraChannelData[offset + 3]) << 24)
+            let maxValue = (UInt64(1) << channelInfo.bitsPerSample) - 1
+            return UInt16((UInt64(value) * 65535) / maxValue)
+        }
+    }
+    
+    /// Set extra channel value at specific location
+    /// - Parameters:
+    ///   - x: X coordinate
+    ///   - y: Y coordinate
+    ///   - extraChannelIndex: Index in the extraChannels array (0-based)
+    ///   - value: The sample value (in UInt16 range, will be scaled to channel's bit depth)
+    public mutating func setExtraChannelValue(x: Int, y: Int, extraChannelIndex: Int, value: UInt16) {
+        guard extraChannelIndex < extraChannels.count else { return }
+        
+        let channelInfo = extraChannels[extraChannelIndex]
+        let samplesPerChannel = width * height
+        
+        // Calculate offset to this channel's data
+        var offset = 0
+        for i in 0..<extraChannelIndex {
+            let prevChannelInfo = extraChannels[i]
+            let bytesPerSample = (Int(prevChannelInfo.bitsPerSample) + 7) / 8
+            offset += samplesPerChannel * bytesPerSample
+        }
+        
+        // Add offset to pixel within this channel
+        let pixelIndex = y * width + x
+        let bytesPerSample = (Int(channelInfo.bitsPerSample) + 7) / 8
+        offset += pixelIndex * bytesPerSample
+        
+        // Write value based on bit depth
+        if channelInfo.bitsPerSample <= 8 {
+            extraChannelData[offset] = UInt8(min(255, value))
+        } else if channelInfo.bitsPerSample <= 16 {
+            extraChannelData[offset] = UInt8(value & 0xFF)
+            extraChannelData[offset + 1] = UInt8((value >> 8) & 0xFF)
+        } else {
+            // For >16 bits, scale up from 16-bit range
+            let maxValue = (UInt64(1) << channelInfo.bitsPerSample) - 1
+            let scaledValue = UInt32((UInt64(value) * maxValue) / 65535)
+            extraChannelData[offset] = UInt8(scaledValue & 0xFF)
+            extraChannelData[offset + 1] = UInt8((scaledValue >> 8) & 0xFF)
+            extraChannelData[offset + 2] = UInt8((scaledValue >> 16) & 0xFF)
+            extraChannelData[offset + 3] = UInt8((scaledValue >> 24) & 0xFF)
         }
     }
 }

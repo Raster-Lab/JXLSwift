@@ -20,6 +20,7 @@ JXLSwift provides a pure Swift implementation of the JPEG XL image compression s
   - Wide Gamut: Display P3, Rec. 2020
   - HDR Transfer Functions: PQ (HDR10), HLG
   - Alpha Channels: Straight and premultiplied modes
+- 📊 **Extra Channels** - Depth maps, thermal data, spectral bands, and application-specific channels
 - 🎬 **Animation Support** - Multi-frame encoding with frame timing and loop control
 - 🔄 **EXIF Orientation** - Full support for all 8 EXIF orientation values (rotation/flip metadata)
 - 🔧 **Flexible Configuration** - Quality levels, effort settings, hardware acceleration control
@@ -698,7 +699,7 @@ See [MILESTONES.md](MILESTONES.md) for the detailed project milestone plan.
 - [x] ANS entropy coding — rANS encoder/decoder, multi-context, distribution tables, histogram clustering, ANS interleaving, LZ77 hybrid mode, integrated with Modular + VarDCT
 - [x] Man pages for jxl-tool and all subcommands
 - [x] Makefile for build, test, and installation
-- [x] **Advanced features** — HDR support (PQ, HLG), wide gamut (Display P3, Rec. 2020), alpha channels (straight, premultiplied), EXIF orientation (all 8 values)
+- [x] **Advanced features** — HDR support (PQ, HLG), wide gamut (Display P3, Rec. 2020), alpha channels (straight, premultiplied), EXIF orientation (all 8 values), extra channels (depth, thermal, spectral)
 - [x] **Metal GPU async pipeline with double-buffering** — overlapping CPU and GPU work for improved performance
 - [x] Progressive encoding — frequency-based multi-pass (DC, low-freq AC, high-freq AC)
 - [x] Responsive encoding — quality-layered progressive delivery (2-8 layers)
