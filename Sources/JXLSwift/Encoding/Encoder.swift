@@ -243,10 +243,36 @@ public class JXLEncoder {
         writer = BitstreamWriter() // Reset writer since header includes signature
         writer.writeData(headerData)
         
+        // Initialize reference frame tracker if configured
+        let refTracker: ReferenceFrameTracker? = options.referenceFrameConfig.map { 
+            ReferenceFrameTracker(config: $0) 
+        }
+        
         // Encode each frame
         for (index, frame) in frames.enumerated() {
             let isLast = (index == frames.count - 1)
             let duration = config.duration(for: index)
+            
+            // Determine if this should be a keyframe or use reference
+            let isKeyframe: Bool
+            let saveAsReference: UInt32
+            
+            if let tracker = refTracker {
+                isKeyframe = tracker.shouldBeKeyframe(frameIndex: index)
+                
+                if isKeyframe {
+                    // Mark this frame as a reference (slot 0, 1, 2, or 3)
+                    saveAsReference = UInt32((index % 4) + 1)
+                    tracker.recordKeyframe(frameIndex: index, frame: frame)
+                } else {
+                    saveAsReference = 0
+                    tracker.recordDeltaFrame()
+                }
+            } else {
+                // No reference frame encoding
+                isKeyframe = true
+                saveAsReference = 0
+            }
             
             // Write frame header
             try writeFrameHeader(
@@ -254,7 +280,8 @@ public class JXLEncoder {
                 frame: frame,
                 duration: duration,
                 isLast: isLast,
-                index: index
+                index: index,
+                saveAsReference: saveAsReference
             )
             
             // Encode frame data
@@ -270,7 +297,8 @@ public class JXLEncoder {
         frame: ImageFrame,
         duration: UInt32,
         isLast: Bool,
-        index: Int
+        index: Int,
+        saveAsReference: UInt32 = 0
     ) throws {
         let encoding: FrameEncoding
         switch options.mode {
@@ -286,7 +314,7 @@ public class JXLEncoder {
             blendMode: .blend,
             duration: duration,
             isLast: isLast,
-            saveAsReference: 0,
+            saveAsReference: saveAsReference,
             name: "",
             cropX0: 0,
             cropY0: 0,
@@ -340,5 +368,151 @@ public class JXLEncoder {
         } else {
             return 7.0 + (30 - clampedQuality) / 3.75
         }
+    }
+}
+
+// MARK: - Reference Frame Management
+
+/// Helper class for managing reference frames during animation encoding
+private class ReferenceFrameTracker {
+    /// Stored reference frames
+    private var referenceFrames: [(index: Int, frame: ImageFrame)] = []
+    
+    /// Configuration
+    private let config: ReferenceFrameConfig
+    
+    /// Number of consecutive delta frames since last keyframe
+    private var deltaFrameCount: Int = 0
+    
+    /// Last keyframe index
+    private var lastKeyframeIndex: Int = -1
+    
+    init(config: ReferenceFrameConfig) {
+        self.config = config
+    }
+    
+    /// Determine if a frame should be a keyframe
+    func shouldBeKeyframe(frameIndex: Int) -> Bool {
+        // First frame is always a keyframe
+        if frameIndex == 0 {
+            return true
+        }
+        
+        // Force keyframe if we've exceeded max delta frames
+        if deltaFrameCount >= config.maxDeltaFrames {
+            return true
+        }
+        
+        // Force keyframe if we've exceeded the keyframe interval
+        if frameIndex - lastKeyframeIndex >= config.keyframeInterval {
+            return true
+        }
+        
+        return false
+    }
+    
+    /// Calculate similarity between two frames (0.0 = completely different, 1.0 = identical)
+    /// Uses mean squared error (MSE) as similarity metric
+    func calculateSimilarity(current: ImageFrame, reference: ImageFrame) -> Float {
+        // Quick dimension check
+        guard current.width == reference.width,
+              current.height == reference.height,
+              current.channels == reference.channels else {
+            return 0.0
+        }
+        
+        let pixelCount = current.width * current.height * current.channels
+        guard pixelCount > 0 else { return 0.0 }
+        
+        var sumSquaredDiff: Double = 0.0
+        let maxValue: Double
+        
+        switch current.pixelType {
+        case .uint8:
+            maxValue = 255.0
+            for i in 0..<pixelCount {
+                let diff = Double(current.data[i]) - Double(reference.data[i])
+                sumSquaredDiff += diff * diff
+            }
+        case .uint16:
+            maxValue = 65535.0
+            for i in 0..<(pixelCount * 2) where i % 2 == 0 {
+                let currentVal = UInt16(current.data[i]) | (UInt16(current.data[i+1]) << 8)
+                let refVal = UInt16(reference.data[i]) | (UInt16(reference.data[i+1]) << 8)
+                let diff = Double(currentVal) - Double(refVal)
+                sumSquaredDiff += diff * diff
+            }
+        case .float32:
+            maxValue = 1.0
+            for i in 0..<(pixelCount * 4) where i % 4 == 0 {
+                let currentVal = current.data.withUnsafeBytes { $0.load(fromByteOffset: i, as: Float.self) }
+                let refVal = reference.data.withUnsafeBytes { $0.load(fromByteOffset: i, as: Float.self) }
+                let diff = Double(currentVal) - Double(refVal)
+                sumSquaredDiff += diff * diff
+            }
+        }
+        
+        // Calculate MSE and normalize to [0, 1] similarity
+        let mse = sumSquaredDiff / Double(pixelCount)
+        let maxMSE = maxValue * maxValue
+        
+        // Convert MSE to similarity: 0 MSE = 1.0 similarity, max MSE = 0.0 similarity
+        let similarity = 1.0 - Float(min(mse / maxMSE, 1.0))
+        return similarity
+    }
+    
+    /// Decide whether to use reference encoding for a frame
+    func shouldUseReference(frameIndex: Int, currentFrame: ImageFrame) -> (useReference: Bool, referenceIndex: Int?) {
+        // Keyframes don't use reference
+        if shouldBeKeyframe(frameIndex: frameIndex) {
+            return (false, nil)
+        }
+        
+        // Find the most similar recent reference frame
+        var bestSimilarity: Float = 0.0
+        var bestReferenceIndex: Int?
+        
+        for (refIndex, refFrame) in referenceFrames {
+            let similarity = calculateSimilarity(current: currentFrame, reference: refFrame)
+            if similarity > bestSimilarity {
+                bestSimilarity = similarity
+                bestReferenceIndex = refIndex
+            }
+        }
+        
+        // Use reference if similarity exceeds threshold
+        if let refIndex = bestReferenceIndex, bestSimilarity >= config.similarityThreshold {
+            return (true, refIndex)
+        }
+        
+        return (false, nil)
+    }
+    
+    /// Record that a frame was encoded as a keyframe
+    func recordKeyframe(frameIndex: Int, frame: ImageFrame) {
+        deltaFrameCount = 0
+        lastKeyframeIndex = frameIndex
+        addReferenceFrame(index: frameIndex, frame: frame)
+    }
+    
+    /// Record that a frame was encoded as a delta frame
+    func recordDeltaFrame() {
+        deltaFrameCount += 1
+    }
+    
+    /// Add a reference frame to the pool
+    private func addReferenceFrame(index: Int, frame: ImageFrame) {
+        // Add the frame
+        referenceFrames.append((index, frame))
+        
+        // Keep only the most recent N frames
+        if referenceFrames.count > config.maxReferenceFrames {
+            referenceFrames.removeFirst()
+        }
+    }
+    
+    /// Get a reference frame by index
+    func getReferenceFrame(index: Int) -> ImageFrame? {
+        return referenceFrames.first { $0.index == index }?.frame
     }
 }
