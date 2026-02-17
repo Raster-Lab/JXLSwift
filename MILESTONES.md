@@ -22,7 +22,7 @@
 | 9 | Advanced Encoding Features | Weeks 27–31 | ✅ Complete (13/13) |
 | 10 | Command Line Tool (jxl-tool) | Weeks 31–34 | ✅ Complete |
 | 11 | libjxl Validation & Performance Benchmarking | Weeks 34–38 | ✅ Complete |
-| 12 | Decoding Support | Weeks 38–44 | ⬜ Not Started |
+| 12 | Decoding Support | Weeks 38–44 | 🔶 In Progress |
 | 13 | Production Hardening & Release | Weeks 44–48 | ⬜ Not Started |
 
 ---
@@ -479,24 +479,24 @@
 
 ### Deliverables
 
-- [ ] `JXLDecoder` class — main decoding interface
-- [ ] Codestream header parsing
-- [ ] Frame header parsing
+- [x] `JXLDecoder` class — main decoding interface
+- [x] Codestream header parsing
+- [x] Frame header parsing
 - [x] Modular mode decoder (inverse prediction, entropy decoding) — `ModularDecoder` with unframed and framed decoding
 - [ ] VarDCT mode decoder (entropy decoding, dequantisation, IDCT, colour conversion)
 - [ ] ANS entropy decoder
 - [ ] Progressive decoding (partial image rendering)
-- [ ] Container format parsing
+- [x] Container format parsing
 - [ ] Metadata extraction (EXIF, XMP, ICC)
-- [ ] `decode` subcommand in jxl-tool
+- [x] `decode` subcommand in jxl-tool
 - [ ] Output to PNG, TIFF, BMP via platform image I/O
 
 ### Tests Required
 
-- [ ] Decode JXLSwift-encoded files: pixel-perfect for lossless, PSNR > 40 dB for lossy
+- [x] Decode JXLSwift-encoded files: pixel-perfect for lossless, PSNR > 40 dB for lossy
 - [ ] Decode libjxl-encoded test files
 - [ ] Decode progressive files incrementally
-- [ ] Handle corrupted/truncated files gracefully
+- [x] Handle corrupted/truncated files gracefully
 - [ ] Memory-bounded decoding of large images
 - [ ] Performance: decode ≥ 100 MP/s on Apple Silicon
 
