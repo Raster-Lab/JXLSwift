@@ -500,4 +500,112 @@ final class CLITests: XCTestCase {
                           "Metal disabled and Metal unavailable should produce identical output")
         }
     }
+    
+    // MARK: - Progressive Encoding Tests
+    
+    func testEncode_ProgressiveProducesValidOutput() throws {
+        let progressiveOptions = EncodingOptions(
+            mode: .lossy(quality: 90),
+            effort: .squirrel,
+            progressive: true
+        )
+        let encoder = JXLEncoder(options: progressiveOptions)
+        
+        var frame = ImageFrame(width: 32, height: 32, channels: 3)
+        for y in 0..<32 {
+            for x in 0..<32 {
+                let value = UInt16((x + y) % 256)
+                frame.setPixel(x: x, y: y, channel: 0, value: value)
+                frame.setPixel(x: x, y: y, channel: 1, value: value)
+                frame.setPixel(x: x, y: y, channel: 2, value: value)
+            }
+        }
+        
+        let result = try encoder.encode(frame)
+        
+        XCTAssertGreaterThanOrEqual(result.data.count, 2)
+        XCTAssertEqual(result.data[0], 0xFF)
+        XCTAssertEqual(result.data[1], 0x0A)
+        XCTAssertGreaterThan(result.stats.compressionRatio, 1.0)
+    }
+    
+    func testEncode_ProgressiveVsNonProgressive_BothValid() throws {
+        var frame = ImageFrame(width: 64, height: 64, channels: 3)
+        for y in 0..<64 {
+            for x in 0..<64 {
+                let value = UInt16((x * y) % 256)
+                frame.setPixel(x: x, y: y, channel: 0, value: value)
+                frame.setPixel(x: x, y: y, channel: 1, value: value)
+                frame.setPixel(x: x, y: y, channel: 2, value: value)
+            }
+        }
+        
+        // Non-progressive
+        let nonProgressiveOptions = EncodingOptions(
+            mode: .lossy(quality: 85),
+            progressive: false
+        )
+        let nonProgressiveEncoder = JXLEncoder(options: nonProgressiveOptions)
+        let nonProgressiveResult = try nonProgressiveEncoder.encode(frame)
+        
+        // Progressive
+        let progressiveOptions = EncodingOptions(
+            mode: .lossy(quality: 85),
+            progressive: true
+        )
+        let progressiveEncoder = JXLEncoder(options: progressiveOptions)
+        let progressiveResult = try progressiveEncoder.encode(frame)
+        
+        // Both should have valid signatures
+        XCTAssertEqual(nonProgressiveResult.data[0], 0xFF)
+        XCTAssertEqual(nonProgressiveResult.data[1], 0x0A)
+        XCTAssertEqual(progressiveResult.data[0], 0xFF)
+        XCTAssertEqual(progressiveResult.data[1], 0x0A)
+        
+        // Both should achieve compression
+        XCTAssertGreaterThan(nonProgressiveResult.stats.compressionRatio, 1.0)
+        XCTAssertGreaterThan(progressiveResult.stats.compressionRatio, 1.0)
+        
+        // Both should produce non-empty output
+        XCTAssertGreaterThan(nonProgressiveResult.data.count, 0)
+        XCTAssertGreaterThan(progressiveResult.data.count, 0)
+    }
+    
+    func testEncode_ProgressiveWithDifferentQuality_ProducesValidOutput() throws {
+        var frame = ImageFrame(width: 32, height: 32, channels: 3)
+        for y in 0..<32 {
+            for x in 0..<32 {
+                frame.setPixel(x: x, y: y, channel: 0, value: UInt16(x * 8))
+                frame.setPixel(x: x, y: y, channel: 1, value: UInt16(y * 8))
+                frame.setPixel(x: x, y: y, channel: 2, value: 128)
+            }
+        }
+        
+        // Test high quality
+        let highQualityOptions = EncodingOptions(
+            mode: .lossy(quality: 95),
+            progressive: true
+        )
+        let highQualityEncoder = JXLEncoder(options: highQualityOptions)
+        let highQualityResult = try highQualityEncoder.encode(frame)
+        
+        XCTAssertEqual(highQualityResult.data[0], 0xFF)
+        XCTAssertEqual(highQualityResult.data[1], 0x0A)
+        
+        // Test low quality
+        let lowQualityOptions = EncodingOptions(
+            mode: .lossy(quality: 50),
+            progressive: true
+        )
+        let lowQualityEncoder = JXLEncoder(options: lowQualityOptions)
+        let lowQualityResult = try lowQualityEncoder.encode(frame)
+        
+        XCTAssertEqual(lowQualityResult.data[0], 0xFF)
+        XCTAssertEqual(lowQualityResult.data[1], 0x0A)
+        
+        // Higher quality should generally produce larger output
+        // (though not strictly guaranteed for all images)
+        XCTAssertGreaterThan(highQualityResult.data.count, 0)
+        XCTAssertGreaterThan(lowQualityResult.data.count, 0)
+    }
 }

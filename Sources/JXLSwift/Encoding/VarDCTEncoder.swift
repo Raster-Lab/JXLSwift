@@ -5,6 +5,30 @@
 
 import Foundation
 
+/// Progressive pass definition for multi-pass encoding
+struct ProgressivePass {
+    /// Pass index (0 = DC-only, 1+ = AC passes)
+    let passIndex: Int
+    
+    /// Range of coefficient indices to encode in this pass (in zigzag order)
+    /// For DC-only pass: 0..<1
+    /// For AC passes: 1..<16, 16..<64, etc.
+    let coefficientRange: Range<Int>
+    
+    /// Human-readable description of the pass
+    var description: String {
+        if coefficientRange == 0..<1 {
+            return "DC-only pass"
+        } else if coefficientRange == 1..<16 {
+            return "Low-frequency AC pass (1-15)"
+        } else if coefficientRange == 16..<64 {
+            return "High-frequency AC pass (16-63)"
+        } else {
+            return "AC pass \(coefficientRange)"
+        }
+    }
+}
+
 /// VarDCT encoder for lossy compression
 class VarDCTEncoder {
     private let hardware: HardwareCapabilities
@@ -50,6 +74,29 @@ class VarDCTEncoder {
         self.hardware = hardware
         self.options = options
         self.distance = distance
+    }
+    
+    /// Generate progressive passes for multi-pass encoding
+    ///
+    /// Returns an array of ProgressivePass structures defining how to split
+    /// DCT coefficients across multiple rendering passes.
+    ///
+    /// - Returns: Array of passes (1 pass for non-progressive, 3 passes for progressive)
+    private func generateProgressivePasses() -> [ProgressivePass] {
+        guard options.progressive else {
+            // Non-progressive: encode all coefficients in a single pass
+            return [ProgressivePass(passIndex: 0, coefficientRange: 0..<64)]
+        }
+        
+        // Progressive encoding with 3 passes:
+        // Pass 0: DC coefficients only (coefficient 0)
+        // Pass 1: Low-frequency AC coefficients (coefficients 1-15)
+        // Pass 2: High-frequency AC coefficients (coefficients 16-63)
+        return [
+            ProgressivePass(passIndex: 0, coefficientRange: 0..<1),   // DC-only
+            ProgressivePass(passIndex: 1, coefficientRange: 1..<16),  // Low-freq AC
+            ProgressivePass(passIndex: 2, coefficientRange: 16..<64)  // High-freq AC
+        ]
     }
     
     /// Encode frame using VarDCT mode
@@ -795,6 +842,18 @@ class VarDCTEncoder {
         channel: Int,
         lumaDCTBlocks: [[[[Float]]]]? = nil
     ) throws -> Data {
+        // Check if progressive encoding is enabled
+        if options.progressive {
+            return try encodeChannelDCTProgressive(
+                data: data,
+                width: width,
+                height: height,
+                channel: channel,
+                lumaDCTBlocks: lumaDCTBlocks
+            )
+        }
+        
+        // Non-progressive encoding (existing code)
         var writer = BitstreamWriter()
         
         // Process image in 8x8 blocks
@@ -891,6 +950,153 @@ class VarDCTEncoder {
                 allBlocks: allBlocks, dcResiduals: allDCResiduals
             )
             writer.writeData(ansData)
+        }
+        
+        writer.flushByte()
+        return writer.data
+    }
+    
+    /// Progressive DCT encoding with multiple frequency passes
+    private func encodeChannelDCTProgressive(
+        data: [[Float]],
+        width: Int,
+        height: Int,
+        channel: Int,
+        lumaDCTBlocks: [[[[Float]]]]? = nil
+    ) throws -> Data {
+        var writer = BitstreamWriter()
+        
+        // Process image in 8x8 blocks
+        let blocksX = (width + blockSize - 1) / blockSize
+        let blocksY = (height + blockSize - 1) / blockSize
+        
+        // Track quantized DC values for inter-block prediction
+        var dcValues = [[Int16]](
+            repeating: [Int16](repeating: 0, count: blocksX),
+            count: blocksY
+        )
+        
+        let useAdaptive = options.adaptiveQuantization
+        let useANS = options.useANS
+        
+        // Store all quantized blocks for multi-pass encoding
+        var allQuantizedBlocks = [[[Int16]]]()
+        var allDCResiduals = [Int16]()
+        var allActivities = [Float]()
+        var allCfLCoeffs = [Float?]()
+        
+        // First pass: compute all DCT blocks and quantize them
+        for blockY in 0..<blocksY {
+            for blockX in 0..<blocksX {
+                // Extract block
+                let block = extractBlock(
+                    data: data,
+                    blockX: blockX,
+                    blockY: blockY,
+                    width: width,
+                    height: height
+                )
+                
+                // Compute adaptive quantization scale
+                let activity: Float
+                if useAdaptive {
+                    let rawActivity = computeBlockActivity(block: block)
+                    activity = adaptiveQuantizationScale(activity: rawActivity)
+                } else {
+                    activity = 1.0
+                }
+                allActivities.append(activity)
+                
+                // Apply DCT
+                var dctBlock = applyDCT(block: block)
+                
+                // Apply CfL prediction for chroma channels
+                var cflCoeff: Float? = nil
+                if let lumaDCT = lumaDCTBlocks?[blockY][blockX] {
+                    cflCoeff = computeCfLCoefficient(
+                        lumaDCT: lumaDCT, chromaDCT: dctBlock
+                    )
+                    dctBlock = applyCfLPrediction(
+                        chromaDCT: dctBlock, lumaDCT: lumaDCT,
+                        coefficient: cflCoeff!
+                    )
+                }
+                allCfLCoeffs.append(cflCoeff)
+                
+                // Quantize
+                let quantized = quantize(
+                    block: dctBlock, channel: channel, activity: activity
+                )
+                
+                // Store DC residual
+                let dc = quantized[0][0]
+                let predicted = predictDC(
+                    dcValues: dcValues,
+                    blockX: blockX,
+                    blockY: blockY
+                )
+                let dcResidual = dc - predicted
+                dcValues[blockY][blockX] = dc
+                
+                allQuantizedBlocks.append(quantized)
+                allDCResiduals.append(dcResidual)
+            }
+        }
+        
+        // Generate progressive passes
+        let passes = generateProgressivePasses()
+        
+        // Encode each pass
+        for pass in passes {
+            // Write pass marker to help identify boundaries (simplified)
+            writer.writeBits(UInt32(pass.passIndex), count: 8)
+            
+            // Write metadata for this pass (simplified - proper implementation
+            // would use section headers per JPEG XL spec)
+            var blockIdx = 0
+            for _ in 0..<blocksY {
+                for _ in 0..<blocksX {
+                    // Write CfL coefficient (only in first pass for chroma)
+                    if pass.passIndex == 0, let cflCoeff = allCfLCoeffs[blockIdx] {
+                        writer.writeVarint(encodeSignedValue(
+                            Int32(round(cflCoeff * VarDCTEncoder.cflScaleFactor))
+                        ))
+                    }
+                    
+                    // Write per-block quantization field (only in first pass)
+                    if pass.passIndex == 0 && useAdaptive {
+                        writer.writeVarint(
+                            UInt64(round(allActivities[blockIdx] * VarDCTEncoder.qfScaleFactor))
+                        )
+                    }
+                    
+                    blockIdx += 1
+                }
+            }
+            
+            // Encode coefficients for this pass
+            if useANS {
+                // Batch ANS encoding for this pass
+                let ansData = try encodeBlocksANS(
+                    allBlocks: allQuantizedBlocks,
+                    dcResiduals: allDCResiduals,
+                    coefficientRange: pass.coefficientRange
+                )
+                writer.writeData(ansData)
+            } else {
+                // Run-length encoding for each block
+                for blockIdx in 0..<allQuantizedBlocks.count {
+                    let block = allQuantizedBlocks[blockIdx]
+                    let dcResidual = pass.coefficientRange.lowerBound == 0 ?
+                        allDCResiduals[blockIdx] : nil
+                    encodeBlock(
+                        writer: &writer,
+                        block: block,
+                        dcResidual: dcResidual,
+                        coefficientRange: pass.coefficientRange
+                    )
+                }
+            }
         }
         
         writer.flushByte()
@@ -1299,17 +1505,29 @@ class VarDCTEncoder {
     
     // MARK: - Coefficient Encoding
     
-    private func encodeBlock(writer: inout BitstreamWriter, block: [[Int16]], dcResidual: Int16? = nil) {
+    private func encodeBlock(
+        writer: inout BitstreamWriter,
+        block: [[Int16]],
+        dcResidual: Int16? = nil,
+        coefficientRange: Range<Int> = 0..<64
+    ) {
         // Zigzag scan order for better compression
         let coefficients = zigzagScan(block: block)
         
-        // Encode DC coefficient (use prediction residual if available)
-        let dcValue = dcResidual ?? coefficients[0]
-        writer.writeVarint(encodeSignedValue(Int32(dcValue)))
+        // Determine which coefficients to encode based on the range
+        let startIdx = coefficientRange.lowerBound
+        let endIdx = min(coefficientRange.upperBound, coefficients.count)
+        
+        // Encode DC coefficient if in range (use prediction residual if available)
+        if startIdx == 0 && endIdx > 0 {
+            let dcValue = dcResidual ?? coefficients[0]
+            writer.writeVarint(encodeSignedValue(Int32(dcValue)))
+        }
         
         // Encode AC coefficients with run-length encoding
         var zeroRun = 0
-        for i in 1..<coefficients.count {
+        let acStart = max(1, startIdx)
+        for i in acStart..<endIdx {
             let coeff = coefficients[i]
             
             if coeff == 0 {
@@ -1339,12 +1557,14 @@ class VarDCTEncoder {
     /// two-context rANS encoder (context 0 = DC, context 1 = AC).
     ///
     /// - Parameters:
-    ///   - allBlocks: All quantised 8×8 blocks in raster order.
+    ///   - allBlocks: All quantized 8×8 blocks in raster order.
     ///   - dcResiduals: DC prediction residuals for each block.
+    ///   - coefficientRange: Range of coefficient indices to encode (in zigzag order)
     /// - Returns: ANS-compressed coefficient data.
     func encodeBlocksANS(
         allBlocks: [[[Int16]]],
-        dcResiduals: [Int16]
+        dcResiduals: [Int16],
+        coefficientRange: Range<Int> = 0..<64
     ) throws -> Data {
         let maxAlpha = ANSConstants.maxAlphabetSize
         
@@ -1356,18 +1576,24 @@ class VarDCTEncoder {
         var acSymbols = [Int]()
         var pairs = [(symbol: Int, context: Int)]()
         
+        let startIdx = coefficientRange.lowerBound
+        let endIdx = min(coefficientRange.upperBound, 64)
+        
         for (blockIdx, block) in allBlocks.enumerated() {
             let coefficients = zigzagScan(block: block)
             
-            // DC coefficient (use residual)
-            let dcValue = dcResiduals[blockIdx]
-            let dcSym = min(Int(encodeSignedValue(Int32(dcValue))),
-                            maxAlpha - 1)
-            dcSymbols.append(dcSym)
-            pairs.append((symbol: dcSym, context: 0))
+            // DC coefficient (use residual) - only if in range
+            if startIdx == 0 && endIdx > 0 {
+                let dcValue = dcResiduals[blockIdx]
+                let dcSym = min(Int(encodeSignedValue(Int32(dcValue))),
+                                maxAlpha - 1)
+                dcSymbols.append(dcSym)
+                pairs.append((symbol: dcSym, context: 0))
+            }
             
-            // AC coefficients
-            for i in 1..<coefficients.count {
+            // AC coefficients - only encode those in range
+            let acStart = max(1, startIdx)
+            for i in acStart..<endIdx {
                 let acSym = min(Int(encodeSignedValue(Int32(coefficients[i]))),
                                 maxAlpha - 1)
                 acSymbols.append(acSym)
