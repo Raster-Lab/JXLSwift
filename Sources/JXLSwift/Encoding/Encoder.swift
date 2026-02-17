@@ -229,7 +229,7 @@ public class JXLEncoder {
             extraChannelCount: firstFrame.hasAlpha ? 1 : 0,
             xybEncoded: false,
             colourEncoding: ColourEncoding.from(colorSpace: firstFrame.colorSpace),
-            orientation: 1,
+            orientation: firstFrame.orientation,
             haveAnimation: true,
             animationTpsNumerator: config.fps,
             animationTpsDenominator: config.tpsDenominator,
