@@ -15,7 +15,11 @@ JXLSwift provides a pure Swift implementation of the JPEG XL image compression s
 - 📦 **Two Compression Modes**:
   - **Lossless (Modular Mode)** - Perfect pixel reproduction
   - **Lossy (VarDCT Mode)** - High-quality lossy compression
-- 🎨 **Advanced Color Support** - sRGB, linear RGB, grayscale, custom color spaces
+- 🎨 **Advanced Color Support**:
+  - Standard: sRGB, linear RGB, grayscale
+  - Wide Gamut: Display P3, Rec. 2020
+  - HDR Transfer Functions: PQ (HDR10), HLG
+  - Alpha Channels: Straight and premultiplied modes
 - 🔧 **Flexible Configuration** - Quality levels, effort settings, hardware acceleration control
 - 📄 **JPEG XL Container Format** - ISOBMFF container with metadata boxes (EXIF, XMP, ICC)
 - 🎬 **Animation Support** - Multi-frame container framing with frame index for seeking
@@ -150,6 +154,72 @@ print("ARM NEON: \(caps.hasNEON)")
 print("Apple Accelerate: \(caps.hasAccelerate)")
 print("Metal: \(caps.hasMetal)")
 print("CPU cores: \(caps.coreCount)")
+```
+
+### HDR and Wide Gamut Support
+
+```swift
+// Display P3 (wide gamut)
+var displayP3Frame = ImageFrame(
+    width: 1920,
+    height: 1080,
+    channels: 3,
+    pixelType: .uint16,
+    colorSpace: .displayP3,  // Display P3 with sRGB transfer function
+    bitsPerSample: 10
+)
+
+// HDR10 (Rec. 2020 with PQ transfer function)
+var hdr10Frame = ImageFrame(
+    width: 3840,
+    height: 2160,
+    channels: 3,
+    pixelType: .float32,  // HDR typically uses float
+    colorSpace: .rec2020PQ,  // Rec. 2020 primaries with PQ (Perceptual Quantizer)
+    bitsPerSample: 16
+)
+
+// HLG HDR (Rec. 2020 with HLG transfer function)
+var hlgFrame = ImageFrame(
+    width: 3840,
+    height: 2160,
+    channels: 3,
+    pixelType: .uint16,
+    colorSpace: .rec2020HLG,  // Rec. 2020 primaries with HLG (Hybrid Log-Gamma)
+    bitsPerSample: 10
+)
+```
+
+### Alpha Channel Support
+
+```swift
+// RGBA with straight (unassociated) alpha
+var rgbaFrame = ImageFrame(
+    width: 1920,
+    height: 1080,
+    channels: 4,  // RGB + Alpha
+    pixelType: .uint8,
+    colorSpace: .sRGB,
+    hasAlpha: true,
+    alphaMode: .straight  // RGB values independent of alpha
+)
+
+// Set pixel with alpha
+rgbaFrame.setPixel(x: 100, y: 100, channel: 0, value: 255)  // R
+rgbaFrame.setPixel(x: 100, y: 100, channel: 1, value: 128)  // G
+rgbaFrame.setPixel(x: 100, y: 100, channel: 2, value: 64)   // B
+rgbaFrame.setPixel(x: 100, y: 100, channel: 3, value: 128)  // A (50% transparent)
+
+// RGBA with premultiplied alpha
+var premultFrame = ImageFrame(
+    width: 1920,
+    height: 1080,
+    channels: 4,
+    pixelType: .uint16,
+    colorSpace: .displayP3,
+    hasAlpha: true,
+    alphaMode: .premultiplied  // RGB already multiplied by alpha
+)
 ```
 
 ## Architecture
@@ -334,8 +404,8 @@ See [MILESTONES.md](MILESTONES.md) for the detailed project milestone plan.
 - [x] ANS entropy coding — rANS encoder/decoder, multi-context, distribution tables, histogram clustering, ANS interleaving, LZ77 hybrid mode, integrated with Modular + VarDCT
 - [x] Man pages for jxl-tool and all subcommands
 - [x] Makefile for build, test, and installation
+- [x] **Advanced features** — HDR support (PQ, HLG), wide gamut (Display P3, Rec. 2020), alpha channels (straight, premultiplied)
 - [ ] Metal GPU async pipeline with double-buffering
-- [ ] Progressive encoding
 - [ ] Progressive encoding
 - [ ] Decoding support
 - [ ] libjxl validation & benchmarking

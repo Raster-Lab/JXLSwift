@@ -11,6 +11,34 @@ public enum ColorSpace: Sendable {
     case grayscale
     case cmyk
     case custom(primaries: ColorPrimaries, transferFunction: TransferFunction)
+    
+    /// Display P3 with sRGB transfer function
+    /// Common on modern Apple devices
+    public static var displayP3: ColorSpace {
+        return .custom(primaries: .displayP3, transferFunction: .sRGB)
+    }
+    
+    /// Display P3 with linear transfer function
+    public static var displayP3Linear: ColorSpace {
+        return .custom(primaries: .displayP3, transferFunction: .linear)
+    }
+    
+    /// Rec. 2020 with PQ transfer function (HDR10)
+    /// Standard for UHD HDR content
+    public static var rec2020PQ: ColorSpace {
+        return .custom(primaries: .rec2020, transferFunction: .pq)
+    }
+    
+    /// Rec. 2020 with HLG transfer function
+    /// Alternative HDR format, compatible with SDR displays
+    public static var rec2020HLG: ColorSpace {
+        return .custom(primaries: .rec2020, transferFunction: .hlg)
+    }
+    
+    /// Rec. 2020 with linear transfer function
+    public static var rec2020Linear: ColorSpace {
+        return .custom(primaries: .rec2020, transferFunction: .linear)
+    }
 }
 
 /// Color primaries
@@ -43,6 +71,24 @@ public struct ColorPrimaries: Sendable {
         blueX: 0.15, blueY: 0.06,
         whiteX: 0.3127, whiteY: 0.3290
     )
+    
+    /// Display P3 (DCI-P3 D65) primaries
+    /// Used by Apple displays, wider gamut than sRGB
+    public static let displayP3 = ColorPrimaries(
+        redX: 0.680, redY: 0.320,
+        greenX: 0.265, greenY: 0.690,
+        blueX: 0.150, blueY: 0.060,
+        whiteX: 0.3127, whiteY: 0.3290  // D65 white point
+    )
+    
+    /// Rec. 2020 (BT.2020) primaries
+    /// Ultra-wide gamut for UHD/HDR content
+    public static let rec2020 = ColorPrimaries(
+        redX: 0.708, redY: 0.292,
+        greenX: 0.170, greenY: 0.797,
+        blueX: 0.131, blueY: 0.046,
+        whiteX: 0.3127, whiteY: 0.3290  // D65 white point
+    )
 }
 
 /// Transfer function (gamma curve)
@@ -52,6 +98,20 @@ public enum TransferFunction: Sendable {
     case gamma(Float)
     case pq      // Perceptual Quantizer (HDR)
     case hlg     // Hybrid Log-Gamma (HDR)
+}
+
+/// Alpha channel mode
+public enum AlphaMode: Sendable {
+    /// No alpha channel
+    case none
+    
+    /// Straight (unassociated) alpha
+    /// RGB values are independent of alpha
+    case straight
+    
+    /// Premultiplied (associated) alpha
+    /// RGB values are already multiplied by alpha
+    case premultiplied
 }
 
 /// Pixel data type
@@ -92,6 +152,9 @@ public struct ImageFrame {
     /// Has alpha channel
     public let hasAlpha: Bool
     
+    /// Alpha channel mode (only relevant if hasAlpha is true)
+    public let alphaMode: AlphaMode
+    
     /// Bits per sample (8, 10, 12, 16, 32)
     public let bitsPerSample: Int
     
@@ -99,6 +162,7 @@ public struct ImageFrame {
                 pixelType: PixelType = .uint8,
                 colorSpace: ColorSpace = .sRGB,
                 hasAlpha: Bool = false,
+                alphaMode: AlphaMode = .straight,
                 bitsPerSample: Int = 8) {
         self.width = width
         self.height = height
@@ -106,6 +170,7 @@ public struct ImageFrame {
         self.pixelType = pixelType
         self.colorSpace = colorSpace
         self.hasAlpha = hasAlpha
+        self.alphaMode = hasAlpha ? alphaMode : .none
         self.bitsPerSample = bitsPerSample
         
         let totalSamples = width * height * channels
