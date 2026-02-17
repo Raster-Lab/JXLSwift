@@ -28,6 +28,9 @@ JXLSwift provides a pure Swift implementation of the JPEG XL image compression s
 - 🔲 **Patch Encoding** - Copy repeated rectangular regions from reference frames for massive compression gains on screen content, slideshows, and animations with static elements
 - 🎨 **Noise Synthesis** - Add film grain or synthetic noise to improve perceptual quality and mask quantization artifacts
 - 🎨 **Spline Encoding** - Vector overlay rendering for smooth curves, edges, and line art with resolution-independent quality
+- 📊 **Quality Metrics** - PSNR, SSIM, MS-SSIM, and Butteraugli perceptual distance for encoding validation
+- 🧪 **Validation Harness** - Automated test harness with configurable criteria for quality, compression, and performance validation
+- 📈 **Benchmark Reports** - JSON and HTML report generation with performance regression detection
 - 🔧 **Flexible Configuration** - Quality levels, effort settings, hardware acceleration control
 - 📄 **JPEG XL Container Format** - ISOBMFF container with metadata boxes (EXIF, XMP, ICC)
 - 🌊 **Progressive Encoding** - Incremental rendering for faster perceived loading
@@ -629,7 +632,10 @@ Sources/JXLSwift/
 │   ├── ImageFrame.swift       # Image representation
 │   ├── PixelBuffer.swift      # Tiled pixel buffer access
 │   ├── Bitstream.swift        # Bitstream I/O
-│   └── EncodingOptions.swift  # Configuration
+│   ├── EncodingOptions.swift  # Configuration
+│   ├── QualityMetrics.swift   # PSNR, SSIM, MS-SSIM, Butteraugli metrics
+│   ├── ValidationHarness.swift # Encoding validation test harness
+│   └── BenchmarkReport.swift  # JSON/HTML benchmark report generation
 ├── Encoding/          # Compression pipeline
 │   ├── Encoder.swift          # Main encoder interface
 │   ├── ModularEncoder.swift   # Lossless compression
@@ -652,6 +658,7 @@ Sources/JXLTool/
 ├── Benchmark.swift            # Benchmark subcommand
 ├── Batch.swift                # Batch subcommand
 ├── Compare.swift              # Compare subcommand
+├── Validate.swift             # Validate subcommand (quality, compression, performance)
 └── Utilities.swift            # Shared CLI helpers
 ```
 
@@ -831,6 +838,18 @@ swift run jxl-tool benchmark --compare-hardware
 
 # Compare Metal GPU vs CPU acceleration
 swift run jxl-tool benchmark --compare-metal
+
+# Validate encoding quality and performance
+swift run jxl-tool validate --width 64 --height 64
+
+# Validate with JSON report output
+swift run jxl-tool validate --format json --output report.json
+
+# Validate with HTML report output
+swift run jxl-tool validate --format html --output report.html --include-lossless
+
+# Validate with quality metrics comparison
+swift run jxl-tool validate --quality-metrics --all-efforts
 ```
 
 ### Man Pages
@@ -865,7 +884,7 @@ See [MILESTONES.md](MILESTONES.md) for the detailed project milestone plan.
 - [x] Accelerate framework integration — vDSP DCT, vectorized color/quantization
 - [x] ARM NEON SIMD acceleration — portable Swift SIMD types, DCT, colour conversion, quantisation, MED prediction, RCT, squeeze (Modular + VarDCT)
 - [x] Metal GPU acceleration — compute shaders for DCT, color conversion, quantization (batch operations)
-- [x] Command line tool (jxl-tool) — encode, info, hardware, benchmark, batch, compare
+- [x] Command line tool (jxl-tool) — encode, info, hardware, benchmark, batch, compare, validate
 - [x] JPEG XL file format (.jxl) — ISOBMFF container, codestream/frame headers
 - [x] Metadata support (EXIF, XMP, ICC profiles)
 - [x] Animation container framing (frame index, multi-frame)
@@ -882,8 +901,10 @@ See [MILESTONES.md](MILESTONES.md) for the detailed project milestone plan.
 - [x] Reference frame encoding — delta encoding for animations with configurable keyframe intervals
 - [x] Patch encoding — copy repeated rectangular regions from reference frames for screen content
 - [x] Noise synthesis — add film grain or synthetic noise to mask quantization artifacts
+- [x] Spline encoding — vector overlay rendering for smooth curves and line art
+- [x] **libjxl Validation & Benchmarking** — quality metrics (PSNR, SSIM, MS-SSIM, Butteraugli), validation harness with configurable criteria, benchmark reports (JSON/HTML), performance regression detection (10% threshold alerting), validate CLI subcommand, test image generator
 - [ ] Decoding support
-- [ ] libjxl validation & benchmarking
+- [ ] libjxl bitstream compatibility testing (requires decoder)
 
 ## Standards Compliance
 

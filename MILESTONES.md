@@ -21,7 +21,7 @@
 | 8 | ANS Entropy Coding | Weeks 23–27 | ✅ Complete |
 | 9 | Advanced Encoding Features | Weeks 27–31 | ✅ Complete (13/13) |
 | 10 | Command Line Tool (jxl-tool) | Weeks 31–34 | ✅ Complete |
-| 11 | libjxl Validation & Performance Benchmarking | Weeks 34–38 | ⬜ Not Started |
+| 11 | libjxl Validation & Performance Benchmarking | Weeks 34–38 | 🔶 In Progress |
 | 12 | Decoding Support | Weeks 38–44 | ⬜ Not Started |
 | 13 | Production Hardening & Release | Weeks 44–48 | ⬜ Not Started |
 
@@ -446,16 +446,16 @@
 
 ### Deliverables
 
-- [ ] Test harness comparing JXLSwift and libjxl output
+- [x] Test harness comparing JXLSwift and libjxl output
 - [ ] Bitstream compatibility validation (libjxl can decode JXLSwift output)
-- [ ] Quality metric comparison: PSNR, SSIM, MS-SSIM, Butteraugli
+- [x] Quality metric comparison: PSNR, SSIM, MS-SSIM, Butteraugli
 - [ ] Speed comparison: encode time at each effort level
 - [ ] Compression ratio comparison at each quality level
 - [ ] Memory usage comparison
 - [ ] Test image corpus: Kodak, Tecnick, Wikipedia test images
-- [ ] Automated regression test suite (CI integration)
-- [ ] Performance regression detection (alerting on > 10% slowdown)
-- [ ] Benchmark result publishing (JSON, HTML report)
+- [x] Automated regression test suite (CI integration)
+- [x] Performance regression detection (alerting on > 10% slowdown)
+- [x] Benchmark result publishing (JSON, HTML report)
 
 ### Tests Required
 
