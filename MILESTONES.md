@@ -102,15 +102,15 @@
 - [x] Squeeze transform (multi-resolution decomposition)
 - [x] Context modelling for entropy coding
 - [x] MA (Meta-Adaptive) tree-based prediction
-- [ ] Full Modular subbitstream framing per ISO/IEC 18181-1 §7
+- [x] Full Modular subbitstream framing per ISO/IEC 18181-1 §7
 
 ### Tests Required
 
 - [x] Lossless encoding produces non-empty output
 - [x] Compression ratio > 1.0 for gradient images
-- [ ] Round-trip test: encode → decode → pixel-perfect match (requires decoder)
-- [ ] Round-trip test: encode with JXLSwift → decode with libjxl → pixel-perfect match
-- [ ] Round-trip test: encode with libjxl → decode with JXLSwift → pixel-perfect match (requires decoder)
+- [x] Round-trip test: encode → decode → pixel-perfect match — **14 tests covering 1×1 to 32×32, 1–4 channels, gradients, random data, edge cases**
+- [x] Round-trip test: encode with JXLSwift → decode with libjxl → pixel-perfect match — **conditional test (skipped if `djxl` not installed)**
+- [x] Round-trip test: encode with libjxl → decode with JXLSwift → pixel-perfect match — **conditional test (skipped if `cjxl` not installed)**
 - [x] MED predictor unit tests: first pixel, first row, first column, general case
 - [x] ZigZag encoding: 0→0, -1→1, 1→2, -2→3, 2→4
 - [x] RCT forward and inverse produce pixel-perfect round-trip
@@ -482,7 +482,7 @@
 - [ ] `JXLDecoder` class — main decoding interface
 - [ ] Codestream header parsing
 - [ ] Frame header parsing
-- [ ] Modular mode decoder (inverse prediction, entropy decoding)
+- [x] Modular mode decoder (inverse prediction, entropy decoding) — `ModularDecoder` with unframed and framed decoding
 - [ ] VarDCT mode decoder (entropy decoding, dequantisation, IDCT, colour conversion)
 - [ ] ANS entropy decoder
 - [ ] Progressive decoding (partial image rendering)
