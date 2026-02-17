@@ -101,11 +101,50 @@ let result = try encoder.encode(frame)
 
 // Access compressed data
 let compressedData = result.data
-print("Compression ratio: \(result.stats.compressionRatio)x")
-print("Encoding time: \(result.stats.encodingTime)s")
+let stats = result.stats
+print("Compressed: \(stats.originalSize) → \(stats.compressedSize) bytes")
+print("Ratio: \(stats.compressionRatio)x in \(stats.encodingTime)s")
 ```
 
-### Lossless Encoding
+### Alpha Channel Support
+
+```swift
+// Create RGBA frame with alpha channel
+var rgbaFrame = ImageFrame(
+    width: 1920,
+    height: 1080,
+    channels: 4,  // RGBA
+    pixelType: .uint8,
+    colorSpace: .sRGB,
+    hasAlpha: true,
+    alphaMode: .straight  // or .premultiplied
+)
+
+// Set pixels including alpha channel
+for y in 0..<rgbaFrame.height {
+    for x in 0..<rgbaFrame.width {
+        rgbaFrame.setPixel(x: x, y: y, channel: 0, value: r)      // Red
+        rgbaFrame.setPixel(x: x, y: y, channel: 1, value: g)      // Green
+        rgbaFrame.setPixel(x: x, y: y, channel: 2, value: b)      // Blue
+        rgbaFrame.setPixel(x: x, y: y, channel: 3, value: alpha)  // Alpha
+    }
+}
+
+// Encode with alpha - works with both lossless and lossy modes
+let encoder = JXLEncoder(options: EncodingOptions(mode: .lossy(quality: 90)))
+let result = try encoder.encode(rgbaFrame)
+```
+
+### Lossless Compression
+
+```swift
+// Lossless (Modular) mode - bit-perfect preservation
+let options = EncodingOptions(mode: .lossless)
+let encoder = JXLEncoder(options: options)
+let result = try encoder.encode(frame)
+```
+
+### Lossy Compression
 
 ```swift
 let encoder = JXLEncoder(options: .lossless)
@@ -119,11 +158,26 @@ let encoder = JXLEncoder(options: .highQuality)
 let result = try encoder.encode(frame)
 ```
 
-### Fast Encoding
+### Encoding Effort Levels
 
 ```swift
-let encoder = JXLEncoder(options: .fast)
-let result = try encoder.encode(frame)
+// Fast encoding (effort level 1: lightning)
+let fastOptions = EncodingOptions(
+    mode: .lossy(quality: 90),
+    effort: .lightning
+)
+
+// Balanced encoding (effort level 7: squirrel - default)
+let balancedOptions = EncodingOptions(
+    mode: .lossy(quality: 90),
+    effort: .squirrel
+)
+
+// Best compression (effort level 9: tortoise)
+let bestOptions = EncodingOptions(
+    mode: .lossy(quality: 90),
+    effort: .tortoise
+)
 ```
 
 ### Custom Configuration
