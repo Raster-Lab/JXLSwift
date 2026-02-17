@@ -20,6 +20,7 @@ struct JXLTool: ParsableCommand {
             Benchmark.self,
             Batch.self,
             Compare.self,
+            Validate.self,
         ],
         defaultSubcommand: Encode.self
     )
