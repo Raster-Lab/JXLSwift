@@ -643,7 +643,8 @@ Sources/JXLSwift/
 │   └── ComparisonBenchmark.swift # Speed, compression, memory comparison & test corpus
 ├── Encoding/          # Compression pipeline
 │   ├── Encoder.swift          # Main encoder interface
-│   ├── ModularEncoder.swift   # Lossless compression
+│   ├── ModularEncoder.swift   # Lossless compression (with subbitstream framing)
+│   ├── ModularDecoder.swift   # Lossless decompression (round-trip support)
 │   ├── VarDCTEncoder.swift    # Lossy compression
 │   └── ANSEncoder.swift       # rANS entropy coding (ISO/IEC 18181-1 Annex A)
 ├── Hardware/          # Platform optimizations
@@ -691,6 +692,8 @@ Benchmarks on Apple M1 (256x256 image):
 ### Modular Mode (Lossless)
 - Perfect pixel-by-pixel reproduction
 - Uses predictive coding + entropy encoding
+- Full subbitstream framing per ISO/IEC 18181-1 §7 with global + per-channel sections
+- Round-trip encode → decode support via `ModularDecoder`
 - NEON-accelerated MED prediction, RCT, and squeeze transforms on ARM64
 - Ideal for archival, medical imaging, scientific data
 
@@ -883,7 +886,7 @@ The tool follows standard UNIX exit code conventions:
 See [MILESTONES.md](MILESTONES.md) for the detailed project milestone plan.
 
 - [x] Core compression pipeline
-- [x] Lossless (Modular) mode — MED, RCT, Squeeze, MA tree, context modeling
+- [x] Lossless (Modular) mode — MED, RCT, Squeeze, MA tree, context modeling, subbitstream framing (§7), round-trip decode
 - [x] Lossy (VarDCT) mode — DCT, XYB, CfL, adaptive quantization, DC prediction
 - [x] Apple Silicon optimization
 - [x] Accelerate framework integration — vDSP DCT, vectorized color/quantization
