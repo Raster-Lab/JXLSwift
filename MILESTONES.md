@@ -345,7 +345,7 @@
 - [x] Responsive encoding (progressive by quality layer) — **Framework Complete**
 - [x] Multi-frame / animation support
 - [x] Alpha channel encoding (separate or premultiplied) — **Pipeline Complete**
-- [ ] Extra channels (depth, thermal, spectral)
+- [x] Extra channels (depth, thermal, spectral) — **Core Implementation Complete**
 - [x] HDR support: PQ and HLG transfer functions
 - [x] Wide gamut: Display P3, Rec. 2020 colour spaces
 - [x] Oriented rendering (EXIF orientation) — **All 8 values supported**
@@ -361,10 +361,10 @@
 - [x] Responsive: quality layers configured and validated — **29 comprehensive tests**
 - [x] Animation: multi-frame round-trip with correct timing — **24 comprehensive tests**
 - [x] Alpha: premultiplied and straight alpha modes — **13 comprehensive tests**
+- [x] Extra channels: depth, thermal, spectral encoding — **23 comprehensive tests**
 - [x] HDR: PQ and HLG metadata preserved
 - [x] Wide gamut: P3 and Rec.2020 primaries encoded correctly
 - [x] EXIF orientation: all 8 values preserved through encoding — **15 comprehensive tests**
-- [ ] Extra channels round-trip
 - [ ] Region-of-interest: only selected area is encoded at high quality
 
 ### Acceptance Criteria
