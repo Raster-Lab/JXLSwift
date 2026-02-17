@@ -57,7 +57,8 @@ class VarDCTEncoder {
         // Compute luma DCT blocks for CfL prediction (only if we have chroma)
         let lumaDCTBlocks: [[[[Float]]]]?
         if ycbcr.channels >= 3 {
-            lumaDCTBlocks = computeDCTBlocks(
+            // Use async Metal pipeline for better performance on large images
+            lumaDCTBlocks = computeDCTBlocksAsync(
                 data: channelArrays[0],
                 width: ycbcr.width,
                 height: ycbcr.height
@@ -501,6 +502,175 @@ class VarDCTEncoder {
         
         return blocks
     }
+    
+    /// Compute all DCT blocks for a channel using async Metal GPU pipeline when beneficial.
+    ///
+    /// This version attempts to use the async Metal GPU pipeline for better performance
+    /// on large images by overlapping CPU and GPU work. Falls back to synchronous processing
+    /// if Metal is unavailable or batch size is too small.
+    ///
+    /// - Parameters:
+    ///   - data: 2D float pixel data (row-major, value range 0–1).
+    ///   - width: Image width in pixels.
+    ///   - height: Image height in pixels.
+    /// - Returns: 2D grid of 8×8 DCT coefficient blocks indexed as
+    ///   `[blockY][blockX][row][col]`.
+    func computeDCTBlocksAsync(
+        data: [[Float]],
+        width: Int,
+        height: Int
+    ) -> [[[[Float]]]] {
+        let blocksX = (width + blockSize - 1) / blockSize
+        let blocksY = (height + blockSize - 1) / blockSize
+        let totalBlocks = blocksX * blocksY
+        
+        // Only use async Metal for larger images where benefit outweighs overhead
+        let minBlocksForAsyncGPU = 32
+        
+        #if canImport(Metal)
+        if hardware.hasMetal && options.useMetal && totalBlocks >= minBlocksForAsyncGPU {
+            if let result = computeDCTBlocksMetalAsync(data: data, width: width, height: height, blocksX: blocksX, blocksY: blocksY) {
+                return result
+            }
+            // Fall through to sync version if async Metal fails
+        }
+        #endif
+        
+        // Fallback to synchronous processing
+        return computeDCTBlocks(data: data, width: width, height: height)
+    }
+    
+    #if canImport(Metal)
+    /// Internal helper to process DCT blocks using async Metal pipeline
+    private func computeDCTBlocksMetalAsync(
+        data: [[Float]],
+        width: Int,
+        height: Int,
+        blocksX: Int,
+        blocksY: Int
+    ) -> [[[[Float]]]]? {
+        guard MetalOps.isAvailable else { return nil }
+        
+        // Extract all blocks first (CPU preparation phase)
+        var flatBlocks: [[Float]] = []
+        flatBlocks.reserveCapacity(blocksX * blocksY)
+        
+        for blockY in 0..<blocksY {
+            for blockX in 0..<blocksX {
+                let block = extractBlock(
+                    data: data, blockX: blockX, blockY: blockY,
+                    width: width, height: height
+                )
+                // Flatten 2D block to 1D for Metal processing
+                let flatBlock = block.flatMap { $0 }
+                flatBlocks.append(flatBlock)
+            }
+        }
+        
+        // Process in batches using Metal async pipeline
+        let batchSize = 64 // Process 64 blocks at a time
+        var allResults: [[Float]] = []
+        allResults.reserveCapacity(flatBlocks.count)
+        
+        let dispatchGroup = DispatchGroup()
+        var processedResults: [[Float]?] = Array(repeating: nil, count: flatBlocks.count)
+        let resultsLock = NSLock()
+        var hasError = false
+        
+        // Process batches with double-buffering via async pipeline
+        for batchStart in stride(from: 0, to: flatBlocks.count, by: batchSize) {
+            let batchEnd = min(batchStart + batchSize, flatBlocks.count)
+            let batch = Array(flatBlocks[batchStart..<batchEnd])
+            
+            dispatchGroup.enter()
+            
+            // Flatten batch for Metal (each block is 64 floats)
+            let flatData = batch.flatMap { $0 }
+            let blockCount = batch.count
+            
+            // Arrange blocks horizontally for Metal
+            let metalWidth = 8 * blockCount
+            let metalHeight = 8
+            
+            MetalCompute.dct8x8Async(
+                inputData: flatData,
+                width: metalWidth,
+                height: metalHeight
+            ) { result in
+                defer { dispatchGroup.leave() }
+                
+                guard let transformed = result else {
+                    resultsLock.lock()
+                    hasError = true
+                    resultsLock.unlock()
+                    return
+                }
+                
+                // Split back into blocks
+                var batchResults: [[Float]] = []
+                batchResults.reserveCapacity(blockCount)
+                
+                for blockIdx in 0..<blockCount {
+                    let blockStart = blockIdx * 64
+                    let blockEnd = blockStart + 64
+                    let blockData = Array(transformed[blockStart..<blockEnd])
+                    batchResults.append(blockData)
+                }
+                
+                // Store results
+                resultsLock.lock()
+                for (idx, blockResult) in batchResults.enumerated() {
+                    processedResults[batchStart + idx] = blockResult
+                }
+                resultsLock.unlock()
+            }
+        }
+        
+        // Wait for all batches to complete
+        dispatchGroup.wait()
+        
+        // Check for errors
+        if hasError {
+            return nil
+        }
+        
+        // Reconstruct 4D block structure from flat results
+        var blocks = [[[[Float]]]](
+            repeating: [[[Float]]](
+                repeating: [[Float]](
+                    repeating: [Float](repeating: 0, count: blockSize),
+                    count: blockSize
+                ),
+                count: blocksX
+            ),
+            count: blocksY
+        )
+        
+        var blockIdx = 0
+        for blockY in 0..<blocksY {
+            for blockX in 0..<blocksX {
+                guard let flatBlock = processedResults[blockIdx] else {
+                    return nil // Missing result
+                }
+                
+                // Reshape flat 64-element array to 8×8 2D array
+                var block = [[Float]](
+                    repeating: [Float](repeating: 0, count: blockSize),
+                    count: blockSize
+                )
+                for i in 0..<blockSize {
+                    for j in 0..<blockSize {
+                        block[i][j] = flatBlock[i * blockSize + j]
+                    }
+                }
+                blocks[blockY][blockX] = block
+                blockIdx += 1
+            }
+        }
+        
+        return blocks
+    }
+    #endif
     
     /// Compute the CfL correlation coefficient for a single block.
     ///
