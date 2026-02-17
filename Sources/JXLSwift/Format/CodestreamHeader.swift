@@ -387,10 +387,14 @@ public struct CodestreamHeader: Sendable, Equatable {
             width: UInt32(frame.width),
             height: UInt32(frame.height)
         )
+        
+        // Calculate total extra channel count: alpha (if present) + additional extra channels
+        let totalExtraChannels = (frame.hasAlpha ? 1 : 0) + UInt32(frame.extraChannels.count)
+        
         self.metadata = ImageMetadata(
             bitsPerSample: UInt32(frame.bitsPerSample),
             hasAlpha: frame.hasAlpha,
-            extraChannelCount: frame.hasAlpha ? 1 : 0,
+            extraChannelCount: totalExtraChannels,
             xybEncoded: false,
             colourEncoding: ColourEncoding.from(colorSpace: frame.colorSpace),
             orientation: frame.orientation,
