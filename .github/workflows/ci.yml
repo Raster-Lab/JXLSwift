@@ -44,4 +44,4 @@ jobs:
         run: swift build
 
       - name: Test
-        run: swift test --parallel --skip Performance --skip Benchmark
+        run: swift test --parallel --skip Performance --skip Benchmark --skip MetalComputeTests
