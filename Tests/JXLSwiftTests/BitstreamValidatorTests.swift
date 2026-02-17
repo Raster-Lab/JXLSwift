@@ -545,9 +545,8 @@ final class BitstreamValidatorTests: XCTestCase {
     }
 
     func testIsLibjxlAvailable_NoLibjxl() {
+        // Verify the useLibjxl property is correctly set to false when initialized with false
         let validator = BitstreamValidator(useLibjxl: false)
-        // When useLibjxl is false, the validator won't try to use it
-        // but isLibjxlAvailable checks the actual system
         XCTAssertFalse(validator.useLibjxl)
     }
 

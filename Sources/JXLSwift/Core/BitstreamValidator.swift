@@ -14,10 +14,10 @@ public struct BitstreamValidationResult: Sendable {
     /// Test case name
     public let name: String
 
-    /// Image dimensions
+    /// Image width in pixels
     public let width: Int
 
-    /// Image dimensions
+    /// Image height in pixels
     public let height: Int
 
     /// Encoding mode description
