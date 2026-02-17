@@ -31,6 +31,10 @@ JXLSwift provides a pure Swift implementation of the JPEG XL image compression s
 - 📊 **Quality Metrics** - PSNR, SSIM, MS-SSIM, and Butteraugli perceptual distance for encoding validation
 - 🧪 **Validation Harness** - Automated test harness with configurable criteria for quality, compression, and performance validation
 - 📈 **Benchmark Reports** - JSON and HTML report generation with performance regression detection
+- 🏎️ **Speed Comparison** - Systematic encoding speed measurement across all effort levels with throughput analysis
+- 📦 **Compression Comparison** - Compression ratio analysis across quality levels with bits-per-pixel metrics
+- 💾 **Memory Comparison** - Process-level memory usage tracking during encoding with per-megapixel analysis
+- 🖼️ **Test Image Corpus** - Synthetic test image collections (Kodak-like, Tecnick-like, Wikipedia-like) for reproducible benchmarking
 - 🔧 **Flexible Configuration** - Quality levels, effort settings, hardware acceleration control
 - 📄 **JPEG XL Container Format** - ISOBMFF container with metadata boxes (EXIF, XMP, ICC)
 - 🌊 **Progressive Encoding** - Incremental rendering for faster perceived loading
@@ -635,7 +639,8 @@ Sources/JXLSwift/
 │   ├── EncodingOptions.swift  # Configuration
 │   ├── QualityMetrics.swift   # PSNR, SSIM, MS-SSIM, Butteraugli metrics
 │   ├── ValidationHarness.swift # Encoding validation test harness
-│   └── BenchmarkReport.swift  # JSON/HTML benchmark report generation
+│   ├── BenchmarkReport.swift  # JSON/HTML benchmark report generation
+│   └── ComparisonBenchmark.swift # Speed, compression, memory comparison & test corpus
 ├── Encoding/          # Compression pipeline
 │   ├── Encoder.swift          # Main encoder interface
 │   ├── ModularEncoder.swift   # Lossless compression
@@ -902,7 +907,7 @@ See [MILESTONES.md](MILESTONES.md) for the detailed project milestone plan.
 - [x] Patch encoding — copy repeated rectangular regions from reference frames for screen content
 - [x] Noise synthesis — add film grain or synthetic noise to mask quantization artifacts
 - [x] Spline encoding — vector overlay rendering for smooth curves and line art
-- [x] **libjxl Validation & Benchmarking** — quality metrics (PSNR, SSIM, MS-SSIM, Butteraugli), validation harness with configurable criteria, benchmark reports (JSON/HTML), performance regression detection (10% threshold alerting), validate CLI subcommand, test image generator
+- [x] **libjxl Validation & Benchmarking** — quality metrics (PSNR, SSIM, MS-SSIM, Butteraugli), validation harness with configurable criteria, benchmark reports (JSON/HTML), performance regression detection (10% threshold alerting), validate CLI subcommand, test image generator, speed comparison across effort levels, compression ratio comparison across quality levels, memory usage comparison with process-level tracking, test image corpus (Kodak-like, Tecnick-like, Wikipedia-like)
 - [ ] Decoding support
 - [ ] libjxl bitstream compatibility testing (requires decoder)
 
