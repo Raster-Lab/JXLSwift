@@ -171,6 +171,109 @@ class ModularDecoder {
         return frame
     }
 
+    /// Decode a framed modular subbitstream produced by
+    /// ``ModularEncoder/encodeWithFraming(frame:)``.
+    ///
+    /// The framed format has section 0 as global info (modular flag, RCT flag,
+    /// channel count, MA tree type, squeeze levels) and sections 1…N as
+    /// per-channel entropy-coded data.
+    ///
+    /// - Parameters:
+    ///   - sections: The section payloads extracted from the ``FrameData``.
+    ///   - width: Image width in pixels.
+    ///   - height: Image height in pixels.
+    ///   - bitsPerSample: Bits per sample (e.g. 8, 16).
+    ///   - pixelType: The pixel storage type.
+    /// - Returns: A reconstructed ``ImageFrame``.
+    /// - Throws: ``ModularDecoderError`` if the data is malformed.
+    func decodeFramed(
+        sections: [Data],
+        width: Int,
+        height: Int,
+        bitsPerSample: Int = 8,
+        pixelType: PixelType = .uint8
+    ) throws -> ImageFrame {
+        guard !sections.isEmpty else {
+            throw ModularDecoderError.unexpectedEndOfData
+        }
+
+        // --- Parse global section (section 0) ---
+        var globalReader = BitstreamReader(data: sections[0])
+
+        guard let isModular = globalReader.readBit(), isModular else {
+            throw ModularDecoderError.invalidModularMode
+        }
+        guard let useRCT = globalReader.readBit() else {
+            throw ModularDecoderError.unexpectedEndOfData
+        }
+        // Channel count, MA tree type, squeeze levels
+        alignReaderToByte(&globalReader)
+        guard let channelCount = globalReader.readByte() else {
+            throw ModularDecoderError.unexpectedEndOfData
+        }
+        // MA tree type and squeeze levels are read but currently
+        // derived from options; reserved for future use.
+        _ = globalReader.readByte() // treeType
+        _ = globalReader.readByte() // squeezeLevels
+
+        let channels = Int(channelCount)
+        let expectedSections = channels + 1 // global + one per channel
+        guard sections.count >= expectedSections else {
+            throw ModularDecoderError.elementCountMismatch(
+                expected: expectedSections, got: sections.count
+            )
+        }
+
+        // --- Decode per-channel sections ---
+        let pixelCount = width * height
+        var decodedChannels = [[UInt16]]()
+
+        for c in 0..<channels {
+            var channelReader = BitstreamReader(data: sections[c + 1])
+            let squeezedResiduals = try entropyDecode(
+                reader: &channelReader,
+                expectedCount: pixelCount
+            )
+
+            let steps = computeSqueezeSteps(width: width, height: height)
+            let residuals = inverseSqueeze(data: squeezedResiduals, steps: steps)
+            let channelData = inversePrediction(
+                residuals: residuals,
+                width: width,
+                height: height,
+                channel: c
+            )
+
+            decodedChannels.append(channelData)
+        }
+
+        if useRCT {
+            inverseRCT(channels: &decodedChannels)
+        }
+
+        var frame = ImageFrame(
+            width: width,
+            height: height,
+            channels: channels,
+            pixelType: pixelType,
+            bitsPerSample: bitsPerSample
+        )
+
+        for c in 0..<channels {
+            let channelData = decodedChannels[c]
+            for y in 0..<height {
+                for x in 0..<width {
+                    frame.setPixel(
+                        x: x, y: y, channel: c,
+                        value: channelData[y * width + x]
+                    )
+                }
+            }
+        }
+
+        return frame
+    }
+
     // MARK: - Bitstream Helpers
 
     /// Advance the reader to the next byte boundary.

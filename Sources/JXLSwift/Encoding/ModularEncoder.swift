@@ -389,6 +389,81 @@ class ModularEncoder {
         return writer.data
     }
     
+    // MARK: - Subbitstream Framing (ISO/IEC 18181-1 §7)
+    
+    /// Encode a frame with full Modular subbitstream framing per ISO/IEC 18181-1 §7.
+    ///
+    /// The framed output wraps the modular data in a ``FrameData`` structure
+    /// consisting of a ``FrameHeader`` plus byte-aligned sections:
+    /// - **Section 0 (global):** MA tree descriptor and transform metadata
+    ///   (modular mode flag, RCT flag, channel count, squeeze level count).
+    /// - **Sections 1…N:** One per channel, each containing the
+    ///   entropy-coded residuals for that channel.
+    ///
+    /// This layout allows a decoder to seek directly to any channel's data
+    /// and supports parallel decoding of independent sections.
+    ///
+    /// - Parameter frame: The image frame to encode.
+    /// - Returns: The serialised frame data with proper subbitstream framing.
+    func encodeWithFraming(frame: ImageFrame) throws -> FrameData {
+        // Extract and optionally decorrelate channels
+        var channels = (0..<frame.channels).map { channel in
+            extractChannel(frame: frame, channel: channel)
+        }
+        
+        let useRCT = frame.channels >= 3
+        if useRCT {
+            applyRCT(channels: &channels)
+        }
+        
+        // --- Section 0: Global modular info ---
+        var globalWriter = BitstreamWriter()
+        
+        // Modular mode flag
+        globalWriter.writeBit(true)
+        // RCT flag
+        globalWriter.writeBit(useRCT)
+        // Byte-align before writing metadata bytes
+        globalWriter.flushByte()
+        // Channel count (8 bits)
+        globalWriter.writeByte(UInt8(frame.channels))
+        // MA tree type: 0 = default, 1 = extended
+        let treeType: UInt8 = (options.effort.rawValue >= EncodingEffort.squirrel.rawValue) ? 1 : 0
+        globalWriter.writeByte(treeType)
+        // Squeeze level count (8 bits) — default is 3
+        globalWriter.writeByte(3)
+        
+        globalWriter.flushByte()
+        let globalSection = globalWriter.data
+        
+        // --- Sections 1…N: Per-channel data ---
+        var channelSections = [Data]()
+        for channelData in channels {
+            let encoded = try encodeChannel(
+                data: channelData,
+                width: frame.width,
+                height: frame.height
+            )
+            channelSections.append(encoded)
+        }
+        
+        // Build the complete section list
+        var allSections = [globalSection]
+        allSections.append(contentsOf: channelSections)
+        
+        // Build frame header
+        let header = FrameHeader(
+            frameType: .regularFrame,
+            encoding: .modular,
+            blendMode: .replace,
+            duration: 0,
+            isLast: true,
+            numGroups: UInt32(allSections.count)
+        )
+        
+        return FrameData(header: header, sections: allSections)
+    }
+    
     // MARK: - Channel Extraction
     
     private func extractChannel(frame: ImageFrame, channel: Int) -> [UInt16] {
