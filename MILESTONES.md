@@ -348,7 +348,7 @@
 - [ ] Extra channels (depth, thermal, spectral)
 - [x] HDR support: PQ and HLG transfer functions
 - [x] Wide gamut: Display P3, Rec. 2020 colour spaces
-- [ ] Oriented rendering (EXIF orientation)
+- [x] Oriented rendering (EXIF orientation) — **All 8 values supported**
 - [ ] Crop/region-of-interest encoding
 - [ ] Reference frame encoding (for animation deltas)
 - [ ] Noise synthesis parameters
@@ -362,6 +362,7 @@
 - [x] Alpha: premultiplied and straight alpha modes — **13 comprehensive tests**
 - [x] HDR: PQ and HLG metadata preserved
 - [x] Wide gamut: P3 and Rec.2020 primaries encoded correctly
+- [x] EXIF orientation: all 8 values preserved through encoding — **15 comprehensive tests**
 - [ ] Extra channels round-trip
 - [ ] Region-of-interest: only selected area is encoded at high quality
 
