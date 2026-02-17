@@ -46,6 +46,12 @@ struct Validate: ParsableCommand {
     @Flag(name: .long, help: "Run quality metrics comparison between original and encoded")
     var qualityMetrics: Bool = false
 
+    @Flag(name: .long, help: "Run bitstream compatibility validation (structural + optional libjxl decode)")
+    var bitstreamCompat: Bool = false
+
+    @Flag(name: .long, help: "Skip libjxl decode validation (structural checks only)")
+    var skipLibjxl: Bool = false
+
     func run() throws {
         // Build test cases
         var testCases: [ValidationHarness.TestCase] = []
@@ -140,6 +146,15 @@ struct Validate: ParsableCommand {
         // Run quality metrics if requested
         if qualityMetrics {
             printQualityMetrics(gradientFrame: gradientFrame)
+        }
+
+        // Run bitstream compatibility validation if requested
+        if bitstreamCompat {
+            let bitstreamReport = try runBitstreamCompatValidation()
+            printBitstreamCompatReport(bitstreamReport)
+            if !bitstreamReport.summary.allPassed {
+                throw ExitCode.failure
+            }
         }
 
         // Generate output
@@ -306,5 +321,61 @@ struct Validate: ParsableCommand {
             entries: entries,
             baselines: []
         )
+    }
+
+    // MARK: - Bitstream Compatibility
+
+    private func runBitstreamCompatValidation() throws -> BitstreamValidationReport {
+        let cases = BitstreamValidator.standardTestCases(width: width, height: height)
+        let validator = BitstreamValidator(useLibjxl: !skipLibjxl)
+        return try validator.validate(corpus: "bitstream-compat-\(width)x\(height)", testCases: cases)
+    }
+
+    private func printBitstreamCompatReport(_ report: BitstreamValidationReport) {
+        print()
+        print("=== Bitstream Compatibility Validation ===")
+        print()
+        print("libjxl available: \(report.libjxlAvailable ? "yes" : "no")")
+        print()
+
+        print(String(format: "%-30s %8s %10s %8s",
+            "Test", "Size(B)", "Structural", "libjxl"))
+        print(String(repeating: "─", count: 60))
+
+        for result in report.results {
+            let structStatus = result.structuralChecks.allSatisfy(\.passed) ? "✅" : "❌"
+            let ljStatus: String
+            if let lj = result.libjxlResult {
+                ljStatus = lj.passed ? "✅" : "❌"
+            } else {
+                ljStatus = "—"
+            }
+            print(String(format: "%-30s %8d %10s %8s",
+                String(result.name.prefix(30)),
+                result.compressedSize,
+                structStatus,
+                ljStatus
+            ))
+        }
+
+        let summary = report.summary
+        print()
+        print("Summary:")
+        print("  Total: \(summary.totalTests), Passed: \(summary.passed), Failed: \(summary.failed)")
+        print("  Structural: \(summary.structuralPassed)/\(summary.totalTests) passed")
+        if summary.libjxlTested > 0 {
+            print("  libjxl: \(summary.libjxlPassed)/\(summary.libjxlTested) decoded successfully")
+        }
+
+        if !report.results.filter({ !$0.passed }).isEmpty {
+            print()
+            print("Failed tests:")
+            for result in report.results where !result.passed {
+                print("  \(result.name):")
+                for reason in result.failureReasons {
+                    print("    - \(reason)")
+                }
+            }
+        }
     }
 }

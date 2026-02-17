@@ -30,6 +30,7 @@ JXLSwift provides a pure Swift implementation of the JPEG XL image compression s
 - 🎨 **Spline Encoding** - Vector overlay rendering for smooth curves, edges, and line art with resolution-independent quality
 - 📊 **Quality Metrics** - PSNR, SSIM, MS-SSIM, and Butteraugli perceptual distance for encoding validation
 - 🧪 **Validation Harness** - Automated test harness with configurable criteria for quality, compression, and performance validation
+- 🔗 **Bitstream Compatibility** - Structural validation and optional libjxl decode verification for bitstream correctness
 - 📈 **Benchmark Reports** - JSON and HTML report generation with performance regression detection
 - 🏎️ **Speed Comparison** - Systematic encoding speed measurement across all effort levels with throughput analysis
 - 📦 **Compression Comparison** - Compression ratio analysis across quality levels with bits-per-pixel metrics
@@ -639,6 +640,7 @@ Sources/JXLSwift/
 │   ├── EncodingOptions.swift  # Configuration
 │   ├── QualityMetrics.swift   # PSNR, SSIM, MS-SSIM, Butteraugli metrics
 │   ├── ValidationHarness.swift # Encoding validation test harness
+│   ├── BitstreamValidator.swift # Bitstream compatibility validation (structural + libjxl)
 │   ├── BenchmarkReport.swift  # JSON/HTML benchmark report generation
 │   └── ComparisonBenchmark.swift # Speed, compression, memory comparison & test corpus
 ├── Encoding/          # Compression pipeline
@@ -858,6 +860,12 @@ swift run jxl-tool validate --format html --output report.html --include-lossles
 
 # Validate with quality metrics comparison
 swift run jxl-tool validate --quality-metrics --all-efforts
+
+# Validate bitstream compatibility (structural checks + libjxl decode if available)
+swift run jxl-tool validate --bitstream-compat
+
+# Validate bitstream compatibility (structural checks only, skip libjxl)
+swift run jxl-tool validate --bitstream-compat --skip-libjxl
 ```
 
 ### Man Pages
@@ -910,9 +918,8 @@ See [MILESTONES.md](MILESTONES.md) for the detailed project milestone plan.
 - [x] Patch encoding — copy repeated rectangular regions from reference frames for screen content
 - [x] Noise synthesis — add film grain or synthetic noise to mask quantization artifacts
 - [x] Spline encoding — vector overlay rendering for smooth curves and line art
-- [x] **libjxl Validation & Benchmarking** — quality metrics (PSNR, SSIM, MS-SSIM, Butteraugli), validation harness with configurable criteria, benchmark reports (JSON/HTML), performance regression detection (10% threshold alerting), validate CLI subcommand, test image generator, speed comparison across effort levels, compression ratio comparison across quality levels, memory usage comparison with process-level tracking, test image corpus (Kodak-like, Tecnick-like, Wikipedia-like)
+- [x] **libjxl Validation & Benchmarking** — quality metrics (PSNR, SSIM, MS-SSIM, Butteraugli), validation harness with configurable criteria, benchmark reports (JSON/HTML), performance regression detection (10% threshold alerting), validate CLI subcommand, test image generator, speed comparison across effort levels, compression ratio comparison across quality levels, memory usage comparison with process-level tracking, test image corpus (Kodak-like, Tecnick-like, Wikipedia-like), bitstream compatibility validation (structural checks + libjxl decode verification)
 - [ ] Decoding support
-- [ ] libjxl bitstream compatibility testing (requires decoder)
 
 ## Standards Compliance
 

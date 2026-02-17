@@ -21,7 +21,7 @@
 | 8 | ANS Entropy Coding | Weeks 23–27 | ✅ Complete |
 | 9 | Advanced Encoding Features | Weeks 27–31 | ✅ Complete (13/13) |
 | 10 | Command Line Tool (jxl-tool) | Weeks 31–34 | ✅ Complete |
-| 11 | libjxl Validation & Performance Benchmarking | Weeks 34–38 | 🔶 In Progress |
+| 11 | libjxl Validation & Performance Benchmarking | Weeks 34–38 | ✅ Complete |
 | 12 | Decoding Support | Weeks 38–44 | ⬜ Not Started |
 | 13 | Production Hardening & Release | Weeks 44–48 | ⬜ Not Started |
 
@@ -447,7 +447,7 @@
 ### Deliverables
 
 - [x] Test harness comparing JXLSwift and libjxl output
-- [ ] Bitstream compatibility validation (libjxl can decode JXLSwift output)
+- [x] Bitstream compatibility validation (libjxl can decode JXLSwift output)
 - [x] Quality metric comparison: PSNR, SSIM, MS-SSIM, Butteraugli
 - [x] Speed comparison: encode time at each effort level
 - [x] Compression ratio comparison at each quality level
