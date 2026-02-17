@@ -449,10 +449,10 @@
 - [x] Test harness comparing JXLSwift and libjxl output
 - [ ] Bitstream compatibility validation (libjxl can decode JXLSwift output)
 - [x] Quality metric comparison: PSNR, SSIM, MS-SSIM, Butteraugli
-- [ ] Speed comparison: encode time at each effort level
-- [ ] Compression ratio comparison at each quality level
-- [ ] Memory usage comparison
-- [ ] Test image corpus: Kodak, Tecnick, Wikipedia test images
+- [x] Speed comparison: encode time at each effort level
+- [x] Compression ratio comparison at each quality level
+- [x] Memory usage comparison
+- [x] Test image corpus: Kodak, Tecnick, Wikipedia test images
 - [x] Automated regression test suite (CI integration)
 - [x] Performance regression detection (alerting on > 10% slowdown)
 - [x] Benchmark result publishing (JSON, HTML report)
