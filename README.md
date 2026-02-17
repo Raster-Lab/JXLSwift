@@ -626,6 +626,27 @@ jxl-tool encode screencast/*.png --reference-frames --patches --patch-preset scr
 jxl-tool encode slides/*.png --reference-frames --patches --patch-preset conservative -o slides.jxl
 ```
 
+### Decoding (Lossless Round-Trip)
+
+```swift
+import JXLSwift
+
+// Decode a JPEG XL codestream
+let jxlData = try Data(contentsOf: URL(fileURLWithPath: "image.jxl"))
+let decoder = JXLDecoder()
+
+// Handles both bare codestream and container formats
+let codestream = try decoder.extractCodestream(jxlData)
+
+// Parse the image header
+let header = try decoder.parseImageHeader(codestream)
+print("Image: \(header.width)×\(header.height), \(header.channels) channels")
+
+// Decode to an ImageFrame (lossless modular mode)
+let frame = try decoder.decode(codestream)
+let pixel = frame.getPixel(x: 0, y: 0, channel: 0)
+```
+
 ## Architecture
 
 The library is organized into several modules:
@@ -645,6 +666,7 @@ Sources/JXLSwift/
 │   └── ComparisonBenchmark.swift # Speed, compression, memory comparison & test corpus
 ├── Encoding/          # Compression pipeline
 │   ├── Encoder.swift          # Main encoder interface
+│   ├── Decoder.swift          # Main decoder interface (JXLDecoder)
 │   ├── ModularEncoder.swift   # Lossless compression (with subbitstream framing)
 │   ├── ModularDecoder.swift   # Lossless decompression (round-trip support)
 │   ├── VarDCTEncoder.swift    # Lossy compression
@@ -661,6 +683,7 @@ Sources/JXLSwift/
 Sources/JXLTool/
 ├── JXLTool.swift              # CLI entry point
 ├── Encode.swift               # Encode subcommand
+├── Decode.swift               # Decode subcommand
 ├── Info.swift                  # Info subcommand
 ├── Hardware.swift              # Hardware subcommand
 ├── Benchmark.swift            # Benchmark subcommand
@@ -919,7 +942,7 @@ See [MILESTONES.md](MILESTONES.md) for the detailed project milestone plan.
 - [x] Noise synthesis — add film grain or synthetic noise to mask quantization artifacts
 - [x] Spline encoding — vector overlay rendering for smooth curves and line art
 - [x] **libjxl Validation & Benchmarking** — quality metrics (PSNR, SSIM, MS-SSIM, Butteraugli), validation harness with configurable criteria, benchmark reports (JSON/HTML), performance regression detection (10% threshold alerting), validate CLI subcommand, test image generator, speed comparison across effort levels, compression ratio comparison across quality levels, memory usage comparison with process-level tracking, test image corpus (Kodak-like, Tecnick-like, Wikipedia-like), bitstream compatibility validation (structural checks + libjxl decode verification)
-- [ ] Decoding support
+- [ ] Decoding support — `JXLDecoder` (codestream/frame header parsing, container extraction, lossless round-trip decode), `decode` CLI subcommand
 
 ## Standards Compliance
 

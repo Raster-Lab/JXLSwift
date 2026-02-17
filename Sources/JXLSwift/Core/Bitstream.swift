@@ -172,4 +172,17 @@ struct BitstreamReader {
             return UInt8(result)
         }
     }
+
+    /// Skip remaining bits in the current byte to reach the next byte boundary.
+    ///
+    /// If the reader is already aligned (bitPosition == 0), this is a no-op.
+    /// Otherwise, the remaining `8 - bitPosition` bits are discarded.
+    mutating func skipToByteAlignment() {
+        if bitPosition > 0 {
+            let remaining = 8 - bitPosition
+            for _ in 0..<remaining {
+                _ = readBit()
+            }
+        }
+    }
 }

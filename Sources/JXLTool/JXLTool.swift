@@ -15,6 +15,7 @@ struct JXLTool: ParsableCommand {
         version: JXLSwift.version,
         subcommands: [
             Encode.self,
+            Decode.self,
             Info.self,
             Hardware.self,
             Benchmark.self,
