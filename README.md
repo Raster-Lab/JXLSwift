@@ -25,6 +25,7 @@ JXLSwift provides a pure Swift implementation of the JPEG XL image compression s
 - 🔄 **EXIF Orientation** - Full support for all 8 EXIF orientation values (rotation/flip metadata)
 - 🎯 **Region-of-Interest (ROI)** - Selective quality encoding with configurable feathering for smooth transitions
 - 🎞️ **Reference Frame Encoding** - Delta encoding for animations with configurable keyframe intervals to reduce file size for video-like content
+- 🔲 **Patch Encoding** - Copy repeated rectangular regions from reference frames for massive compression gains on screen content, slideshows, and animations with static elements
 - 🔧 **Flexible Configuration** - Quality levels, effort settings, hardware acceleration control
 - 📄 **JPEG XL Container Format** - ISOBMFF container with metadata boxes (EXIF, XMP, ICC)
 - 🌊 **Progressive Encoding** - Incremental rendering for faster perceived loading
@@ -517,6 +518,103 @@ let customDurations = AnimationConfig(
 - **Cons**: Larger than single frame, decoder support varies
 - **Best for**: Web animations, UI sequences, short video clips
 - **Avoid for**: Long videos (use proper video codecs)
+
+### Reference Frame and Patch Encoding
+
+For animations with temporal coherence or repeated content, JXLSwift provides reference frame encoding and patch encoding to dramatically reduce file size.
+
+#### Reference Frame Encoding
+
+Reference frames mark certain frames as keyframes that subsequent frames can reference, enabling delta encoding.
+
+```swift
+// Create animation frames with similar content
+var frames: [ImageFrame] = []
+for i in 0..<100 {
+    var frame = ImageFrame(width: 256, height: 256, channels: 3)
+    // Populate with content that changes gradually...
+    frames.append(frame)
+}
+
+// Configure animation with reference frame encoding
+let animConfig = AnimationConfig.fps30
+let refConfig = ReferenceFrameConfig.balanced  // Keyframe every 30 frames
+
+let options = EncodingOptions(
+    mode: .lossy(quality: 90),
+    animationConfig: animConfig,
+    referenceFrameConfig: refConfig
+)
+
+let encoder = JXLEncoder(options: options)
+let result = try encoder.encode(frames)
+```
+
+**Reference Frame Presets:**
+
+```swift
+let aggressive = ReferenceFrameConfig.aggressive    // Keyframe every 60 frames, max compression
+let balanced = ReferenceFrameConfig.balanced        // Keyframe every 30 frames, default
+let conservative = ReferenceFrameConfig.conservative // Keyframe every 15 frames, faster seeking
+```
+
+#### Patch Encoding
+
+Patch encoding goes further by detecting and copying identical or very similar rectangular regions from reference frames, eliminating redundant encoding. This is especially effective for screen content, slideshows, and animations with static UI elements.
+
+```swift
+// Enable both reference frames and patches
+let animConfig = AnimationConfig.fps30
+let refConfig = ReferenceFrameConfig.balanced
+let patchConfig = PatchConfig.screenContent  // Optimized for UI/screen content
+
+let options = EncodingOptions(
+    mode: .lossy(quality: 90),
+    animationConfig: animConfig,
+    referenceFrameConfig: refConfig,
+    patchConfig: patchConfig  // Enable patch copying
+)
+
+let encoder = JXLEncoder(options: options)
+let result = try encoder.encode(frames)
+```
+
+**Patch Encoding Presets:**
+
+```swift
+let aggressive = PatchConfig.aggressive      // Small patches, max compression
+let balanced = PatchConfig.balanced          // Default, good for most content
+let conservative = PatchConfig.conservative  // Larger patches, quality-focused
+let screenContent = PatchConfig.screenContent // Optimized for UI, presentations, screen captures
+```
+
+**Use Cases:**
+- **Screen recordings**: UI elements remain static across frames
+- **Slideshows**: Large portions of slides repeat between transitions
+- **Video calls**: Static backgrounds save significant bandwidth
+- **Game recordings**: UI overlays and HUD elements are repeated
+- **Presentation videos**: Title cards and repeated graphics
+
+**Performance:**
+- Can achieve 70-90% compression for screen content vs. reference frames alone
+- 50-80% compression for presentation-style content
+- 20-40% additional compression for video with static elements
+
+**CLI Usage:**
+
+```bash
+# Reference frames only
+jxl-tool encode frames/*.png --reference-frames --keyframe-interval 30 -o animation.jxl
+
+# Reference frames + patches (balanced)
+jxl-tool encode frames/*.png --reference-frames --patches -o animation.jxl
+
+# Screen content optimization
+jxl-tool encode screencast/*.png --reference-frames --patches --patch-preset screen -o screencast.jxl
+
+# Conservative patches for quality-critical work
+jxl-tool encode slides/*.png --reference-frames --patches --patch-preset conservative -o slides.jxl
+```
 
 ## Architecture
 

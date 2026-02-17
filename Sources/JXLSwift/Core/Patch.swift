@@ -268,6 +268,7 @@ public struct PatchDetector {
     
     /// Compute similarity between two rectangular regions
     /// Returns a value between 0.0 (completely different) and 1.0 (identical)
+    /// Uses early termination if similarity drops below threshold
     private func computeRegionSimilarity(
         currentFrame: ImageFrame,
         referenceFrame: ImageFrame,
@@ -281,8 +282,14 @@ public struct PatchDetector {
         var totalDifference: Double = 0.0
         var maxPossibleDifference: Double = 0.0
         let channels = currentFrame.channels
+        let maxValue = Double((1 << currentFrame.bitsPerSample) - 1)
+        let pixelCount = width * height * channels
         
-        // Calculate per-pixel difference
+        // Early termination threshold: if we've exceeded the allowed difference
+        // for the configured similarity threshold, stop calculating
+        let maxAllowedDifference = Double(pixelCount) * maxValue * (1.0 - Double(config.similarityThreshold))
+        
+        // Calculate per-pixel difference with early termination
         for y in 0..<height {
             for x in 0..<width {
                 let currentPixelX = destX + x
@@ -311,10 +318,12 @@ public struct PatchDetector {
                     // Calculate absolute difference
                     let diff = abs(Double(currentValue) - Double(refValue))
                     totalDifference += diff
+                    maxPossibleDifference += maxValue
                     
-                    // Maximum possible difference depends on pixel type and bits per sample
-                    let maxValue = (1 << currentFrame.bitsPerSample) - 1
-                    maxPossibleDifference += Double(maxValue)
+                    // Early termination: if difference already exceeds threshold, stop
+                    if totalDifference > maxAllowedDifference {
+                        return 0.0  // Definitely below threshold
+                    }
                 }
             }
         }
