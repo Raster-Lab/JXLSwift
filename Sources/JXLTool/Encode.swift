@@ -70,6 +70,15 @@ struct Encode: ParsableCommand {
     
     @Option(name: .long, help: "Patch encoding preset: aggressive, balanced, conservative, screen (default: balanced)")
     var patchPreset: String?
+    
+    @Flag(name: .long, help: "Enable noise synthesis to add film grain or texture")
+    var noise: Bool = false
+    
+    @Option(name: .long, help: "Noise amplitude (0.0-1.0, default 0.35). Higher values add more grain.")
+    var noiseAmplitude: Float?
+    
+    @Option(name: .long, help: "Noise preset: subtle, moderate, heavy, film (default: moderate)")
+    var noisePreset: String?
 
     @Flag(name: .long, help: "Show verbose output")
     var verbose: Bool = false
@@ -189,6 +198,38 @@ struct Encode: ParsableCommand {
         } else {
             patchConfig = nil
         }
+        
+        // Build noise config if enabled
+        let noiseConfig: NoiseConfig?
+        if noise {
+            if let preset = noisePreset {
+                switch preset.lowercased() {
+                case "subtle":
+                    noiseConfig = .subtle
+                case "moderate":
+                    noiseConfig = .moderate
+                case "heavy":
+                    noiseConfig = .heavy
+                case "film":
+                    noiseConfig = .filmGrain
+                default:
+                    print("Error: Unknown noise preset '\(preset)'. Use: subtle, moderate, heavy, or film", to: &standardError)
+                    throw JXLExitCode.invalidArguments
+                }
+            } else if let amplitude = noiseAmplitude {
+                // Custom amplitude
+                guard amplitude >= 0.0 && amplitude <= 1.0 else {
+                    print("Error: Noise amplitude must be between 0.0 and 1.0", to: &standardError)
+                    throw JXLExitCode.invalidArguments
+                }
+                noiseConfig = NoiseConfig(enabled: true, amplitude: amplitude)
+            } else {
+                // Default to moderate preset
+                noiseConfig = .moderate
+            }
+        } else {
+            noiseConfig = nil
+        }
 
         let options = EncodingOptions(
             mode: mode,
@@ -201,7 +242,8 @@ struct Encode: ParsableCommand {
             useMetal: !noMetal,
             regionOfInterest: regionOfInterest,
             referenceFrameConfig: referenceFrameConfig,
-            patchConfig: patchConfig
+            patchConfig: patchConfig,
+            noiseConfig: noiseConfig
         )
 
         // Generate a test image (until file I/O is implemented)

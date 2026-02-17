@@ -571,6 +571,17 @@ public struct EncodingOptions: Sendable {
     /// Requires referenceFrameConfig to be set.
     public var patchConfig: PatchConfig?
     
+    /// Noise synthesis configuration for adding film grain or synthetic noise.
+    ///
+    /// When set, adds controlled noise to the encoded image to improve perceptual
+    /// quality by masking quantization artifacts and maintaining natural texture
+    /// appearance. Particularly useful for:
+    /// - Preserving film grain in scanned photographs
+    /// - Adding natural texture to synthetic/rendered images
+    /// - Masking compression artifacts in smooth gradients
+    /// - Matching noise characteristics of original content
+    public var noiseConfig: NoiseConfig?
+    
     public init(
         mode: CompressionMode = .lossy(quality: 90),
         effort: EncodingEffort = .squirrel,
@@ -588,7 +599,8 @@ public struct EncodingOptions: Sendable {
         animationConfig: AnimationConfig? = nil,
         regionOfInterest: RegionOfInterest? = nil,
         referenceFrameConfig: ReferenceFrameConfig? = nil,
-        patchConfig: PatchConfig? = nil
+        patchConfig: PatchConfig? = nil,
+        noiseConfig: NoiseConfig? = nil
     ) {
         self.mode = mode
         self.effort = effort
@@ -607,6 +619,7 @@ public struct EncodingOptions: Sendable {
         self.regionOfInterest = regionOfInterest
         self.referenceFrameConfig = referenceFrameConfig
         self.patchConfig = patchConfig
+        self.noiseConfig = noiseConfig
     }
     
     /// Default high-quality encoding
