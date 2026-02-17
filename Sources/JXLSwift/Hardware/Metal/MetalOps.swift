@@ -18,7 +18,7 @@ public enum MetalOps {
     // MARK: - Device Management
     
     /// Shared Metal device instance (lazy-initialized)
-    private static var _device: MTLDevice?
+    private nonisolated(unsafe) static var _device: MTLDevice?
     private static let deviceLock = NSLock()
     
     /// Get the default Metal device
@@ -47,7 +47,7 @@ public enum MetalOps {
     // MARK: - Command Queue Management
     
     /// Shared command queue (lazy-initialized)
-    private static var _commandQueue: MTLCommandQueue?
+    private nonisolated(unsafe) static var _commandQueue: MTLCommandQueue?
     private static let queueLock = NSLock()
     
     /// Get the shared command queue
@@ -66,7 +66,7 @@ public enum MetalOps {
     // MARK: - Shader Library Management
     
     /// Shared compute pipeline library (lazy-initialized)
-    private static var _library: MTLLibrary?
+    private nonisolated(unsafe) static var _library: MTLLibrary?
     private static let libraryLock = NSLock()
     
     /// Load the Metal shader library
@@ -86,7 +86,7 @@ public enum MetalOps {
     // MARK: - Pipeline State Cache
     
     /// Cache for compute pipeline states
-    private static var pipelineCache: [String: MTLComputePipelineState] = [:]
+    private nonisolated(unsafe) static var pipelineCache: [String: MTLComputePipelineState] = [:]
     private static let pipelineLock = NSLock()
     
     /// Get or create a compute pipeline state for the given function name

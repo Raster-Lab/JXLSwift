@@ -582,10 +582,7 @@ public final class MetalAsyncPipeline: @unchecked Sendable {
         isProcessing = true
         lock.unlock()
         
-        var results: [[Float]?] = Array(repeating: nil, count: batches.count)
-        var completedCount = 0
-        let totalBatches = batches.count
-        let resultsLock = NSLock()
+        let state = BatchState(count: batches.count)
         
         // Process batches with pipelining
         for (index, batch) in batches.enumerated() {
@@ -594,17 +591,13 @@ public final class MetalAsyncPipeline: @unchecked Sendable {
                 width: batch.width,
                 height: batch.height
             ) { result in
-                resultsLock.lock()
-                results[index] = result
-                completedCount += 1
-                let isDone = completedCount == totalBatches
-                resultsLock.unlock()
+                let isDone = state.setResult(result, at: index)
                 
                 if isDone {
                     self.lock.lock()
                     self.isProcessing = false
                     self.lock.unlock()
-                    completion(results)
+                    completion(state.getResults())
                 }
             }
         }
@@ -613,6 +606,39 @@ public final class MetalAsyncPipeline: @unchecked Sendable {
     /// Clean up cached buffers
     public func cleanup() {
         bufferPool.clear()
+    }
+}
+
+/// Thread-safe state container for batch processing results
+///
+/// Thread Safety: Uses `@unchecked Sendable` with `NSLock` protection for
+/// mutable `results` and `completedCount`. All mutations go through the lock.
+@available(macOS 13.0, iOS 16.0, tvOS 16.0, *)
+private final class BatchState: @unchecked Sendable {
+    private var results: [[Float]?]
+    private var completedCount: Int = 0
+    private let totalBatches: Int
+    private let lock = NSLock()
+    
+    init(count: Int) {
+        self.results = Array(repeating: nil, count: count)
+        self.totalBatches = count
+    }
+    
+    /// Set a result at the given index and return whether all batches are done
+    func setResult(_ result: [Float]?, at index: Int) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        results[index] = result
+        completedCount += 1
+        return completedCount == totalBatches
+    }
+    
+    /// Get the final results array
+    func getResults() -> [[Float]?] {
+        lock.lock()
+        defer { lock.unlock() }
+        return results
     }
 }
 
