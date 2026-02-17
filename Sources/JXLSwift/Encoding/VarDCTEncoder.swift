@@ -947,6 +947,12 @@ class VarDCTEncoder {
         let useAdaptive = options.adaptiveQuantization
         let useANS = options.useANS
         
+        // Initialize noise synthesizer if configured
+        var noiseSynthesizer: NoiseSynthesizer? = nil
+        if let noiseConfig = options.noiseConfig, noiseConfig.enabled {
+            noiseSynthesizer = NoiseSynthesizer(config: noiseConfig)
+        }
+        
         // ANS mode: collect all blocks and DC residuals for batch encoding
         var allBlocks = [[[Int16]]]()
         var allDCResiduals = [Int16]()
@@ -987,6 +993,15 @@ class VarDCTEncoder {
                     writer.writeVarint(encodeSignedValue(
                         Int32(round(cflCoeff * VarDCTEncoder.cflScaleFactor))
                     ))
+                }
+                
+                // Apply noise synthesis if configured
+                if noiseSynthesizer != nil {
+                    dctBlock = applyNoiseIfConfigured(
+                        dctBlock: dctBlock,
+                        channel: channel,
+                        noiseSynthesizer: &noiseSynthesizer!
+                    )
                 }
                 
                 // Quantize with per-block activity scaling
@@ -1057,6 +1072,12 @@ class VarDCTEncoder {
         let useAdaptive = options.adaptiveQuantization
         let useANS = options.useANS
         
+        // Initialize noise synthesizer if configured
+        var noiseSynthesizer: NoiseSynthesizer? = nil
+        if let noiseConfig = options.noiseConfig, noiseConfig.enabled {
+            noiseSynthesizer = NoiseSynthesizer(config: noiseConfig)
+        }
+        
         // Store all quantized blocks for multi-pass encoding
         var allQuantizedBlocks = [[[Int16]]]()
         var allDCResiduals = [Int16]()
@@ -1100,6 +1121,15 @@ class VarDCTEncoder {
                     )
                 }
                 allCfLCoeffs.append(cflCoeff)
+                
+                // Apply noise synthesis if configured
+                if noiseSynthesizer != nil {
+                    dctBlock = applyNoiseIfConfigured(
+                        dctBlock: dctBlock,
+                        channel: channel,
+                        noiseSynthesizer: &noiseSynthesizer!
+                    )
+                }
                 
                 // Calculate block-specific distance (for ROI support)
                 let blockDistance = calculateBlockDistance(blockX: blockX, blockY: blockY)
@@ -1498,6 +1528,46 @@ class VarDCTEncoder {
     }
     
     // MARK: - Quantization
+    
+    /// Apply noise synthesis to DCT coefficients if configured.
+    ///
+    /// Adds controlled noise to the DCT coefficients to improve perceptual quality
+    /// by masking quantization artifacts and maintaining natural texture.
+    ///
+    /// - Parameters:
+    ///   - dctBlock: 8×8 DCT coefficient block to modify
+    ///   - channel: Channel index (0 = luma, >0 = chroma)
+    ///   - noiseSynthesizer: Noise synthesizer instance
+    /// - Returns: Modified DCT block with noise applied
+    private func applyNoiseIfConfigured(
+        dctBlock: [[Float]],
+        channel: Int,
+        noiseSynthesizer: inout NoiseSynthesizer
+    ) -> [[Float]] {
+        guard let _ = options.noiseConfig, options.noiseConfig?.enabled == true else {
+            return dctBlock
+        }
+        
+        // Flatten to 1D for noise application
+        var coefficients = dctBlock.flatMap { $0 }
+        
+        // Apply noise to coefficients
+        let isLuma = (channel == 0)
+        noiseSynthesizer.applyNoiseToCoefficients(coefficients: &coefficients, isLuma: isLuma)
+        
+        // Reshape back to 2D
+        var noisyBlock = [[Float]](
+            repeating: [Float](repeating: 0, count: blockSize),
+            count: blockSize
+        )
+        for y in 0..<blockSize {
+            for x in 0..<blockSize {
+                noisyBlock[y][x] = coefficients[y * blockSize + x]
+            }
+        }
+        
+        return noisyBlock
+    }
     
     /// Quantise an 8×8 DCT block using the base quantisation matrix.
     ///
