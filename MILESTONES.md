@@ -19,7 +19,7 @@
 | 6 | Hardware Acceleration — ARM NEON / SIMD | Weeks 17–20 | ✅ Complete |
 | 7 | Hardware Acceleration — Metal GPU | Weeks 20–23 | ✅ Complete |
 | 8 | ANS Entropy Coding | Weeks 23–27 | ✅ Complete |
-| 9 | Advanced Encoding Features | Weeks 27–31 | 🔶 In Progress (12/13) |
+| 9 | Advanced Encoding Features | Weeks 27–31 | ✅ Complete (13/13) |
 | 10 | Command Line Tool (jxl-tool) | Weeks 31–34 | ✅ Complete |
 | 11 | libjxl Validation & Performance Benchmarking | Weeks 34–38 | ⬜ Not Started |
 | 12 | Decoding Support | Weeks 38–44 | ⬜ Not Started |
@@ -353,7 +353,7 @@
 - [x] Reference frame encoding (for animation deltas) — **Complete with keyframe-based approach**
 - [x] Patches (copy from reference) — **Complete with 4 presets and CLI support**
 - [x] Noise synthesis parameters — **Complete with 4 presets, deterministic PRNG, Gaussian noise, CLI support**
-- [ ] Splines (vector overlay feature)
+- [x] Splines (vector overlay feature) — **Complete with 3 presets and CLI support**
 
 ### Tests Required
 
