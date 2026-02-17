@@ -176,6 +176,11 @@ class VarDCTEncoder {
     func encode(frame: ImageFrame) throws -> Data {
         var writer = BitstreamWriter()
         
+        // Validate ROI if configured
+        if let roi = options.regionOfInterest {
+            try roi.validate(imageWidth: frame.width, imageHeight: frame.height)
+        }
+        
         // Write VarDCT mode indicator
         writer.writeBit(false) // Use VarDCT mode
         
@@ -1096,9 +1101,12 @@ class VarDCTEncoder {
                 }
                 allCfLCoeffs.append(cflCoeff)
                 
+                // Calculate block-specific distance (for ROI support)
+                let blockDistance = calculateBlockDistance(blockX: blockX, blockY: blockY)
+                
                 // Quantize
                 let quantized = quantize(
-                    block: dctBlock, channel: channel, activity: activity
+                    block: dctBlock, channel: channel, activity: activity, distance: blockDistance
                 )
                 
                 // Store DC residual
@@ -1210,6 +1218,33 @@ class VarDCTEncoder {
             // First block: no prediction available
             return 0
         }
+    }
+    
+    // MARK: - Region of Interest
+    
+    /// Calculate the effective distance for a block based on ROI configuration.
+    ///
+    /// If a region of interest is configured, blocks within the ROI will have
+    /// lower distance (higher quality), with smooth feathering at the edges.
+    ///
+    /// - Parameters:
+    ///   - blockX: Horizontal block index
+    ///   - blockY: Vertical block index
+    /// - Returns: Effective distance for this block
+    func calculateBlockDistance(blockX: Int, blockY: Int) -> Float {
+        guard let roi = options.regionOfInterest else {
+            return self.distance
+        }
+        
+        // Calculate the center pixel position of this block
+        let centerX = blockX * blockSize + blockSize / 2
+        let centerY = blockY * blockSize + blockSize / 2
+        
+        // Get the distance multiplier for this block's center
+        let multiplier = roi.distanceMultiplier(px: centerX, py: centerY)
+        
+        // Apply multiplier to base distance
+        return self.distance * multiplier
     }
     
     func extractBlock(data: [[Float]], blockX: Int, blockY: Int, 
@@ -1483,7 +1518,19 @@ class VarDCTEncoder {
     ///     detailed block and produce finer quantisation; values < 1
     ///     indicate a flat block and produce coarser quantisation.
     func quantize(block: [[Float]], channel: Int, activity: Float) -> [[Int16]] {
-        let qMatrix = generateQuantizationMatrix(channel: channel, activity: activity)
+        return quantize(block: block, channel: channel, activity: activity, distance: self.distance)
+    }
+    
+    /// Quantise an 8×8 DCT block using the base quantisation matrix
+    /// scaled by the given activity factor and custom distance.
+    ///
+    /// - Parameters:
+    ///   - block: 8×8 DCT coefficient block.
+    ///   - channel: Channel index (0 = luma, >0 = chroma).
+    ///   - activity: Local spatial activity.
+    ///   - distance: Custom distance for this block (supports ROI).
+    func quantize(block: [[Float]], channel: Int, activity: Float, distance: Float) -> [[Int16]] {
+        let qMatrix = generateQuantizationMatrix(channel: channel, activity: activity, distance: distance)
         
         #if canImport(Accelerate)
         if hardware.hasAccelerate && options.useAccelerate {
@@ -1540,14 +1587,15 @@ class VarDCTEncoder {
     }
     #endif
     
-    func generateQuantizationMatrix(channel: Int, activity: Float = 1.0) -> [[Float]] {
+    func generateQuantizationMatrix(channel: Int, activity: Float = 1.0, distance: Float? = nil) -> [[Float]] {
         var matrix = [[Float]](
             repeating: [Float](repeating: 1, count: blockSize),
             count: blockSize
         )
         
-        // Base quantization on distance parameter
-        let baseQuant = max(1.0, distance * 8.0)
+        // Base quantization on distance parameter (use custom or default)
+        let effectiveDistance = distance ?? self.distance
+        let baseQuant = max(1.0, effectiveDistance * 8.0)
         
         // Adaptive scale: invert activity so that high-detail blocks
         // (activity > 1) get smaller (finer) quantisation steps and
