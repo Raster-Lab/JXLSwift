@@ -33,10 +33,16 @@ final class AnimationEncodingTests: XCTestCase {
     
     func testAnimationConfig_DurationForFrame_Uniform() {
         let config = AnimationConfig(fps: 30)
-        // Default: 1000ms / 30fps ≈ 33.33ms per frame
+        // Default: 1000ms / 30fps = 33 ticks (integer division)
         XCTAssertEqual(config.duration(for: 0), 33)
         XCTAssertEqual(config.duration(for: 5), 33)
         XCTAssertEqual(config.duration(for: 100), 33)
+    }
+    
+    func testAnimationConfig_DurationForFrame_ZeroFPS_ReturnsDefault() {
+        let config = AnimationConfig(fps: 0)
+        // Should return 1000 ticks to avoid division by zero
+        XCTAssertEqual(config.duration(for: 0), 1000)
     }
     
     func testAnimationConfig_DurationForFrame_Custom() {

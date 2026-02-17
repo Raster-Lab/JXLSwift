@@ -23,7 +23,7 @@ JXLSwift provides a pure Swift implementation of the JPEG XL image compression s
 - 🎬 **Animation Support** - Multi-frame encoding with frame timing and loop control
 - 🔧 **Flexible Configuration** - Quality levels, effort settings, hardware acceleration control
 - 📄 **JPEG XL Container Format** - ISOBMFF container with metadata boxes (EXIF, XMP, ICC)
-- 🎬 **Progressive Encoding** - Incremental rendering for faster perceived loading
+- 🌊 **Progressive Encoding** - Incremental rendering for faster perceived loading
 
 ## Requirements
 

@@ -73,6 +73,8 @@ public struct AnimationConfig: Sendable {
             return frameDurations[index]
         }
         // Default: 1 second / fps = tps / fps ticks
+        // Ensure fps > 0 to avoid division by zero
+        guard fps > 0 else { return 1000 }
         return 1000 / fps
     }
     
