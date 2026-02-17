@@ -32,6 +32,62 @@ public enum EncodingEffort: Int, Sendable {
     case tortoise = 9   // Slowest, best compression
 }
 
+/// Animation configuration for multi-frame encoding
+public struct AnimationConfig: Sendable {
+    /// Frames per second (ticks per second numerator)
+    public var fps: UInt32
+    
+    /// Ticks per second denominator (for fractional frame rates)
+    public var tpsDenominator: UInt32
+    
+    /// Loop count (0 = infinite loop)
+    public var loopCount: UInt32
+    
+    /// Frame durations in ticks (one per frame)
+    /// If empty, all frames use uniform duration (tps / fps)
+    public var frameDurations: [UInt32]
+    
+    /// Initialize animation configuration
+    /// - Parameters:
+    ///   - fps: Frames per second (default 30)
+    ///   - tpsDenominator: Denominator for fractional fps (default 1)
+    ///   - loopCount: Number of loops (0 = infinite, default 0)
+    ///   - frameDurations: Custom frame durations in ticks (empty = uniform)
+    public init(
+        fps: UInt32 = 30,
+        tpsDenominator: UInt32 = 1,
+        loopCount: UInt32 = 0,
+        frameDurations: [UInt32] = []
+    ) {
+        self.fps = fps
+        self.tpsDenominator = tpsDenominator
+        self.loopCount = loopCount
+        self.frameDurations = frameDurations
+    }
+    
+    /// Get duration in ticks for a specific frame index
+    /// - Parameter index: Frame index
+    /// - Returns: Duration in ticks
+    public func duration(for index: Int) -> UInt32 {
+        if !frameDurations.isEmpty && index < frameDurations.count {
+            return frameDurations[index]
+        }
+        // Default: 1 second / fps = tps / fps ticks
+        // Ensure fps > 0 to avoid division by zero
+        guard fps > 0 else { return 1000 }
+        return 1000 / fps
+    }
+    
+    /// Common preset: 30 FPS, infinite loop
+    public static let fps30 = AnimationConfig(fps: 30, loopCount: 0)
+    
+    /// Common preset: 24 FPS (cinematic), infinite loop
+    public static let fps24 = AnimationConfig(fps: 24, loopCount: 0)
+    
+    /// Common preset: 60 FPS (smooth), infinite loop
+    public static let fps60 = AnimationConfig(fps: 60, loopCount: 0)
+}
+
 /// Encoding options
 public struct EncodingOptions: Sendable {
     /// Compression mode
@@ -78,6 +134,13 @@ public struct EncodingOptions: Sendable {
     /// This follows ISO/IEC 18181-1 Annex A.
     public var useANS: Bool
     
+    /// Animation configuration for multi-frame encoding.
+    ///
+    /// When set, enables animation mode with the specified frame rate,
+    /// loop count, and frame durations. Use with the multi-frame encoder
+    /// API to create animated JPEG XL files.
+    public var animationConfig: AnimationConfig?
+    
     public init(
         mode: CompressionMode = .lossy(quality: 90),
         effort: EncodingEffort = .squirrel,
@@ -89,7 +152,8 @@ public struct EncodingOptions: Sendable {
         useMetal: Bool = true,
         keepJPEG: Bool = false,
         adaptiveQuantization: Bool = true,
-        useANS: Bool = false
+        useANS: Bool = false,
+        animationConfig: AnimationConfig? = nil
     ) {
         self.mode = mode
         self.effort = effort
@@ -102,6 +166,7 @@ public struct EncodingOptions: Sendable {
         self.keepJPEG = keepJPEG
         self.adaptiveQuantization = adaptiveQuantization
         self.useANS = useANS
+        self.animationConfig = animationConfig
     }
     
     /// Default high-quality encoding

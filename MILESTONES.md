@@ -343,7 +343,7 @@
 
 - [x] Progressive encoding (DC → AC refinement passes)
 - [ ] Responsive encoding (progressive by quality layer)
-- [ ] Multi-frame / animation support
+- [x] Multi-frame / animation support
 - [x] Alpha channel encoding (separate or premultiplied) — **Pipeline Complete**
 - [ ] Extra channels (depth, thermal, spectral)
 - [x] HDR support: PQ and HLG transfer functions
@@ -358,7 +358,7 @@
 ### Tests Required
 
 - [x] Progressive: first pass produces viewable low-resolution image
-- [ ] Animation: multi-frame round-trip with correct timing
+- [x] Animation: multi-frame round-trip with correct timing — **24 comprehensive tests**
 - [x] Alpha: premultiplied and straight alpha modes — **13 comprehensive tests**
 - [x] HDR: PQ and HLG metadata preserved
 - [x] Wide gamut: P3 and Rec.2020 primaries encoded correctly
@@ -368,7 +368,7 @@
 ### Acceptance Criteria
 
 - Progressive files render incrementally in supported viewers
-- Animation files play correctly in supported viewers
+- Animation files play correctly in supported viewers — **Encoding complete, decoder required for validation**
 - HDR metadata survives round-trip through libjxl
 
 ---

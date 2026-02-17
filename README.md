@@ -20,9 +20,10 @@ JXLSwift provides a pure Swift implementation of the JPEG XL image compression s
   - Wide Gamut: Display P3, Rec. 2020
   - HDR Transfer Functions: PQ (HDR10), HLG
   - Alpha Channels: Straight and premultiplied modes
+- 🎬 **Animation Support** - Multi-frame encoding with frame timing and loop control
 - 🔧 **Flexible Configuration** - Quality levels, effort settings, hardware acceleration control
 - 📄 **JPEG XL Container Format** - ISOBMFF container with metadata boxes (EXIF, XMP, ICC)
-- 🎬 **Animation Support** - Multi-frame container framing with frame index for seeking
+- 🌊 **Progressive Encoding** - Incremental rendering for faster perceived loading
 
 ## Requirements
 
@@ -308,6 +309,73 @@ var premultFrame = ImageFrame(
 )
 ```
 
+### Multi-Frame Animation Support
+
+JXLSwift supports encoding animated JPEG XL files with multiple frames, frame timing, and loop controls. This is ideal for animated images, sequences, and video-like content.
+
+```swift
+// Create animation frames
+var frames: [ImageFrame] = []
+for i in 0..<30 {
+    var frame = ImageFrame(width: 512, height: 512, channels: 3)
+    // Populate frame with animation data...
+    frames.append(frame)
+}
+
+// Configure animation settings
+let animConfig = AnimationConfig(
+    fps: 30,              // 30 frames per second
+    loopCount: 0          // 0 = infinite loop
+)
+
+// Create encoder with animation config
+let options = EncodingOptions(
+    mode: .lossy(quality: 90),
+    effort: .falcon,
+    animationConfig: animConfig
+)
+
+let encoder = JXLEncoder(options: options)
+
+// Encode all frames as animation
+let result = try encoder.encode(frames)
+```
+
+#### Animation Configuration Options
+
+```swift
+// Different frame rates
+let fps24 = AnimationConfig.fps24  // Cinematic 24 FPS
+let fps30 = AnimationConfig.fps30  // Standard 30 FPS
+let fps60 = AnimationConfig.fps60  // Smooth 60 FPS
+
+// Finite loop count
+let loopThrice = AnimationConfig(fps: 30, loopCount: 3)
+
+// Custom frame durations (in ticks, 1000 ticks per second)
+let customDurations = AnimationConfig(
+    fps: 30,
+    frameDurations: [100, 200, 150, 300]  // Different duration per frame
+)
+```
+
+#### Animation Features
+
+- **Frame Rate Control**: Set FPS from 1 to any desired rate
+- **Loop Control**: Infinite loop or specific repeat count
+- **Custom Timing**: Different duration for each frame
+- **All Pixel Types**: Supports uint8, uint16, and float32
+- **Alpha Channel**: Full RGBA animation support
+- **Progressive**: Combine with progressive encoding for streaming
+- **HDR/Wide Gamut**: Animate HDR or wide color gamut content
+
+#### Animation Trade-offs
+
+- **Pros**: Native format support, better compression than GIF/APNG
+- **Cons**: Larger than single frame, decoder support varies
+- **Best for**: Web animations, UI sequences, short video clips
+- **Avoid for**: Long videos (use proper video codecs)
+
 ## Architecture
 
 The library is organized into several modules:
@@ -494,6 +562,7 @@ See [MILESTONES.md](MILESTONES.md) for the detailed project milestone plan.
 - [x] **Advanced features** — HDR support (PQ, HLG), wide gamut (Display P3, Rec. 2020), alpha channels (straight, premultiplied)
 - [x] **Metal GPU async pipeline with double-buffering** — overlapping CPU and GPU work for improved performance
 - [x] Progressive encoding
+- [x] Multi-frame animation encoding — frame timing, loop control, custom durations
 - [ ] Decoding support
 - [ ] libjxl validation & benchmarking
 

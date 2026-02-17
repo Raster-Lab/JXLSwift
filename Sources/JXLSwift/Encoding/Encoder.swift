@@ -81,6 +81,62 @@ public class JXLEncoder {
         return EncodedImage(data: encodedData, stats: stats)
     }
     
+    /// Encode multiple image frames to create an animated JPEG XL file
+    /// - Parameter frames: Array of image frames to encode as animation
+    /// - Returns: Encoded animation data with statistics
+    /// - Throws: EncoderError if encoding fails
+    public func encode(_ frames: [ImageFrame]) throws -> EncodedImage {
+        guard !frames.isEmpty else {
+            throw EncoderError.invalidConfiguration
+        }
+        
+        // For single frame, use single-frame encoder
+        if frames.count == 1 {
+            return try encode(frames[0])
+        }
+        
+        // Validate animation configuration
+        guard let animConfig = options.animationConfig else {
+            throw EncoderError.encodingFailed("Animation configuration required for multi-frame encoding")
+        }
+        
+        let startTime = Date()
+        
+        // Validate all frames
+        for (index, frame) in frames.enumerated() {
+            do {
+                try validateFrame(frame)
+            } catch {
+                throw EncoderError.encodingFailed("Frame \(index) validation failed: \(error.localizedDescription)")
+            }
+        }
+        
+        // Validate consistent dimensions
+        let firstFrame = frames[0]
+        for (index, frame) in frames.enumerated().dropFirst() {
+            guard frame.width == firstFrame.width && frame.height == firstFrame.height else {
+                throw EncoderError.encodingFailed("Frame \(index) dimensions (\(frame.width)×\(frame.height)) differ from first frame (\(firstFrame.width)×\(firstFrame.height))")
+            }
+        }
+        
+        // Encode animation
+        let encodedData = try encodeAnimation(frames: frames, config: animConfig)
+        
+        let encodingTime = Date().timeIntervalSince(startTime)
+        
+        // Calculate statistics
+        let originalSize = frames.reduce(0) { $0 + $1.data.count }
+        let compressedSize = encodedData.count
+        let stats = CompressionStats(
+            originalSize: originalSize,
+            compressedSize: compressedSize,
+            encodingTime: encodingTime,
+            peakMemory: 0
+        )
+        
+        return EncodedImage(data: encodedData, stats: stats)
+    }
+    
     // MARK: - Validation
     
     private func validateFrame(_ frame: ImageFrame) throws {
@@ -153,6 +209,124 @@ public class JXLEncoder {
     }
     
     // MARK: - Helper Functions
+    
+    private func encodeAnimation(frames: [ImageFrame], config: AnimationConfig) throws -> Data {
+        var writer = BitstreamWriter()
+        
+        // Write JPEG XL signature
+        try writer.writeSignature()
+        
+        // Create codestream header with animation metadata
+        let firstFrame = frames[0]
+        let size = try SizeHeader(
+            width: UInt32(firstFrame.width),
+            height: UInt32(firstFrame.height)
+        )
+        
+        let metadata = ImageMetadata(
+            bitsPerSample: UInt32(firstFrame.bitsPerSample),
+            hasAlpha: firstFrame.hasAlpha,
+            extraChannelCount: firstFrame.hasAlpha ? 1 : 0,
+            xybEncoded: false,
+            colourEncoding: ColourEncoding.from(colorSpace: firstFrame.colorSpace),
+            orientation: 1,
+            haveAnimation: true,
+            animationTpsNumerator: config.fps,
+            animationTpsDenominator: config.tpsDenominator,
+            animationLoopCount: config.loopCount
+        )
+        
+        let header = CodestreamHeader(size: size, metadata: metadata)
+        
+        // Write codestream header (includes signature)
+        let headerData = header.serialise()
+        writer = BitstreamWriter() // Reset writer since header includes signature
+        writer.writeData(headerData)
+        
+        // Encode each frame
+        for (index, frame) in frames.enumerated() {
+            let isLast = (index == frames.count - 1)
+            let duration = config.duration(for: index)
+            
+            // Write frame header
+            try writeFrameHeader(
+                to: &writer,
+                frame: frame,
+                duration: duration,
+                isLast: isLast,
+                index: index
+            )
+            
+            // Encode frame data
+            let frameData = try encodeFrameData(frame)
+            writer.writeData(frameData)
+        }
+        
+        return writer.data
+    }
+    
+    private func writeFrameHeader(
+        to writer: inout BitstreamWriter,
+        frame: ImageFrame,
+        duration: UInt32,
+        isLast: Bool,
+        index: Int
+    ) throws {
+        let encoding: FrameEncoding
+        switch options.mode {
+        case .lossless:
+            encoding = .modular
+        case .lossy, .distance:
+            encoding = .varDCT
+        }
+        
+        let frameHeader = FrameHeader(
+            frameType: .regularFrame,
+            encoding: encoding,
+            blendMode: .blend,
+            duration: duration,
+            isLast: isLast,
+            saveAsReference: 0,
+            name: "",
+            cropX0: 0,
+            cropY0: 0,
+            frameWidth: 0,
+            frameHeight: 0,
+            numGroups: 1,
+            numPasses: options.progressive ? 3 : 1
+        )
+        
+        frameHeader.serialise(to: &writer)
+    }
+    
+    private func encodeFrameData(_ frame: ImageFrame) throws -> Data {
+        switch options.mode {
+        case .lossless:
+            return try encodeFrameDataLossless(frame)
+        case .lossy(let quality):
+            let distance = qualityToDistance(quality)
+            return try encodeFrameDataLossy(frame, distance: distance)
+        case .distance(let distance):
+            return try encodeFrameDataLossy(frame, distance: distance)
+        }
+    }
+    
+    private func encodeFrameDataLossless(_ frame: ImageFrame) throws -> Data {
+        let modularEncoder = ModularEncoder(
+            hardware: hardware,
+            options: options
+        )
+        return try modularEncoder.encode(frame: frame)
+    }
+    
+    private func encodeFrameDataLossy(_ frame: ImageFrame, distance: Float) throws -> Data {
+        let dctEncoder = VarDCTEncoder(
+            hardware: hardware,
+            options: options,
+            distance: distance
+        )
+        return try dctEncoder.encode(frame: frame)
+    }
     
     private func qualityToDistance(_ quality: Float) -> Float {
         // Convert quality (0-100) to distance parameter
