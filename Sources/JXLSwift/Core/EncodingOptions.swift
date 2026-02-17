@@ -366,6 +366,124 @@ public struct ReferenceFrameConfig: Sendable {
     )
 }
 
+/// Patch encoding configuration for copying rectangular regions from reference frames
+///
+/// Enables efficient compression of animations and screen content by identifying
+/// and copying repeated rectangular regions from reference frames, significantly
+/// reducing file size for content with static or repeated elements (UI, slideshows, etc.).
+public struct PatchConfig: Sendable {
+    /// Enable patch encoding
+    public var enabled: Bool
+    
+    /// Minimum patch size in pixels (width or height)
+    /// Smaller patches may not provide sufficient compression benefit
+    /// Default: 8 pixels (one DCT block)
+    public var minPatchSize: Int
+    
+    /// Maximum patch size in pixels (width or height)
+    /// Larger patches are split into multiple smaller patches
+    /// Default: 128 pixels
+    public var maxPatchSize: Int
+    
+    /// Minimum similarity threshold for patch matching (0.0-1.0)
+    /// Higher values require closer matches before using a patch
+    /// 0.0 = accept any match
+    /// 1.0 = require perfect match
+    /// Default: 0.95 (95% similarity required)
+    public var similarityThreshold: Float
+    
+    /// Block size for patch detection (must be power of 2)
+    /// Detection is performed at this block size and refined
+    /// Default: 8 (matches DCT block size)
+    public var blockSize: Int
+    
+    /// Maximum number of patches per frame
+    /// Limits encoding overhead for frames with many repeated regions
+    /// Default: 256 patches
+    public var maxPatchesPerFrame: Int
+    
+    /// Search region expansion factor for patch matching
+    /// Larger values search more broadly but increase encoding time
+    /// 0 = exact position only, 1 = ±blockSize, 2 = ±2*blockSize, etc.
+    /// Default: 2 (search ±2 blocks from current position)
+    public var searchRadius: Int
+    
+    /// Initialize patch encoding configuration
+    /// - Parameters:
+    ///   - enabled: Enable patch encoding
+    ///   - minPatchSize: Minimum patch size in pixels
+    ///   - maxPatchSize: Maximum patch size in pixels
+    ///   - similarityThreshold: Minimum similarity for patch matching
+    ///   - blockSize: Block size for detection
+    ///   - maxPatchesPerFrame: Maximum patches per frame
+    ///   - searchRadius: Search region expansion factor
+    public init(
+        enabled: Bool = true,
+        minPatchSize: Int = 8,
+        maxPatchSize: Int = 128,
+        similarityThreshold: Float = 0.95,
+        blockSize: Int = 8,
+        maxPatchesPerFrame: Int = 256,
+        searchRadius: Int = 2
+    ) {
+        self.enabled = enabled
+        self.minPatchSize = max(1, minPatchSize)
+        self.maxPatchSize = max(minPatchSize, maxPatchSize)
+        self.similarityThreshold = max(0.0, min(1.0, similarityThreshold))
+        self.blockSize = max(1, blockSize)
+        self.maxPatchesPerFrame = max(1, maxPatchesPerFrame)
+        self.searchRadius = max(0, searchRadius)
+    }
+    
+    /// Common preset: Aggressive patch encoding (maximum compression)
+    /// Small patches (8×8), high similarity (98%), many patches per frame
+    public static let aggressive = PatchConfig(
+        enabled: true,
+        minPatchSize: 8,
+        maxPatchSize: 64,
+        similarityThreshold: 0.98,
+        blockSize: 8,
+        maxPatchesPerFrame: 512,
+        searchRadius: 3
+    )
+    
+    /// Common preset: Balanced patch encoding (default)
+    /// Medium patches (8-128), good similarity (95%), moderate patches per frame
+    public static let balanced = PatchConfig(
+        enabled: true,
+        minPatchSize: 8,
+        maxPatchSize: 128,
+        similarityThreshold: 0.95,
+        blockSize: 8,
+        maxPatchesPerFrame: 256,
+        searchRadius: 2
+    )
+    
+    /// Common preset: Conservative patch encoding (quality-focused)
+    /// Larger patches (16-128), very high similarity (99%), fewer patches per frame
+    public static let conservative = PatchConfig(
+        enabled: true,
+        minPatchSize: 16,
+        maxPatchSize: 128,
+        similarityThreshold: 0.99,
+        blockSize: 8,
+        maxPatchesPerFrame: 128,
+        searchRadius: 1
+    )
+    
+    /// Preset: Screen content optimized (UI, presentations, etc.)
+    /// Small patches, moderate similarity, many patches (ideal for repeated UI elements)
+    public static let screenContent = PatchConfig(
+        enabled: true,
+        minPatchSize: 4,
+        maxPatchSize: 96,
+        similarityThreshold: 0.92,
+        blockSize: 4,
+        maxPatchesPerFrame: 1024,
+        searchRadius: 4
+    )
+}
+
 /// Encoding options
 public struct EncodingOptions: Sendable {
     /// Compression mode
@@ -444,6 +562,15 @@ public struct EncodingOptions: Sendable {
     /// animations (requires animationConfig to be set).
     public var referenceFrameConfig: ReferenceFrameConfig?
     
+    /// Patch encoding configuration for copying rectangular regions from reference frames.
+    ///
+    /// When set and used with reference frame encoding, repeated rectangular regions
+    /// will be copied from reference frames rather than re-encoded, significantly
+    /// reducing file size for animations and screen content with static or repeated
+    /// elements (UI elements, slideshows, screen captures, etc.).
+    /// Requires referenceFrameConfig to be set.
+    public var patchConfig: PatchConfig?
+    
     public init(
         mode: CompressionMode = .lossy(quality: 90),
         effort: EncodingEffort = .squirrel,
@@ -460,7 +587,8 @@ public struct EncodingOptions: Sendable {
         useANS: Bool = false,
         animationConfig: AnimationConfig? = nil,
         regionOfInterest: RegionOfInterest? = nil,
-        referenceFrameConfig: ReferenceFrameConfig? = nil
+        referenceFrameConfig: ReferenceFrameConfig? = nil,
+        patchConfig: PatchConfig? = nil
     ) {
         self.mode = mode
         self.effort = effort
@@ -478,6 +606,7 @@ public struct EncodingOptions: Sendable {
         self.animationConfig = animationConfig
         self.regionOfInterest = regionOfInterest
         self.referenceFrameConfig = referenceFrameConfig
+        self.patchConfig = patchConfig
     }
     
     /// Default high-quality encoding

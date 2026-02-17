@@ -64,6 +64,12 @@ struct Encode: ParsableCommand {
     
     @Option(name: .long, help: "Keyframe interval for reference encoding (default 30 frames)")
     var keyframeInterval: Int?
+    
+    @Flag(name: .long, help: "Enable patch encoding to copy repeated regions from reference frames (requires --reference-frames)")
+    var patches: Bool = false
+    
+    @Option(name: .long, help: "Patch encoding preset: aggressive, balanced, conservative, screen (default: balanced)")
+    var patchPreset: String?
 
     @Flag(name: .long, help: "Show verbose output")
     var verbose: Bool = false
@@ -153,6 +159,36 @@ struct Encode: ParsableCommand {
         } else {
             referenceFrameConfig = nil
         }
+        
+        // Build patch config if enabled
+        let patchConfig: PatchConfig?
+        if patches {
+            // Patches require reference frames
+            guard referenceFrames else {
+                print("Error: --patches requires --reference-frames to be enabled", to: &standardError)
+                throw JXLExitCode.invalidArguments
+            }
+            
+            if let preset = patchPreset {
+                switch preset.lowercased() {
+                case "aggressive":
+                    patchConfig = .aggressive
+                case "balanced":
+                    patchConfig = .balanced
+                case "conservative":
+                    patchConfig = .conservative
+                case "screen":
+                    patchConfig = .screenContent
+                default:
+                    print("Error: Unknown patch preset '\(preset)'. Use: aggressive, balanced, conservative, or screen", to: &standardError)
+                    throw JXLExitCode.invalidArguments
+                }
+            } else {
+                patchConfig = .balanced  // Default
+            }
+        } else {
+            patchConfig = nil
+        }
 
         let options = EncodingOptions(
             mode: mode,
@@ -164,7 +200,8 @@ struct Encode: ParsableCommand {
             useAccelerate: !noAccelerate,
             useMetal: !noMetal,
             regionOfInterest: regionOfInterest,
-            referenceFrameConfig: referenceFrameConfig
+            referenceFrameConfig: referenceFrameConfig,
+            patchConfig: patchConfig
         )
 
         // Generate a test image (until file I/O is implemented)
