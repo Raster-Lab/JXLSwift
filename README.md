@@ -23,6 +23,7 @@ JXLSwift provides a pure Swift implementation of the JPEG XL image compression s
 - 📊 **Extra Channels** - Depth maps, thermal data, spectral bands, and application-specific channels
 - 🎬 **Animation Support** - Multi-frame encoding with frame timing and loop control
 - 🔄 **EXIF Orientation** - Full support for all 8 EXIF orientation values (rotation/flip metadata)
+- 🎯 **Region-of-Interest (ROI)** - Selective quality encoding with configurable feathering for smooth transitions
 - 🔧 **Flexible Configuration** - Quality levels, effort settings, hardware acceleration control
 - 📄 **JPEG XL Container Format** - ISOBMFF container with metadata boxes (EXIF, XMP, ICC)
 - 🌊 **Progressive Encoding** - Incremental rendering for faster perceived loading
@@ -599,6 +600,77 @@ Encoding effort controls the quality/speed tradeoff:
 8. **Kitten** - High quality preset
 9. **Tortoise** - Maximum compression (slowest)
 
+### Region-of-Interest (ROI) Encoding
+
+Region-of-Interest encoding allows you to encode a specific rectangular area at higher quality than the rest of the image. This is particularly useful for:
+- Reducing file size by compressing less important areas more aggressively
+- Highlighting specific parts of an image (faces, subjects, etc.)
+- Creating focal point encoding for attention guidance
+
+```swift
+// Define a region of interest (center 200×200 region)
+let roi = RegionOfInterest(
+    x: 100,         // Top-left X coordinate
+    y: 100,         // Top-left Y coordinate
+    width: 200,     // Width of the ROI
+    height: 200,    // Height of the ROI
+    qualityBoost: 15.0,   // Quality improvement (0-50)
+    featherWidth: 16      // Transition width in pixels
+)
+
+let options = EncodingOptions(
+    mode: .lossy(quality: 80),  // Base quality for non-ROI areas
+    effort: .squirrel,
+    regionOfInterest: roi
+)
+
+let encoder = JXLEncoder(options: options)
+let result = try encoder.encode(frame)
+```
+
+#### How ROI Encoding Works
+
+ROI encoding varies the quantization distance on a per-block basis:
+1. **Inside ROI**: Lower distance = higher quality (e.g., quality boost of 10 ≈ 0.91× distance multiplier)
+2. **Outside ROI**: Normal distance = base quality
+3. **Feather Zone**: Smooth transition using cosine interpolation for seamless quality gradients
+
+#### ROI Configuration Options
+
+- **qualityBoost** (0-50, default 10): Quality improvement for ROI region
+  - 10 = approximately 10% higher quality
+  - 20 = approximately 16.7% higher quality
+  - 50 = approximately 33.3% higher quality (maximum)
+- **featherWidth** (pixels, default 16): Width of smooth transition at ROI edges
+  - 0 = hard edge (abrupt quality change)
+  - 8-16 = subtle transition (recommended)
+  - 32+ = very gradual transition
+
+#### CLI Example
+
+```bash
+# Encode with ROI in center region
+swift run jxl-tool encode --width 512 --height 512 \\
+    --roi 128,128,256,256 \\
+    --roi-quality-boost 20 \\
+    --roi-feather 16 \\
+    -o output.jxl
+
+# Corner ROI with sharp edges
+swift run jxl-tool encode --width 800 --height 600 \\
+    --roi 0,0,200,200 \\
+    --roi-quality-boost 15 \\
+    --roi-feather 0 \\
+    -o corner_roi.jxl
+```
+
+#### Trade-offs
+
+- **Pros**: Smaller file size, maintains detail where it matters, guides viewer attention
+- **Cons**: Potential visible quality boundaries (mitigated by feathering)
+- **Best for**: Portrait photography, product shots, documents with focal areas
+- **Note**: Only applies to lossy (VarDCT) encoding; ignored for lossless mode
+
 ## Quality Settings
 
 For lossy encoding, quality ranges from 0-100:
@@ -705,6 +777,7 @@ See [MILESTONES.md](MILESTONES.md) for the detailed project milestone plan.
 - [x] Responsive encoding — quality-layered progressive delivery (2-8 layers)
 - [x] Multi-frame animation encoding — frame timing, loop control, custom durations
 - [x] EXIF orientation support — reading, encoding, and CLI integration
+- [x] Region-of-Interest (ROI) encoding — selective quality with configurable feathering
 - [ ] Decoding support
 - [ ] libjxl validation & benchmarking
 
