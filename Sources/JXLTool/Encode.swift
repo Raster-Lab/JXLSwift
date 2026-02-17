@@ -25,6 +25,9 @@ struct Encode: ParsableCommand {
 
     @Flag(name: .shortAndLong, help: "Use lossless compression")
     var lossless: Bool = false
+    
+    @Flag(name: .long, help: "Enable progressive encoding (DC → AC refinement passes)")
+    var progressive: Bool = false
 
     @Flag(help: "Disable hardware acceleration")
     var noAccelerate: Bool = false
@@ -69,6 +72,7 @@ struct Encode: ParsableCommand {
         let options = EncodingOptions(
             mode: mode,
             effort: effortLevel,
+            progressive: progressive,
             useHardwareAcceleration: !noAccelerate,
             useAccelerate: !noAccelerate,
             useMetal: !noMetal
@@ -115,7 +119,7 @@ struct Encode: ParsableCommand {
             print("  Time:        \(String(format: "%.3f", result.stats.encodingTime))s")
 
             if verbose {
-                print("  Mode:        \(lossless ? "lossless" : "lossy")")
+                print("  Mode:        \(lossless ? "lossless" : "lossy")\(progressive ? " (progressive)" : "")")
                 print("  Effort:      \(effortLevel) (\(effort))")
                 if !lossless {
                     if let d = distance {
