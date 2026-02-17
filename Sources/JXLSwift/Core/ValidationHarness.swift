@@ -461,6 +461,11 @@ public class ValidationHarness {
 
     // MARK: - Quality Estimation (Pre-Decoder)
 
+    // FIXME: Replace these heuristic estimation functions with actual decoded frame
+    // comparisons once the JXLDecoder (Milestone 12) is implemented. Currently these
+    // provide rough estimates based on compression ratio correlations. Actual quality
+    // metrics require: encode → decode → compare(original, decoded).
+
     /// Estimate PSNR from compression ratio (heuristic until decoder is available).
     private func estimatePSNRFromCompressionRatio(_ ratio: Double) -> Double {
         // Higher compression ratio generally means lower quality

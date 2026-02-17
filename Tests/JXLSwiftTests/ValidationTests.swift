@@ -386,7 +386,7 @@ final class ValidationTests: XCTestCase {
 
     // MARK: - ValidationReport Tests
 
-    func testValidationReport_Timestamp() throws {
+    func testValidationReport_TimestampAndCorpus() throws {
         let frame = TestImageGenerator.gradient(width: 8, height: 8)
         let options = EncodingOptions(mode: .lossy(quality: 90))
         let testCase = ValidationHarness.TestCase(name: "test", frame: frame, options: options)
