@@ -393,7 +393,7 @@ public struct CodestreamHeader: Sendable, Equatable {
             extraChannelCount: frame.hasAlpha ? 1 : 0,
             xybEncoded: false,
             colourEncoding: ColourEncoding.from(colorSpace: frame.colorSpace),
-            orientation: 1,
+            orientation: frame.orientation,
             haveAnimation: false
         )
     }

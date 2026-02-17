@@ -40,6 +40,9 @@ struct Encode: ParsableCommand {
 
     @Option(name: .long, help: "Height of test image to generate")
     var height: Int = 256
+    
+    @Option(name: .long, help: "EXIF orientation (1-8, default 1). 1=normal, 6=90°CW, 3=180°, 8=270°CW")
+    var orientation: Int = 1
 
     @Flag(name: .long, help: "Show verbose output")
     var verbose: Bool = false
@@ -82,13 +85,20 @@ struct Encode: ParsableCommand {
         if verbose && !quiet {
             print("Generating \(width)×\(height) test image...")
         }
+        
+        // Validate orientation
+        guard orientation >= 1 && orientation <= 8 else {
+            print("Error: Orientation must be between 1 and 8", to: &standardError)
+            throw JXLExitCode.invalidArguments
+        }
 
         var frame = ImageFrame(
             width: width,
             height: height,
             channels: 3,
             pixelType: .uint8,
-            colorSpace: .sRGB
+            colorSpace: .sRGB,
+            orientation: UInt32(orientation)
         )
 
         for y in 0..<frame.height {
@@ -121,6 +131,7 @@ struct Encode: ParsableCommand {
             if verbose {
                 print("  Mode:        \(lossless ? "lossless" : "lossy")\(progressive ? " (progressive)" : "")")
                 print("  Effort:      \(effortLevel) (\(effort))")
+                print("  Orientation: \(orientation)")
                 if !lossless {
                     if let d = distance {
                         print("  Distance:    \(d)")

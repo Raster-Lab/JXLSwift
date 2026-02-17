@@ -21,6 +21,7 @@ JXLSwift provides a pure Swift implementation of the JPEG XL image compression s
   - HDR Transfer Functions: PQ (HDR10), HLG
   - Alpha Channels: Straight and premultiplied modes
 - 🎬 **Animation Support** - Multi-frame encoding with frame timing and loop control
+- 🔄 **EXIF Orientation** - Full support for all 8 EXIF orientation values (rotation/flip metadata)
 - 🔧 **Flexible Configuration** - Quality levels, effort settings, hardware acceleration control
 - 📄 **JPEG XL Container Format** - ISOBMFF container with metadata boxes (EXIF, XMP, ICC)
 - 🌊 **Progressive Encoding** - Incremental rendering for faster perceived loading
@@ -230,6 +231,65 @@ This allows decoders to render a usable image after receiving just the first pas
 - **Cons**: Slightly larger file size (typically 5-15% overhead) due to pass structure
 - **Best for**: Web delivery, progressive image loading, streaming scenarios
 - **Avoid for**: Archival storage where file size is critical
+
+### EXIF Orientation Support
+
+JXLSwift fully supports EXIF orientation metadata, allowing proper handling of rotated and flipped images from cameras and smartphones. The orientation is preserved in the JPEG XL file and can be used by viewers to display images correctly without modifying pixel data.
+
+```swift
+// Create a frame with specific orientation
+let frame = ImageFrame(
+    width: 1920,
+    height: 1080,
+    channels: 3,
+    orientation: 6  // 90° clockwise rotation
+)
+
+// Encode with orientation metadata
+let encoder = JXLEncoder()
+let result = try encoder.encode(frame)
+```
+
+#### EXIF Orientation Values
+
+| Value | Transform | Description |
+|-------|-----------|-------------|
+| 1 | None | Normal (no rotation) |
+| 2 | Flip horizontal | Mirror image |
+| 3 | Rotate 180° | Upside-down |
+| 4 | Flip vertical | Vertical mirror |
+| 5 | Rotate 270° + flip H | Transpose |
+| 6 | Rotate 90° CW | 90° clockwise |
+| 7 | Rotate 90° + flip H | Transverse |
+| 8 | Rotate 270° CW | 270° clockwise |
+
+#### Extracting Orientation from EXIF Data
+
+```swift
+import JXLSwift
+
+// Parse orientation from EXIF data
+let exifData = Data(...) // Raw EXIF from JPEG/PNG/TIFF
+let orientation = EXIFOrientation.extractOrientation(from: exifData)
+
+// Create frame with extracted orientation
+let frame = ImageFrame(
+    width: width,
+    height: height,
+    channels: 3,
+    orientation: orientation
+)
+```
+
+#### Command Line Tool
+
+```bash
+# Encode with specific orientation
+swift run jxl-tool encode --orientation 6 --width 1920 --height 1080 -o output.jxl
+
+# Orientation is preserved in the encoded file
+swift run jxl-tool info output.jxl
+```
 
 ### Hardware Capabilities Detection
 
@@ -559,10 +619,11 @@ See [MILESTONES.md](MILESTONES.md) for the detailed project milestone plan.
 - [x] ANS entropy coding — rANS encoder/decoder, multi-context, distribution tables, histogram clustering, ANS interleaving, LZ77 hybrid mode, integrated with Modular + VarDCT
 - [x] Man pages for jxl-tool and all subcommands
 - [x] Makefile for build, test, and installation
-- [x] **Advanced features** — HDR support (PQ, HLG), wide gamut (Display P3, Rec. 2020), alpha channels (straight, premultiplied)
+- [x] **Advanced features** — HDR support (PQ, HLG), wide gamut (Display P3, Rec. 2020), alpha channels (straight, premultiplied), EXIF orientation (all 8 values)
 - [x] **Metal GPU async pipeline with double-buffering** — overlapping CPU and GPU work for improved performance
 - [x] Progressive encoding
 - [x] Multi-frame animation encoding — frame timing, loop control, custom durations
+- [x] EXIF orientation support — reading, encoding, and CLI integration
 - [ ] Decoding support
 - [ ] libjxl validation & benchmarking
 

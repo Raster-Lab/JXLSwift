@@ -158,12 +158,20 @@ public struct ImageFrame {
     /// Bits per sample (8, 10, 12, 16, 32)
     public let bitsPerSample: Int
     
+    /// Orientation (1-8 per EXIF convention, 1 = normal/no rotation)
+    /// Values 1-8 correspond to EXIF Orientation tag values:
+    /// 1 = normal, 2 = flip horizontal, 3 = rotate 180°, 4 = flip vertical,
+    /// 5 = rotate 270° + flip horizontal, 6 = rotate 90° CW,
+    /// 7 = rotate 90° + flip horizontal, 8 = rotate 270° CW
+    public let orientation: UInt32
+    
     public init(width: Int, height: Int, channels: Int, 
                 pixelType: PixelType = .uint8,
                 colorSpace: ColorSpace = .sRGB,
                 hasAlpha: Bool = false,
                 alphaMode: AlphaMode = .straight,
-                bitsPerSample: Int = 8) {
+                bitsPerSample: Int = 8,
+                orientation: UInt32 = 1) {
         self.width = width
         self.height = height
         self.channels = channels
@@ -172,6 +180,7 @@ public struct ImageFrame {
         self.hasAlpha = hasAlpha
         self.alphaMode = hasAlpha ? alphaMode : .none
         self.bitsPerSample = bitsPerSample
+        self.orientation = min(8, max(1, orientation)) // Clamp to valid range
         
         let totalSamples = width * height * channels
         let bytesPerSample = pixelType.bytesPerSample
