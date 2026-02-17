@@ -395,6 +395,56 @@ final class MetalComputeTests: XCTestCase {
         pool.releaseBuffer(buffer2)
     }
     
+    func testMetalBufferPool_DifferentSizes_NoIncorrectReuse() throws {
+        guard MetalOps.isAvailable else {
+            throw XCTSkip("Metal not available on this platform")
+        }
+        
+        guard let device = MetalOps.device() else {
+            XCTFail("Could not get Metal device")
+            return
+        }
+        
+        let pool = MetalBufferPool(device: device)
+        
+        // Acquire and release buffers of different sizes
+        guard let buffer1K = pool.acquireBuffer(length: 1024) else {
+            XCTFail("Failed to acquire 1KB buffer")
+            return
+        }
+        guard let buffer2K = pool.acquireBuffer(length: 2048) else {
+            XCTFail("Failed to acquire 2KB buffer")
+            return
+        }
+        
+        XCTAssertGreaterThanOrEqual(buffer1K.length, 1024)
+        XCTAssertGreaterThanOrEqual(buffer2K.length, 2048)
+        
+        // Return to pool
+        pool.releaseBuffer(buffer1K)
+        pool.releaseBuffer(buffer2K)
+        XCTAssertEqual(pool.totalBuffers, 2, "Should have 2 buffers cached")
+        
+        // Request 1KB again - should get the 1KB buffer, not the 2KB one
+        guard let reused1K = pool.acquireBuffer(length: 1024) else {
+            XCTFail("Failed to reacquire 1KB buffer")
+            return
+        }
+        XCTAssertEqual(reused1K.length, buffer1K.length, "Should reuse exact size match")
+        XCTAssertEqual(pool.totalBuffers, 1, "Should have 1 buffer remaining in pool")
+        
+        // Request 2KB - should get the 2KB buffer
+        guard let reused2K = pool.acquireBuffer(length: 2048) else {
+            XCTFail("Failed to reacquire 2KB buffer")
+            return
+        }
+        XCTAssertEqual(reused2K.length, buffer2K.length, "Should reuse exact size match")
+        XCTAssertEqual(pool.totalBuffers, 0, "Pool should be empty")
+        
+        pool.releaseBuffer(reused1K)
+        pool.releaseBuffer(reused2K)
+    }
+    
     func testMetalBufferPool_Clear() throws {
         guard MetalOps.isAvailable else {
             throw XCTSkip("Metal not available on this platform")

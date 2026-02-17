@@ -33,6 +33,19 @@ class VarDCTEncoder {
     /// the adaptive quantisation matrix for each block.
     static let qfScaleFactor: Float = 256
     
+    /// Minimum number of blocks required to use async Metal GPU pipeline.
+    ///
+    /// Below this threshold, the overhead of GPU transfer and async coordination
+    /// outweighs the benefit. Empirically chosen based on Apple Silicon performance.
+    private static let minBlocksForAsyncGPU = 32
+    
+    /// Batch size for Metal GPU processing.
+    ///
+    /// Processing blocks in batches of 64 provides good GPU utilization while
+    /// keeping memory footprint reasonable. Larger batches increase throughput
+    /// but require more memory for buffering.
+    private static let metalBatchSize = 64
+    
     init(hardware: HardwareCapabilities, options: EncodingOptions, distance: Float) {
         self.hardware = hardware
         self.options = options
@@ -525,10 +538,8 @@ class VarDCTEncoder {
         let totalBlocks = blocksX * blocksY
         
         // Only use async Metal for larger images where benefit outweighs overhead
-        let minBlocksForAsyncGPU = 32
-        
         #if canImport(Metal)
-        if hardware.hasMetal && options.useMetal && totalBlocks >= minBlocksForAsyncGPU {
+        if hardware.hasMetal && options.useMetal && totalBlocks >= Self.minBlocksForAsyncGPU {
             if let result = computeDCTBlocksMetalAsync(data: data, width: width, height: height, blocksX: blocksX, blocksY: blocksY) {
                 return result
             }
@@ -568,18 +579,21 @@ class VarDCTEncoder {
         }
         
         // Process in batches using Metal async pipeline
-        let batchSize = 64 // Process 64 blocks at a time
         var allResults: [[Float]] = []
         allResults.reserveCapacity(flatBlocks.count)
         
+        // Thread-safety synchronization:
+        // - DispatchGroup: Coordinates completion of all async operations
+        // - resultsLock (NSLock): Protects shared mutable state (processedResults, hasError)
+        // - All modifications to processedResults/hasError must be within resultsLock critical sections
         let dispatchGroup = DispatchGroup()
         var processedResults: [[Float]?] = Array(repeating: nil, count: flatBlocks.count)
         let resultsLock = NSLock()
         var hasError = false
         
         // Process batches with double-buffering via async pipeline
-        for batchStart in stride(from: 0, to: flatBlocks.count, by: batchSize) {
-            let batchEnd = min(batchStart + batchSize, flatBlocks.count)
+        for batchStart in stride(from: 0, to: flatBlocks.count, by: Self.metalBatchSize) {
+            let batchEnd = min(batchStart + Self.metalBatchSize, flatBlocks.count)
             let batch = Array(flatBlocks[batchStart..<batchEnd])
             
             dispatchGroup.enter()

@@ -454,12 +454,22 @@ public enum MetalCompute {
 // MARK: - Buffer Pool for Double-Buffering
 
 /// Metal buffer pool for efficient reuse in double-buffering scenarios
+///
+/// Thread Safety: This class uses `@unchecked Sendable` because it manages mutable state
+/// (`availableBuffers`) that is protected by `NSLock`. All access to mutable properties
+/// must go through methods that acquire the lock. Do not add direct property access.
 @available(macOS 13.0, iOS 16.0, tvOS 16.0, *)
 public final class MetalBufferPool: @unchecked Sendable {
     private let device: MTLDevice
     private var availableBuffers: [Int: [MTLBuffer]] = [:]
     private let lock = NSLock()
     private let minBufferSize = 1024 // Minimum 1 KB
+    
+    /// Maximum number of buffers to cache per size.
+    ///
+    /// Limits memory usage while still providing reuse benefits.
+    /// 4 buffers supports double-buffering (2) plus 2 extra for pipeline depth.
+    private let maxBuffersPerSize = 4
     
     /// Initialize buffer pool with Metal device
     ///
@@ -500,7 +510,7 @@ public final class MetalBufferPool: @unchecked Sendable {
         }
         
         // Limit pool size per buffer size to avoid excessive memory usage
-        if availableBuffers[length]!.count < 4 {
+        if availableBuffers[length]!.count < maxBuffersPerSize {
             availableBuffers[length]!.append(buffer)
         }
     }
@@ -508,7 +518,7 @@ public final class MetalBufferPool: @unchecked Sendable {
     /// Clear all cached buffers
     public func clear() {
         lock.lock()
-        defer { lock.unlock()  }
+        defer { lock.unlock() }
         availableBuffers.removeAll()
     }
     
@@ -523,6 +533,10 @@ public final class MetalBufferPool: @unchecked Sendable {
 // MARK: - Async Pipeline Manager
 
 /// Manager for async Metal operations with double-buffering
+///
+/// Thread Safety: Uses `@unchecked Sendable` with `NSLock` protection for the `isProcessing`
+/// flag. This simple boolean flag pattern is sufficient for preventing concurrent pipeline
+/// invocations. The lock ensures atomic check-and-set operations.
 @available(macOS 13.0, iOS 16.0, tvOS 16.0, *)
 public final class MetalAsyncPipeline: @unchecked Sendable {
     private let bufferPool: MetalBufferPool
