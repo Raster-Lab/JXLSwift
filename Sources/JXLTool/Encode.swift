@@ -28,6 +28,12 @@ struct Encode: ParsableCommand {
     
     @Flag(name: .long, help: "Enable progressive encoding (DC → AC refinement passes)")
     var progressive: Bool = false
+    
+    @Flag(name: .long, help: "Enable responsive encoding (quality-layered progressive delivery)")
+    var responsive: Bool = false
+    
+    @Option(name: .long, help: "Number of quality layers for responsive encoding (2-8, default 3)")
+    var qualityLayers: Int?
 
     @Flag(help: "Disable hardware acceleration")
     var noAccelerate: Bool = false
@@ -71,11 +77,29 @@ struct Encode: ParsableCommand {
             print("Error: Effort must be between 1 and 9", to: &standardError)
             throw JXLExitCode.invalidArguments
         }
+        
+        // Build responsive config if enabled
+        let responsiveConfig: ResponsiveConfig?
+        if responsive {
+            if let layers = qualityLayers {
+                guard layers >= 2 && layers <= 8 else {
+                    print("Error: Quality layers must be between 2 and 8", to: &standardError)
+                    throw JXLExitCode.invalidArguments
+                }
+                responsiveConfig = ResponsiveConfig(layerCount: layers)
+            } else {
+                responsiveConfig = .threeLayers  // Default
+            }
+        } else {
+            responsiveConfig = nil
+        }
 
         let options = EncodingOptions(
             mode: mode,
             effort: effortLevel,
             progressive: progressive,
+            responsiveEncoding: responsive,
+            responsiveConfig: responsiveConfig,
             useHardwareAcceleration: !noAccelerate,
             useAccelerate: !noAccelerate,
             useMetal: !noMetal
