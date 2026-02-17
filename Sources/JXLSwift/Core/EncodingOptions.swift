@@ -84,6 +84,157 @@ public enum EncodingEffort: Int, Sendable {
     case tortoise = 9   // Slowest, best compression
 }
 
+/// Region of Interest (ROI) configuration for selective quality encoding
+public struct RegionOfInterest: Sendable, Equatable {
+    /// X coordinate of the top-left corner of the ROI (in pixels)
+    public var x: Int
+    
+    /// Y coordinate of the top-left corner of the ROI (in pixels)
+    public var y: Int
+    
+    /// Width of the ROI (in pixels)
+    public var width: Int
+    
+    /// Height of the ROI (in pixels)
+    public var height: Int
+    
+    /// Quality boost for the ROI region (in quality points, 0-50)
+    /// This increases the quality/decreases the distance for blocks within the ROI.
+    /// Default: 10 (approximately 10% better quality)
+    public var qualityBoost: Float
+    
+    /// Feathering width for smooth quality transition at ROI edges (in pixels)
+    /// A value of 0 creates a hard edge, while larger values create a gradual transition.
+    /// Default: 16 pixels
+    public var featherWidth: Int
+    
+    /// Initialize region of interest configuration
+    /// - Parameters:
+    ///   - x: X coordinate of top-left corner
+    ///   - y: Y coordinate of top-left corner
+    ///   - width: Width of the region
+    ///   - height: Height of the region
+    ///   - qualityBoost: Quality improvement in points (0-50, default 10)
+    ///   - featherWidth: Transition width in pixels (default 16)
+    public init(
+        x: Int,
+        y: Int,
+        width: Int,
+        height: Int,
+        qualityBoost: Float = 10.0,
+        featherWidth: Int = 16
+    ) {
+        self.x = x
+        self.y = y
+        self.width = width
+        self.height = height
+        self.qualityBoost = max(0, min(50, qualityBoost))
+        self.featherWidth = max(0, featherWidth)
+    }
+    
+    /// Validate ROI against image dimensions
+    /// - Parameters:
+    ///   - imageWidth: Width of the image
+    ///   - imageHeight: Height of the image
+    /// - Throws: Error if ROI is invalid or out of bounds
+    func validate(imageWidth: Int, imageHeight: Int) throws {
+        // Check for non-positive dimensions
+        if width <= 0 || height <= 0 {
+            throw NSError(
+                domain: "RegionOfInterest",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "ROI width and height must be positive (got \(width)×\(height))"]
+            )
+        }
+        
+        // Check if ROI is completely out of bounds
+        if x >= imageWidth || y >= imageHeight {
+            throw NSError(
+                domain: "RegionOfInterest",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "ROI position (\(x), \(y)) is outside image bounds (\(imageWidth)×\(imageHeight))"]
+            )
+        }
+        
+        // Check if ROI extends beyond image bounds
+        if x + width > imageWidth || y + height > imageHeight {
+            throw NSError(
+                domain: "RegionOfInterest",
+                code: 3,
+                userInfo: [NSLocalizedDescriptionKey: "ROI extends beyond image bounds (ROI: \(x),\(y) \(width)×\(height), Image: \(imageWidth)×\(imageHeight))"]
+            )
+        }
+        
+        // Check for negative coordinates
+        if x < 0 || y < 0 {
+            throw NSError(
+                domain: "RegionOfInterest",
+                code: 4,
+                userInfo: [NSLocalizedDescriptionKey: "ROI coordinates must be non-negative (got \(x), \(y))"]
+            )
+        }
+    }
+    
+    /// Calculate distance multiplier for a pixel position
+    /// - Parameters:
+    ///   - px: X coordinate of the pixel
+    ///   - py: Y coordinate of the pixel
+    /// - Returns: Distance multiplier (1.0 = no change, <1.0 = higher quality, >1.0 = lower quality)
+    public func distanceMultiplier(px: Int, py: Int) -> Float {
+        // Check if pixel is completely outside ROI (including feather)
+        let maxX = x + width + featherWidth
+        let maxY = y + height + featherWidth
+        let minX = x - featherWidth
+        let minY = y - featherWidth
+        
+        if px < minX || px >= maxX || py < minY || py >= maxY {
+            return 1.0 // No change outside ROI
+        }
+        
+        // Check if pixel is fully inside ROI (no feathering)
+        if px >= x && px < x + width && py >= y && py < y + height {
+            // Full quality boost inside ROI
+            // Convert quality boost to distance multiplier
+            // Higher quality = lower distance, so boost of 10 ≈ 0.7× distance
+            return 1.0 / (1.0 + qualityBoost / 100.0)
+        }
+        
+        // Pixel is in the feather zone - calculate smooth transition
+        guard featherWidth > 0 else {
+            return 1.0 // No feathering, treat as outside
+        }
+        
+        // Calculate minimum distance from pixel to ROI rectangle
+        let dx: Float
+        if px < x {
+            dx = Float(x - px)
+        } else if px >= x + width {
+            dx = Float(px - (x + width - 1))
+        } else {
+            dx = 0
+        }
+        
+        let dy: Float
+        if py < y {
+            dy = Float(y - py)
+        } else if py >= y + height {
+            dy = Float(py - (y + height - 1))
+        } else {
+            dy = 0
+        }
+        
+        let distance = sqrt(dx * dx + dy * dy)
+        
+        // Smooth transition using cosine interpolation
+        let t = min(1.0, distance / Float(featherWidth))
+        let smoothT = (1.0 - cos(t * .pi)) / 2.0 // Smooth S-curve
+        
+        // Interpolate between full boost (inside) and no boost (outside)
+        let fullBoostMultiplier = 1.0 / (1.0 + qualityBoost / 100.0)
+        return fullBoostMultiplier + smoothT * (1.0 - fullBoostMultiplier)
+    }
+}
+
 /// Animation configuration for multi-frame encoding
 public struct AnimationConfig: Sendable {
     /// Frames per second (ticks per second numerator)
@@ -202,6 +353,14 @@ public struct EncodingOptions: Sendable {
     /// API to create animated JPEG XL files.
     public var animationConfig: AnimationConfig?
     
+    /// Region of interest configuration for selective quality encoding.
+    ///
+    /// When set, the specified region will be encoded at higher quality
+    /// than the rest of the image, with optional feathering for smooth
+    /// transitions. Useful for preserving detail in important areas
+    /// while reducing file size by compressing less important regions.
+    public var regionOfInterest: RegionOfInterest?
+    
     public init(
         mode: CompressionMode = .lossy(quality: 90),
         effort: EncodingEffort = .squirrel,
@@ -216,7 +375,8 @@ public struct EncodingOptions: Sendable {
         keepJPEG: Bool = false,
         adaptiveQuantization: Bool = true,
         useANS: Bool = false,
-        animationConfig: AnimationConfig? = nil
+        animationConfig: AnimationConfig? = nil,
+        regionOfInterest: RegionOfInterest? = nil
     ) {
         self.mode = mode
         self.effort = effort
@@ -232,6 +392,7 @@ public struct EncodingOptions: Sendable {
         self.adaptiveQuantization = adaptiveQuantization
         self.useANS = useANS
         self.animationConfig = animationConfig
+        self.regionOfInterest = regionOfInterest
     }
     
     /// Default high-quality encoding
