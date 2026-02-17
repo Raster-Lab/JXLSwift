@@ -29,6 +29,24 @@ struct ProgressivePass {
     }
 }
 
+/// Quality layer definition for responsive encoding
+struct QualityLayer {
+    /// Layer index (0 = lowest quality/preview, higher = better quality)
+    let layerIndex: Int
+    
+    /// Distance value for this layer (lower = higher quality)
+    let distance: Float
+    
+    /// Human-readable description of the layer
+    var description: String {
+        if layerIndex == 0 {
+            return "Preview layer (distance: \(String(format: "%.2f", distance)))"
+        } else {
+            return "Quality layer \(layerIndex) (distance: \(String(format: "%.2f", distance)))"
+        }
+    }
+}
+
 /// VarDCT encoder for lossy compression
 class VarDCTEncoder {
     private let hardware: HardwareCapabilities
@@ -97,6 +115,61 @@ class VarDCTEncoder {
             ProgressivePass(passIndex: 1, coefficientRange: 1..<16),  // Low-freq AC
             ProgressivePass(passIndex: 2, coefficientRange: 16..<64)  // High-freq AC
         ]
+    }
+    
+    /// Generate quality layers for responsive encoding
+    ///
+    /// Returns an array of QualityLayer structures defining progressive quality refinement.
+    /// Each layer uses a different distance (quantization) value, allowing decoders to
+    /// progressively improve image quality as more data arrives.
+    ///
+    /// - Parameter baseDistance: Base distance value (from quality setting)
+    /// - Returns: Array of quality layers (1 layer for non-responsive, N layers for responsive)
+    private func generateQualityLayers(baseDistance: Float) -> [QualityLayer] {
+        guard options.responsiveEncoding else {
+            // Non-responsive: single quality layer
+            return [QualityLayer(layerIndex: 0, distance: baseDistance)]
+        }
+        
+        // Get responsive configuration or use default
+        let config = options.responsiveConfig ?? ResponsiveConfig()
+        
+        // Use custom distances if provided
+        if !config.layerDistances.isEmpty {
+            return config.layerDistances.enumerated().map { index, distance in
+                QualityLayer(layerIndex: index, distance: distance)
+            }
+        }
+        
+        // Auto-generate quality layers based on layer count
+        // Strategy: distribute distances logarithmically from high (preview) to low (final)
+        // Layer 0: Preview with significantly higher distance (lower quality)
+        // Middle layers: Progressively lower distances
+        // Final layer: Base distance (target quality)
+        
+        var layers: [QualityLayer] = []
+        let layerCount = config.layerCount
+        
+        // Calculate distance range
+        // Preview layer should be 4-8x the base distance (much lower quality for fast preview)
+        let previewMultiplier: Float = 6.0
+        let maxDistance = min(baseDistance * previewMultiplier, 15.0) // Cap at distance 15
+        let minDistance = baseDistance
+        
+        for i in 0..<layerCount {
+            let progress = Float(layerCount - 1 - i) / Float(layerCount - 1)
+            // Use exponential distribution for better perceptual quality steps
+            let distance: Float
+            if layerCount == 1 {
+                distance = baseDistance
+            } else {
+                // Exponential interpolation: distance = max * (min/max)^(1-progress)
+                distance = maxDistance * pow(minDistance / maxDistance, 1.0 - progress)
+            }
+            layers.append(QualityLayer(layerIndex: i, distance: distance))
+        }
+        
+        return layers
     }
     
     /// Encode frame using VarDCT mode
