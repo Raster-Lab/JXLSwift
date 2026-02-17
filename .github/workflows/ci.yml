@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: read
+  checks: write
 
 jobs:
   build:
@@ -44,4 +45,45 @@ jobs:
         run: swift build
 
       - name: Test
-        run: swift test --parallel --skip Performance --skip Benchmark --skip MetalComputeTests
+        run: swift test --parallel --skip Performance --skip Benchmark --skip MetalComputeTests --xunit-output test-results.xml
+
+      - name: Publish test report
+        uses: mikepenz/action-junit-report@v5
+        if: always()
+        with:
+          report_paths: test-results.xml
+          check_name: Test Report (${{ matrix.name }})
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-${{ matrix.runner }}
+          path: test-results.xml
+
+      - name: Generate job summary
+        if: always()
+        run: |
+          echo "## Build & Test Results — ${{ matrix.name }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Item | Detail |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|------|--------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Platform** | ${{ matrix.name }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Runner** | ${{ matrix.runner }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Swift** | ${{ matrix.swift-version }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f test-results.xml ]; then
+            tests=$(grep -c '<testcase' test-results.xml || echo "0")
+            failures=$(grep -c '<failure' test-results.xml || echo "0")
+            echo "| **Tests run** | $tests |" >> "$GITHUB_STEP_SUMMARY"
+            echo "| **Failures** | $failures |" >> "$GITHUB_STEP_SUMMARY"
+            if [ "$failures" -eq 0 ]; then
+              echo "" >> "$GITHUB_STEP_SUMMARY"
+              echo "✅ All tests passed." >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "" >> "$GITHUB_STEP_SUMMARY"
+              echo "❌ $failures test(s) failed." >> "$GITHUB_STEP_SUMMARY"
+            fi
+          else
+            echo "⚠️ No test results file found." >> "$GITHUB_STEP_SUMMARY"
+          fi
