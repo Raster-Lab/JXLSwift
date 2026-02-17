@@ -997,7 +997,7 @@ class VarDCTEncoder {
                     height: height
                 )
                 
-                // Compute adaptive quantisation scale
+                // Compute adaptive quantization scale
                 let activity: Float
                 if useAdaptive {
                     let rawActivity = computeBlockActivity(block: block)
@@ -1063,7 +1063,7 @@ class VarDCTEncoder {
                         ))
                     }
                     
-                    // Write per-block quantisation field (only in first pass)
+                    // Write per-block quantization field (only in first pass)
                     if pass.passIndex == 0 && useAdaptive {
                         writer.writeVarint(
                             UInt64(round(allActivities[blockIdx] * VarDCTEncoder.qfScaleFactor))
@@ -1557,7 +1557,7 @@ class VarDCTEncoder {
     /// two-context rANS encoder (context 0 = DC, context 1 = AC).
     ///
     /// - Parameters:
-    ///   - allBlocks: All quantised 8×8 blocks in raster order.
+    ///   - allBlocks: All quantized 8×8 blocks in raster order.
     ///   - dcResiduals: DC prediction residuals for each block.
     ///   - coefficientRange: Range of coefficient indices to encode (in zigzag order)
     /// - Returns: ANS-compressed coefficient data.
