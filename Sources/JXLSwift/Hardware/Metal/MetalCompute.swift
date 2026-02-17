@@ -352,6 +352,254 @@ public enum MetalCompute {
         let resultPointer = outputBuffer.contents().assumingMemoryBound(to: Float.self)
         return Array(UnsafeBufferPointer(start: resultPointer, count: quantized.count))
     }
+    
+    // MARK: - Async Operations with Double-Buffering
+    
+    /// Asynchronously perform 2D DCT on 8×8 blocks using Metal GPU with completion handler
+    ///
+    /// - Parameters:
+    ///   - inputData: Input spatial domain data (must be width×height floats)
+    ///   - width: Image width (must be multiple of 8)
+    ///   - height: Image height (must be multiple of 8)
+    ///   - completion: Completion handler called when operation finishes with result or nil on error
+    public static func dct8x8Async(
+        inputData: [Float],
+        width: Int,
+        height: Int,
+        completion: @escaping @Sendable ([Float]?) -> Void
+    ) {
+        guard MetalOps.isAvailable else {
+            completion(nil)
+            return
+        }
+        guard width % 8 == 0 && height % 8 == 0 else {
+            completion(nil)
+            return
+        }
+        guard inputData.count == width * height else {
+            completion(nil)
+            return
+        }
+        guard let commandQueue = MetalOps.commandQueue() else {
+            completion(nil)
+            return
+        }
+        guard let pipeline = MetalOps.computePipelineState(for: "dct_8x8") else {
+            completion(nil)
+            return
+        }
+        
+        // Create input buffer
+        guard let inputBuffer = MetalOps.makeBuffer(
+            from: inputData,
+            length: inputData.count * MemoryLayout<Float>.stride
+        ) else {
+            completion(nil)
+            return
+        }
+        
+        // Create output buffer
+        guard let outputBuffer = MetalOps.makeBuffer(
+            length: inputData.count * MemoryLayout<Float>.stride
+        ) else {
+            completion(nil)
+            return
+        }
+        
+        // Create command buffer
+        guard let commandBuffer = commandQueue.makeCommandBuffer(),
+              let computeEncoder = commandBuffer.makeComputeCommandEncoder() else {
+            completion(nil)
+            return
+        }
+        
+        // Encode command
+        computeEncoder.setComputePipelineState(pipeline)
+        computeEncoder.setBuffer(inputBuffer, offset: 0, index: 0)
+        computeEncoder.setBuffer(outputBuffer, offset: 0, index: 1)
+        
+        var widthU = UInt32(width)
+        var heightU = UInt32(height)
+        computeEncoder.setBytes(&widthU, length: MemoryLayout<UInt32>.stride, index: 2)
+        computeEncoder.setBytes(&heightU, length: MemoryLayout<UInt32>.stride, index: 3)
+        
+        // Calculate threadgroup configuration for 8×8 blocks
+        let blocksX = width / 8
+        let blocksY = height / 8
+        let (threadsPerThreadgroup, threadgroupsPerGrid) = MetalOps.calculateThreadgroups2D(
+            pipeline: pipeline,
+            width: blocksX,
+            height: blocksY
+        )
+        
+        computeEncoder.dispatchThreadgroups(
+            threadgroupsPerGrid,
+            threadsPerThreadgroup: threadsPerThreadgroup
+        )
+        
+        computeEncoder.endEncoding()
+        
+        // Add completion handler (async execution)
+        commandBuffer.addCompletedHandler { _ in
+            let resultPointer = outputBuffer.contents().assumingMemoryBound(to: Float.self)
+            let result = Array(UnsafeBufferPointer(start: resultPointer, count: width * height))
+            completion(result)
+        }
+        
+        commandBuffer.commit()
+        // Note: Does NOT wait - returns immediately
+    }
+}
+
+// MARK: - Buffer Pool for Double-Buffering
+
+/// Metal buffer pool for efficient reuse in double-buffering scenarios
+@available(macOS 13.0, iOS 16.0, tvOS 16.0, *)
+public final class MetalBufferPool: @unchecked Sendable {
+    private let device: MTLDevice
+    private var availableBuffers: [Int: [MTLBuffer]] = [:]
+    private let lock = NSLock()
+    private let minBufferSize = 1024 // Minimum 1 KB
+    
+    /// Initialize buffer pool with Metal device
+    ///
+    /// - Parameter device: Metal device to allocate buffers from
+    public init(device: MTLDevice) {
+        self.device = device
+    }
+    
+    /// Acquire a buffer from the pool or create new one
+    ///
+    /// - Parameter length: Required buffer length in bytes
+    /// - Returns: A Metal buffer of at least the requested size, or nil on failure
+    public func acquireBuffer(length: Int) -> MTLBuffer? {
+        lock.lock()
+        defer { lock.unlock() }
+        
+        let actualLength = max(length, minBufferSize)
+        
+        // Check if we have a buffer of this size available
+        if let buffer = availableBuffers[actualLength]?.popLast() {
+            return buffer
+        }
+        
+        // Create new buffer
+        return device.makeBuffer(length: actualLength, options: .storageModeShared)
+    }
+    
+    /// Return a buffer to the pool for reuse
+    ///
+    /// - Parameter buffer: Buffer to return to pool
+    public func releaseBuffer(_ buffer: MTLBuffer) {
+        lock.lock()
+        defer { lock.unlock() }
+        
+        let length = buffer.length
+        if availableBuffers[length] == nil {
+            availableBuffers[length] = []
+        }
+        
+        // Limit pool size per buffer size to avoid excessive memory usage
+        if availableBuffers[length]!.count < 4 {
+            availableBuffers[length]!.append(buffer)
+        }
+    }
+    
+    /// Clear all cached buffers
+    public func clear() {
+        lock.lock()
+        defer { lock.unlock()  }
+        availableBuffers.removeAll()
+    }
+    
+    /// Get total number of cached buffers
+    public var totalBuffers: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return availableBuffers.values.reduce(0) { $0 + $1.count }
+    }
+}
+
+// MARK: - Async Pipeline Manager
+
+/// Manager for async Metal operations with double-buffering
+@available(macOS 13.0, iOS 16.0, tvOS 16.0, *)
+public final class MetalAsyncPipeline: @unchecked Sendable {
+    private let bufferPool: MetalBufferPool
+    private let commandQueue: MTLCommandQueue
+    private var isProcessing = false
+    private let lock = NSLock()
+    
+    /// Initialize async pipeline
+    ///
+    /// - Parameters:
+    ///   - device: Metal device to use
+    ///   - commandQueue: Command queue for GPU operations
+    public init?(device: MTLDevice, commandQueue: MTLCommandQueue) {
+        self.bufferPool = MetalBufferPool(device: device)
+        self.commandQueue = commandQueue
+    }
+    
+    /// Convenience initializer using default Metal device
+    public convenience init?() {
+        guard let device = MetalOps.device(),
+              let queue = MetalOps.commandQueue() else {
+            return nil
+        }
+        self.init(device: device, commandQueue: queue)
+    }
+    
+    /// Process DCT on multiple batches with double-buffering
+    ///
+    /// - Parameters:
+    ///   - batches: Array of batches to process (each batch is inputData, width, height)
+    ///   - completion: Called when all batches complete with array of results (nil entries on error)
+    public func processDCTBatches(
+        batches: [(data: [Float], width: Int, height: Int)],
+        completion: @escaping @Sendable ([[Float]?]) -> Void
+    ) {
+        lock.lock()
+        guard !isProcessing else {
+            lock.unlock()
+            // Already processing - fallback to sequential
+            completion(Array(repeating: nil, count: batches.count))
+            return
+        }
+        isProcessing = true
+        lock.unlock()
+        
+        var results: [[Float]?] = Array(repeating: nil, count: batches.count)
+        var completedCount = 0
+        let totalBatches = batches.count
+        let resultsLock = NSLock()
+        
+        // Process batches with pipelining
+        for (index, batch) in batches.enumerated() {
+            MetalCompute.dct8x8Async(
+                inputData: batch.data,
+                width: batch.width,
+                height: batch.height
+            ) { result in
+                resultsLock.lock()
+                results[index] = result
+                completedCount += 1
+                let isDone = completedCount == totalBatches
+                resultsLock.unlock()
+                
+                if isDone {
+                    self.lock.lock()
+                    self.isProcessing = false
+                    self.lock.unlock()
+                    completion(results)
+                }
+            }
+        }
+    }
+    
+    /// Clean up cached buffers
+    public func cleanup() {
+        bufferPool.clear()
+    }
 }
 
 #endif // canImport(Metal)
