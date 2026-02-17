@@ -344,7 +344,7 @@
 - [x] Progressive encoding (DC → AC refinement passes)
 - [ ] Responsive encoding (progressive by quality layer)
 - [ ] Multi-frame / animation support
-- [x] Alpha channel encoding (separate or premultiplied)
+- [x] Alpha channel encoding (separate or premultiplied) — **Pipeline Complete**
 - [ ] Extra channels (depth, thermal, spectral)
 - [x] HDR support: PQ and HLG transfer functions
 - [x] Wide gamut: Display P3, Rec. 2020 colour spaces
@@ -359,7 +359,7 @@
 
 - [x] Progressive: first pass produces viewable low-resolution image
 - [ ] Animation: multi-frame round-trip with correct timing
-- [x] Alpha: premultiplied and straight alpha modes
+- [x] Alpha: premultiplied and straight alpha modes — **13 comprehensive tests**
 - [x] HDR: PQ and HLG metadata preserved
 - [x] Wide gamut: P3 and Rec.2020 primaries encoded correctly
 - [ ] Extra channels round-trip

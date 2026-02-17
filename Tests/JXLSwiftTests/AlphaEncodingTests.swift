@@ -8,6 +8,10 @@ import XCTest
 
 final class AlphaEncodingTests: XCTestCase {
     
+    // Alpha gradient scale factor for 16x16 test images
+    // Calculated as: 65535 / 30 ≈ 2184 (to span full 16-bit range over 30 positions)
+    private let alphaGradientScale: UInt16 = 2184
+    
     // MARK: - VarDCT (Lossy) Alpha Encoding Tests
     
     func testVarDCT_RGBAUInt8_StraightAlpha_ProducesValidOutput() throws {
@@ -69,7 +73,7 @@ final class AlphaEncodingTests: XCTestCase {
         // Fill with premultiplied alpha pattern
         for y in 0..<16 {
             for x in 0..<16 {
-                let alpha = UInt16(min(65535, (x + y) * 2184))  // Clamp to avoid overflow
+                let alpha = UInt16(min(65535, (x + y) * Int(alphaGradientScale)))  // Gradient scale
                 // RGB values are premultiplied by alpha
                 let alphaFraction = Int(alpha)
                 let r = UInt16((x * 4096 * alphaFraction) / 65535)
@@ -273,7 +277,7 @@ final class AlphaEncodingTests: XCTestCase {
         for y in 0..<16 {
             for x in 0..<16 {
                 // Alpha value scaled appropriately for 16-bit
-                let alpha = UInt16(min(65535, (x + y) * 2184))  // Clamp to avoid overflow
+                let alpha = UInt16(min(65535, (x + y) * Int(alphaGradientScale)))  // Gradient scale
                 // RGB values are premultiplied by alpha fraction
                 let alphaFraction = Int(alpha)
                 let r = UInt16((x * 4096 * alphaFraction) / 65535)
