@@ -1,5 +1,11 @@
 # JXLSwift
 
+[![CI](https://github.com/Raster-Lab/JXLSwift/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Raster-Lab/JXLSwift/actions/workflows/ci.yml)
+[![Swift 6.2](https://img.shields.io/badge/Swift-6.2-orange.svg)](https://swift.org)
+[![Platforms](https://img.shields.io/badge/Platforms-macOS%20|%20iOS%20|%20tvOS%20|%20watchOS%20|%20visionOS-blue.svg)](https://developer.apple.com)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![SPM Compatible](https://img.shields.io/badge/SPM-Compatible-brightgreen.svg)](https://swift.org/package-manager/)
+
 A native Swift implementation of the JPEG XL (ISO/IEC 18181) compression codec, optimized for Apple Silicon hardware.
 
 ## Overview
