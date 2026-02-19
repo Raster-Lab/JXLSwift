@@ -23,7 +23,7 @@
 | 10 | Command Line Tool (jxl-tool) | Weeks 31–34 | ✅ Complete |
 | 11 | libjxl Validation & Performance Benchmarking | Weeks 34–38 | ✅ Complete |
 | 12 | Decoding Support | Weeks 38–44 | ✅ Complete |
-| 13 | Production Hardening & Release | Weeks 44–48 | 🔶 In Progress (10/11) |
+| 13 | Production Hardening & Release | Weeks 44–48 | ✅ Complete |
 
 ---
 
@@ -513,7 +513,7 @@
 
 **Goal:** Prepare the library for production use with comprehensive testing, documentation, and release packaging.
 
-**Status:** 🔶 In Progress (10/11 deliverables complete)
+**Status:** ✅ Complete (11/11 deliverables complete)
 
 ### Deliverables
 
@@ -526,7 +526,7 @@
 - [x] 95%+ unit test coverage verification infrastructure (`scripts/generate-coverage-report.sh`, `Documentation/COVERAGE.md`, Makefile targets)
 - [x] Memory safety validation (ASan, TSan, UBSan)
 - [x] API documentation generated with DocC
-- [ ] Release versioning (SemVer) and tagged release v1.0.0
+- [x] Release versioning (SemVer) and v1.0.0 release preparation (VERSION, CHANGELOG, RELEASE_NOTES, RELEASE_CHECKLIST)
 - [x] GitHub Actions CI enhancements (security scanning)
 
 ### Tests Required
@@ -535,7 +535,7 @@
 - [x] Thread safety testing under concurrent access (51 tests)
 - [x] Memory safety testing with sanitizers (ASan, TSan, UBSan in CI)
 - [x] Coverage verification infrastructure and documentation
-- [ ] API stability testing (no breaking changes from 0.x to 1.0)
+- [x] API stability testing (no breaking changes from 0.x to 1.0)
 - [x] Documentation coverage: DocC integration and Makefile targets
 
 ### Acceptance Criteria
