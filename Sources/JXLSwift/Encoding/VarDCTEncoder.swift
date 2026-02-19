@@ -183,34 +183,45 @@ class VarDCTEncoder {
         
         // Write VarDCT mode indicator
         writer.writeBit(false) // Use VarDCT mode
-        
-        // Convert to YCbCr color space for better compression
-        let ycbcr = convertToYCbCr(frame: frame)
-        
-        // Extract all channels as 2D float arrays
-        let channelArrays = (0..<ycbcr.channels).map { channel in
-            extractChannel(frame: ycbcr, channel: channel)
+
+        // Write VarDCT header: distance (IEEE 754) + encoding flags + pixel type
+        writer.flushByte()
+        writer.writeU32(distance.bitPattern)
+        var flags: UInt8 = 0
+        if options.adaptiveQuantization { flags |= 0x01 }
+        if options.useANS { flags |= 0x02 }
+        writer.writeByte(flags)
+        // Pixel type byte so the decoder can derive the CbCr offset
+        switch frame.pixelType {
+        case .uint8:   writer.writeByte(0)
+        case .uint16:  writer.writeByte(1)
+        case .float32: writer.writeByte(2)
         }
+
+        // Convert to YCbCr colour space as float channel arrays.
+        // Using float arrays directly avoids uint8 clamping that would
+        // destroy Cb/Cr precision for low-dynamic-range pixel types.
+        let channelArrays = convertToYCbCrFloat(frame: frame)
         
         // Compute luma DCT blocks for CfL prediction (only if we have chroma)
         let lumaDCTBlocks: [[[[Float]]]]?
-        if ycbcr.channels >= 3 {
+        if frame.channels >= 3 {
             // Use async Metal pipeline for better performance on large images
             lumaDCTBlocks = computeDCTBlocksAsync(
                 data: channelArrays[0],
-                width: ycbcr.width,
-                height: ycbcr.height
+                width: frame.width,
+                height: frame.height
             )
         } else {
             lumaDCTBlocks = nil
         }
         
         // Process each channel with DCT
-        for channel in 0..<ycbcr.channels {
+        for channel in 0..<frame.channels {
             let encoded = try encodeChannelDCT(
                 data: channelArrays[channel],
-                width: ycbcr.width,
-                height: ycbcr.height,
+                width: frame.width,
+                height: frame.height,
                 channel: channel,
                 lumaDCTBlocks: (channel > 0) ? lumaDCTBlocks : nil
             )
@@ -588,12 +599,67 @@ class VarDCTEncoder {
         
         for y in 0..<frame.height {
             for x in 0..<frame.width {
-                let value = frame.getPixel(x: x, y: y, channel: channel)
-                channelData[y][x] = Float(value) / 65535.0
+                channelData[y][x] = Float(frame.getPixel(x: x, y: y, channel: channel))
             }
         }
         
         return channelData
+    }
+
+    /// Convert an RGB frame to YCbCr as float channel arrays.
+    ///
+    /// Unlike ``convertToYCbCr(frame:)`` this method returns float arrays
+    /// directly, avoiding uint8 clamping that would destroy Cb/Cr precision.
+    /// The normalisation uses 65535 for consistency with
+    /// ``extractChannel(frame:channel:)``.
+    ///
+    /// For single-channel images, returns the channel as-is.
+    ///
+    /// - Parameter frame: Input RGB frame.
+    /// - Returns: Array of 2D float arrays, one per channel.
+    func convertToYCbCrFloat(frame: ImageFrame) -> [[[Float]]] {
+        guard frame.channels >= 3 else {
+            return (0..<frame.channels).map { extractChannel(frame: frame, channel: $0) }
+        }
+
+        let w = frame.width
+        let h = frame.height
+        // Offset for Cb/Cr centring — half the maximum getPixel value
+        let offset = VarDCTEncoder.cbcrOffset(for: frame.pixelType)
+
+        var yArr = [[Float]](repeating: [Float](repeating: 0, count: w), count: h)
+        var cbArr = [[Float]](repeating: [Float](repeating: 0, count: w), count: h)
+        var crArr = [[Float]](repeating: [Float](repeating: 0, count: w), count: h)
+
+        for y in 0..<h {
+            for x in 0..<w {
+                let r = Float(frame.getPixel(x: x, y: y, channel: 0))
+                let g = Float(frame.getPixel(x: x, y: y, channel: 1))
+                let b = Float(frame.getPixel(x: x, y: y, channel: 2))
+
+                yArr[y][x]  =  0.299    * r + 0.587    * g + 0.114    * b
+                cbArr[y][x] = -0.168736 * r - 0.331264 * g + 0.5      * b + offset
+                crArr[y][x] =  0.5      * r - 0.418688 * g - 0.081312 * b + offset
+            }
+        }
+
+        var result = [yArr, cbArr, crArr]
+        // Preserve extra channels (alpha, etc.)
+        for c in 3..<frame.channels {
+            result.append(extractChannel(frame: frame, channel: c))
+        }
+        return result
+    }
+
+    /// Cb/Cr offset for centring chroma around zero.
+    ///
+    /// Returns half the maximum `getPixel` value for the given pixel type.
+    static func cbcrOffset(for pixelType: PixelType) -> Float {
+        switch pixelType {
+        case .uint8:   return 128.0
+        case .uint16:  return 32768.0
+        case .float32: return 32768.0
+        }
     }
     
     // MARK: - Chroma-from-Luma (CfL) Prediction
@@ -1753,6 +1819,9 @@ class VarDCTEncoder {
         }
         
         // Encode AC coefficients with run-length encoding
+        // Format: alternating (zeroRun, coefficient) pairs
+        // zeroRun is always written (even when 0) so the decoder can
+        // unambiguously distinguish runs from coefficients.
         var zeroRun = 0
         let acStart = max(1, startIdx)
         for i in acStart..<endIdx {
@@ -1761,11 +1830,9 @@ class VarDCTEncoder {
             if coeff == 0 {
                 zeroRun += 1
             } else {
-                // Encode zero run
-                if zeroRun > 0 {
-                    writer.writeVarint(UInt64(zeroRun))
-                    zeroRun = 0
-                }
+                // Write zero run (always, even when 0)
+                writer.writeVarint(UInt64(zeroRun))
+                zeroRun = 0
                 
                 // Encode coefficient
                 writer.writeVarint(encodeSignedValue(Int32(coeff)))
