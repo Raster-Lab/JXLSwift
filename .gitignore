@@ -22,6 +22,11 @@ DerivedData/
 # Test outputs
 *.profdata
 *.profraw
+coverage.lcov
+coverage.json
+coverage_report.txt
+coverage_report/
+test-results.xml
 
 # Temporary files
 *.tmp

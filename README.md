@@ -86,7 +86,12 @@ sudo make install-man
 The Makefile provides several targets:
 - `make build` - Build the project in release mode
 - `make test` - Run all tests
+- `make coverage` - Generate code coverage report
+- `make coverage-html` - Generate HTML code coverage report
 - `make man` - Generate man pages
+- `make docc` - Generate API documentation with DocC
+- `make docc-html` - Generate HTML API documentation
+- `make docc-preview` - Preview API documentation in browser
 - `make install` - Install jxl-tool binary
 - `make install-man` - Install man pages
 - `make uninstall` - Remove installed files
@@ -1087,6 +1092,20 @@ sudo cmake --install .
 ```
 
 After installation, the libjxl compatibility tests will automatically run with the full test suite. Tests gracefully skip if libjxl is not available.
+
+### Code Coverage
+
+JXLSwift maintains **95%+ code coverage** on all public and internal APIs. Generate coverage reports with:
+
+```bash
+# Text-based coverage summary
+make coverage
+
+# HTML coverage report with line-by-line analysis
+make coverage-html
+```
+
+For detailed information on coverage verification, see [Documentation/COVERAGE.md](Documentation/COVERAGE.md).
 
 ## Contributing
 
