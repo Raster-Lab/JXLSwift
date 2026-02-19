@@ -543,4 +543,506 @@ final class DecoderTests: XCTestCase {
             _ = try? decoder.decode(encoded)
         }
     }
+
+    // MARK: - Metadata Extraction — parseContainer
+
+    func testParseContainer_BareCodestream_ReturnsContainerWithNoMetadata() throws {
+        let frame = makeGradientFrame(width: 4, height: 4, channels: 1)
+        let codestream = try encodeLossless(frame)
+
+        let decoder = JXLDecoder()
+        let container = try decoder.parseContainer(codestream)
+
+        XCTAssertEqual(container.codestream, codestream)
+        XCTAssertNil(container.exif)
+        XCTAssertNil(container.xmp)
+        XCTAssertNil(container.iccProfile)
+        XCTAssertNil(container.frameIndex)
+    }
+
+    func testParseContainer_ContainerWithCodestreamOnly() throws {
+        let frame = makeGradientFrame(width: 4, height: 4, channels: 1)
+        let codestream = try encodeLossless(frame)
+
+        let original = JXLContainer(codestream: codestream)
+        let serialised = original.serialise()
+
+        let decoder = JXLDecoder()
+        let parsed = try decoder.parseContainer(serialised)
+
+        XCTAssertEqual(parsed.codestream, codestream)
+        XCTAssertNil(parsed.exif)
+        XCTAssertNil(parsed.xmp)
+        XCTAssertNil(parsed.iccProfile)
+    }
+
+    func testParseContainer_WithEXIF() throws {
+        let frame = makeGradientFrame(width: 4, height: 4, channels: 1)
+        let codestream = try encodeLossless(frame)
+
+        let exifData = EXIFBuilder.createWithOrientation(6)
+        let container = JXLContainerBuilder(codestream: codestream)
+            .withEXIF(exifData)
+            .build()
+        let serialised = container.serialise()
+
+        let decoder = JXLDecoder()
+        let parsed = try decoder.parseContainer(serialised)
+
+        XCTAssertEqual(parsed.codestream, codestream)
+        XCTAssertNotNil(parsed.exif)
+        XCTAssertEqual(parsed.exif?.data, exifData)
+    }
+
+    func testParseContainer_WithXMP() throws {
+        let frame = makeGradientFrame(width: 4, height: 4, channels: 1)
+        let codestream = try encodeLossless(frame)
+
+        let xmpString = "<x:xmpmeta><rdf:RDF><rdf:Description/></rdf:RDF></x:xmpmeta>"
+        let container = JXLContainerBuilder(codestream: codestream)
+            .withXMP(xmlString: xmpString)
+            .build()
+        let serialised = container.serialise()
+
+        let decoder = JXLDecoder()
+        let parsed = try decoder.parseContainer(serialised)
+
+        XCTAssertEqual(parsed.codestream, codestream)
+        XCTAssertNotNil(parsed.xmp)
+        XCTAssertEqual(parsed.xmp?.data, Data(xmpString.utf8))
+    }
+
+    func testParseContainer_WithICCProfile() throws {
+        let frame = makeGradientFrame(width: 4, height: 4, channels: 1)
+        let codestream = try encodeLossless(frame)
+
+        let iccData = Data([0x00, 0x00, 0x01, 0x00, 0x41, 0x44, 0x42, 0x45])
+        let container = JXLContainerBuilder(codestream: codestream)
+            .withICCProfile(iccData)
+            .build()
+        let serialised = container.serialise()
+
+        let decoder = JXLDecoder()
+        let parsed = try decoder.parseContainer(serialised)
+
+        XCTAssertEqual(parsed.codestream, codestream)
+        XCTAssertNotNil(parsed.iccProfile)
+        XCTAssertEqual(parsed.iccProfile?.data, iccData)
+    }
+
+    func testParseContainer_WithAllMetadata() throws {
+        let frame = makeGradientFrame(width: 4, height: 4, channels: 1)
+        let codestream = try encodeLossless(frame)
+
+        let exifData = EXIFBuilder.createWithOrientation(3)
+        let xmpString = "<x:xmpmeta/>"
+        let iccData = Data([0xDE, 0xAD, 0xBE, 0xEF])
+
+        let container = JXLContainerBuilder(codestream: codestream)
+            .withEXIF(exifData)
+            .withXMP(xmlString: xmpString)
+            .withICCProfile(iccData)
+            .build()
+        let serialised = container.serialise()
+
+        let decoder = JXLDecoder()
+        let parsed = try decoder.parseContainer(serialised)
+
+        XCTAssertEqual(parsed.codestream, codestream)
+        XCTAssertEqual(parsed.exif?.data, exifData)
+        XCTAssertEqual(parsed.xmp?.data, Data(xmpString.utf8))
+        XCTAssertEqual(parsed.iccProfile?.data, iccData)
+    }
+
+    func testParseContainer_WithFrameIndex() throws {
+        let frame = makeGradientFrame(width: 4, height: 4, channels: 1)
+        let codestream = try encodeLossless(frame)
+
+        let entries = [
+            FrameIndexEntry(frameNumber: 0, byteOffset: 0, duration: 100),
+            FrameIndexEntry(frameNumber: 1, byteOffset: 256, duration: 200),
+        ]
+        let container = JXLContainerBuilder(codestream: codestream)
+            .withFrameIndex(entries)
+            .build()
+        let serialised = container.serialise()
+
+        let decoder = JXLDecoder()
+        let parsed = try decoder.parseContainer(serialised)
+
+        XCTAssertNotNil(parsed.frameIndex)
+        XCTAssertEqual(parsed.frameIndex?.entries.count, 2)
+        XCTAssertEqual(parsed.frameIndex?.entries[0].frameNumber, 0)
+        XCTAssertEqual(parsed.frameIndex?.entries[0].byteOffset, 0)
+        XCTAssertEqual(parsed.frameIndex?.entries[0].duration, 100)
+        XCTAssertEqual(parsed.frameIndex?.entries[1].frameNumber, 1)
+        XCTAssertEqual(parsed.frameIndex?.entries[1].byteOffset, 256)
+        XCTAssertEqual(parsed.frameIndex?.entries[1].duration, 200)
+    }
+
+    func testParseContainer_WithLevel10() throws {
+        let frame = makeGradientFrame(width: 4, height: 4, channels: 1)
+        let codestream = try encodeLossless(frame)
+
+        let container = JXLContainerBuilder(codestream: codestream)
+            .withLevel(10)
+            .build()
+        let serialised = container.serialise()
+
+        let decoder = JXLDecoder()
+        let parsed = try decoder.parseContainer(serialised)
+
+        XCTAssertEqual(parsed.level, 10)
+    }
+
+    func testParseContainer_EmptyData_ThrowsError() {
+        let decoder = JXLDecoder()
+        XCTAssertThrowsError(try decoder.parseContainer(Data())) { error in
+            XCTAssertEqual(error as? DecoderError, DecoderError.truncatedData)
+        }
+    }
+
+    func testParseContainer_NoCodestreamBox_ThrowsError() {
+        let decoder = JXLDecoder()
+        // Build a container with only signature and ftyp, no jxlc
+        let sigBox = Box(
+            type: .jxlSignature,
+            payload: Data(JXLContainer.signaturePayload)
+        )
+        let ftypBox = Box(
+            type: .fileType,
+            payload: JXLContainer.fileTypePayload(level: 5)
+        )
+        var data = Data()
+        data.append(sigBox.serialise())
+        data.append(ftypBox.serialise())
+
+        XCTAssertThrowsError(try decoder.parseContainer(data)) { error in
+            guard let decoderError = error as? DecoderError,
+                  case .invalidContainer = decoderError else {
+                XCTFail("Expected invalidContainer error, got \(error)")
+                return
+            }
+        }
+    }
+
+    func testParseContainer_InvalidBoxSize_ThrowsError() {
+        let decoder = JXLDecoder()
+        // Box with size = 0 (invalid)
+        let data = Data([0x00, 0x00, 0x00, 0x00, 0x4A, 0x58, 0x4C, 0x20])
+        XCTAssertThrowsError(try decoder.parseContainer(data)) { error in
+            guard let decoderError = error as? DecoderError,
+                  case .invalidContainer = decoderError else {
+                XCTFail("Expected invalidContainer error, got \(error)")
+                return
+            }
+        }
+    }
+
+    // MARK: - Metadata Extraction — extractMetadata
+
+    func testExtractMetadata_BareCodestream_AllNil() throws {
+        let frame = makeGradientFrame(width: 4, height: 4, channels: 1)
+        let codestream = try encodeLossless(frame)
+
+        let decoder = JXLDecoder()
+        let (exif, xmp, icc) = try decoder.extractMetadata(codestream)
+
+        XCTAssertNil(exif)
+        XCTAssertNil(xmp)
+        XCTAssertNil(icc)
+    }
+
+    func testExtractMetadata_WithEXIF() throws {
+        let frame = makeGradientFrame(width: 4, height: 4, channels: 1)
+        let codestream = try encodeLossless(frame)
+
+        let exifData = EXIFBuilder.createWithOrientation(8)
+        let container = JXLContainerBuilder(codestream: codestream)
+            .withEXIF(exifData)
+            .build()
+        let serialised = container.serialise()
+
+        let decoder = JXLDecoder()
+        let (exif, xmp, icc) = try decoder.extractMetadata(serialised)
+
+        XCTAssertNotNil(exif)
+        XCTAssertEqual(exif?.data, exifData)
+        XCTAssertNil(xmp)
+        XCTAssertNil(icc)
+    }
+
+    func testExtractMetadata_WithXMP() throws {
+        let frame = makeGradientFrame(width: 4, height: 4, channels: 1)
+        let codestream = try encodeLossless(frame)
+
+        let xmpString = "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF/></x:xmpmeta>"
+        let container = JXLContainerBuilder(codestream: codestream)
+            .withXMP(xmlString: xmpString)
+            .build()
+        let serialised = container.serialise()
+
+        let decoder = JXLDecoder()
+        let (exif, xmp, icc) = try decoder.extractMetadata(serialised)
+
+        XCTAssertNil(exif)
+        XCTAssertNotNil(xmp)
+        XCTAssertEqual(String(data: xmp!.data, encoding: .utf8), xmpString)
+        XCTAssertNil(icc)
+    }
+
+    func testExtractMetadata_WithICCProfile() throws {
+        let frame = makeGradientFrame(width: 4, height: 4, channels: 1)
+        let codestream = try encodeLossless(frame)
+
+        let iccData = Data(repeating: 0xAB, count: 128)
+        let container = JXLContainerBuilder(codestream: codestream)
+            .withICCProfile(iccData)
+            .build()
+        let serialised = container.serialise()
+
+        let decoder = JXLDecoder()
+        let (exif, xmp, icc) = try decoder.extractMetadata(serialised)
+
+        XCTAssertNil(exif)
+        XCTAssertNil(xmp)
+        XCTAssertNotNil(icc)
+        XCTAssertEqual(icc?.data, iccData)
+    }
+
+    func testExtractMetadata_AllMetadata() throws {
+        let frame = makeGradientFrame(width: 4, height: 4, channels: 1)
+        let codestream = try encodeLossless(frame)
+
+        let exifData = EXIFBuilder.createWithOrientation(1)
+        let xmpString = "<xmp/>"
+        let iccData = Data([0x01, 0x02, 0x03])
+
+        let container = JXLContainerBuilder(codestream: codestream)
+            .withEXIF(exifData)
+            .withXMP(xmlString: xmpString)
+            .withICCProfile(iccData)
+            .build()
+        let serialised = container.serialise()
+
+        let decoder = JXLDecoder()
+        let (exif, xmp, icc) = try decoder.extractMetadata(serialised)
+
+        XCTAssertNotNil(exif)
+        XCTAssertNotNil(xmp)
+        XCTAssertNotNil(icc)
+        XCTAssertEqual(exif?.data, exifData)
+        XCTAssertEqual(icc?.data, iccData)
+    }
+
+    // MARK: - Metadata Round-Trip
+
+    func testMetadataRoundTrip_EXIF_OrientationPreserved() throws {
+        let frame = makeGradientFrame(width: 4, height: 4, channels: 1)
+        let codestream = try encodeLossless(frame)
+
+        for orientation: UInt32 in 1...8 {
+            let exifData = EXIFBuilder.createWithOrientation(orientation)
+            let container = JXLContainerBuilder(codestream: codestream)
+                .withEXIF(exifData)
+                .build()
+            let serialised = container.serialise()
+
+            let decoder = JXLDecoder()
+            let parsed = try decoder.parseContainer(serialised)
+
+            XCTAssertNotNil(parsed.exif)
+            let extracted = EXIFOrientation.extractOrientation(from: parsed.exif!.data)
+            XCTAssertEqual(extracted, orientation,
+                           "Orientation \(orientation) not preserved")
+        }
+    }
+
+    func testMetadataRoundTrip_XMP_ContentPreserved() throws {
+        let frame = makeGradientFrame(width: 4, height: 4, channels: 1)
+        let codestream = try encodeLossless(frame)
+
+        let xmpContent = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <x:xmpmeta xmlns:x="adobe:ns:meta/">
+          <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+            <rdf:Description rdf:about=""
+              xmlns:dc="http://purl.org/dc/elements/1.1/"
+              dc:title="Test Image"/>
+          </rdf:RDF>
+        </x:xmpmeta>
+        """
+
+        let container = JXLContainerBuilder(codestream: codestream)
+            .withXMP(xmlString: xmpContent)
+            .build()
+        let serialised = container.serialise()
+
+        let decoder = JXLDecoder()
+        let parsed = try decoder.parseContainer(serialised)
+
+        XCTAssertNotNil(parsed.xmp)
+        let extractedXMP = String(data: parsed.xmp!.data, encoding: .utf8)
+        XCTAssertEqual(extractedXMP, xmpContent)
+    }
+
+    func testMetadataRoundTrip_ICC_DataPreserved() throws {
+        let frame = makeGradientFrame(width: 4, height: 4, channels: 1)
+        let codestream = try encodeLossless(frame)
+
+        // Simulate a real ICC profile with varied bytes
+        var iccData = Data()
+        for i: UInt8 in 0..<255 {
+            iccData.append(i)
+        }
+
+        let container = JXLContainerBuilder(codestream: codestream)
+            .withICCProfile(iccData)
+            .build()
+        let serialised = container.serialise()
+
+        let decoder = JXLDecoder()
+        let parsed = try decoder.parseContainer(serialised)
+
+        XCTAssertNotNil(parsed.iccProfile)
+        XCTAssertEqual(parsed.iccProfile?.data, iccData)
+    }
+
+    func testMetadataRoundTrip_FrameIndex_EntriesPreserved() throws {
+        let frame = makeGradientFrame(width: 4, height: 4, channels: 1)
+        let codestream = try encodeLossless(frame)
+
+        let entries = [
+            FrameIndexEntry(frameNumber: 0, byteOffset: 0, duration: 50),
+            FrameIndexEntry(frameNumber: 1, byteOffset: 1024, duration: 100),
+            FrameIndexEntry(frameNumber: 2, byteOffset: 2048, duration: 150),
+        ]
+
+        let container = JXLContainerBuilder(codestream: codestream)
+            .withFrameIndex(entries)
+            .build()
+        let serialised = container.serialise()
+
+        let decoder = JXLDecoder()
+        let parsed = try decoder.parseContainer(serialised)
+
+        XCTAssertNotNil(parsed.frameIndex)
+        XCTAssertEqual(parsed.frameIndex?.entries.count, 3)
+        for (i, entry) in entries.enumerated() {
+            XCTAssertEqual(parsed.frameIndex?.entries[i].frameNumber, entry.frameNumber)
+            XCTAssertEqual(parsed.frameIndex?.entries[i].byteOffset, entry.byteOffset)
+            XCTAssertEqual(parsed.frameIndex?.entries[i].duration, entry.duration)
+        }
+    }
+
+    func testMetadataRoundTrip_CodestreamDecodesCorrectly() throws {
+        let original = makeGradientFrame(width: 8, height: 8, channels: 3)
+        let codestream = try encodeLossless(original)
+
+        let exifData = EXIFBuilder.createWithOrientation(5)
+        let container = JXLContainerBuilder(codestream: codestream)
+            .withEXIF(exifData)
+            .withXMP(xmlString: "<xmp/>")
+            .withICCProfile(Data([0x01]))
+            .build()
+        let serialised = container.serialise()
+
+        let decoder = JXLDecoder()
+        let parsed = try decoder.parseContainer(serialised)
+        let decoded = try decoder.decode(parsed.codestream)
+
+        assertPixelPerfect(original, decoded)
+    }
+
+    // MARK: - Edge Cases
+
+    func testParseContainer_EmptyEXIF_StillParsed() throws {
+        let frame = makeGradientFrame(width: 4, height: 4, channels: 1)
+        let codestream = try encodeLossless(frame)
+
+        let container = JXLContainerBuilder(codestream: codestream)
+            .withEXIF(Data())
+            .build()
+        let serialised = container.serialise()
+
+        let decoder = JXLDecoder()
+        let parsed = try decoder.parseContainer(serialised)
+
+        // EXIF box payload = 4-byte offset + 0 bytes data
+        // After stripping 4-byte offset, the exif data is empty
+        XCTAssertNotNil(parsed.exif)
+        XCTAssertEqual(parsed.exif?.data.count, 0)
+    }
+
+    func testParseContainer_EmptyXMP_StillParsed() throws {
+        let frame = makeGradientFrame(width: 4, height: 4, channels: 1)
+        let codestream = try encodeLossless(frame)
+
+        let container = JXLContainerBuilder(codestream: codestream)
+            .withXMP(xmlString: "")
+            .build()
+        let serialised = container.serialise()
+
+        let decoder = JXLDecoder()
+        let parsed = try decoder.parseContainer(serialised)
+
+        XCTAssertNotNil(parsed.xmp)
+        XCTAssertEqual(parsed.xmp?.data.count, 0)
+    }
+
+    func testParseContainer_LargeXMP_Preserved() throws {
+        let frame = makeGradientFrame(width: 4, height: 4, channels: 1)
+        let codestream = try encodeLossless(frame)
+
+        // Create a large XMP string (8 KB)
+        let largeXMP = String(repeating: "x", count: 8192)
+        let container = JXLContainerBuilder(codestream: codestream)
+            .withXMP(xmlString: largeXMP)
+            .build()
+        let serialised = container.serialise()
+
+        let decoder = JXLDecoder()
+        let parsed = try decoder.parseContainer(serialised)
+
+        XCTAssertEqual(parsed.xmp?.data.count, 8192)
+        XCTAssertEqual(String(data: parsed.xmp!.data, encoding: .utf8), largeXMP)
+    }
+
+    func testParseContainer_EmptyFrameIndex() throws {
+        let frame = makeGradientFrame(width: 4, height: 4, channels: 1)
+        let codestream = try encodeLossless(frame)
+
+        let container = JXLContainerBuilder(codestream: codestream)
+            .withFrameIndex([])
+            .build()
+        let serialised = container.serialise()
+
+        let decoder = JXLDecoder()
+        let parsed = try decoder.parseContainer(serialised)
+
+        XCTAssertNotNil(parsed.frameIndex)
+        XCTAssertEqual(parsed.frameIndex?.entries.count, 0)
+    }
+
+    func testParseContainer_SingleByteData_ThrowsError() {
+        let decoder = JXLDecoder()
+        XCTAssertThrowsError(try decoder.parseContainer(Data([0x42]))) { error in
+            XCTAssertEqual(error as? DecoderError, DecoderError.truncatedData)
+        }
+    }
+
+    func testParseContainer_BoxExtendsPastEnd_ThrowsError() {
+        let decoder = JXLDecoder()
+        // Box claims size 100 but data is only 8 bytes
+        var data = Data()
+        data.append(contentsOf: [0x00, 0x00, 0x00, 0x64] as [UInt8]) // size = 100
+        data.append(contentsOf: Array("JXL ".utf8)) // type
+        XCTAssertThrowsError(try decoder.parseContainer(data)) { error in
+            guard let decoderError = error as? DecoderError,
+                  case .invalidContainer = decoderError else {
+                XCTFail("Expected invalidContainer error, got \(error)")
+                return
+            }
+        }
+    }
 }
