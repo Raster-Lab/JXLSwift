@@ -485,7 +485,7 @@
 - [x] Modular mode decoder (inverse prediction, entropy decoding) — `ModularDecoder` with unframed and framed decoding
 - [x] VarDCT mode decoder (entropy decoding, dequantisation, IDCT, colour conversion) — `VarDCTDecoder` with inverse DCT, dequantization, YCbCr→RGB (32 tests passing)
 - [x] ANS entropy decoder — rANS symbol decoding
-- [ ] Progressive decoding (partial image rendering)
+- [x] Progressive decoding (partial image rendering) — `decodeProgressive(_:callback:)` API with 3-pass incremental rendering (10 tests passing)
 - [x] Container format parsing
 - [x] Metadata extraction (EXIF, XMP, ICC) — `parseContainer(_:)` full ISOBMFF box parsing, `extractMetadata(_:)` convenience API
 - [x] `decode` subcommand in jxl-tool
@@ -495,7 +495,7 @@
 
 - [x] Decode JXLSwift-encoded files: pixel-perfect for lossless, PSNR > 40 dB for lossy
 - [ ] Decode libjxl-encoded test files
-- [ ] Decode progressive files incrementally
+- [x] Decode progressive files incrementally — `decodeProgressive(_:callback:)` with pass-by-pass callbacks (10 tests passing)
 - [x] Handle corrupted/truncated files gracefully
 - [ ] Memory-bounded decoding of large images
 - [ ] Performance: decode ≥ 100 MP/s on Apple Silicon
