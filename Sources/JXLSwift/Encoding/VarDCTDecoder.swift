@@ -85,6 +85,75 @@ class VarDCTDecoder {
         bitsPerSample: Int = 8,
         pixelType: PixelType = .uint8
     ) throws -> ImageFrame {
+        // Non-progressive decode: decode all passes at once
+        return try decodeInternal(
+            data: data,
+            width: width,
+            height: height,
+            channels: channels,
+            bitsPerSample: bitsPerSample,
+            pixelType: pixelType,
+            progressCallback: nil,
+            isProgressive: false
+        )
+    }
+
+    /// Decode VarDCT-encoded data progressively with a callback for each pass.
+    ///
+    /// This method decodes progressive VarDCT data in multiple passes,
+    /// invoking the callback after each pass is decoded. The callback
+    /// receives an intermediate ``ImageFrame`` that improves in quality
+    /// with each pass.
+    ///
+    /// Progressive decoding uses 3 passes:
+    /// - Pass 0: DC coefficients only (low-resolution preview)
+    /// - Pass 1: Low-frequency AC coefficients (medium quality)
+    /// - Pass 2: High-frequency AC coefficients (full quality)
+    ///
+    /// - Parameters:
+    ///   - data: The VarDCT payload (without JXL codestream header).
+    ///   - width: Image width in pixels.
+    ///   - height: Image height in pixels.
+    ///   - channels: Number of colour channels.
+    ///   - bitsPerSample: Bits per sample (e.g. 8, 16).
+    ///   - pixelType: The pixel storage type.
+    ///   - callback: Called after each pass is decoded with the intermediate frame.
+    /// - Returns: The final reconstructed ``ImageFrame`` (same as last callback).
+    /// - Throws: ``VarDCTDecoderError`` if the bitstream is malformed.
+    func decodeProgressive(
+        data: Data,
+        width: Int,
+        height: Int,
+        channels: Int,
+        bitsPerSample: Int = 8,
+        pixelType: PixelType = .uint8,
+        callback: @escaping (ImageFrame, Int) -> Void
+    ) throws -> ImageFrame {
+        return try decodeInternal(
+            data: data,
+            width: width,
+            height: height,
+            channels: channels,
+            bitsPerSample: bitsPerSample,
+            pixelType: pixelType,
+            progressCallback: callback,
+            isProgressive: true
+        )
+    }
+
+    // MARK: - Internal Decoding
+    
+    /// Internal decode method that handles both progressive and non-progressive modes.
+    private func decodeInternal(
+        data: Data,
+        width: Int,
+        height: Int,
+        channels: Int,
+        bitsPerSample: Int = 8,
+        pixelType: PixelType = .uint8,
+        progressCallback: ((ImageFrame, Int) -> Void)?,
+        isProgressive: Bool
+    ) throws -> ImageFrame {
         var reader = BitstreamReader(data: data)
 
         // 1. Read VarDCT mode flag
@@ -126,75 +195,92 @@ class VarDCTDecoder {
         }
 
         // 3. Decode each channel's DCT data
-        let blocksX = (width + blockSize - 1) / blockSize
-        let blocksY = (height + blockSize - 1) / blockSize
-
-        var channelPixels = [[[Float]]](
-            repeating: [[Float]](
-                repeating: [Float](repeating: 0, count: width),
-                count: height
-            ),
-            count: channels
-        )
-
-        // We need luma DCT blocks if CfL is used (to reconstruct chroma)
-        var lumaDCTBlocks: [[[[Float]]]]? = nil
-
-        for channel in 0..<channels {
-            let (pixels, dctBlocks) = try decodeChannelDCT(
+        if isProgressive {
+            // Progressive mode: decode passes incrementally
+            return try decodeProggressiveInternal(
                 reader: &reader,
                 width: width,
                 height: height,
-                channel: channel,
+                channels: channels,
                 distance: distance,
                 useAdaptive: useAdaptive,
                 useANS: useANS,
-                hasCfL: hasCfL && channel > 0,
-                lumaDCTBlocks: (hasCfL && channel > 0) ? lumaDCTBlocks : nil
+                hasCfL: hasCfL,
+                cbcrOffset: cbcrOffset,
+                maxPixelVal: maxPixelVal,
+                pixelType: pixelType,
+                bitsPerSample: bitsPerSample,
+                progressCallback: progressCallback
+            )
+        } else {
+            // Non-progressive mode: decode all at once
+            var channelPixels = [[[Float]]](
+                repeating: [[Float]](
+                    repeating: [Float](repeating: 0, count: width),
+                    count: height
+                ),
+                count: channels
             )
 
-            channelPixels[channel] = pixels
+            // We need luma DCT blocks if CfL is used (to reconstruct chroma)
+            var lumaDCTBlocks: [[[[Float]]]]? = nil
 
-            // Store luma DCT blocks for CfL reconstruction on chroma channels
-            if channel == 0 && hasCfL {
-                lumaDCTBlocks = dctBlocks
-            }
-        }
+            for channel in 0..<channels {
+                let (pixels, dctBlocks) = try decodeChannelDCT(
+                    reader: &reader,
+                    width: width,
+                    height: height,
+                    channel: channel,
+                    distance: distance,
+                    useAdaptive: useAdaptive,
+                    useANS: useANS,
+                    hasCfL: hasCfL && channel > 0,
+                    lumaDCTBlocks: (hasCfL && channel > 0) ? lumaDCTBlocks : nil
+                )
 
-        // 4. Convert YCbCr → RGB directly on float arrays to avoid
-        //    uint8 clamping that would corrupt Cb/Cr values.
-        if channels >= 3 {
-            convertFromYCbCrFloat(
-                channels: &channelPixels,
-                width: width,
-                height: height,
-                offset: cbcrOffset
-            )
-        }
+                channelPixels[channel] = pixels
 
-        // 5. Build the output frame
-        var frame = ImageFrame(
-            width: width,
-            height: height,
-            channels: channels,
-            pixelType: pixelType,
-            bitsPerSample: bitsPerSample
-        )
-
-        // Float values are in [0, maxPixelVal]; write back as UInt16
-        for c in 0..<channels {
-            for y in 0..<height {
-                for x in 0..<width {
-                    let value = max(0, min(maxPixelVal, channelPixels[c][y][x]))
-                    frame.setPixel(
-                        x: x, y: y, channel: c,
-                        value: UInt16(value)
-                    )
+                // Store luma DCT blocks for CfL reconstruction on chroma channels
+                if channel == 0 && hasCfL {
+                    lumaDCTBlocks = dctBlocks
                 }
             }
-        }
 
-        return frame
+            // 4. Convert YCbCr → RGB directly on float arrays to avoid
+            //    uint8 clamping that would corrupt Cb/Cr values.
+            if channels >= 3 {
+                convertFromYCbCrFloat(
+                    channels: &channelPixels,
+                    width: width,
+                    height: height,
+                    offset: cbcrOffset
+                )
+            }
+
+            // 5. Build the output frame
+            var frame = ImageFrame(
+                width: width,
+                height: height,
+                channels: channels,
+                pixelType: pixelType,
+                bitsPerSample: bitsPerSample
+            )
+
+            // Float values are in [0, maxPixelVal]; write back as UInt16
+            for c in 0..<channels {
+                for y in 0..<height {
+                    for x in 0..<width {
+                        let value = max(0, min(maxPixelVal, channelPixels[c][y][x]))
+                        frame.setPixel(
+                            x: x, y: y, channel: c,
+                            value: UInt16(value)
+                        )
+                    }
+                }
+            }
+
+            return frame
+        }
     }
 
     // MARK: - Channel Decoding
@@ -513,6 +599,430 @@ class VarDCTDecoder {
                 blockIdx += 1
             }
         }
+    }
+
+    // MARK: - Progressive Decoding
+    
+    /// Decode progressive VarDCT data with incremental passes.
+    ///
+    /// This method decodes data that was encoded with progressive encoding
+    /// (3 passes: DC-only, low-freq AC, high-freq AC). It reads pass markers,
+    /// decodes each pass incrementally, and invokes the callback after each pass.
+    ///
+    /// - Parameters:
+    ///   - reader: Bitstream reader positioned after VarDCT header.
+    ///   - width: Image width in pixels.
+    ///   - height: Image height in pixels.
+    ///   - channels: Number of colour channels.
+    ///   - distance: Quantisation distance.
+    ///   - useAdaptive: Whether adaptive quantisation is enabled.
+    ///   - useANS: Whether ANS entropy coding is used.
+    ///   - hasCfL: Whether CfL prediction is enabled.
+    ///   - cbcrOffset: Cb/Cr offset for color space conversion.
+    ///   - maxPixelVal: Maximum pixel value.
+    ///   - pixelType: Output pixel type.
+    ///   - bitsPerSample: Bits per sample.
+    ///   - progressCallback: Callback invoked after each pass.
+    /// - Returns: Final decoded frame.
+    private func decodeProggressiveInternal(
+        reader: inout BitstreamReader,
+        width: Int,
+        height: Int,
+        channels: Int,
+        distance: Float,
+        useAdaptive: Bool,
+        useANS: Bool,
+        hasCfL: Bool,
+        cbcrOffset: Float,
+        maxPixelVal: Float,
+        pixelType: PixelType,
+        bitsPerSample: Int,
+        progressCallback: ((ImageFrame, Int) -> Void)?
+    ) throws -> ImageFrame {
+        let blocksX = (width + blockSize - 1) / blockSize
+        let blocksY = (height + blockSize - 1) / blockSize
+        let totalBlocks = blocksX * blocksY
+        
+        // Storage for accumulated DCT coefficients across passes
+        var accumulatedBlocks = [[[[Int16]]]](
+            repeating: [[[Int16]]](
+                repeating: [[Int16]](
+                    repeating: [Int16](repeating: 0, count: blockSize),
+                    count: blockSize
+                ),
+                count: blocksX
+            ),
+            count: blocksY
+        )
+        
+        // Storage for per-channel accumulated blocks
+        var channelAccumulatedBlocks = [[[[[Int16]]]]](
+            repeating: accumulatedBlocks,
+            count: channels
+        )
+        
+        // Storage for CfL coefficients and activities (read in pass 0)
+        var channelCfLCoeffs = [[Float?]](
+            repeating: [Float?](repeating: nil, count: totalBlocks),
+            count: channels
+        )
+        var channelActivities = [[Float]](
+            repeating: [Float](repeating: 1.0, count: totalBlocks),
+            count: channels
+        )
+        
+        // Storage for DC values (for prediction) - per channel
+        var channelDCValues = [[[Int16]]](repeating: [], count: channels)
+        for _ in 0..<channels {
+            channelDCValues.append(
+                [[Int16]](
+                    repeating: [Int16](repeating: 0, count: blocksX),
+                    count: blocksY
+                )
+            )
+        }
+        // Remove empty placeholders
+        channelDCValues.removeFirst(channels)
+        
+        // Luma DCT blocks for CfL reconstruction
+        var lumaDCTBlocks: [[[[Float]]]]? = nil
+        
+        // Progressive passes: 0 = DC-only, 1 = low-freq AC, 2 = high-freq AC
+        for passIndex in 0..<3 {
+            // For each channel, decode this pass
+            for channel in 0..<channels {
+                // Read pass marker
+                guard let marker = reader.readByte() else {
+                    throw VarDCTDecoderError.unexpectedEndOfData
+                }
+                guard Int(marker) == passIndex else {
+                    throw VarDCTDecoderError.malformedBlockData(
+                        "Expected pass \(passIndex) but got \(marker)"
+                    )
+                }
+                
+                // In pass 0, read metadata (CfL coefficients and activities)
+                if passIndex == 0 {
+                    var blockIdx = 0
+                    for _ in 0..<blocksY {
+                        for _ in 0..<blocksX {
+                            // Read CfL coefficient for chroma channels
+                            if hasCfL && channel > 0 {
+                                let encoded = try readVarint(&reader)
+                                channelCfLCoeffs[channel][blockIdx] = 
+                                    Float(decodeSignedValue(encoded)) / VarDCTEncoder.cflScaleFactor
+                            }
+                            
+                            // Read activity scale
+                            if useAdaptive {
+                                let activityEncoded = try readVarint(&reader)
+                                channelActivities[channel][blockIdx] =
+                                    Float(activityEncoded) / VarDCTEncoder.qfScaleFactor
+                            }
+                            
+                            blockIdx += 1
+                        }
+                    }
+                }
+                
+                // Decode coefficients for this pass
+                let coeffRange: Range<Int>
+                switch passIndex {
+                case 0:  coeffRange = 0..<1    // DC-only
+                case 1:  coeffRange = 1..<16   // Low-freq AC
+                default: coeffRange = 16..<64  // High-freq AC
+                }
+                
+                if useANS {
+                    // ANS decoding for this pass
+                    try decodePassANS(
+                        reader: &reader,
+                        blocksX: blocksX,
+                        blocksY: blocksY,
+                        channel: channel,
+                        coeffRange: coeffRange,
+                        dcValues: &channelDCValues[channel],
+                        accumulatedBlocks: &channelAccumulatedBlocks[channel]
+                    )
+                } else {
+                    // Run-length decoding for each block in this pass
+                    for blockY in 0..<blocksY {
+                        for blockX in 0..<blocksX {
+                            let partialCoeffs = try decodeBlockPartial(
+                                reader: &reader,
+                                coeffRange: coeffRange
+                            )
+                            
+                            // Accumulate coefficients into the block
+                            for (i, coeff) in partialCoeffs.enumerated() where i < 64 {
+                                let zigzagPos = coeffRange.lowerBound + i
+                                if zigzagPos < 64 {
+                                    let (y, x) = zigzagOrder[zigzagPos]
+                                    channelAccumulatedBlocks[channel][blockY][blockX][y][x] = coeff
+                                }
+                            }
+                            
+                            // Reconstruct DC from residual + prediction (only in pass 0)
+                            if passIndex == 0 {
+                                let predicted = predictDC(
+                                    dcValues: channelDCValues[channel],
+                                    blockX: blockX,
+                                    blockY: blockY
+                                )
+                                channelAccumulatedBlocks[channel][blockY][blockX][0][0] += predicted
+                                channelDCValues[channel][blockY][blockX] =
+                                    channelAccumulatedBlocks[channel][blockY][blockX][0][0]
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // After decoding this pass for all channels, reconstruct and invoke callback
+            if let callback = progressCallback {
+                let frame = try reconstructFrameFromBlocks(
+                    channelBlocks: channelAccumulatedBlocks,
+                    channelCfLCoeffs: channelCfLCoeffs,
+                    channelActivities: channelActivities,
+                    lumaDCTBlocks: &lumaDCTBlocks,
+                    width: width,
+                    height: height,
+                    channels: channels,
+                    distance: distance,
+                    hasCfL: hasCfL,
+                    cbcrOffset: cbcrOffset,
+                    maxPixelVal: maxPixelVal,
+                    pixelType: pixelType,
+                    bitsPerSample: bitsPerSample
+                )
+                callback(frame, passIndex)
+            }
+        }
+        
+        // Return final frame after all passes
+        return try reconstructFrameFromBlocks(
+            channelBlocks: channelAccumulatedBlocks,
+            channelCfLCoeffs: channelCfLCoeffs,
+            channelActivities: channelActivities,
+            lumaDCTBlocks: &lumaDCTBlocks,
+            width: width,
+            height: height,
+            channels: channels,
+            distance: distance,
+            hasCfL: hasCfL,
+            cbcrOffset: cbcrOffset,
+            maxPixelVal: maxPixelVal,
+            pixelType: pixelType,
+            bitsPerSample: bitsPerSample
+        )
+    }
+    
+    /// Decode a partial block for a specific coefficient range.
+    ///
+    /// Similar to `decodeBlock` but only reads coefficients in the given range.
+    /// For DC-only pass: reads DC residual.
+    /// For AC passes: reads AC coefficients in the range.
+    ///
+    /// - Parameters:
+    ///   - reader: Bitstream reader.
+    ///   - coeffRange: Range of coefficient indices to decode (in zigzag order).
+    /// - Returns: Array of coefficients in the given range.
+    private func decodeBlockPartial(
+        reader: inout BitstreamReader,
+        coeffRange: Range<Int>
+    ) throws -> [Int16] {
+        var coefficients = [Int16]()
+        
+        if coeffRange.lowerBound == 0 {
+            // DC-only pass: read DC residual
+            let dcEncoded = try readVarint(&reader)
+            coefficients.append(Int16(decodeSignedValue(dcEncoded)))
+        } else {
+            // AC pass: read AC coefficients with run-length encoding
+            let expectedCount = coeffRange.count
+            var pos = 0
+            
+            while pos < expectedCount {
+                // Read zero run
+                let runValue = try readVarint(&reader)
+                
+                if runValue == 0xFFFF {
+                    // End-of-block marker: remaining coefficients are zero
+                    break
+                }
+                
+                // Add zeros
+                for _ in 0..<runValue {
+                    coefficients.append(0)
+                    pos += 1
+                    if pos >= expectedCount { break }
+                }
+                
+                guard pos < expectedCount else { break }
+                
+                // Read the coefficient
+                let coeffEncoded = try readVarint(&reader)
+                coefficients.append(Int16(decodeSignedValue(coeffEncoded)))
+                pos += 1
+            }
+            
+            // Fill remaining with zeros if needed
+            while coefficients.count < expectedCount {
+                coefficients.append(0)
+            }
+        }
+        
+        return coefficients
+    }
+    
+    /// Decode ANS-encoded pass data.
+    ///
+    /// This is a simplified version that assumes similar ANS structure as
+    /// non-progressive decoding but for a specific coefficient range.
+    private func decodePassANS(
+        reader: inout BitstreamReader,
+        blocksX: Int,
+        blocksY: Int,
+        channel: Int,
+        coeffRange: Range<Int>,
+        dcValues: inout [[Int16]],
+        accumulatedBlocks: inout [[[[Int16]]]]
+    ) throws {
+        // For progressive ANS, we'd need to read per-pass ANS data
+        // This is a placeholder that throws an error for now
+        // Full implementation would need to match the encoder's ANS structure
+        throw VarDCTDecoderError.ansDecodingFailed(
+            "Progressive ANS decoding not yet fully implemented"
+        )
+    }
+    
+    /// Reconstruct an ImageFrame from accumulated DCT blocks.
+    ///
+    /// This method performs dequantisation, inverse DCT, CfL reconstruction,
+    /// and YCbCr→RGB conversion to produce a complete frame.
+    private func reconstructFrameFromBlocks(
+        channelBlocks: [[[[[Int16]]]]],
+        channelCfLCoeffs: [[Float?]],
+        channelActivities: [[Float]],
+        lumaDCTBlocks: inout [[[[Float]]]]?,
+        width: Int,
+        height: Int,
+        channels: Int,
+        distance: Float,
+        hasCfL: Bool,
+        cbcrOffset: Float,
+        maxPixelVal: Float,
+        pixelType: PixelType,
+        bitsPerSample: Int
+    ) throws -> ImageFrame {
+        let blocksX = (width + blockSize - 1) / blockSize
+        let blocksY = (height + blockSize - 1) / blockSize
+        
+        var channelPixels = [[[Float]]](
+            repeating: [[Float]](
+                repeating: [Float](repeating: 0, count: width),
+                count: height
+            ),
+            count: channels
+        )
+        
+        // Process each channel
+        for channel in 0..<channels {
+            var blockIdx = 0
+            
+            for blockY in 0..<blocksY {
+                for blockX in 0..<blocksX {
+                    let quantizedBlock = channelBlocks[channel][blockY][blockX]
+                    let activity = channelActivities[channel][blockIdx]
+                    
+                    // Generate quantization matrix
+                    let qMatrix = generateQuantizationMatrix(
+                        channel: channel,
+                        activity: activity,
+                        distance: distance
+                    )
+                    
+                    // Dequantise
+                    var dct = dequantize(block: quantizedBlock, qMatrix: qMatrix)
+                    
+                    // Apply inverse CfL if applicable
+                    if hasCfL && channel > 0, let cflCoeff = channelCfLCoeffs[channel][blockIdx] {
+                        if let luma = lumaDCTBlocks {
+                            dct = reconstructFromCfL(
+                                residual: dct,
+                                lumaDCT: luma[blockY][blockX],
+                                coefficient: cflCoeff
+                            )
+                        }
+                    }
+                    
+                    // Inverse DCT
+                    let spatial = applyIDCTScalar(block: dct)
+                    
+                    // Place block in output
+                    placeBlock(
+                        spatial: spatial,
+                        pixels: &channelPixels[channel],
+                        blockX: blockX,
+                        blockY: blockY,
+                        width: width,
+                        height: height
+                    )
+                    
+                    // Store luma DCT blocks for CfL
+                    if channel == 0 && hasCfL {
+                        if lumaDCTBlocks == nil {
+                            lumaDCTBlocks = [[[[Float]]]](
+                                repeating: [[[Float]]](
+                                    repeating: [[Float]](
+                                        repeating: [Float](repeating: 0, count: blockSize),
+                                        count: blockSize
+                                    ),
+                                    count: blocksX
+                                ),
+                                count: blocksY
+                            )
+                        }
+                        lumaDCTBlocks?[blockY][blockX] = dct
+                    }
+                    
+                    blockIdx += 1
+                }
+            }
+        }
+        
+        // Convert YCbCr → RGB
+        if channels >= 3 {
+            convertFromYCbCrFloat(
+                channels: &channelPixels,
+                width: width,
+                height: height,
+                offset: cbcrOffset
+            )
+        }
+        
+        // Build output frame
+        var frame = ImageFrame(
+            width: width,
+            height: height,
+            channels: channels,
+            pixelType: pixelType,
+            bitsPerSample: bitsPerSample
+        )
+        
+        for c in 0..<channels {
+            for y in 0..<height {
+                for x in 0..<width {
+                    let value = max(0, min(maxPixelVal, channelPixels[c][y][x]))
+                    frame.setPixel(
+                        x: x, y: y, channel: c,
+                        value: UInt16(value)
+                    )
+                }
+            }
+        }
+        
+        return frame
     }
 
     // MARK: - Block Decoding

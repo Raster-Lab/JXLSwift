@@ -192,6 +192,85 @@ public class JXLDecoder {
         }
     }
 
+    /// Decode a JPEG XL codestream progressively with a callback for each pass.
+    ///
+    /// This method is designed for progressive VarDCT-encoded data. The callback
+    /// is invoked after each decoding pass with an intermediate ``ImageFrame``
+    /// that progressively improves in quality:
+    /// - Pass 0: DC coefficients only (low-resolution preview)
+    /// - Pass 1: Low-frequency AC coefficients (medium quality)
+    /// - Pass 2: High-frequency AC coefficients (full quality)
+    ///
+    /// For non-progressive or Modular-encoded data, this method falls back to
+    /// regular decoding and invokes the callback once with the final frame.
+    ///
+    /// - Parameters:
+    ///   - data: The JPEG XL codestream data (starting with 0xFF 0x0A).
+    ///   - callback: Called after each pass with (frame, passIndex).
+    /// - Returns: The final decoded frame (same as last callback).
+    /// - Throws: ``DecoderError`` if the data is invalid.
+    public func decodeProgressive(
+        _ data: Data,
+        callback: @escaping (ImageFrame, Int) -> Void
+    ) throws -> ImageFrame {
+        // 1. Parse the image header
+        let header = try parseImageHeader(data)
+
+        // 2. Extract the payload
+        guard data.count > header.headerSize else {
+            throw DecoderError.truncatedData
+        }
+        let payload = data.subdata(in: header.headerSize..<data.count)
+
+        // 3. Check encoding mode
+        guard payload.count >= 1 else {
+            throw DecoderError.truncatedData
+        }
+        let firstBit = (payload[payload.startIndex] & 0x80) != 0
+
+        let width = Int(header.width)
+        let height = Int(header.height)
+        let channels = Int(header.channels)
+        let bitsPerSample = Int(header.bitsPerSample)
+        let pixelType: PixelType = bitsPerSample <= 8 ? .uint8 : .uint16
+
+        if firstBit {
+            // Modular mode: no progressive support, decode once and callback
+            let options = EncodingOptions(
+                mode: .lossless,
+                effort: .squirrel,
+                modularMode: true
+            )
+            let modularDecoder = ModularDecoder(
+                hardware: hardware,
+                options: options
+            )
+
+            let frame = try modularDecoder.decode(
+                data: payload,
+                width: width,
+                height: height,
+                channels: channels,
+                bitsPerSample: bitsPerSample,
+                pixelType: pixelType
+            )
+            callback(frame, 0)
+            return frame
+        } else {
+            // VarDCT mode: use progressive decoding
+            let varDCTDecoder = VarDCTDecoder(hardware: hardware)
+            return try varDCTDecoder.decodeProgressive(
+                data: payload,
+                width: width,
+                height: height,
+                channels: channels,
+                bitsPerSample: bitsPerSample,
+                pixelType: pixelType,
+                callback: callback
+            )
+        }
+    }
+
     // MARK: - Codestream Header Parsing
 
     /// Parse the JPEG XL codestream signature.
