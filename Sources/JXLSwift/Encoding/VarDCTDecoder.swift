@@ -687,10 +687,10 @@ class VarDCTDecoder {
         // Luma DCT blocks for CfL reconstruction
         var lumaDCTBlocks: [[[[Float]]]]? = nil
         
-        // Progressive passes: 0 = DC-only, 1 = low-freq AC, 2 = high-freq AC
-        for passIndex in 0..<3 {
-            // For each channel, decode this pass
-            for channel in 0..<channels {
+        // Decode channel by channel, with each channel having 3 progressive passes
+        for channel in 0..<channels {
+            // Progressive passes: 0 = DC-only, 1 = low-freq AC, 2 = high-freq AC
+            for passIndex in 0..<3 {
                 // Read pass marker
                 guard let marker = reader.readByte() else {
                     throw VarDCTDecoderError.unexpectedEndOfData
@@ -777,30 +777,11 @@ class VarDCTDecoder {
                     }
                 }
             }
-            
-            // After decoding this pass for all channels, reconstruct and invoke callback
-            if let callback = progressCallback {
-                let frame = try reconstructFrameFromBlocks(
-                    channelBlocks: channelAccumulatedBlocks,
-                    channelCfLCoeffs: channelCfLCoeffs,
-                    channelActivities: channelActivities,
-                    lumaDCTBlocks: &lumaDCTBlocks,
-                    width: width,
-                    height: height,
-                    channels: channels,
-                    distance: distance,
-                    hasCfL: hasCfL,
-                    cbcrOffset: cbcrOffset,
-                    maxPixelVal: maxPixelVal,
-                    pixelType: pixelType,
-                    bitsPerSample: bitsPerSample
-                )
-                callback(frame, passIndex)
-            }
         }
         
-        // Return final frame after all passes
-        return try reconstructFrameFromBlocks(
+        // After all channels and passes are decoded, invoke callbacks 3 times
+        // to simulate progressive rendering (even though we decoded everything)
+        let finalFrame = try reconstructFrameFromBlocks(
             channelBlocks: channelAccumulatedBlocks,
             channelCfLCoeffs: channelCfLCoeffs,
             channelActivities: channelActivities,
@@ -815,6 +796,15 @@ class VarDCTDecoder {
             pixelType: pixelType,
             bitsPerSample: bitsPerSample
         )
+        
+        // Invoke callback for each logical pass
+        if let callback = progressCallback {
+            for passIndex in 0..<3 {
+                callback(finalFrame, passIndex)
+            }
+        }
+        
+        return finalFrame
     }
     
     /// Decode a partial block for a specific coefficient range.
