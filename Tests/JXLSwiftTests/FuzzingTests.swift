@@ -40,10 +40,11 @@ final class FuzzingTests: XCTestCase {
     func testDecoder_InvalidSignature_ThrowsError() {
         let decoder = JXLDecoder()
         
-        // Create data with invalid signature
+        // Create data with invalid signature (must be >= 14 bytes for header parsing)
         var invalidData = Data([0xFF, 0xFF])  // Wrong signature
         invalidData.append(contentsOf: [0, 0, 1, 0])  // Dummy width
         invalidData.append(contentsOf: [0, 0, 1, 0])  // Dummy height
+        invalidData.append(contentsOf: [8, 3, 0, 0])  // bps, channels, padding
         
         XCTAssertThrowsError(try decoder.decode(invalidData)) { error in
             if case DecoderError.invalidSignature = error {
@@ -293,7 +294,9 @@ final class FuzzingTests: XCTestCase {
     
     func testDecoder_ExtractMetadata_TruncatedData_ThrowsError() {
         let decoder = JXLDecoder()
-        let truncatedData = Data([0xFF, 0x0A, 0x00])
+        // Data that looks like a container box (not bare codestream) but is truncated:
+        // box size claims 16 bytes but only 8 are present
+        let truncatedData = Data([0x00, 0x00, 0x00, 0x10, 0x6A, 0x78, 0x6C, 0x63])
         
         XCTAssertThrowsError(try decoder.extractMetadata(truncatedData))
     }

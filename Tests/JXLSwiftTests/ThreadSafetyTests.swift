@@ -36,11 +36,7 @@ final class ThreadSafetyTests: XCTestCase {
             }
         }
         
-        nonisolated(unsafe) let testCase = self
-        let task = Task { @MainActor in
-            testCase.waitForExpectations(timeout: 30.0)
-        }
-        _ = await task.value
+        await fulfillment(of: [expectation], timeout: 30.0)
     }
     
     func testEncoder_ConcurrentEncodingSharedEncoder_Succeeds() async {
@@ -70,11 +66,7 @@ final class ThreadSafetyTests: XCTestCase {
             }
         }
         
-        nonisolated(unsafe) let testCase = self
-        let task = Task { @MainActor in
-            testCase.waitForExpectations(timeout: 30.0)
-        }
-        _ = await task.value
+        await fulfillment(of: [expectation], timeout: 30.0)
     }
     
     func testEncoder_ConcurrentEncodingDifferentQuality_Succeeds() async {
@@ -105,11 +97,7 @@ final class ThreadSafetyTests: XCTestCase {
             }
         }
         
-        nonisolated(unsafe) let testCase = self
-        let task = Task { @MainActor in
-            testCase.waitForExpectations(timeout: 30.0)
-        }
-        _ = await task.value
+        await fulfillment(of: [expectation], timeout: 30.0)
     }
     
     // MARK: - Concurrent Decoding Tests
@@ -146,11 +134,7 @@ final class ThreadSafetyTests: XCTestCase {
             }
         }
         
-        nonisolated(unsafe) let testCase = self
-        let task = Task { @MainActor in
-            testCase.waitForExpectations(timeout: 30.0)
-        }
-        _ = await task.value
+        await fulfillment(of: [expectation], timeout: 30.0)
     }
     
     func testDecoder_ConcurrentDecodingSharedDecoder_Succeeds() async throws {
@@ -185,11 +169,7 @@ final class ThreadSafetyTests: XCTestCase {
             }
         }
         
-        nonisolated(unsafe) let testCase = self
-        let task = Task { @MainActor in
-            testCase.waitForExpectations(timeout: 30.0)
-        }
-        _ = await task.value
+        await fulfillment(of: [expectation], timeout: 30.0)
     }
     
     // MARK: - Concurrent Encode/Decode Tests
@@ -248,11 +228,7 @@ final class ThreadSafetyTests: XCTestCase {
             }
         }
         
-        nonisolated(unsafe) let testCase = self
-        let task = Task { @MainActor in
-            testCase.waitForExpectations(timeout: 30.0)
-        }
-        _ = await task.value
+        await fulfillment(of: [expectation], timeout: 30.0)
     }
     
     // MARK: - Concurrent Hardware Detection Tests
@@ -277,11 +253,7 @@ final class ThreadSafetyTests: XCTestCase {
             }
         }
         
-        nonisolated(unsafe) let testCase = self
-        let task = Task { @MainActor in
-            testCase.waitForExpectations(timeout: 10.0)
-        }
-        _ = await task.value
+        await fulfillment(of: [expectation], timeout: 10.0)
         
         // All detections should return the same values
         let first = results[0]
@@ -328,11 +300,7 @@ final class ThreadSafetyTests: XCTestCase {
             }
         }
         
-        nonisolated(unsafe) let testCase = self
-        let task = Task { @MainActor in
-            testCase.waitForExpectations(timeout: 30.0)
-        }
-        _ = await task.value
+        await fulfillment(of: [expectation], timeout: 30.0)
     }
     
     // MARK: - Stress Tests
@@ -364,11 +332,7 @@ final class ThreadSafetyTests: XCTestCase {
             }
         }
         
-        nonisolated(unsafe) let testCase = self
-        let task = Task { @MainActor in
-            testCase.waitForExpectations(timeout: 60.0)
-        }
-        _ = await task.value
+        await fulfillment(of: [expectation], timeout: 60.0)
     }
     
     func testDecoder_HighConcurrencyStress_Succeeds() async throws {
@@ -403,11 +367,7 @@ final class ThreadSafetyTests: XCTestCase {
             }
         }
         
-        nonisolated(unsafe) let testCase = self
-        let task = Task { @MainActor in
-            testCase.waitForExpectations(timeout: 60.0)
-        }
-        _ = await task.value
+        await fulfillment(of: [expectation], timeout: 60.0)
     }
     
     // MARK: - Mixed Operations Tests
@@ -480,11 +440,7 @@ final class ThreadSafetyTests: XCTestCase {
             }
         }
         
-        nonisolated(unsafe) let testCase = self
-        let task = Task { @MainActor in
-            testCase.waitForExpectations(timeout: 60.0)
-        }
-        _ = await task.value
+        await fulfillment(of: [expectation], timeout: 60.0)
     }
     
     // MARK: - Data Race Detection Tests
@@ -509,11 +465,7 @@ final class ThreadSafetyTests: XCTestCase {
             }
         }
         
-        nonisolated(unsafe) let testCase = self
-        let task = Task { @MainActor in
-            testCase.waitForExpectations(timeout: 10.0)
-        }
-        _ = await task.value
+        await fulfillment(of: [expectation], timeout: 10.0)
     }
     
     func testCompressionStats_ConcurrentAccess_NoDataRace() async throws {
@@ -548,10 +500,6 @@ final class ThreadSafetyTests: XCTestCase {
             }
         }
         
-        nonisolated(unsafe) let testCase = self
-        let task = Task { @MainActor in
-            testCase.waitForExpectations(timeout: 10.0)
-        }
-        _ = await task.value
+        await fulfillment(of: [expectation], timeout: 10.0)
     }
 }
