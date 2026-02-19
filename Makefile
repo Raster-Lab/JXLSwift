@@ -1,6 +1,6 @@
 # JXLSwift Makefile
 
-.PHONY: all build test clean install install-man man help
+.PHONY: all build test clean install install-man man help docc docc-html docc-preview
 
 PREFIX ?= /usr/local
 BINDIR = $(PREFIX)/bin
@@ -64,19 +64,46 @@ help:
 	@echo "JXLSwift Makefile"
 	@echo ""
 	@echo "Available targets:"
-	@echo "  make build       - Build the project in release mode"
-	@echo "  make test        - Run all tests"
-	@echo "  make man         - Generate man pages"
-	@echo "  make install     - Install jxl-tool binary (requires sudo)"
-	@echo "  make install-man - Install man pages (requires sudo)"
-	@echo "  make uninstall   - Uninstall jxl-tool and man pages (requires sudo)"
-	@echo "  make clean       - Clean build artifacts"
-	@echo "  make help        - Show this help message"
+	@echo "  make build        - Build the project in release mode"
+	@echo "  make test         - Run all tests"
+	@echo "  make man          - Generate man pages"
+	@echo "  make docc         - Generate API documentation with DocC"
+	@echo "  make docc-html    - Generate HTML API documentation"
+	@echo "  make docc-preview - Preview API documentation in browser"
+	@echo "  make install      - Install jxl-tool binary (requires sudo)"
+	@echo "  make install-man  - Install man pages (requires sudo)"
+	@echo "  make uninstall    - Uninstall jxl-tool and man pages (requires sudo)"
+	@echo "  make clean        - Clean build artifacts"
+	@echo "  make help         - Show this help message"
 	@echo ""
 	@echo "Options:"
-	@echo "  PREFIX=/path     - Installation prefix (default: /usr/local)"
+	@echo "  PREFIX=/path      - Installation prefix (default: /usr/local)"
 	@echo ""
 	@echo "Examples:"
 	@echo "  sudo make install"
 	@echo "  sudo make install-man"
 	@echo "  make PREFIX=~/.local install"
+	@echo "  make docc-preview"
+
+## Generate API documentation with DocC
+docc:
+@echo "Generating API documentation..."
+swift package --allow-writing-to-package-directory \
+generate-documentation --target JXLSwift \
+--output-path ./Documentation/API
+@echo "Documentation generated in Documentation/API/"
+
+## Generate API documentation in HTML format
+docc-html:
+@echo "Generating HTML API documentation..."
+swift package --allow-writing-to-package-directory \
+generate-documentation --target JXLSwift \
+--transform-for-static-hosting \
+--hosting-base-path JXLSwift \
+--output-path ./Documentation/API
+@echo "HTML documentation generated in Documentation/API/"
+
+## Preview API documentation
+docc-preview:
+@echo "Starting documentation preview server..."
+swift package --disable-sandbox preview-documentation --target JXLSwift

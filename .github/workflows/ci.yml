@@ -101,3 +101,98 @@ jobs:
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "📊 **Code coverage report generated**" >> "$GITHUB_STEP_SUMMARY"
           fi
+
+  memory-safety:
+    name: Memory Safety (${{ matrix.sanitizer }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - sanitizer: Address Sanitizer
+            runner: ubuntu-latest
+            swift-flags: "-sanitize=address"
+          - sanitizer: Thread Sanitizer
+            runner: ubuntu-latest
+            swift-flags: "-sanitize=thread"
+          - sanitizer: Undefined Behavior Sanitizer
+            runner: ubuntu-latest
+            swift-flags: "-sanitize=undefined"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Swift
+        uses: swift-actions/setup-swift@v3
+        with:
+          swift-version: "6.2"
+          skip-verify-signature: true
+
+      - name: Swift version
+        run: swift --version
+
+      - name: Build with ${{ matrix.sanitizer }}
+        run: swift build -Xswiftc ${{ matrix.swift-flags }}
+
+      - name: Test with ${{ matrix.sanitizer }}
+        run: swift test -Xswiftc ${{ matrix.swift-flags }} --skip Performance --skip Benchmark --skip MetalComputeTests
+
+      - name: Generate job summary
+        if: always()
+        run: |
+          echo "## Memory Safety Results — ${{ matrix.sanitizer }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Item | Detail |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|------|--------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Sanitizer** | ${{ matrix.sanitizer }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Runner** | ${{ matrix.runner }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "✅ No memory safety issues detected." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "❌ Memory safety issues detected. Check logs for details." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  security:
+    name: Security Scanning
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: swift
+
+      - name: Setup Swift
+        uses: swift-actions/setup-swift@v3
+        with:
+          swift-version: "6.2"
+          skip-verify-signature: true
+
+      - name: Build for CodeQL
+        run: swift build
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:swift"
+
+      - name: Generate job summary
+        if: always()
+        run: |
+          echo "## Security Scanning Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Item | Detail |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|------|--------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Scanner** | CodeQL |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Language** | Swift |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "✅ Security scan completed. Check Security tab for any findings." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "❌ Security scan failed. Check logs for details." >> "$GITHUB_STEP_SUMMARY"
+          fi
