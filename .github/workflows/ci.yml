@@ -45,8 +45,16 @@ jobs:
         run: swift build
 
       - name: Test
-        run: swift test --parallel --skip Performance --skip Benchmark --skip MetalComputeTests --xunit-output test-results.xml
+        run: swift test --parallel --skip Performance --skip Benchmark --skip MetalComputeTests --xunit-output test-results.xml --enable-code-coverage
 
+      - name: Generate code coverage report
+        if: runner.os == 'macOS'
+        run: |
+          xcrun llvm-cov export -format="lcov" \
+            .build/debug/JXLSwiftPackageTests.xctest/Contents/MacOS/JXLSwiftPackageTests \
+            -instr-profile .build/debug/codecov/default.profdata \
+            > coverage.lcov || echo "Coverage generation failed (non-fatal)"
+      
       - name: Publish test report
         uses: mikepenz/action-junit-report@v5
         if: always()
@@ -59,7 +67,9 @@ jobs:
         if: always()
         with:
           name: test-results-${{ matrix.runner }}
-          path: test-results.xml
+          path: |
+            test-results.xml
+            coverage.lcov
 
       - name: Generate job summary
         if: always()
@@ -86,4 +96,8 @@ jobs:
             fi
           else
             echo "⚠️ No test results file found." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -f coverage.lcov ]; then
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "📊 **Code coverage report generated**" >> "$GITHUB_STEP_SUMMARY"
           fi
