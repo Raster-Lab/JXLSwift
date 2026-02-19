@@ -479,6 +479,119 @@ public class JXLDecoder {
         return try parseContainerForCodestream(data)
     }
 
+    /// Parse a JPEG XL container and extract all metadata.
+    ///
+    /// Iterates over every ISOBMFF box in the container and populates
+    /// the returned ``JXLContainer`` with the codestream and any
+    /// EXIF, XMP, ICC, and frame-index metadata found.
+    ///
+    /// If the data is a bare codestream (starts with 0xFF 0x0A), a
+    /// container with only the codestream is returned (no metadata).
+    ///
+    /// - Parameter data: The raw file data (container or bare codestream).
+    /// - Returns: A ``JXLContainer`` with all extracted metadata.
+    /// - Throws: ``DecoderError`` if the data is malformed.
+    public func parseContainer(_ data: Data) throws -> JXLContainer {
+        guard data.count >= 2 else {
+            throw DecoderError.truncatedData
+        }
+
+        // Bare codestream — no metadata to extract
+        if data[data.startIndex] == 0xFF && data[data.startIndex + 1] == 0x0A {
+            return JXLContainer(codestream: data)
+        }
+
+        var container = JXLContainer(codestream: Data())
+        var foundCodestream = false
+        var offset = 0
+
+        while offset + 8 <= data.count {
+            // Box size (4 bytes big-endian)
+            let size = UInt32(data[offset]) << 24
+                     | UInt32(data[offset + 1]) << 16
+                     | UInt32(data[offset + 2]) << 8
+                     | UInt32(data[offset + 3])
+
+            // Box type (4 bytes ASCII)
+            let typeBytes = data.subdata(in: (offset + 4)..<(offset + 8))
+            let typeString = String(data: typeBytes, encoding: .ascii) ?? ""
+
+            let boxSize = Int(size)
+            guard boxSize >= 8 else {
+                throw DecoderError.invalidContainer("invalid box size \(boxSize)")
+            }
+            guard offset + boxSize <= data.count else {
+                throw DecoderError.invalidContainer("box extends past end of data")
+            }
+
+            let payload = data.subdata(in: (offset + 8)..<(offset + boxSize))
+
+            switch typeString {
+            case BoxType.jxlCodestream.rawValue:
+                container.codestream = payload
+                foundCodestream = true
+
+            case BoxType.exif.rawValue:
+                // EXIF box: 4-byte offset prefix + raw TIFF data
+                if payload.count >= 4 {
+                    let exifData = payload.subdata(in: 4..<payload.count)
+                    container.exif = EXIFMetadata(data: exifData)
+                }
+
+            case BoxType.xml.rawValue:
+                container.xmp = XMPMetadata(data: payload)
+
+            case BoxType.colourProfile.rawValue:
+                // colr box: 4-byte colour type ("prof") + ICC data
+                if payload.count >= 4 {
+                    let iccData = payload.subdata(in: 4..<payload.count)
+                    container.iccProfile = ICCProfile(data: iccData)
+                }
+
+            case BoxType.frameIndex.rawValue:
+                container.frameIndex = parseFrameIndexPayload(payload)
+
+            case BoxType.jxlLevel.rawValue:
+                if let levelByte = payload.first {
+                    container.level = UInt32(levelByte)
+                }
+
+            default:
+                break // Skip signature, ftyp, and unknown boxes
+            }
+
+            offset += boxSize
+        }
+
+        if !foundCodestream {
+            throw DecoderError.invalidContainer("no jxlc box found")
+        }
+
+        return container
+    }
+
+    /// Extract metadata from a JPEG XL container without decoding pixels.
+    ///
+    /// This is a convenience method that parses the container and returns
+    /// only the metadata (EXIF, XMP, ICC profile). For bare codestreams,
+    /// all metadata fields will be `nil`.
+    ///
+    /// - Parameter data: The raw file data.
+    /// - Returns: A tuple containing optional EXIF, XMP, and ICC metadata.
+    /// - Throws: ``DecoderError`` if the container is malformed.
+    public func extractMetadata(_ data: Data) throws -> (
+        exif: EXIFMetadata?,
+        xmp: XMPMetadata?,
+        iccProfile: ICCProfile?
+    ) {
+        let container = try parseContainer(data)
+        return (
+            exif: container.exif,
+            xmp: container.xmp,
+            iccProfile: container.iccProfile
+        )
+    }
+
     // MARK: - Private Helpers
 
     /// Read a big-endian UInt32 from the reader (4 consecutive bytes).
@@ -537,6 +650,56 @@ public class JXLDecoder {
             remaining += 1
         }
         return dataLength - remaining
+    }
+
+    /// Parse a frame index box payload into a ``FrameIndex``.
+    ///
+    /// Format: 4-byte BE entry count, then per entry:
+    /// 4-byte BE frame number, 8-byte BE byte offset, 4-byte BE duration.
+    private func parseFrameIndexPayload(_ payload: Data) -> FrameIndex? {
+        guard payload.count >= 4 else { return nil }
+
+        let entryCount = Int(
+            UInt32(payload[payload.startIndex]) << 24
+            | UInt32(payload[payload.startIndex + 1]) << 16
+            | UInt32(payload[payload.startIndex + 2]) << 8
+            | UInt32(payload[payload.startIndex + 3])
+        )
+
+        guard entryCount > 0 else { return FrameIndex(entries: []) }
+
+        let entrySize = 16 // 4 + 8 + 4 bytes per entry
+        guard payload.count >= 4 + entryCount * entrySize else { return nil }
+
+        var entries: [FrameIndexEntry] = []
+        entries.reserveCapacity(entryCount)
+
+        for i in 0..<entryCount {
+            let base = payload.startIndex + 4 + i * entrySize
+
+            let frameNumber = UInt32(payload[base]) << 24
+                | UInt32(payload[base + 1]) << 16
+                | UInt32(payload[base + 2]) << 8
+                | UInt32(payload[base + 3])
+
+            var byteOffset: UInt64 = 0
+            for j in 0..<8 {
+                byteOffset = (byteOffset << 8) | UInt64(payload[base + 4 + j])
+            }
+
+            let duration = UInt32(payload[base + 12]) << 24
+                | UInt32(payload[base + 13]) << 16
+                | UInt32(payload[base + 14]) << 8
+                | UInt32(payload[base + 15])
+
+            entries.append(FrameIndexEntry(
+                frameNumber: frameNumber,
+                byteOffset: byteOffset,
+                duration: duration
+            ))
+        }
+
+        return FrameIndex(entries: entries)
     }
 
     /// Parse an ISOBMFF container for the jxlc box.

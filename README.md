@@ -44,6 +44,7 @@ JXLSwift provides a pure Swift implementation of the JPEG XL image compression s
 - 🖼️ **Test Image Corpus** - Synthetic test image collections (Kodak-like, Tecnick-like, Wikipedia-like) for reproducible benchmarking
 - 🔧 **Flexible Configuration** - Quality levels, effort settings, hardware acceleration control
 - 📄 **JPEG XL Container Format** - ISOBMFF container with metadata boxes (EXIF, XMP, ICC)
+- 🏷️ **Metadata Extraction** - Parse and extract EXIF, XMP, and ICC profiles from container files
 - 🌊 **Progressive Encoding** - Incremental rendering for faster perceived loading
 
 ## Requirements
@@ -653,6 +654,32 @@ let frame = try decoder.decode(codestream)
 let pixel = frame.getPixel(x: 0, y: 0, channel: 0)
 ```
 
+### Metadata Extraction (EXIF, XMP, ICC)
+
+```swift
+import JXLSwift
+
+let jxlData = try Data(contentsOf: URL(fileURLWithPath: "image.jxl"))
+let decoder = JXLDecoder()
+
+// Parse the container and extract all metadata
+let container = try decoder.parseContainer(jxlData)
+if let exif = container.exif {
+    let orientation = EXIFOrientation.extractOrientation(from: exif.data)
+    print("EXIF orientation: \(orientation)")
+}
+if let xmp = container.xmp {
+    let xml = String(data: xmp.data, encoding: .utf8) ?? ""
+    print("XMP: \(xml.prefix(100))…")
+}
+if let icc = container.iccProfile {
+    print("ICC profile: \(icc.data.count) bytes")
+}
+
+// Or use the convenience method
+let (exif, xmp, iccProfile) = try decoder.extractMetadata(jxlData)
+```
+
 ## Architecture
 
 The library is organized into several modules:
@@ -949,7 +976,7 @@ See [MILESTONES.md](MILESTONES.md) for the detailed project milestone plan.
 - [x] Noise synthesis — add film grain or synthetic noise to mask quantization artifacts
 - [x] Spline encoding — vector overlay rendering for smooth curves and line art
 - [x] **libjxl Validation & Benchmarking** — quality metrics (PSNR, SSIM, MS-SSIM, Butteraugli), validation harness with configurable criteria, benchmark reports (JSON/HTML), performance regression detection (10% threshold alerting), validate CLI subcommand, test image generator, speed comparison across effort levels, compression ratio comparison across quality levels, memory usage comparison with process-level tracking, test image corpus (Kodak-like, Tecnick-like, Wikipedia-like), bitstream compatibility validation (structural checks + libjxl decode verification)
-- [x] Decoding support — `JXLDecoder` (codestream/frame header parsing, container extraction, Modular + VarDCT decode), `decode` CLI subcommand
+- [x] Decoding support — `JXLDecoder` (codestream/frame header parsing, container extraction, Modular + VarDCT decode, metadata extraction), `decode` CLI subcommand with `--metadata` flag
 
 ## Standards Compliance
 
