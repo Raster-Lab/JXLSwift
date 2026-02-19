@@ -656,6 +656,31 @@ let frame = try decoder.decode(codestream)
 let pixel = frame.getPixel(x: 0, y: 0, channel: 0)
 ```
 
+### Progressive Decoding
+
+JXLSwift supports progressive decoding for VarDCT (lossy) images, allowing incremental image reconstruction:
+
+```swift
+import JXLSwift
+
+let jxlData = try Data(contentsOf: URL(fileURLWithPath: "progressive.jxl"))
+let decoder = JXLDecoder()
+
+// Decode progressively with callback for each pass
+try decoder.decodeProgressive(jxlData) { pass, frame in
+    print("Pass \(pass): \(frame.width)×\(frame.height)")
+    // Update UI with progressive refinement
+    // Pass 0: DC-only (8×8 blocks)
+    // Pass 1: Low-frequency AC coefficients (1-15)
+    // Pass 2: High-frequency AC coefficients (16-63)
+}
+```
+
+Progressive decoding enables:
+- **Faster perceived loading** - Display low-resolution preview immediately
+- **Adaptive streaming** - Stop at desired quality level
+- **Bandwidth optimization** - Load only what's needed
+
 ### Metadata Extraction (EXIF, XMP, ICC)
 
 ```swift
