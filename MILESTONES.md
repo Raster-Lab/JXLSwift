@@ -487,7 +487,7 @@
 - [x] ANS entropy decoder — rANS symbol decoding
 - [ ] Progressive decoding (partial image rendering)
 - [x] Container format parsing
-- [ ] Metadata extraction (EXIF, XMP, ICC)
+- [x] Metadata extraction (EXIF, XMP, ICC) — `parseContainer(_:)` full ISOBMFF box parsing, `extractMetadata(_:)` convenience API
 - [x] `decode` subcommand in jxl-tool
 - [ ] Output to PNG, TIFF, BMP via platform image I/O
 
