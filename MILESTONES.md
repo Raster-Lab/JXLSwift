@@ -489,7 +489,7 @@
 - [x] Container format parsing
 - [x] Metadata extraction (EXIF, XMP, ICC) — `parseContainer(_:)` full ISOBMFF box parsing, `extractMetadata(_:)` convenience API
 - [x] `decode` subcommand in jxl-tool
-- [ ] Output to PNG, TIFF, BMP via platform image I/O
+- [x] Output to PNG, TIFF, BMP via platform image I/O — `ImageExporter` with `PixelConversion` (planar→interleaved), `CGImage` creation, `OutputFormat` enum; CLI `--format` option
 
 ### Tests Required
 
