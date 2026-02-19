@@ -324,7 +324,14 @@ public class JXLDecoder {
         // Read height (4 bytes big-endian)
         let height = try readU32(&reader)
 
-        guard width >= 1, height >= 1 else {
+        guard width >= 1, height >= 1,
+              width <= SizeHeader.maximumDimension,
+              height <= SizeHeader.maximumDimension else {
+            throw DecoderError.invalidDimensions(width: width, height: height)
+        }
+        // Prevent OOM from malformed data: cap total pixel count at 256 megapixels
+        let totalPixels = UInt64(width) * UInt64(height)
+        guard totalPixels <= 256 * 1024 * 1024 else {
             throw DecoderError.invalidDimensions(width: width, height: height)
         }
 
