@@ -145,27 +145,51 @@ public class JXLDecoder {
         }
         let payload = data.subdata(in: header.headerSize..<data.count)
 
-        // 3. Decode the payload using modular decoder
-        let options = EncodingOptions(
-            mode: .lossless,
-            effort: .squirrel,
-            modularMode: true
-        )
-        let modularDecoder = ModularDecoder(
-            hardware: hardware,
-            options: options
-        )
+        // 3. Check the first bit of the payload to determine encoding mode
+        //    false = VarDCT, true = Modular
+        guard payload.count >= 1 else {
+            throw DecoderError.truncatedData
+        }
+        let firstBit = (payload[payload.startIndex] & 0x80) != 0
 
-        let frame = try modularDecoder.decode(
-            data: payload,
-            width: Int(header.width),
-            height: Int(header.height),
-            channels: Int(header.channels),
-            bitsPerSample: Int(header.bitsPerSample),
-            pixelType: header.bitsPerSample <= 8 ? .uint8 : .uint16
-        )
+        let width = Int(header.width)
+        let height = Int(header.height)
+        let channels = Int(header.channels)
+        let bitsPerSample = Int(header.bitsPerSample)
+        let pixelType: PixelType = bitsPerSample <= 8 ? .uint8 : .uint16
 
-        return frame
+        if firstBit {
+            // Modular mode
+            let options = EncodingOptions(
+                mode: .lossless,
+                effort: .squirrel,
+                modularMode: true
+            )
+            let modularDecoder = ModularDecoder(
+                hardware: hardware,
+                options: options
+            )
+
+            return try modularDecoder.decode(
+                data: payload,
+                width: width,
+                height: height,
+                channels: channels,
+                bitsPerSample: bitsPerSample,
+                pixelType: pixelType
+            )
+        } else {
+            // VarDCT mode
+            let varDCTDecoder = VarDCTDecoder(hardware: hardware)
+            return try varDCTDecoder.decode(
+                data: payload,
+                width: width,
+                height: height,
+                channels: channels,
+                bitsPerSample: bitsPerSample,
+                pixelType: pixelType
+            )
+        }
     }
 
     // MARK: - Codestream Header Parsing

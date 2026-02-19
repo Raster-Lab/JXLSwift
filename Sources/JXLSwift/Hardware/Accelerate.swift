@@ -306,7 +306,7 @@ public enum AccelerateOps {
         var rounded = [Float](repeating: 0, count: count)
         vvnintf(&rounded, divided, [Int32(count)])
         
-        return rounded.map { Int16($0) }
+        return rounded.map { Int16(clamping: Int32($0)) }
     }
     
     // MARK: - Vector Operations

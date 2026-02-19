@@ -632,7 +632,7 @@ jxl-tool encode screencast/*.png --reference-frames --patches --patch-preset scr
 jxl-tool encode slides/*.png --reference-frames --patches --patch-preset conservative -o slides.jxl
 ```
 
-### Decoding (Lossless Round-Trip)
+### Decoding (Modular & VarDCT)
 
 ```swift
 import JXLSwift
@@ -648,7 +648,7 @@ let codestream = try decoder.extractCodestream(jxlData)
 let header = try decoder.parseImageHeader(codestream)
 print("Image: \(header.width)×\(header.height), \(header.channels) channels")
 
-// Decode to an ImageFrame (lossless modular mode)
+// Decode to an ImageFrame (lossless modular or lossy VarDCT mode)
 let frame = try decoder.decode(codestream)
 let pixel = frame.getPixel(x: 0, y: 0, channel: 0)
 ```
@@ -676,6 +676,7 @@ Sources/JXLSwift/
 │   ├── ModularEncoder.swift   # Lossless compression (with subbitstream framing)
 │   ├── ModularDecoder.swift   # Lossless decompression (round-trip support)
 │   ├── VarDCTEncoder.swift    # Lossy compression
+│   ├── VarDCTDecoder.swift    # Lossy decompression (VarDCT round-trip support)
 │   └── ANSEncoder.swift       # rANS entropy coding (ISO/IEC 18181-1 Annex A)
 ├── Hardware/          # Platform optimizations
 │   ├── Accelerate.swift       # Apple Accelerate framework (vDSP)
@@ -948,13 +949,13 @@ See [MILESTONES.md](MILESTONES.md) for the detailed project milestone plan.
 - [x] Noise synthesis — add film grain or synthetic noise to mask quantization artifacts
 - [x] Spline encoding — vector overlay rendering for smooth curves and line art
 - [x] **libjxl Validation & Benchmarking** — quality metrics (PSNR, SSIM, MS-SSIM, Butteraugli), validation harness with configurable criteria, benchmark reports (JSON/HTML), performance regression detection (10% threshold alerting), validate CLI subcommand, test image generator, speed comparison across effort levels, compression ratio comparison across quality levels, memory usage comparison with process-level tracking, test image corpus (Kodak-like, Tecnick-like, Wikipedia-like), bitstream compatibility validation (structural checks + libjxl decode verification)
-- [ ] Decoding support — `JXLDecoder` (codestream/frame header parsing, container extraction, lossless round-trip decode), `decode` CLI subcommand
+- [x] Decoding support — `JXLDecoder` (codestream/frame header parsing, container extraction, Modular + VarDCT decode), `decode` CLI subcommand
 
 ## Standards Compliance
 
 This implementation follows the JPEG XL specification:
 - ISO/IEC 18181-1:2024 - Core coding system
-- Focus on compression (encoding) only
+- Supports both encoding and decoding (Modular + VarDCT)
 
 ## License
 

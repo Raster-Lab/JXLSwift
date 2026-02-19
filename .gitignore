@@ -32,3 +32,4 @@ DerivedData/
 .vscode/
 .idea/
 *.xcworkspace
+*.jxl
