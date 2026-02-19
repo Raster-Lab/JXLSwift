@@ -45,7 +45,8 @@ JXLSwift provides a pure Swift implementation of the JPEG XL image compression s
 - 🔧 **Flexible Configuration** - Quality levels, effort settings, hardware acceleration control
 - 📄 **JPEG XL Container Format** - ISOBMFF container with metadata boxes (EXIF, XMP, ICC)
 - 🏷️ **Metadata Extraction** - Parse and extract EXIF, XMP, and ICC profiles from container files
-- 🌊 **Progressive Encoding** - Incremental rendering for faster perceived loading
+- ✅ **Progressive Encoding** - Incremental rendering for faster perceived loading
+- ✅ **Progressive Decoding** - Incremental image reconstruction from DC-only to full quality
 - 🖼️ **Image Export** - Output decoded images to PNG, TIFF, BMP via platform image I/O
 
 ## Requirements
