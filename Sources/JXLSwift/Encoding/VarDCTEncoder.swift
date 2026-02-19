@@ -1731,7 +1731,8 @@ class VarDCTEncoder {
             for x in 0..<blockSize {
                 let value = block[y][x]
                 let qValue = qMatrix[y][x]
-                quantized[y][x] = Int16(round(value / qValue))
+                let rounded = round(value / qValue)
+                quantized[y][x] = Int16(clamping: Int32(rounded))
             }
         }
         

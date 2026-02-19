@@ -397,8 +397,8 @@ public enum NEONOps {
 
             // Round and convert to Int16
             for j in 0..<4 {
-                result[y][j]   = Int16(rLo[j].rounded(.toNearestOrAwayFromZero))
-                result[y][j+4] = Int16(rHi[j].rounded(.toNearestOrAwayFromZero))
+                result[y][j]   = Int16(clamping: Int32(rLo[j].rounded(.toNearestOrAwayFromZero)))
+                result[y][j+4] = Int16(clamping: Int32(rHi[j].rounded(.toNearestOrAwayFromZero)))
             }
         }
 
