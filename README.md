@@ -1019,6 +1019,47 @@ This implementation follows the JPEG XL specification:
 
 MIT License - See LICENSE file for details
 
+## Testing
+
+Run the test suite with:
+
+```bash
+swift test
+```
+
+### Full Test Coverage with libjxl
+
+For complete bitstream compatibility testing, install the reference [libjxl](https://github.com/libjxl/libjxl) implementation. JXLSwift includes 11 additional tests that verify bidirectional compatibility:
+
+- **Decode libjxl-encoded files** - Tests JXLSwift decoder against files produced by `cjxl`
+- **Encode for libjxl** - Tests that `djxl` can decode JXLSwift-encoded files
+- **Quality validation** - Verifies PSNR thresholds for lossy compression
+- **Format validation** - Tests various image sizes and encoding modes
+
+#### Installing libjxl
+
+**macOS (via Homebrew):**
+```bash
+brew install jpeg-xl
+```
+
+**Ubuntu/Debian:**
+```bash
+sudo apt-get install libjxl-tools
+```
+
+**Building from source:**
+```bash
+git clone https://github.com/libjxl/libjxl.git
+cd libjxl
+mkdir build && cd build
+cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF ..
+cmake --build . --target cjxl djxl
+sudo cmake --install .
+```
+
+After installation, the libjxl compatibility tests will automatically run with the full test suite. Tests gracefully skip if libjxl is not available.
+
 ## Contributing
 
 Contributions welcome! Please ensure:
