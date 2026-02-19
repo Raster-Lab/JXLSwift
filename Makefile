@@ -1,6 +1,6 @@
 # JXLSwift Makefile
 
-.PHONY: all build test clean install install-man man help docc docc-html docc-preview
+.PHONY: all build test clean install install-man man help docc docc-html docc-preview coverage coverage-html
 
 PREFIX ?= /usr/local
 BINDIR = $(PREFIX)/bin
@@ -66,6 +66,8 @@ help:
 	@echo "Available targets:"
 	@echo "  make build        - Build the project in release mode"
 	@echo "  make test         - Run all tests"
+	@echo "  make coverage     - Generate code coverage report"
+	@echo "  make coverage-html - Generate HTML code coverage report"
 	@echo "  make man          - Generate man pages"
 	@echo "  make docc         - Generate API documentation with DocC"
 	@echo "  make docc-html    - Generate HTML API documentation"
@@ -105,5 +107,15 @@ generate-documentation --target JXLSwift \
 
 ## Preview API documentation
 docc-preview:
-@echo "Starting documentation preview server..."
-swift package --disable-sandbox preview-documentation --target JXLSwift
+	@echo "Starting documentation preview server..."
+	swift package --disable-sandbox preview-documentation --target JXLSwift
+
+## Generate code coverage report
+coverage:
+	@echo "Generating code coverage report..."
+	@./scripts/generate-coverage-report.sh
+
+## Generate code coverage report with HTML output
+coverage-html:
+	@echo "Generating code coverage report with HTML..."
+	@./scripts/generate-coverage-report.sh --html
