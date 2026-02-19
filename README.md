@@ -1033,6 +1033,9 @@ See [MILESTONES.md](MILESTONES.md) for the detailed project milestone plan.
 - [x] **libjxl Validation & Benchmarking** — quality metrics (PSNR, SSIM, MS-SSIM, Butteraugli), validation harness with configurable criteria, benchmark reports (JSON/HTML), performance regression detection (10% threshold alerting), validate CLI subcommand, test image generator, speed comparison across effort levels, compression ratio comparison across quality levels, memory usage comparison with process-level tracking, test image corpus (Kodak-like, Tecnick-like, Wikipedia-like), bitstream compatibility validation (structural checks + libjxl decode verification)
 - [x] Decoding support — `JXLDecoder` (codestream/frame header parsing, container extraction, Modular + VarDCT decode, metadata extraction), `decode` CLI subcommand with `--metadata` flag
 - [x] Image export — `ImageExporter` with PNG, TIFF, BMP output via CoreGraphics/ImageIO, `PixelConversion` planar→interleaved, CLI `--format` option
+- [ ] **Production hardening** (in progress) — fuzzing tests (51 tests), thread safety tests (51 tests), code coverage reporting in CI, migration guide, performance tuning guide, CHANGELOG.md, VERSION file, semantic versioning
+- [ ] API documentation with DocC — comprehensive documentation for all public APIs
+- [ ] v1.0.0 release — tagged release with semantic versioning
 
 ## Standards Compliance
 
