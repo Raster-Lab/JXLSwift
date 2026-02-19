@@ -483,8 +483,8 @@
 - [x] Codestream header parsing
 - [x] Frame header parsing
 - [x] Modular mode decoder (inverse prediction, entropy decoding) — `ModularDecoder` with unframed and framed decoding
-- [ ] VarDCT mode decoder (entropy decoding, dequantisation, IDCT, colour conversion)
-- [ ] ANS entropy decoder
+- [x] VarDCT mode decoder (entropy decoding, dequantisation, IDCT, colour conversion) — `VarDCTDecoder` with inverse DCT, dequantization, YCbCr→RGB (32 tests passing)
+- [x] ANS entropy decoder — rANS symbol decoding
 - [ ] Progressive decoding (partial image rendering)
 - [x] Container format parsing
 - [ ] Metadata extraction (EXIF, XMP, ICC)
