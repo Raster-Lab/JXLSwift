@@ -46,6 +46,7 @@ JXLSwift provides a pure Swift implementation of the JPEG XL image compression s
 - 📄 **JPEG XL Container Format** - ISOBMFF container with metadata boxes (EXIF, XMP, ICC)
 - 🏷️ **Metadata Extraction** - Parse and extract EXIF, XMP, and ICC profiles from container files
 - 🌊 **Progressive Encoding** - Incremental rendering for faster perceived loading
+- 🖼️ **Image Export** - Output decoded images to PNG, TIFF, BMP via platform image I/O
 
 ## Requirements
 
@@ -680,6 +681,32 @@ if let icc = container.iccProfile {
 let (exif, xmp, iccProfile) = try decoder.extractMetadata(jxlData)
 ```
 
+### Exporting to PNG, TIFF, BMP
+
+```swift
+import JXLSwift
+
+// Decode a JPEG XL file
+let jxlData = try Data(contentsOf: URL(fileURLWithPath: "image.jxl"))
+let decoder = JXLDecoder()
+let codestream = try decoder.extractCodestream(jxlData)
+let frame = try decoder.decode(codestream)
+
+// Export to PNG data
+let pngData = try ImageExporter.export(frame, format: .png)
+
+// Export to a file (format auto-detected from extension)
+try ImageExporter.export(frame, to: URL(fileURLWithPath: "output.png"))
+try ImageExporter.export(frame, to: URL(fileURLWithPath: "output.tiff"))
+try ImageExporter.export(frame, to: URL(fileURLWithPath: "output.bmp"))
+
+// Or specify format explicitly
+try ImageExporter.export(frame, to: URL(fileURLWithPath: "image.dat"), format: .tiff)
+
+// Convert planar pixel data to interleaved format (available on all platforms)
+let (interleaved, bytesPerComponent, componentCount) = try PixelConversion.interleave(frame)
+```
+
 ## Architecture
 
 The library is organized into several modules:
@@ -705,6 +732,8 @@ Sources/JXLSwift/
 │   ├── VarDCTEncoder.swift    # Lossy compression
 │   ├── VarDCTDecoder.swift    # Lossy decompression (VarDCT round-trip support)
 │   └── ANSEncoder.swift       # rANS entropy coding (ISO/IEC 18181-1 Annex A)
+├── Export/             # Image format export
+│   └── ImageExporter.swift    # PNG, TIFF, BMP export via CoreGraphics/ImageIO
 ├── Hardware/          # Platform optimizations
 │   ├── Accelerate.swift       # Apple Accelerate framework (vDSP)
 │   ├── NEONOps.swift          # ARM NEON SIMD via Swift SIMD types
@@ -977,6 +1006,7 @@ See [MILESTONES.md](MILESTONES.md) for the detailed project milestone plan.
 - [x] Spline encoding — vector overlay rendering for smooth curves and line art
 - [x] **libjxl Validation & Benchmarking** — quality metrics (PSNR, SSIM, MS-SSIM, Butteraugli), validation harness with configurable criteria, benchmark reports (JSON/HTML), performance regression detection (10% threshold alerting), validate CLI subcommand, test image generator, speed comparison across effort levels, compression ratio comparison across quality levels, memory usage comparison with process-level tracking, test image corpus (Kodak-like, Tecnick-like, Wikipedia-like), bitstream compatibility validation (structural checks + libjxl decode verification)
 - [x] Decoding support — `JXLDecoder` (codestream/frame header parsing, container extraction, Modular + VarDCT decode, metadata extraction), `decode` CLI subcommand with `--metadata` flag
+- [x] Image export — `ImageExporter` with PNG, TIFF, BMP output via CoreGraphics/ImageIO, `PixelConversion` planar→interleaved, CLI `--format` option
 
 ## Standards Compliance
 

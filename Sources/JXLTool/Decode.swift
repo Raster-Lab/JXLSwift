@@ -1,7 +1,7 @@
 /// Decode subcommand — decode a JPEG XL file back to pixel data
 ///
-/// Decodes a JPEG XL codestream or container file and writes information
-/// about the decoded image. Currently supports lossless (Modular) mode.
+/// Decodes a JPEG XL codestream or container file and writes the decoded
+/// image to PNG, TIFF, BMP, or raw pixel data.
 
 import ArgumentParser
 import Foundation
@@ -15,8 +15,11 @@ struct Decode: ParsableCommand {
     @Argument(help: "Input JPEG XL file path")
     var input: String
 
-    @Option(name: .shortAndLong, help: "Output file path (raw pixel data)")
+    @Option(name: .shortAndLong, help: "Output file path (format detected from extension, or use --format)")
     var output: String?
+
+    @Option(name: .long, help: "Output format: png, tiff, bmp, raw (default: auto-detect from extension)")
+    var format: String?
 
     @Flag(name: .long, help: "Print decoded image header information")
     var info: Bool = false
@@ -91,8 +94,32 @@ struct Decode: ParsableCommand {
         // Write output if requested
         if let outputPath = output {
             let outputURL = URL(fileURLWithPath: outputPath)
-            try Data(frame.data).write(to: outputURL)
-            print("Wrote raw pixel data to \(outputPath) (\(frame.data.count) bytes)")
+
+            // Determine output format
+            let resolvedFormat = resolveFormat(outputPath: outputPath)
+
+            if resolvedFormat == "raw" {
+                try Data(frame.data).write(to: outputURL)
+                print("Wrote raw pixel data to \(outputPath) (\(frame.data.count) bytes)")
+            } else if let outputFormat = OutputFormat.from(fileExtension: resolvedFormat) {
+                try ImageExporter.export(frame, to: outputURL, format: outputFormat)
+                print("Wrote \(resolvedFormat.uppercased()) image to \(outputPath)")
+            } else {
+                try Data(frame.data).write(to: outputURL)
+                print("Wrote raw pixel data to \(outputPath) (\(frame.data.count) bytes)")
+            }
         }
+    }
+
+    /// Resolves the output format from the `--format` flag or file extension.
+    private func resolveFormat(outputPath: String) -> String {
+        if let explicit = format {
+            return explicit.lowercased()
+        }
+        let ext = URL(fileURLWithPath: outputPath).pathExtension.lowercased()
+        if OutputFormat.from(fileExtension: ext) != nil {
+            return ext
+        }
+        return "raw"
     }
 }
