@@ -59,8 +59,39 @@ public struct HardwareCapabilities: Sendable {
     /// Metal device name (if available)
     public let metalDeviceName: String?
     
+    /// Vulkan GPU support (Linux/Windows)
+    public let hasVulkan: Bool
+    
+    /// Vulkan device name (if available)
+    public let vulkanDeviceName: String?
+    
     /// Number of CPU cores
     public let coreCount: Int
+    
+    /// Designated initialiser.
+    ///
+    /// `hasVulkan` and `vulkanDeviceName` default to `false`/`nil` so that
+    /// existing call sites that pre-date Milestone 16 continue to compile
+    /// without modification.
+    public init(
+        hasNEON: Bool,
+        hasAVX2: Bool,
+        hasAccelerate: Bool,
+        hasMetal: Bool,
+        metalDeviceName: String?,
+        hasVulkan: Bool = false,
+        vulkanDeviceName: String? = nil,
+        coreCount: Int
+    ) {
+        self.hasNEON = hasNEON
+        self.hasAVX2 = hasAVX2
+        self.hasAccelerate = hasAccelerate
+        self.hasMetal = hasMetal
+        self.metalDeviceName = metalDeviceName
+        self.hasVulkan = hasVulkan
+        self.vulkanDeviceName = vulkanDeviceName
+        self.coreCount = coreCount
+    }
     
     /// Detect hardware capabilities
     public static func detect() -> HardwareCapabilities {
@@ -124,12 +155,27 @@ public struct HardwareCapabilities: Sendable {
         // Get CPU core count
         let coreCount = ProcessInfo.processInfo.activeProcessorCount
         
+        // Vulkan availability (Linux/Windows only)
+        let (hasVulkan, vulkanDeviceName): (Bool, String?) = {
+            #if canImport(Vulkan)
+            if VulkanOps.isAvailable {
+                return (true, VulkanOps.deviceName)
+            } else {
+                return (false, nil)
+            }
+            #else
+            return (false, nil)
+            #endif
+        }()
+        
         return HardwareCapabilities(
             hasNEON: hasNEON,
             hasAVX2: hasAVX2,
             hasAccelerate: hasAccelerate,
             hasMetal: hasMetal,
             metalDeviceName: metalDeviceName,
+            hasVulkan: hasVulkan,
+            vulkanDeviceName: vulkanDeviceName,
             coreCount: coreCount
         )
     }

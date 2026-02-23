@@ -18,6 +18,7 @@ JXLSwift provides a pure Swift implementation of the JPEG XL image compression s
 - 🚀 **Apple Silicon Optimized** - Leverages ARM NEON SIMD via portable Swift SIMD types
 - ⚡ **Apple Accelerate Integration** - Uses vDSP for DCT and matrix operations, vImage for high-quality image resampling
 - 🎯 **Modular Architecture** - Separate x86-64 code paths for future removal
+- 🖥️ **Cross-Platform GPU Acceleration** - Metal on Apple platforms; Vulkan on Linux/Windows via `GPUCompute` abstraction
 - 📦 **Two Compression Modes**:
   - **Lossless (Modular Mode)** - Perfect pixel reproduction
   - **Lossy (VarDCT Mode)** - High-quality lossy compression
@@ -769,9 +770,18 @@ Sources/JXLSwift/
 │   ├── Accelerate.swift       # Apple Accelerate framework (vDSP)
 │   ├── NEONOps.swift          # ARM NEON SIMD via Swift SIMD types
 │   ├── DispatchBackend.swift  # Runtime backend selection
-│   └── x86/                   # Intel x86-64 SIMD (#if arch(x86_64) guarded)
-│       ├── SSEOps.swift       # SSE2 4-wide operations (DCT, colour conversion, etc.)
-│       └── AVXOps.swift       # AVX2 8-wide operations (wider DCT, colour conversion)
+│   ├── GPUCompute.swift       # Cross-platform GPU abstraction (Metal ↔ Vulkan)
+│   ├── x86/                   # Intel x86-64 SIMD (#if arch(x86_64) guarded)
+│   │   ├── SSEOps.swift       # SSE2 4-wide operations (DCT, colour conversion, etc.)
+│   │   └── AVXOps.swift       # AVX2 8-wide operations (wider DCT, colour conversion)
+│   ├── Metal/                 # Apple GPU (#if canImport(Metal) guarded)
+│   │   ├── MetalOps.swift     # Metal device/buffer management
+│   │   ├── MetalCompute.swift # Metal compute pipeline (DCT, colour conversion, quantisation)
+│   │   └── Shaders.metal      # MSL compute shaders
+│   └── Vulkan/                # Linux/Windows GPU (#if canImport(Vulkan) guarded)
+│       ├── VulkanOps.swift    # Vulkan device/buffer/pipeline management
+│       ├── VulkanCompute.swift# Vulkan compute operations (DCT, colour conversion, quantisation)
+│       └── Shaders.comp       # GLSL compute shaders (compiled to SPIR-V with glslc)
 └── Format/            # JPEG XL file format (ISO/IEC 18181-2)
     ├── CodestreamHeader.swift # SizeHeader, ImageMetadata, ColourEncoding
     ├── FrameHeader.swift      # Frame header, section/group framing
@@ -798,6 +808,7 @@ JXLSwift is optimized for Apple Silicon:
 - **Intel SSE2/AVX2** - Parallel x86-64 code paths: SSE2 4-wide operations in `SSEOps`, AVX2 8-wide DCT and colour conversion in `AVXOps`; runtime AVX2 detection
 - **Apple Accelerate** - vDSP DCT transforms and matrix operations; vImage high-quality Lanczos resampling
 - **Metal GPU** - Parallel block processing with compute shaders for DCT, color conversion, and quantization (batch operations with async pipeline)
+- **Vulkan GPU** - Cross-platform GPU compute for Linux and Windows via Vulkan compute shaders; mirrors Metal API shape, `#if canImport(Vulkan)` guarded
 
 Benchmarks on Apple M1 (256x256 image):
 - Fast mode: ~0.7s per frame
@@ -1048,6 +1059,7 @@ See [MILESTONES.md](MILESTONES.md) for the detailed project milestone plan.
 - [x] **Production hardening** — fuzzing tests (51 tests), thread safety tests (51 tests), code coverage reporting in CI, migration guide, performance tuning guide, CHANGELOG.md, VERSION file, DocC API documentation, memory safety validation (ASan, TSan, UBSan), security scanning (CodeQL), v1.0.0 release infrastructure
 - [x] **ISO/IEC 18181-3 Conformance Testing** (in progress) — `ConformanceRunner` with 17 synthetic test vectors, bitstream structure checks (§6), image header checks (§11), frame header checks (§9), container format checks (Part 2 §3), lossless round-trip checks, lossy round-trip checks, bidirectional libjxl interoperability (conditional), `ConformanceReport` with per-category pass/fail, CI `conformance` job
 - [x] **Intel x86-64 SIMD Optimisation (SSE/AVX)** — `SSEOps` with SSE2 4-wide operations (DCT, colour conversion, quantisation, MED prediction, RCT, squeeze) in `Hardware/x86/SSEOps.swift`; `AVXOps` with AVX2 8-wide DCT and colour conversion in `Hardware/x86/AVXOps.swift`; runtime AVX2 CPU detection; `#if arch(x86_64)` dispatch in VarDCTEncoder and ModularEncoder with scalar `#else` fallback
+- [x] **Vulkan GPU Compute (Linux/Windows)** — `VulkanOps` (device/queue/buffer management) and `VulkanCompute` (DCT, colour conversion, quantisation, async pipeline) in `Hardware/Vulkan/`, all `#if canImport(Vulkan)` guarded; `GPUCompute` cross-platform abstraction layer routes to Metal on Apple and Vulkan on Linux/Windows; `hasVulkan` field added to `HardwareCapabilities`; Vulkan dispatch path added to `VarDCTEncoder`; GLSL compute shaders in `Shaders.comp`; `VulkanBufferPool` and `VulkanAsyncPipeline` for double-buffered GPU execution
 
 ## Standards Compliance
 

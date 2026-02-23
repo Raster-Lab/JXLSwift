@@ -860,6 +860,18 @@ class VarDCTEncoder {
             // Fall through to sync version if async Metal fails
         }
         #endif
+
+        // Use Vulkan GPU for larger images on Linux/Windows
+        // Note: reuses `options.useMetal` as a general "enable GPU acceleration" flag;
+        // the option will be renamed to `useGPU` in a future API version.
+        #if canImport(Vulkan)
+        if hardware.hasVulkan && options.useMetal && totalBlocks >= Self.minBlocksForAsyncGPU {
+            if let result = computeDCTBlocksVulkanAsync(data: data, width: width, height: height, blocksX: blocksX, blocksY: blocksY) {
+                return result
+            }
+            // Fall through to sync version if Vulkan fails
+        }
+        #endif
         
         // Fallback to synchronous processing
         return computeDCTBlocks(data: data, width: width, height: height)
@@ -1036,8 +1048,98 @@ class VarDCTEncoder {
         }
     }
     #endif
-    
-    /// Compute the CfL correlation coefficient for a single block.
+
+    #if canImport(Vulkan)
+    /// Internal helper to process DCT blocks using async Vulkan pipeline on Linux/Windows.
+    private func computeDCTBlocksVulkanAsync(
+        data: [[Float]],
+        width: Int,
+        height: Int,
+        blocksX: Int,
+        blocksY: Int
+    ) -> [[[[Float]]]]? {
+        guard VulkanOps.isAvailable else { return nil }
+
+        let blockSize = 8
+        var flatBlocks: [[Float]] = []
+        flatBlocks.reserveCapacity(blocksX * blocksY)
+
+        for blockY in 0..<blocksY {
+            for blockX in 0..<blocksX {
+                let block = extractBlock(
+                    data: data, blockX: blockX, blockY: blockY,
+                    width: width, height: height
+                )
+                flatBlocks.append(block.flatMap { $0 })
+            }
+        }
+
+        let dispatchGroup = DispatchGroup()
+        let batchState = DCTBatchState(count: flatBlocks.count)
+
+        for batchStart in stride(from: 0, to: flatBlocks.count, by: Self.metalBatchSize) {
+            let batchEnd = min(batchStart + Self.metalBatchSize, flatBlocks.count)
+            let batch = Array(flatBlocks[batchStart..<batchEnd])
+            let blockCount = batch.count
+            let flatData = batch.flatMap { $0 }
+            let vulkanWidth = 8 * blockCount
+            let vulkanHeight = 8
+
+            dispatchGroup.enter()
+            DispatchQueue.global(qos: .userInitiated).async {
+                defer { dispatchGroup.leave() }
+                guard let transformed = VulkanCompute.dct8x8(
+                    inputData: flatData, width: vulkanWidth, height: vulkanHeight
+                ) else {
+                    batchState.setError()
+                    return
+                }
+                var batchResults: [[Float]] = []
+                batchResults.reserveCapacity(blockCount)
+                for blockIdx in 0..<blockCount {
+                    let start = blockIdx * 64
+                    batchResults.append(Array(transformed[start..<start + 64]))
+                }
+                batchState.setResults(batchResults, startingAt: batchStart)
+            }
+        }
+
+        dispatchGroup.wait()
+        guard !batchState.hadError else { return nil }
+
+        let processedResults = batchState.getResults()
+        var blocks = [[[[Float]]]](
+            repeating: [[[Float]]](
+                repeating: [[Float]](
+                    repeating: [Float](repeating: 0, count: blockSize),
+                    count: blockSize
+                ),
+                count: blocksX
+            ),
+            count: blocksY
+        )
+
+        var blockIdx = 0
+        for blockY in 0..<blocksY {
+            for blockX in 0..<blocksX {
+                guard let flatBlock = processedResults[blockIdx] else { return nil }
+                var block = [[Float]](
+                    repeating: [Float](repeating: 0, count: blockSize),
+                    count: blockSize
+                )
+                for i in 0..<blockSize {
+                    for j in 0..<blockSize {
+                        block[i][j] = flatBlock[i * blockSize + j]
+                    }
+                }
+                blocks[blockY][blockX] = block
+                blockIdx += 1
+            }
+        }
+        return blocks
+    }
+    #endif // canImport(Vulkan)
+
     ///
     /// Determines how well the chroma DCT coefficients can be predicted
     /// from the luma DCT coefficients using a linear model:

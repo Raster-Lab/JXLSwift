@@ -48,6 +48,9 @@ public enum DispatchBackend: String, Sendable, CaseIterable {
     /// Metal GPU compute shaders.
     case metal
 
+    /// Vulkan GPU compute shaders (Linux/Windows).
+    case vulkan
+
     // MARK: - Auto-Detection
 
     /// Auto-detect the best available backend for the current platform.
@@ -100,6 +103,10 @@ public enum DispatchBackend: String, Sendable, CaseIterable {
         backends.append(.metal)
         #endif
 
+        #if canImport(Vulkan)
+        backends.append(.vulkan)
+        #endif
+
         return backends
     }
 
@@ -110,7 +117,7 @@ public enum DispatchBackend: String, Sendable, CaseIterable {
 
     /// Whether this backend requires a GPU.
     public var requiresGPU: Bool {
-        return self == .metal
+        return self == .metal || self == .vulkan
     }
 
     /// Human-readable description of the backend.
@@ -122,6 +129,7 @@ public enum DispatchBackend: String, Sendable, CaseIterable {
         case .avx2:       return "x86_64 AVX2"
         case .accelerate: return "Apple Accelerate"
         case .metal:      return "Metal GPU"
+        case .vulkan:     return "Vulkan GPU"
         }
     }
 }
