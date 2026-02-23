@@ -9,6 +9,17 @@ JXLSwift is a native Swift implementation of the JPEG XL (ISO/IEC 18181) compres
 
 ---
 
+## Scope of Work
+
+> **You must only work on tasks that are explicitly defined in [`MILESTONES.md`](../MILESTONES.md).**
+
+- **Do not** implement features, fix bugs, refactor code, add tests, or make any other changes that are not part of a milestone listed in `MILESTONES.md`.
+- **Do not** add new milestones, deliverables, or acceptance criteria without explicit instruction from the project maintainer.
+- Before starting any task, verify that it maps to an active (⬜ Not Started or 🔶 In Progress) milestone in `MILESTONES.md`.
+- If a requested task falls outside the defined milestones, **stop and ask the maintainer** rather than proceeding.
+
+---
+
 ## Unit Test Coverage
 
 ### Coverage Target: 95% and Above
@@ -181,6 +192,7 @@ Whenever a feature is added, modified, or removed, you **must** update the follo
 
 When reviewing or generating code, verify:
 
+- [ ] Task is part of an active milestone in `MILESTONES.md` (⬜ Not Started or 🔶 In Progress) — **do not proceed if it is not**.
 - [ ] All public APIs have `///` documentation comments.
 - [ ] Unit tests cover the new code with ≥ 95% branch coverage.
 - [ ] Performance-sensitive code includes `measure {}` benchmarks.
