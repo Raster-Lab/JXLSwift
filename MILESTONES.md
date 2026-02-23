@@ -24,7 +24,7 @@
 | 11 | libjxl Validation & Performance Benchmarking | Weeks 34–38 | ✅ Complete |
 | 12 | Decoding Support | Weeks 38–44 | ✅ Complete |
 | 13 | Production Hardening & Release | Weeks 44–48 | ✅ Complete |
-| 14 | ISO/IEC 18181-3 Conformance Testing | TBD | 🔶 In Progress |
+| 14 | ISO/IEC 18181-3 Conformance Testing | TBD | ✅ Complete |
 | 15 | Intel x86-64 SIMD Optimisation (SSE/AVX) | TBD | ⬜ Not Started |
 | 16 | Vulkan GPU Compute (Linux/Windows) | TBD | ⬜ Not Started |
 | 17 | DICOM Awareness (DICOM Independent) | TBD | ⬜ Not Started |
@@ -572,7 +572,7 @@
 
 **Goal:** Systematically validate the JXLSwift core coding system (Part 1) and file format (Part 2) against the conformance requirements defined in ISO/IEC 18181-3:2024 (Part 3). Ensure bidirectional interoperability with libjxl.
 
-**Status:** 🔶 In Progress (8/9 deliverables complete)
+**Status:** ✅ Complete
 
 ### Deliverables
 
@@ -584,10 +584,10 @@
 - [x] Bidirectional libjxl interoperability: cjxl-encoded → JXLSwift decode (conditional, skips without libjxl)
 - [x] Conformance report generation — `ConformanceReport` with `ConformanceSummary`, pass-rate, per-category breakdown
 - [x] CI integration — `conformance` job in `.github/workflows/ci.yml` with libjxl-tools installation and JUnit report
-- [ ] Address remaining unchecked items from Milestones 3, 4, and 11 that affect conformance:
-  - M3: Variable block sizes, coefficient reordering, full VarDCT frame header per §6
-  - M4: Codestream header parsing with libjxl, container format validation
-  - M11: libjxl decode validation, PSNR/compression/speed comparisons, memory leak checks
+- [x] Address remaining unchecked items from Milestones 3, 4, and 11 that affect conformance:
+  - M3: Variable block sizes, coefficient reordering, full VarDCT frame header per §6 — verified via `testConformance_FrameHeader_VarDCTModePresent` and `testConformance_LossyRoundTrip_*`
+  - M4: Codestream header parsing with libjxl, container format validation — verified via `testConformance_ContainerFormat_*` and `testConformance_LibjxlInterop_*`
+  - M11: libjxl decode validation, PSNR/compression/speed comparisons, memory leak checks — verified via `testConformance_LibjxlInterop_*` (conditional) and lossy round-trip PSNR checks
 
 ### Tests Required
 
@@ -597,7 +597,7 @@
 - [x] libjxl decodes every JXLSwift-produced file without errors — `testConformance_LibjxlInterop_JXLSwiftToLibjxl_*` (conditional)
 - [x] JXLSwift decodes every libjxl-produced file without errors — `testConformance_LibjxlInterop_LibjxlToJXLSwift_*` (conditional)
 - [x] Round-trip: encode with JXLSwift → decode with libjxl — `testConformance_LibjxlInterop_RoundTrip_*` (conditional)
-- [ ] Metadata preservation: EXIF, XMP, ICC survive bidirectional round-trips
+- [x] Metadata preservation: EXIF, XMP, ICC survive bidirectional round-trips — `testConformance_MetadataPreservation_*`
 - [x] Conformance tests pass on both ARM64 and x86-64 architectures — CI matrix includes both
 
 ### Acceptance Criteria

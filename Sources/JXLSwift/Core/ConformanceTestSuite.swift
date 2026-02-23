@@ -722,6 +722,100 @@ public final class ConformanceRunner: Sendable {
         return checks
     }
 
+    // MARK: - Metadata Box Checks (Part 2 §3)
+
+    /// Validates that a parsed ``JXLContainer`` contains the expected metadata payloads.
+    ///
+    /// Checks are performed byte-for-byte so that EXIF, XMP, and ICC profile data
+    /// are confirmed to survive a serialise → parse round-trip without corruption.
+    ///
+    /// - Parameters:
+    ///   - container: The ``JXLContainer`` produced by ``JXLDecoder.parseContainer(_:)``.
+    ///   - expectedEXIF: Expected raw EXIF bytes (nil = no EXIF expected).
+    ///   - expectedXMP: Expected raw XMP bytes (nil = no XMP expected).
+    ///   - expectedICC: Expected raw ICC profile bytes (nil = no ICC expected).
+    /// - Returns: An array of ``ConformanceCheck`` results.
+    public func metadataBoxChecks(
+        container: JXLContainer,
+        expectedEXIF: Data? = nil,
+        expectedXMP: Data? = nil,
+        expectedICC: Data? = nil
+    ) -> [ConformanceCheck] {
+        var checks: [ConformanceCheck] = []
+
+        // EXIF check
+        if let expected = expectedEXIF {
+            let present = container.exif != nil
+            checks.append(ConformanceCheck(
+                name: "exif_present",
+                passed: present,
+                message: present ? "EXIF box is present" : "EXIF box missing from parsed container"
+            ))
+            if let actual = container.exif {
+                let match = actual.data == expected
+                checks.append(ConformanceCheck(
+                    name: "exif_data_preserved",
+                    passed: match,
+                    message: match
+                        ? "EXIF data is byte-exact (\(expected.count) bytes)"
+                        : "EXIF data mismatch: expected \(expected.count) bytes, got \(actual.data.count) bytes"
+                ))
+            }
+        }
+
+        // XMP check
+        if let expected = expectedXMP {
+            let present = container.xmp != nil
+            checks.append(ConformanceCheck(
+                name: "xmp_present",
+                passed: present,
+                message: present ? "XMP box is present" : "XMP box missing from parsed container"
+            ))
+            if let actual = container.xmp {
+                let match = actual.data == expected
+                checks.append(ConformanceCheck(
+                    name: "xmp_data_preserved",
+                    passed: match,
+                    message: match
+                        ? "XMP data is byte-exact (\(expected.count) bytes)"
+                        : "XMP data mismatch: expected \(expected.count) bytes, got \(actual.data.count) bytes"
+                ))
+            }
+        }
+
+        // ICC profile check
+        if let expected = expectedICC {
+            let present = container.iccProfile != nil
+            checks.append(ConformanceCheck(
+                name: "icc_present",
+                passed: present,
+                message: present ? "ICC profile box is present" : "ICC profile box missing from parsed container"
+            ))
+            if let actual = container.iccProfile {
+                let match = actual.data == expected
+                checks.append(ConformanceCheck(
+                    name: "icc_data_preserved",
+                    passed: match,
+                    message: match
+                        ? "ICC profile data is byte-exact (\(expected.count) bytes)"
+                        : "ICC profile data mismatch: expected \(expected.count) bytes, got \(actual.data.count) bytes"
+                ))
+            }
+        }
+
+        // Codestream presence
+        let hasCodestream = !container.codestream.isEmpty
+        checks.append(ConformanceCheck(
+            name: "codestream_intact",
+            passed: hasCodestream,
+            message: hasCodestream
+                ? "Codestream is present (\(container.codestream.count) bytes)"
+                : "Codestream is empty after metadata round-trip"
+        ))
+
+        return checks
+    }
+
     // MARK: - Container Format Checks (Part 2 §3)
 
     /// Validates that the bare codestream is not inadvertently wrapped in a container.
