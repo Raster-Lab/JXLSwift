@@ -16,7 +16,7 @@ JXLSwift provides a pure Swift implementation of the JPEG XL image compression s
 
 - ✅ **Native Swift Implementation** - Pure Swift, no C/C++ dependencies
 - 🚀 **Apple Silicon Optimized** - Leverages ARM NEON SIMD via portable Swift SIMD types
-- ⚡ **Apple Accelerate Integration** - Uses vDSP for DCT and matrix operations
+- ⚡ **Apple Accelerate Integration** - Uses vDSP for DCT and matrix operations, vImage for high-quality image resampling
 - 🎯 **Modular Architecture** - Separate x86-64 code paths for future removal
 - 📦 **Two Compression Modes**:
   - **Lossless (Modular Mode)** - Perfect pixel reproduction
@@ -792,7 +792,7 @@ Sources/JXLTool/
 JXLSwift is optimized for Apple Silicon:
 
 - **ARM NEON SIMD** - Vectorized DCT, colour conversion, quantisation, prediction, RCT, and squeeze transforms via Swift SIMD types (both Modular and VarDCT pipelines)
-- **Apple Accelerate** - vDSP DCT transforms and matrix operations
+- **Apple Accelerate** - vDSP DCT transforms and matrix operations; vImage high-quality Lanczos resampling
 - **Metal GPU** - Parallel block processing with compute shaders for DCT, color conversion, and quantization (batch operations with async pipeline)
 
 Benchmarks on Apple M1 (256x256 image):
@@ -1017,7 +1017,7 @@ See [MILESTONES.md](MILESTONES.md) for the detailed project milestone plan.
 - [x] Lossless (Modular) mode — MED, RCT, Squeeze, MA tree, context modeling, subbitstream framing (§7), round-trip decode
 - [x] Lossy (VarDCT) mode — DCT, XYB, CfL, adaptive quantization, DC prediction, variable block sizes, natural order scanning, full frame header (§6)
 - [x] Apple Silicon optimization
-- [x] Accelerate framework integration — vDSP DCT, vectorized color/quantization
+- [x] Accelerate framework integration — vDSP DCT, vectorized color/quantization, vImage Lanczos resampling
 - [x] ARM NEON SIMD acceleration — portable Swift SIMD types, DCT, colour conversion, quantisation, MED prediction, RCT, squeeze (Modular + VarDCT)
 - [x] Metal GPU acceleration — compute shaders for DCT, color conversion, quantization (batch operations)
 - [x] Command line tool (jxl-tool) — encode, info, hardware, benchmark, batch, compare, validate

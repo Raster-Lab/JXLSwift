@@ -419,6 +419,149 @@ public enum AccelerateOps {
     }
 }
 
+// MARK: - vImage Operations
+
+/// vImage-based image processing operations.
+///
+/// Provides high-quality image resizing and resampling using Apple's vImage
+/// framework, which is part of Accelerate and is available on all Apple platforms.
+public enum VImageOps {
+    
+    /// Resize an `ImageFrame` to the given dimensions using vImage's high-quality
+    /// Lanczos resampling filter.
+    ///
+    /// Each colour plane is scaled independently via `vImageScale_Planar8`,
+    /// preserving the frame's planar storage layout.  The function falls back to
+    /// nearest-neighbour interpolation on non-Apple platforms where vImage is
+    /// unavailable.
+    ///
+    /// - Parameters:
+    ///   - frame: Source `ImageFrame` (must have `pixelType == .uint8`).
+    ///   - toWidth: Desired output width in pixels (must be > 0).
+    ///   - toHeight: Desired output height in pixels (must be > 0).
+    /// - Returns: A new `ImageFrame` with the requested dimensions.
+    public static func resize(
+        frame: ImageFrame,
+        toWidth newWidth: Int,
+        toHeight newHeight: Int
+    ) -> ImageFrame {
+        precondition(newWidth > 0 && newHeight > 0,
+                     "Target dimensions must be positive")
+        
+        // Preserve all metadata, only the pixel dimensions change
+        var output = ImageFrame(
+            width: newWidth,
+            height: newHeight,
+            channels: frame.channels,
+            pixelType: frame.pixelType,
+            colorSpace: frame.colorSpace,
+            hasAlpha: frame.hasAlpha,
+            alphaMode: frame.alphaMode,
+            bitsPerSample: frame.bitsPerSample,
+            orientation: frame.orientation,
+            extraChannels: frame.extraChannels
+        )
+        
+        guard frame.pixelType == .uint8 else {
+            // vImageScale_Planar8 requires 8-bit unsigned integer samples.
+            // For uint16 or float32 frames fall back to nearest-neighbour interpolation.
+            resizeNearestNeighbour(src: frame, dst: &output)
+            return output
+        }
+        
+        let srcW = frame.width
+        let srcH = frame.height
+        let planeSize = srcW * srcH
+        let dstPlaneSize = newWidth * newHeight
+        
+        for channel in 0..<frame.channels {
+            let srcOffset = channel * planeSize
+            let dstOffset = channel * dstPlaneSize
+            
+            // Fill source vImage_Buffer
+            var srcBuf = vImage_Buffer()
+            frame.data.withUnsafeBytes { rawPtr in
+                let ptr = rawPtr.baseAddress!.advanced(by: srcOffset)
+                srcBuf = vImage_Buffer(
+                    data: UnsafeMutableRawPointer(mutating: ptr),
+                    height: vImagePixelCount(srcH),
+                    width: vImagePixelCount(srcW),
+                    rowBytes: srcW
+                )
+            }
+            
+            // Fill destination vImage_Buffer
+            var dstBuf = vImage_Buffer()
+            output.data.withUnsafeMutableBytes { rawPtr in
+                let ptr = rawPtr.baseAddress!.advanced(by: dstOffset)
+                dstBuf = vImage_Buffer(
+                    data: ptr,
+                    height: vImagePixelCount(newHeight),
+                    width: vImagePixelCount(newWidth),
+                    rowBytes: newWidth
+                )
+            }
+            
+            // Scale using high-quality Lanczos resampling
+            let error = vImageScale_Planar8(&srcBuf, &dstBuf, nil, vImage_Flags(kvImageHighQualityResampling))
+            if error != kvImageNoError {
+                // Log the error code and fall back to nearest-neighbour for this channel
+                print("VImageOps.resize: vImageScale_Planar8 failed with error \(error) " +
+                      "for channel \(channel); falling back to nearest-neighbour")
+                resizeNearestNeighbourChannel(
+                    src: frame.data, srcWidth: srcW, srcHeight: srcH,
+                    srcOffset: srcOffset,
+                    dst: &output.data, dstWidth: newWidth, dstHeight: newHeight,
+                    dstOffset: dstOffset
+                )
+            }
+        }
+        
+        return output
+    }
+    
+    // MARK: - Private Helpers
+    
+    /// Nearest-neighbour resize for all channels of a frame (fallback for non-uint8).
+    private static func resizeNearestNeighbour(src: ImageFrame, dst: inout ImageFrame) {
+        let srcW = src.width
+        let srcH = src.height
+        let dstW = dst.width
+        let dstH = dst.height
+        let bytesPerSample = src.pixelType.bytesPerSample
+        
+        for channel in 0..<src.channels {
+            let srcPlane = channel * srcW * srcH
+            let dstPlane = channel * dstW * dstH
+            for dstY in 0..<dstH {
+                let srcY = min(dstY * srcH / dstH, srcH - 1)
+                for dstX in 0..<dstW {
+                    let srcX = min(dstX * srcW / dstW, srcW - 1)
+                    let srcIdx = (srcPlane + srcY * srcW + srcX) * bytesPerSample
+                    let dstIdx = (dstPlane + dstY * dstW + dstX) * bytesPerSample
+                    for b in 0..<bytesPerSample {
+                        dst.data[dstIdx + b] = src.data[srcIdx + b]
+                    }
+                }
+            }
+        }
+    }
+    
+    /// Nearest-neighbour resize for a single 8-bit plane (fallback on vImage error).
+    private static func resizeNearestNeighbourChannel(
+        src: [UInt8], srcWidth: Int, srcHeight: Int, srcOffset: Int,
+        dst: inout [UInt8], dstWidth: Int, dstHeight: Int, dstOffset: Int
+    ) {
+        for dstY in 0..<dstHeight {
+            let srcY = min(dstY * srcHeight / dstHeight, srcHeight - 1)
+            for dstX in 0..<dstWidth {
+                let srcX = min(dstX * srcWidth / dstWidth, srcWidth - 1)
+                dst[dstOffset + dstY * dstWidth + dstX] = src[srcOffset + srcY * srcWidth + srcX]
+            }
+        }
+    }
+}
+
 #endif
 
 // MARK: - SIMD Operations

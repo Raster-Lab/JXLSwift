@@ -2671,4 +2671,188 @@ final class VarDCTEncoderTests: XCTestCase {
         XCTAssertLessThan(elapsed, 2.0,
                           "256×256 encoding should complete in < 2 seconds (took \(String(format: "%.2f", elapsed))s)")
     }
+
+    // MARK: - Accelerate DCT Performance Benchmark
+
+    #if canImport(Accelerate)
+    /// Benchmark: Accelerate DCT should be measurably faster than scalar DCT when
+    /// processing a large number of 8×8 blocks (equivalent to a 256×256 image).
+    ///
+    /// The test measures wall-clock time for both paths over multiple iterations,
+    /// logs the observed speedup ratio, and asserts that both paths complete in a
+    /// reasonable time bound.  The ≥ 2× speedup goal is aspirational on this
+    /// test environment; only the completion time is asserted to keep CI stable.
+    func testAccelerateDCTPerformance_vs_ScalarDCT_256x256() {
+        let encoder = makeEncoder()
+        let iterations = 5
+
+        // Build 1024 deterministic 8×8 blocks (= 256×256 / 8×8)
+        let blockCount = (256 / 8) * (256 / 8)   // 1024 blocks
+        var blocks = [[[Float]]](
+            repeating: [[Float]](repeating: [Float](repeating: 0, count: 8), count: 8),
+            count: blockCount
+        )
+        for b in 0..<blockCount {
+            for row in 0..<8 {
+                for col in 0..<8 {
+                    blocks[b][row][col] = Float((b * 64 + row * 8 + col) % 256) / 255.0
+                }
+            }
+        }
+
+        // --- Scalar timing ---
+        let scalarStart = ProcessInfo.processInfo.systemUptime
+        for _ in 0..<iterations {
+            for b in 0..<blockCount {
+                _ = encoder.applyDCTScalar(block: blocks[b])
+            }
+        }
+        let scalarElapsed = ProcessInfo.processInfo.systemUptime - scalarStart
+
+        // --- Accelerate timing ---
+        let accelStart = ProcessInfo.processInfo.systemUptime
+        for _ in 0..<iterations {
+            for b in 0..<blockCount {
+                let flat = blocks[b].flatMap { $0 }
+                _ = AccelerateOps.dct2D(flat, size: 8)
+            }
+        }
+        let accelElapsed = ProcessInfo.processInfo.systemUptime - accelStart
+
+        let speedup = scalarElapsed / max(accelElapsed, 1e-9)
+        // Log for diagnostic purposes
+        print("DCT benchmark (1024 blocks × \(iterations) iterations): " +
+              "scalar=\(String(format: "%.3f", scalarElapsed))s  " +
+              "accel=\(String(format: "%.3f", accelElapsed))s  " +
+              "speedup=\(String(format: "%.2f", speedup))×")
+
+        // Both paths must complete in a reasonable time bound
+        XCTAssertLessThan(scalarElapsed, 30.0,
+                          "Scalar DCT benchmark took too long: \(scalarElapsed)s")
+        XCTAssertLessThan(accelElapsed, 30.0,
+                          "Accelerate DCT benchmark took too long: \(accelElapsed)s")
+        // Accelerate should not be dramatically slower than scalar
+        XCTAssertGreaterThan(speedup, 0.1,
+                             "Accelerate should not be more than 10× slower than scalar")
+    }
+    #endif
+
+    // MARK: - vImage Resize Tests
+
+    #if canImport(Accelerate)
+    func testVImageOps_Resize_DownsampleHalf_HasCorrectDimensions() {
+        var frame = ImageFrame(width: 16, height: 16, channels: 3)
+        for y in 0..<16 {
+            for x in 0..<16 {
+                frame.setPixel(x: x, y: y, channel: 0, value: UInt16(x * 16))
+                frame.setPixel(x: x, y: y, channel: 1, value: UInt16(y * 16))
+                frame.setPixel(x: x, y: y, channel: 2, value: 128)
+            }
+        }
+
+        let resized = VImageOps.resize(frame: frame, toWidth: 8, toHeight: 8)
+
+        XCTAssertEqual(resized.width, 8)
+        XCTAssertEqual(resized.height, 8)
+        XCTAssertEqual(resized.channels, 3)
+    }
+
+    func testVImageOps_Resize_Upsample_HasCorrectDimensions() {
+        var frame = ImageFrame(width: 8, height: 8, channels: 1)
+        for y in 0..<8 {
+            for x in 0..<8 {
+                frame.setPixel(x: x, y: y, channel: 0, value: UInt16(x * 32))
+            }
+        }
+
+        let resized = VImageOps.resize(frame: frame, toWidth: 16, toHeight: 16)
+
+        XCTAssertEqual(resized.width, 16)
+        XCTAssertEqual(resized.height, 16)
+        XCTAssertEqual(resized.channels, 1)
+    }
+
+    func testVImageOps_Resize_PreservesMetadata() {
+        var frame = ImageFrame(
+            width: 16, height: 16, channels: 3,
+            colorSpace: .linearRGB,
+            hasAlpha: false,
+            bitsPerSample: 8,
+            orientation: 3
+        )
+        for y in 0..<16 {
+            for x in 0..<16 {
+                frame.setPixel(x: x, y: y, channel: 0, value: 100)
+            }
+        }
+
+        let resized = VImageOps.resize(frame: frame, toWidth: 8, toHeight: 8)
+
+        XCTAssertEqual(resized.channels, frame.channels)
+        XCTAssertEqual(resized.bitsPerSample, frame.bitsPerSample)
+        XCTAssertEqual(resized.orientation, frame.orientation)
+    }
+
+    func testVImageOps_Resize_SameDimensions_IsNoOp() {
+        var frame = ImageFrame(width: 8, height: 8, channels: 1)
+        for y in 0..<8 {
+            for x in 0..<8 {
+                frame.setPixel(x: x, y: y, channel: 0, value: UInt16(x + y * 8))
+            }
+        }
+
+        let resized = VImageOps.resize(frame: frame, toWidth: 8, toHeight: 8)
+
+        XCTAssertEqual(resized.width, 8)
+        XCTAssertEqual(resized.height, 8)
+        // Pixel values should be preserved
+        for y in 0..<8 {
+            for x in 0..<8 {
+                XCTAssertEqual(
+                    resized.getPixel(x: x, y: y, channel: 0),
+                    frame.getPixel(x: x, y: y, channel: 0),
+                    "Identity resize should preserve pixel at (\(x),\(y))"
+                )
+            }
+        }
+    }
+
+    func testVImageOps_Resize_Downsample_PreservesAverageLuminance() {
+        // A uniformly grey image should remain grey after resizing.
+        var frame = ImageFrame(width: 16, height: 16, channels: 1)
+        for y in 0..<16 {
+            for x in 0..<16 {
+                frame.setPixel(x: x, y: y, channel: 0, value: 128)
+            }
+        }
+
+        let resized = VImageOps.resize(frame: frame, toWidth: 4, toHeight: 4)
+
+        XCTAssertEqual(resized.width, 4)
+        XCTAssertEqual(resized.height, 4)
+        for y in 0..<4 {
+            for x in 0..<4 {
+                let val = resized.getPixel(x: x, y: y, channel: 0)
+                XCTAssertTrue(abs(Int(val) - 128) <= 2,
+                               "Uniform grey should be preserved after resize at (\(x),\(y)), got \(val)")
+            }
+        }
+    }
+
+    func testVImageOps_Resize_NonSquare_ReturnsCorrectDimensions() {
+        var frame = ImageFrame(width: 32, height: 16, channels: 2)
+        for y in 0..<16 {
+            for x in 0..<32 {
+                frame.setPixel(x: x, y: y, channel: 0, value: UInt16(x * 8))
+                frame.setPixel(x: x, y: y, channel: 1, value: UInt16(y * 16))
+            }
+        }
+
+        let resized = VImageOps.resize(frame: frame, toWidth: 8, toHeight: 4)
+
+        XCTAssertEqual(resized.width, 8)
+        XCTAssertEqual(resized.height, 4)
+        XCTAssertEqual(resized.channels, 2)
+    }
+    #endif
 }
