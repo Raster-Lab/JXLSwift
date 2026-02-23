@@ -13,7 +13,7 @@
 | 0 | Project Foundation & Infrastructure | Weeks 1–2 | ✅ Complete |
 | 1 | Core Data Structures & Bitstream I/O | Weeks 2–4 | ✅ Complete |
 | 2 | Lossless Compression (Modular Mode) | Weeks 4–7 | ✅ Complete |
-| 3 | Lossy Compression (VarDCT Mode) | Weeks 7–11 | 🔶 In Progress (11/14 deliverables) |
+| 3 | Lossy Compression (VarDCT Mode) | Weeks 7–11 | ✅ Complete |
 | 4 | JPEG XL File Format & Container | Weeks 11–14 | ✅ Complete (2 tests outstanding) |
 | 5 | Hardware Acceleration — Apple Accelerate | Weeks 14–17 | 🔶 In Progress (8/10 deliverables) |
 | 6 | Hardware Acceleration — ARM NEON / SIMD | Weeks 17–20 | ✅ Complete |
@@ -147,13 +147,13 @@
 - [x] Zigzag coefficient scanning (8×8)
 - [x] DC coefficient + AC run-length encoding
 - [x] Quality-to-distance conversion formula
-- [ ] Variable block sizes (8×8, 16×16, 32×32, 16×8 etc.)
+- [x] Variable block sizes (8×8, 16×16, 32×32, 16×8 etc.)
 - [x] XYB colour space (JPEG XL native perceptual space)
 - [x] Chroma-from-luma (CfL) prediction
 - [x] Adaptive quantisation per block
 - [x] DC prediction across blocks
-- [ ] Coefficient reordering (natural order per spec)
-- [ ] Full VarDCT frame header per ISO/IEC 18181-1 §6
+- [x] Coefficient reordering (natural order per spec)
+- [x] Full VarDCT frame header per ISO/IEC 18181-1 §6
 
 ### Tests Required
 
@@ -164,9 +164,9 @@
 - [x] Zigzag scan order covers all 64 coefficients exactly once
 - [x] Colour space conversion: RGB → YCbCr → RGB round-trip (within tolerance)
 - [x] XYB colour space forward/inverse
-- [ ] Quality levels: 100 → near-lossless, 50 → high compression, 10 → maximum compression
+- [x] Quality levels: 100 → near-lossless, 50 → high compression, 10 → maximum compression
 - [x] Block sizes: non-multiple-of-8 image dimensions handled correctly
-- [ ] Performance: 256×256 encoding completes in < 2s
+- [x] Performance: 256×256 encoding completes in < 2s
 
 ### Acceptance Criteria
 

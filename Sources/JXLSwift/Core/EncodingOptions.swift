@@ -539,6 +539,22 @@ public struct EncodingOptions: Sendable {
     /// This follows ISO/IEC 18181-1 Annex A.
     public var useANS: Bool
     
+    /// Use XYB color space instead of YCbCr in VarDCT mode.
+    ///
+    /// XYB is JPEG XL's native perceptual color space (ISO/IEC 18181-1 §5.3).
+    /// It provides better perceptual quality at the same bitrate compared
+    /// to YCbCr, but is slower to encode. Default is false (YCbCr).
+    public var useXYBColorSpace: Bool
+    
+    /// Enable variable DCT block sizes in VarDCT mode.
+    ///
+    /// When enabled, the encoder selects optimal block sizes (8×8, 16×16,
+    /// 32×32, 16×8, etc.) per region based on local image content.
+    /// Smooth areas use larger blocks for better compression efficiency
+    /// while textured areas use smaller blocks for better quality.
+    /// Default is false (fixed 8×8 blocks).
+    public var variableBlockSize: Bool
+    
     /// Animation configuration for multi-frame encoding.
     ///
     /// When set, enables animation mode with the specified frame rate,
@@ -606,6 +622,8 @@ public struct EncodingOptions: Sendable {
         keepJPEG: Bool = false,
         adaptiveQuantization: Bool = true,
         useANS: Bool = false,
+        useXYBColorSpace: Bool = false,
+        variableBlockSize: Bool = false,
         animationConfig: AnimationConfig? = nil,
         regionOfInterest: RegionOfInterest? = nil,
         referenceFrameConfig: ReferenceFrameConfig? = nil,
@@ -626,6 +644,8 @@ public struct EncodingOptions: Sendable {
         self.keepJPEG = keepJPEG
         self.adaptiveQuantization = adaptiveQuantization
         self.useANS = useANS
+        self.useXYBColorSpace = useXYBColorSpace
+        self.variableBlockSize = variableBlockSize
         self.animationConfig = animationConfig
         self.regionOfInterest = regionOfInterest
         self.referenceFrameConfig = referenceFrameConfig

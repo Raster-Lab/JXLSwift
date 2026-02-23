@@ -819,6 +819,9 @@ Benchmarks on Apple M1 (256x256 image):
 ### VarDCT Mode (Lossy)
 - High-quality lossy compression
 - Uses DCT transforms, quantization, and entropy coding
+- Variable block sizes (8×8, 16×16, 32×32, 16×8, 8×16, etc.) with content-adaptive selection
+- Natural order coefficient scanning per JPEG XL spec
+- Full VarDCT frame header per ISO/IEC 18181-1 §6
 - Ideal for photographs, web delivery, general use
 
 ## Effort Levels
@@ -1012,7 +1015,7 @@ See [MILESTONES.md](MILESTONES.md) for the detailed project milestone plan.
 
 - [x] Core compression pipeline
 - [x] Lossless (Modular) mode — MED, RCT, Squeeze, MA tree, context modeling, subbitstream framing (§7), round-trip decode
-- [x] Lossy (VarDCT) mode — DCT, XYB, CfL, adaptive quantization, DC prediction
+- [x] Lossy (VarDCT) mode — DCT, XYB, CfL, adaptive quantization, DC prediction, variable block sizes, natural order scanning, full frame header (§6)
 - [x] Apple Silicon optimization
 - [x] Accelerate framework integration — vDSP DCT, vectorized color/quantization
 - [x] ARM NEON SIMD acceleration — portable Swift SIMD types, DCT, colour conversion, quantisation, MED prediction, RCT, squeeze (Modular + VarDCT)

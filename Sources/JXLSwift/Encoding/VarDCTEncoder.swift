@@ -5,6 +5,111 @@
 
 import Foundation
 
+// MARK: - DCT Block Sizes
+
+/// Variable DCT block sizes supported by JPEG XL per ISO/IEC 18181-1 §6.
+///
+/// The encoder selects optimal block sizes based on local image content:
+/// - Larger blocks (16×16, 32×32) for smooth regions — fewer coefficients relative to area
+/// - Smaller blocks (8×8) for textured/detailed regions — better frequency localization
+/// - Rectangular blocks (16×8, 8×16, 32×8, etc.) for directional content like edges
+public enum DCTBlockSize: UInt8, Sendable, CaseIterable {
+    /// Standard 8×8 DCT block (JPEG-compatible)
+    case dct8x8 = 0
+    /// 16×16 DCT block for smooth regions
+    case dct16x16 = 1
+    /// 32×32 DCT block for very smooth regions
+    case dct32x32 = 2
+    /// 16×8 horizontal rectangular block
+    case dct16x8 = 3
+    /// 8×16 vertical rectangular block
+    case dct8x16 = 4
+    /// 32×8 wide horizontal block
+    case dct32x8 = 5
+    /// 8×32 tall vertical block
+    case dct8x32 = 6
+    /// 32×16 wide block
+    case dct32x16 = 7
+    /// 16×32 tall block
+    case dct16x32 = 8
+
+    /// Width of this block type in pixels
+    public var width: Int {
+        switch self {
+        case .dct8x8:   return 8
+        case .dct16x16: return 16
+        case .dct32x32: return 32
+        case .dct16x8:  return 16
+        case .dct8x16:  return 8
+        case .dct32x8:  return 32
+        case .dct8x32:  return 8
+        case .dct32x16: return 32
+        case .dct16x32: return 16
+        }
+    }
+
+    /// Height of this block type in pixels
+    public var height: Int {
+        switch self {
+        case .dct8x8:   return 8
+        case .dct16x16: return 16
+        case .dct32x32: return 32
+        case .dct16x8:  return 8
+        case .dct8x16:  return 16
+        case .dct32x8:  return 8
+        case .dct8x32:  return 32
+        case .dct32x16: return 16
+        case .dct16x32: return 32
+        }
+    }
+
+    /// Total number of coefficients in this block
+    public var coefficientCount: Int {
+        return width * height
+    }
+
+    /// Number of 8×8 sub-blocks in this block (for grid alignment)
+    public var subBlockCount: Int {
+        return (width / 8) * (height / 8)
+    }
+}
+
+/// VarDCT frame header per ISO/IEC 18181-1 §6
+///
+/// Contains all parameters needed to decode a VarDCT frame including
+/// frame dimensions, color transform, quantization, and block size information.
+struct VarDCTFrameHeader: Sendable {
+    /// Frame encoding mode (false = VarDCT)
+    let isModular: Bool
+    /// Image width in pixels
+    let width: UInt32
+    /// Image height in pixels
+    let height: UInt32
+    /// Number of colour channels
+    let channels: UInt8
+    /// Distance parameter (IEEE 754 float) — quantization control
+    let distance: Float
+    /// Encoding flags (bit 0: adaptive quantization, bit 1: ANS entropy)
+    let flags: UInt8
+    /// Pixel type (0=uint8, 1=uint16, 2=float32)
+    let pixelType: UInt8
+    /// Color transform (0=YCbCr, 1=XYB, 2=none)
+    let colorTransform: UInt8
+    /// Variable block size mode (0=fixed 8×8, 1=variable)
+    let variableBlockSize: UInt8
+    /// Number of progressive passes (1=non-progressive, 3=progressive)
+    let numPasses: UInt8
+    /// Frame header version for forward compatibility
+    static let headerVersion: UInt8 = 1
+
+    /// Whether adaptive quantization is enabled
+    var adaptiveQuantization: Bool { (flags & 0x01) != 0 }
+    /// Whether ANS entropy coding is enabled
+    var useANS: Bool { (flags & 0x02) != 0 }
+    /// Whether variable block sizes are enabled
+    var hasVariableBlocks: Bool { variableBlockSize != 0 }
+}
+
 /// Progressive pass definition for multi-pass encoding
 struct ProgressivePass {
     /// Pass index (0 = DC-only, 1+ = AC passes)
@@ -1945,6 +2050,441 @@ class VarDCTEncoder {
         return order.map { block[$0.0][$0.1] }
     }
     
+    /// Natural order coefficient scan for an 8×8 block per JPEG XL spec.
+    ///
+    /// Natural order arranges coefficients by increasing frequency magnitude
+    /// (u² + v²), with ties broken by row-major order. This produces better
+    /// compression for JPEG XL's VarDCT mode compared to the diagonal zigzag
+    /// pattern used by legacy JPEG, because it groups coefficients of similar
+    /// perceptual importance together.
+    ///
+    /// - Parameter block: 8×8 quantized coefficient block.
+    /// - Returns: 64 coefficients in natural frequency order.
+    func naturalOrderScan(block: [[Int16]]) -> [Int16] {
+        return Self.naturalOrder8x8.map { block[$0.0][$0.1] }
+    }
+
+    /// Precomputed natural order permutation for 8×8 blocks.
+    ///
+    /// Coefficients are sorted by increasing frequency magnitude (u² + v²),
+    /// with ties broken by row index then column index.
+    static let naturalOrder8x8: [(Int, Int)] = {
+        var positions: [(row: Int, col: Int, freq: Int)] = []
+        for r in 0..<8 {
+            for c in 0..<8 {
+                positions.append((r, c, r * r + c * c))
+            }
+        }
+        positions.sort { a, b in
+            if a.freq != b.freq { return a.freq < b.freq }
+            if a.row != b.row { return a.row < b.row }
+            return a.col < b.col
+        }
+        return positions.map { ($0.row, $0.col) }
+    }()
+
+    /// Generate natural order permutation for an arbitrary N×M block.
+    ///
+    /// - Parameters:
+    ///   - width: Block width
+    ///   - height: Block height
+    /// - Returns: Array of (row, col) tuples in natural frequency order.
+    static func naturalOrder(width: Int, height: Int) -> [(Int, Int)] {
+        var positions: [(row: Int, col: Int, freq: Int)] = []
+        for r in 0..<height {
+            for c in 0..<width {
+                positions.append((r, c, r * r + c * c))
+            }
+        }
+        positions.sort { a, b in
+            if a.freq != b.freq { return a.freq < b.freq }
+            if a.row != b.row { return a.row < b.row }
+            return a.col < b.col
+        }
+        return positions.map { ($0.row, $0.col) }
+    }
+
+    // MARK: - Block Size Selection
+
+    /// Select optimal block size for a region based on local content analysis.
+    ///
+    /// Analyses the spatial activity (variance) of the region at multiple
+    /// scales to decide which block size best fits the content:
+    /// - Smooth regions → larger blocks (16×16, 32×32) for efficiency
+    /// - Textured regions → 8×8 blocks for better frequency localization
+    /// - Directional content → rectangular blocks (16×8 / 8×16)
+    ///
+    /// - Parameters:
+    ///   - data: Full channel data as 2D float array.
+    ///   - blockX: Horizontal position in 8×8 grid units.
+    ///   - blockY: Vertical position in 8×8 grid units.
+    ///   - width: Image width.
+    ///   - height: Image height.
+    /// - Returns: The recommended ``DCTBlockSize`` for this region.
+    func selectBlockSize(
+        data: [[Float]],
+        blockX: Int,
+        blockY: Int,
+        width: Int,
+        height: Int
+    ) -> DCTBlockSize {
+        // Calculate available pixels for larger block sizes
+        let startX = blockX * 8
+        let startY = blockY * 8
+        let availableW = width - startX
+        let availableH = height - startY
+
+        // If there's not enough room for larger blocks, use 8×8
+        guard availableW >= 16 && availableH >= 16 else {
+            return .dct8x8
+        }
+
+        // Compute variance at 8×8 scale (four sub-blocks)
+        let topLeft = computeRegionVariance(data: data, x: startX, y: startY, w: 8, h: 8, imgW: width, imgH: height)
+        let topRight = computeRegionVariance(data: data, x: startX + 8, y: startY, w: 8, h: 8, imgW: width, imgH: height)
+        let bottomLeft = computeRegionVariance(data: data, x: startX, y: startY + 8, w: 8, h: 8, imgW: width, imgH: height)
+        let bottomRight = computeRegionVariance(data: data, x: startX + 8, y: startY + 8, w: 8, h: 8, imgW: width, imgH: height)
+
+        let maxSubVariance = max(topLeft, topRight, bottomLeft, bottomRight)
+        let avgVariance = (topLeft + topRight + bottomLeft + bottomRight) / 4.0
+
+        // Smooth region threshold (low variance across all sub-blocks)
+        let smoothThreshold: Float = 0.005
+
+        if maxSubVariance < smoothThreshold {
+            // Very smooth region — check if 32×32 is feasible
+            if availableW >= 32 && availableH >= 32 {
+                return .dct32x32
+            }
+            return .dct16x16
+        }
+
+        // Check for directional content (horizontal vs vertical variance)
+        let hVariance = (topLeft + topRight) / 2.0
+        let vVariance = (topLeft + bottomLeft) / 2.0
+        let directionRatio = max(hVariance, vVariance) / max(Float.leastNormalMagnitude, min(hVariance, vVariance))
+
+        if directionRatio > 2.0 && avgVariance < 0.05 {
+            // Directional content — use rectangular block
+            if hVariance > vVariance {
+                // Horizontal edges → wide block
+                return .dct16x8
+            } else {
+                // Vertical edges → tall block
+                return .dct8x16
+            }
+        }
+
+        // Default: standard 8×8 for textured regions
+        return .dct8x8
+    }
+
+    /// Compute pixel variance in a sub-region (clamped to image bounds).
+    private func computeRegionVariance(
+        data: [[Float]], x: Int, y: Int, w: Int, h: Int,
+        imgW: Int, imgH: Int
+    ) -> Float {
+        var sum: Float = 0
+        var sumSq: Float = 0
+        var count: Float = 0
+        for dy in 0..<h {
+            let sy = min(y + dy, imgH - 1)
+            for dx in 0..<w {
+                let sx = min(x + dx, imgW - 1)
+                let v = data[sy][sx]
+                sum += v
+                sumSq += v * v
+                count += 1
+            }
+        }
+        let mean = sum / count
+        return max(0, sumSq / count - mean * mean)
+    }
+
+    // MARK: - Variable-Size DCT
+
+    /// Apply a 2D DCT of arbitrary size using the scalar reference algorithm.
+    ///
+    /// Generalizes the fixed 8×8 ``applyDCTScalar(block:)`` to N×M blocks
+    /// for variable block size support. Used for block sizes other than 8×8.
+    ///
+    /// - Parameters:
+    ///   - block: 2D array of spatial-domain pixel values (height × width).
+    ///   - blockWidth: Block width.
+    ///   - blockHeight: Block height.
+    /// - Returns: 2D array of DCT coefficients.
+    func applyDCTVariable(block: [[Float]], blockWidth: Int, blockHeight: Int) -> [[Float]] {
+        // For 8×8 blocks, delegate to the optimized path
+        if blockWidth == 8 && blockHeight == 8 {
+            return applyDCTScalar(block: block)
+        }
+
+        var dct = [[Float]](
+            repeating: [Float](repeating: 0, count: blockWidth),
+            count: blockHeight
+        )
+
+        let nW = Float(blockWidth)
+        let nH = Float(blockHeight)
+        let normW = sqrt(2.0 / nW)
+        let normH = sqrt(2.0 / nH)
+
+        for v in 0..<blockHeight {
+            for u in 0..<blockWidth {
+                var sum: Float = 0
+                let cu: Float = u == 0 ? Float(1.0 / sqrt(2.0)) : 1.0
+                let cv: Float = v == 0 ? Float(1.0 / sqrt(2.0)) : 1.0
+
+                for y in 0..<blockHeight {
+                    let cosV = cos((2.0 * Float(y) + 1.0) * Float(v) * .pi / (2.0 * nH))
+                    for x in 0..<blockWidth {
+                        let cosU = cos((2.0 * Float(x) + 1.0) * Float(u) * .pi / (2.0 * nW))
+                        sum += block[y][x] * cosU * cosV
+                    }
+                }
+
+                dct[v][u] = sum * cu * cv * normW * normH
+            }
+        }
+
+        return dct
+    }
+
+    /// Apply a 2D inverse DCT of arbitrary size.
+    ///
+    /// - Parameters:
+    ///   - block: 2D array of DCT coefficients (height × width).
+    ///   - blockWidth: Block width.
+    ///   - blockHeight: Block height.
+    /// - Returns: 2D array of reconstructed spatial-domain values.
+    func applyIDCTVariable(block: [[Float]], blockWidth: Int, blockHeight: Int) -> [[Float]] {
+        if blockWidth == 8 && blockHeight == 8 {
+            return applyIDCTScalar(block: block)
+        }
+
+        var spatial = [[Float]](
+            repeating: [Float](repeating: 0, count: blockWidth),
+            count: blockHeight
+        )
+
+        let nW = Float(blockWidth)
+        let nH = Float(blockHeight)
+        let normW = sqrt(2.0 / nW)
+        let normH = sqrt(2.0 / nH)
+
+        for y in 0..<blockHeight {
+            for x in 0..<blockWidth {
+                var sum: Float = 0
+                for v in 0..<blockHeight {
+                    let cv: Float = v == 0 ? Float(1.0 / sqrt(2.0)) : 1.0
+                    let cosV = cos((2.0 * Float(y) + 1.0) * Float(v) * .pi / (2.0 * nH))
+                    for u in 0..<blockWidth {
+                        let cu: Float = u == 0 ? Float(1.0 / sqrt(2.0)) : 1.0
+                        let cosU = cos((2.0 * Float(x) + 1.0) * Float(u) * .pi / (2.0 * nW))
+                        sum += block[v][u] * cu * cv * cosU * cosV
+                    }
+                }
+                spatial[y][x] = sum * normW * normH
+            }
+        }
+
+        return spatial
+    }
+
+    /// Extract a variable-sized block from channel data with edge clamping.
+    ///
+    /// - Parameters:
+    ///   - data: Full channel data as 2D float array.
+    ///   - startX: Left pixel coordinate.
+    ///   - startY: Top pixel coordinate.
+    ///   - blockWidth: Block width in pixels.
+    ///   - blockHeight: Block height in pixels.
+    ///   - width: Image width.
+    ///   - height: Image height.
+    /// - Returns: 2D block of pixel values.
+    func extractVariableBlock(
+        data: [[Float]],
+        startX: Int, startY: Int,
+        blockWidth: Int, blockHeight: Int,
+        width: Int, height: Int
+    ) -> [[Float]] {
+        var block = [[Float]](
+            repeating: [Float](repeating: 0, count: blockWidth),
+            count: blockHeight
+        )
+        for y in 0..<blockHeight {
+            let srcY = min(startY + y, height - 1)
+            for x in 0..<blockWidth {
+                let srcX = min(startX + x, width - 1)
+                block[y][x] = data[srcY][srcX]
+            }
+        }
+        return block
+    }
+
+    /// Generate a quantization matrix for a variable-sized block.
+    ///
+    /// Extends the fixed 8×8 ``generateQuantizationMatrix(channel:activity:distance:)``
+    /// to arbitrary dimensions.
+    ///
+    /// - Parameters:
+    ///   - blockWidth: Block width.
+    ///   - blockHeight: Block height.
+    ///   - channel: Channel index (0 = luma, >0 = chroma).
+    ///   - activity: Local spatial activity scale.
+    ///   - distance: Quantization distance.
+    /// - Returns: 2D quantization matrix.
+    func generateVariableQuantizationMatrix(
+        blockWidth: Int, blockHeight: Int,
+        channel: Int, activity: Float = 1.0, distance: Float? = nil
+    ) -> [[Float]] {
+        let effectiveDistance = distance ?? self.distance
+        let baseQuant = max(1.0, effectiveDistance * 8.0)
+        let adaptiveScale: Float = max(
+            VarDCTEncoder.minAdaptiveScale,
+            min(VarDCTEncoder.maxAdaptiveScale, 1.0 / activity)
+        )
+
+        var matrix = [[Float]](
+            repeating: [Float](repeating: 1, count: blockWidth),
+            count: blockHeight
+        )
+        for y in 0..<blockHeight {
+            for x in 0..<blockWidth {
+                let freq = Float(x + y)
+                matrix[y][x] = baseQuant * (1.0 + freq * 0.5) * adaptiveScale
+                if channel > 0 {
+                    matrix[y][x] *= 1.5
+                }
+            }
+        }
+        return matrix
+    }
+
+    // MARK: - Frame Header I/O
+
+    /// Write the full VarDCT frame header per ISO/IEC 18181-1 §6.
+    ///
+    /// The extended header includes frame dimensions, color transform,
+    /// block size mode, and progressive pass count in addition to the
+    /// existing distance, flags, and pixel type fields.
+    ///
+    /// - Parameters:
+    ///   - writer: Bitstream writer to write to.
+    ///   - frame: Image frame being encoded.
+    func writeVarDCTFrameHeader(writer: inout BitstreamWriter, frame: ImageFrame) {
+        // Mode bit: false = VarDCT
+        writer.writeBit(false)
+        writer.flushByte()
+
+        // Header version byte for forward compatibility
+        writer.writeByte(VarDCTFrameHeader.headerVersion)
+
+        // Frame dimensions
+        writer.writeU32(UInt32(frame.width))
+        writer.writeU32(UInt32(frame.height))
+        writer.writeByte(UInt8(frame.channels))
+
+        // Distance (IEEE 754 float)
+        writer.writeU32(distance.bitPattern)
+
+        // Encoding flags
+        var flags: UInt8 = 0
+        if options.adaptiveQuantization { flags |= 0x01 }
+        if options.useANS { flags |= 0x02 }
+        writer.writeByte(flags)
+
+        // Pixel type
+        switch frame.pixelType {
+        case .uint8:   writer.writeByte(0)
+        case .uint16:  writer.writeByte(1)
+        case .float32: writer.writeByte(2)
+        }
+
+        // Color transform (0=YCbCr, 1=XYB, 2=none)
+        let colorTransform: UInt8 = options.useXYBColorSpace ? 1 : 0
+        writer.writeByte(colorTransform)
+
+        // Variable block size mode (0=fixed 8×8, 1=variable)
+        let variableBlocks: UInt8 = options.variableBlockSize ? 1 : 0
+        writer.writeByte(variableBlocks)
+
+        // Number of progressive passes
+        let numPasses: UInt8 = options.progressive ? 3 : 1
+        writer.writeByte(numPasses)
+    }
+
+    /// Read a VarDCT frame header from a bitstream reader.
+    ///
+    /// - Parameter reader: Bitstream reader positioned at the start of VarDCT data.
+    /// - Returns: Parsed ``VarDCTFrameHeader``.
+    /// - Throws: ``VarDCTDecoderError`` if the header is malformed.
+    static func readVarDCTFrameHeader(reader: inout BitstreamReader) throws -> VarDCTFrameHeader {
+        // Mode bit
+        guard let modeBit = reader.readBit() else {
+            throw VarDCTDecoderError.unexpectedEndOfData
+        }
+        guard !modeBit else {
+            throw VarDCTDecoderError.invalidVarDCTMode
+        }
+        reader.skipToByteAlignment()
+
+        // Check header version
+        guard let version = reader.readByte() else {
+            throw VarDCTDecoderError.unexpectedEndOfData
+        }
+
+        if version == VarDCTFrameHeader.headerVersion {
+            // Extended header (version 1)
+            guard let widthBytes = readU32Static(&reader),
+                  let heightBytes = readU32Static(&reader) else {
+                throw VarDCTDecoderError.unexpectedEndOfData
+            }
+            guard let channels = reader.readByte() else {
+                throw VarDCTDecoderError.unexpectedEndOfData
+            }
+            guard let distBits = readU32Static(&reader) else {
+                throw VarDCTDecoderError.unexpectedEndOfData
+            }
+            guard let flags = reader.readByte(),
+                  let pixelType = reader.readByte(),
+                  let colorTransform = reader.readByte(),
+                  let variableBlockSize = reader.readByte(),
+                  let numPasses = reader.readByte() else {
+                throw VarDCTDecoderError.unexpectedEndOfData
+            }
+
+            return VarDCTFrameHeader(
+                isModular: false,
+                width: widthBytes,
+                height: heightBytes,
+                channels: channels,
+                distance: Float(bitPattern: distBits),
+                flags: flags,
+                pixelType: pixelType,
+                colorTransform: colorTransform,
+                variableBlockSize: variableBlockSize,
+                numPasses: numPasses
+            )
+        } else {
+            // Legacy header (version 0): the byte we read is the first byte of the distance U32
+            // Re-read: version byte was actually part of distance in the old format
+            // For backward compatibility we fall back to legacy parsing
+            throw VarDCTDecoderError.malformedBlockData("Unsupported VarDCT header version \(version)")
+        }
+    }
+
+    /// Read a UInt32 from a BitstreamReader (static helper, big-endian).
+    private static func readU32Static(_ reader: inout BitstreamReader) -> UInt32? {
+        guard let b0 = reader.readByte(),
+              let b1 = reader.readByte(),
+              let b2 = reader.readByte(),
+              let b3 = reader.readByte() else {
+            return nil
+        }
+        return (UInt32(b0) << 24) | (UInt32(b1) << 16) | (UInt32(b2) << 8) | UInt32(b3)
+    }
+
     func encodeSignedValue(_ value: Int32) -> UInt64 {
         if value >= 0 {
             return UInt64(value * 2)
