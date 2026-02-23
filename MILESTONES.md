@@ -29,7 +29,7 @@
 | 16 | Vulkan GPU Compute (Linux/Windows) | TBD | ✅ Complete |
 | 17 | DICOM Awareness (DICOM Independent) | TBD | ✅ Complete |
 | 18 | Internationalisation & Spelling Support | TBD | ✅ Complete |
-| 19 | J2KSwift API Consistency | TBD | ⬜ Not Started |
+| 19 | J2KSwift API Consistency | TBD | ✅ Complete |
 | 20 | Documentation & Examples Refresh | TBD | ⬜ Not Started |
 | 21 | Performance: Exceeding libjxl | TBD | ⬜ Not Started |
 
@@ -774,26 +774,26 @@
 
 **Goal:** Align the JXLSwift API design, naming conventions, documentation patterns, and project structure with the J2KSwift project for consistency across the Raster-Lab codec libraries.
 
-**Status:** ⬜ Not Started
+**Status:** ✅ Complete
 
 ### Deliverables
 
-- [ ] API naming audit against J2KSwift (encoder/decoder API surface, options, error types)
-- [ ] Consistent naming conventions: method names, parameter labels, type names
-- [ ] Consistent error handling patterns: error types, error descriptions, recovery suggestions
-- [ ] Consistent encoding options pattern: presets, quality, effort, hardware control
-- [ ] Consistent CLI subcommand structure and option naming
-- [ ] Consistent documentation structure: README sections, examples, API documentation
-- [ ] Shared protocol definitions where appropriate (e.g., `ImageEncoder`, `ImageDecoder`)
-- [ ] Cross-reference documentation between JXLSwift and J2KSwift
-- [ ] Migration guide for users of both libraries
+- [x] API naming audit against J2KSwift (encoder/decoder API surface, options, error types)
+- [x] Consistent naming conventions: method names, parameter labels, type names
+- [x] Consistent error handling patterns: error types, error descriptions, recovery suggestions
+- [x] Consistent encoding options pattern: presets, quality, effort, hardware control
+- [x] Consistent CLI subcommand structure and option naming
+- [x] Consistent documentation structure: README sections, examples, API documentation
+- [x] Shared protocol definitions: `RasterImageEncoder`, `RasterImageDecoder`, `RasterImageCodec` (`Sources/JXLSwift/Core/CodecProtocols.swift`)
+- [x] Cross-reference documentation between JXLSwift and J2KSwift (README "Cross-Library Usage" section)
+- [x] Migration guide for users of both libraries (`Documentation/J2KSWIFT_MIGRATION.md`)
 
 ### Tests Required
 
-- [ ] API surface matches agreed conventions (automated check or documented audit)
-- [ ] Shared protocol conformance tests (if shared protocols are introduced)
-- [ ] CLI subcommand parity validated
-- [ ] Documentation structure matches J2KSwift pattern
+- [x] API surface matches agreed conventions (automated check in `J2KSwiftConsistencyTests.swift`)
+- [x] Shared protocol conformance tests — 17 tests in `Tests/JXLSwiftTests/J2KSwiftConsistencyTests.swift`
+- [x] CLI subcommand parity validated
+- [x] Documentation structure matches J2KSwift pattern
 
 ### Acceptance Criteria
 

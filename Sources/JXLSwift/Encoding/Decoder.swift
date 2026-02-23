@@ -822,3 +822,21 @@ public class JXLDecoder {
         throw DecoderError.invalidContainer("no jxlc box found")
     }
 }
+
+// MARK: - RasterImageDecoder Conformance
+
+extension JXLDecoder: RasterImageDecoder {
+
+    /// Decode image bytes to an image frame, satisfying the `RasterImageDecoder` protocol.
+    ///
+    /// Delegates to ``decode(_:)``. Use that method directly when you need the
+    /// full ``JXLDecoder`` API (e.g., progressive decoding or container parsing).
+    ///
+    /// - Parameter data: Encoded JPEG XL codestream bytes.
+    /// - Returns: Decoded image frame.
+    /// - Throws: ``DecoderError`` if the data is invalid or unsupported.
+    public func decode(data imageData: Data) throws -> ImageFrame {
+        return try decode(imageData)
+    }
+}
+

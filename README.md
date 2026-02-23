@@ -739,6 +739,39 @@ try ImageExporter.export(frame, to: URL(fileURLWithPath: "image.dat"), format: .
 let (interleaved, bytesPerComponent, componentCount) = try PixelConversion.interleave(frame)
 ```
 
+### Cross-Library Usage (J2KSwift API Consistency)
+
+JXLSwift adopts the Raster-Lab shared codec protocols so that code written
+against `RasterImageEncoder` and `RasterImageDecoder` works with both JXLSwift
+and J2KSwift (JPEG 2000) with minimal changes.
+
+```swift
+import JXLSwift
+
+// Store encoder/decoder as protocol existential
+let encoder: any RasterImageEncoder = JXLEncoder(options: .highQuality)
+let decoder: any RasterImageDecoder = JXLDecoder()
+
+// Encode — returns raw Data (same signature as J2KEncoder)
+let data: Data = try encoder.encode(frame: myFrame)
+let animData: Data = try encoder.encode(frames: [frame1, frame2])
+
+// Decode — returns ImageFrame (same signature as J2KDecoder)
+let decoded: ImageFrame = try decoder.decode(data: data)
+```
+
+For richer results (including `CompressionStats`), use the concrete `JXLEncoder`
+API directly:
+
+```swift
+let encoder = JXLEncoder(options: .highQuality)
+let result: EncodedImage = try encoder.encode(myFrame)
+print("Compression ratio: \(result.stats.compressionRatio)×")
+```
+
+See [Documentation/J2KSWIFT_MIGRATION.md](Documentation/J2KSWIFT_MIGRATION.md)
+for the full API comparison and migration guide.
+
 ## Architecture
 
 The library is organized into several modules:
@@ -1062,6 +1095,7 @@ See [MILESTONES.md](MILESTONES.md) for the detailed project milestone plan.
 - [x] **Vulkan GPU Compute (Linux/Windows)** — `VulkanOps` (device/queue/buffer management) and `VulkanCompute` (DCT, colour conversion, quantisation, async pipeline) in `Hardware/Vulkan/`, all `#if canImport(Vulkan)` guarded; `GPUCompute` cross-platform abstraction layer routes to Metal on Apple and Vulkan on Linux/Windows; `hasVulkan` field added to `HardwareCapabilities`; Vulkan dispatch path added to `VarDCTEncoder`; GLSL compute shaders in `Shaders.comp`; `VulkanBufferPool` and `VulkanAsyncPipeline` for double-buffered GPU execution
 - [x] **DICOM Awareness (DICOM-Independent)** — `PixelType.int16` for signed 16-bit Hounsfield units; `getPixelSigned`/`setPixelSigned`/`getPixelFloat`/`setPixelFloat` accessors; `PhotometricInterpretation` enum (MONOCHROME1/MONOCHROME2/RGB/YCbCr); `WindowLevel` with built-in CT presets; `MedicalImageMetadata` passthrough struct; `MedicalImageValidator` with dimension/bit-depth/channel checks; `MedicalImageSeries` for CT/MR stacks; convenience initialisers `medical12bit`, `medical16bit`, `medicalSigned16bit`; `EncodingOptions.medicalLossless` preset; DICOM integration guide (`Documentation/DICOM_INTEGRATION.md`); zero DICOM dependencies
 - [x] **Internationalisation & Spelling Support** — British English throughout all comments, help text, and error messages; dual-spelling CLI options (`--colour-space`/`--color-space`, `--optimise`/`--optimize`) on the `encode` subcommand; `ColourPrimaries` type alias alongside `ColorPrimaries`; `scripts/check-spelling.sh` spelling consistency checker with CI integration; British English style guide in `CONTRIBUTING.md`
+- [x] **J2KSwift API Consistency** — `RasterImageEncoder`, `RasterImageDecoder`, and `RasterImageCodec` shared protocols; `JXLEncoder` conforms via `encode(frame:)`/`encode(frames:)`; `JXLDecoder` conforms via `decode(data:)`; migration guide (`Documentation/J2KSWIFT_MIGRATION.md`) for cross-library developers
 
 ## Standards Compliance
 
