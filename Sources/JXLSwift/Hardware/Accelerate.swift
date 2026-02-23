@@ -417,6 +417,100 @@ public enum AccelerateOps {
         
         return output
     }
+
+    // MARK: - Clamp and Absolute Value
+
+    /// Clamp each element of `values` to [low, high] using vectorised vDSP operations.
+    ///
+    /// Equivalent to `values.map { min(max($0, low), high) }` but uses
+    /// `vDSP_vclip` to process all elements in a single SIMD pass.
+    ///
+    /// - Parameters:
+    ///   - values: Input float array.
+    ///   - low: Lower bound (inclusive).
+    ///   - high: Upper bound (inclusive).
+    /// - Returns: Clamped array.
+    public static func vectorClamp(_ values: [Float], low: Float, high: Float) -> [Float] {
+        var result = [Float](repeating: 0, count: values.count)
+        var lo = low; var hi = high
+        vDSP_vclip(values, 1, &lo, &hi, &result, 1, vDSP_Length(values.count))
+        return result
+    }
+
+    /// Vectorised element-wise absolute value using `vDSP_vabs`.
+    ///
+    /// - Parameter values: Input float array.
+    /// - Returns: Array of absolute values.
+    public static func vectorAbs(_ values: [Float]) -> [Float] {
+        var result = [Float](repeating: 0, count: values.count)
+        vDSP_vabs(values, 1, &result, 1, vDSP_Length(values.count))
+        return result
+    }
+
+    /// Sum all elements in the array using `vDSP_sve`.
+    ///
+    /// - Parameter values: Input float array.
+    /// - Returns: Sum of all elements.
+    public static func vectorSum(_ values: [Float]) -> Float {
+        var result: Float = 0
+        vDSP_sve(values, 1, &result, vDSP_Length(values.count))
+        return result
+    }
+
+    /// Normalise a float array to have zero mean and unit L2-norm.
+    ///
+    /// Returns an array of zeros if the input has no energy.
+    ///
+    /// - Parameter values: Input float array.
+    /// - Returns: Normalised array.
+    public static func normalise(_ values: [Float]) -> [Float] {
+        guard !values.isEmpty else { return values }
+        let mu = mean(values)
+        var negMu = -mu
+        var centred = [Float](repeating: 0, count: values.count)
+        vDSP_vsadd(values, 1, &negMu, &centred, 1, vDSP_Length(values.count))
+        var energy: Float = 0
+        vDSP_svesq(centred, 1, &energy, vDSP_Length(values.count))
+        let norm = sqrt(energy)
+        guard norm > 0 else { return centred }
+        var invNorm = 1.0 / norm
+        var result = [Float](repeating: 0, count: values.count)
+        vDSP_vsmul(centred, 1, &invNorm, &result, 1, vDSP_Length(values.count))
+        return result
+    }
+
+    // MARK: - Colour Conversion Audit Expansion
+
+    /// Convert interleaved RGB UInt8 pixels to planar float YCbCr (BT.601).
+    ///
+    /// Uses `vDSP_vfltu8` with an input stride of 3 to de-interleave each
+    /// colour channel in a single vectorised pass — significantly faster than
+    /// a scalar loop for large images.
+    ///
+    /// - Parameters:
+    ///   - pixels: Interleaved RGB bytes (R, G, B per pixel).
+    ///   - count:  Number of pixels (pixels.count must equal count * 3).
+    /// - Returns: Tuple of planar (Y, Cb, Cr) float arrays in [0, 1].
+    public static func interleavedU8RGBToYCbCr(
+        _ pixels: [UInt8],
+        count: Int
+    ) -> (y: [Float], cb: [Float], cr: [Float]) {
+        precondition(pixels.count == count * 3)
+        var rF = [Float](repeating: 0, count: count)
+        var gF = [Float](repeating: 0, count: count)
+        var bF = [Float](repeating: 0, count: count)
+        var scale = Float(1) / 255.0
+        // Use stride-3 to de-interleave and convert in one vectorised call.
+        pixels.withUnsafeBufferPointer { buf in
+            vDSP_vfltu8(buf.baseAddress!,     3, &rF, 1, vDSP_Length(count))
+            vDSP_vfltu8(buf.baseAddress! + 1, 3, &gF, 1, vDSP_Length(count))
+            vDSP_vfltu8(buf.baseAddress! + 2, 3, &bF, 1, vDSP_Length(count))
+        }
+        vDSP_vsmul(rF, 1, &scale, &rF, 1, vDSP_Length(count))
+        vDSP_vsmul(gF, 1, &scale, &gF, 1, vDSP_Length(count))
+        vDSP_vsmul(bF, 1, &scale, &bF, 1, vDSP_Length(count))
+        return rgbToYCbCr(r: rF, g: gF, b: bF)
+    }
 }
 
 // MARK: - vImage Operations
