@@ -300,6 +300,7 @@ class VarDCTEncoder {
         switch frame.pixelType {
         case .uint8:   writer.writeByte(0)
         case .uint16:  writer.writeByte(1)
+        case .int16:   writer.writeByte(1)
         case .float32: writer.writeByte(2)
         }
 
@@ -781,6 +782,7 @@ class VarDCTEncoder {
         switch pixelType {
         case .uint8:   return 128.0
         case .uint16:  return 32768.0
+        case .int16:   return 32768.0
         case .float32: return 32768.0
         }
     }
@@ -2549,6 +2551,7 @@ class VarDCTEncoder {
         switch frame.pixelType {
         case .uint8:   writer.writeByte(0)
         case .uint16:  writer.writeByte(1)
+        case .int16:   writer.writeByte(1)
         case .float32: writer.writeByte(2)
         }
 

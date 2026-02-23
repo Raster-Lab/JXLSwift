@@ -191,6 +191,7 @@ class VarDCTDecoder {
         switch sourcePixelType {
         case .uint8:  maxPixelVal = 255.0
         case .uint16: maxPixelVal = 65535.0
+        case .int16:  maxPixelVal = 65535.0
         case .float32: maxPixelVal = 65535.0
         }
 
@@ -1244,6 +1245,7 @@ class VarDCTDecoder {
         switch frame.pixelType {
         case .uint8:  maxVal = 255.0
         case .uint16: maxVal = 65535.0
+        case .int16:  maxVal = 65535.0
         case .float32: maxVal = 65535.0
         }
 

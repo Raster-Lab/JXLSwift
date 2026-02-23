@@ -520,6 +520,7 @@ public enum QualityMetrics {
         switch pixelType {
         case .uint8: return 255.0
         case .uint16: return 65535.0
+        case .int16: return 65535.0
         case .float32: return 1.0
         }
     }
