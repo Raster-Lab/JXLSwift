@@ -287,7 +287,7 @@ public enum AVXOps {
     /// Maps to one `VMULPS ymm` (256-bit) instruction on AVX2-capable
     /// processors, replacing the two-vector approach of `SSEOps.dotProduct8`.
     @inline(__always)
-    static func dotProduct8avx(_ a: SIMD8<Float>, _ b: SIMD8<Float>) -> Float {
+    private static func dotProduct8avx(_ a: SIMD8<Float>, _ b: SIMD8<Float>) -> Float {
         let prod = a * b
         // Horizontal sum via two SIMD4 additions + scalar reduce
         let lo = SIMD4<Float>(prod[0], prod[1], prod[2], prod[3])

@@ -558,8 +558,11 @@ final class SSEOpsTests: XCTestCase {
 
     func testDispatchBackend_SSE2AvailableOnX86_64() {
         #if arch(x86_64)
+        // SSE2 is a baseline for all x86_64 processors — always available
         XCTAssertTrue(DispatchBackend.sse2.isAvailable)
-        XCTAssertTrue(DispatchBackend.avx2.isAvailable)
+        // DispatchBackend lists .avx2 as compilable for x86_64; actual runtime
+        // support depends on the processor. Use AVXOps.isAVX2Available for that.
+        XCTAssertTrue(DispatchBackend.avx2.isAvailable, "DispatchBackend should list avx2 on x86_64")
         #else
         XCTAssertFalse(DispatchBackend.sse2.isAvailable)
         XCTAssertFalse(DispatchBackend.avx2.isAvailable)

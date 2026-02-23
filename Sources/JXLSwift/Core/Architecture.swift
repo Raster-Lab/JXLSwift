@@ -79,13 +79,14 @@ public struct HardwareCapabilities: Sendable {
             let ret = sysctlbyname("hw.optional.avx2_0", &avx2, &size, nil, 0)
             return ret == 0 && avx2 != 0
             #elseif os(Linux)
-            // Linux: scan /proc/cpuinfo flags line for "avx2" token
+            // Linux: scan /proc/cpuinfo flags line for "avx2" as a complete token
             if let cpuInfo = try? String(contentsOfFile: "/proc/cpuinfo", encoding: .utf8) {
                 for line in cpuInfo.components(separatedBy: "\n") {
                     let lower = line.lowercased()
                     if lower.hasPrefix("flags") {
-                        // Match " avx2" as a whole token
-                        return lower.contains(" avx2") || lower.hasSuffix("\tavx2")
+                        // Split by whitespace so "avx2" matches only as a full token
+                        let tokens = lower.components(separatedBy: .whitespaces)
+                        return tokens.contains("avx2")
                     }
                 }
             }
