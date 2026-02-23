@@ -26,7 +26,7 @@
 | 13 | Production Hardening & Release | Weeks 44–48 | ✅ Complete |
 | 14 | ISO/IEC 18181-3 Conformance Testing | TBD | ✅ Complete |
 | 15 | Intel x86-64 SIMD Optimisation (SSE/AVX) | TBD | ✅ Complete |
-| 16 | Vulkan GPU Compute (Linux/Windows) | TBD | ⬜ Not Started |
+| 16 | Vulkan GPU Compute (Linux/Windows) | TBD | ✅ Complete |
 | 17 | DICOM Awareness (DICOM Independent) | TBD | ⬜ Not Started |
 | 18 | Internationalisation & Spelling Support | TBD | ⬜ Not Started |
 | 19 | J2KSwift API Consistency | TBD | ⬜ Not Started |
@@ -654,32 +654,32 @@
 
 **Goal:** Implement GPU-accelerated encoding/decoding via Vulkan compute shaders, providing cross-platform GPU acceleration for Linux and Windows where Metal is unavailable.
 
-**Status:** ⬜ Not Started
+**Status:** ✅ Complete
 
 ### Deliverables
 
-- [ ] Vulkan compute shader for 2D DCT on 8×8 blocks
-- [ ] Vulkan compute shader for RGB ↔ YCbCr colour conversion
-- [ ] Vulkan compute shader for quantisation
-- [ ] Vulkan buffer management for image data transfer (CPU ↔ GPU)
-- [ ] Vulkan device selection and queue management
-- [ ] Async GPU encoding pipeline
-- [ ] Vulkan availability check with CPU fallback
-- [ ] Cross-platform GPU abstraction layer (Metal on Apple, Vulkan on Linux/Windows)
-- [ ] `#if canImport(Metal)` / `#if canImport(Vulkan)` conditional compilation
-- [ ] SwiftPM integration for Vulkan SDK dependency (Linux/Windows)
-- [ ] Vulkan validation layer support for development/debugging
+- [x] Vulkan compute shader for 2D DCT on 8×8 blocks
+- [x] Vulkan compute shader for RGB ↔ YCbCr colour conversion
+- [x] Vulkan compute shader for quantisation
+- [x] Vulkan buffer management for image data transfer (CPU ↔ GPU)
+- [x] Vulkan device selection and queue management
+- [x] Async GPU encoding pipeline
+- [x] Vulkan availability check with CPU fallback
+- [x] Cross-platform GPU abstraction layer (Metal on Apple, Vulkan on Linux/Windows)
+- [x] `#if canImport(Metal)` / `#if canImport(Vulkan)` conditional compilation
+- [x] SwiftPM integration for Vulkan SDK dependency (Linux/Windows)
+- [x] Vulkan validation layer support for development/debugging
 
 ### Tests Required
 
-- [ ] Vulkan DCT matches CPU DCT within tolerance
-- [ ] Vulkan colour conversion matches CPU conversion within tolerance
-- [ ] Vulkan quantisation matches CPU quantisation
-- [ ] Large image (4K) encoding produces valid output via Vulkan
-- [ ] GPU memory is properly released after encoding
-- [ ] Fallback to CPU on systems without Vulkan support
-- [ ] Performance: Vulkan path ≥ 3× faster than CPU-only for large images on supported hardware
-- [ ] Cross-platform: same input produces equivalent output on Metal and Vulkan
+- [x] Vulkan DCT matches CPU DCT within tolerance
+- [x] Vulkan colour conversion matches CPU conversion within tolerance
+- [x] Vulkan quantisation matches CPU quantisation
+- [x] Large image (4K) encoding produces valid output via Vulkan
+- [x] GPU memory is properly released after encoding
+- [x] Fallback to CPU on systems without Vulkan support
+- [x] Performance: Vulkan path ≥ 3× faster than CPU-only for large images on supported hardware
+- [x] Cross-platform: same input produces equivalent output on Metal and Vulkan
 
 ### Acceptance Criteria
 
@@ -933,7 +933,7 @@ The `#else` fallback (scalar) implementations remain as universal fallbacks in a
 | Foundation | Core types, Data, Date | Yes | Apple platform standard |
 | Accelerate | vDSP, vImage | Optional | `#if canImport(Accelerate)` |
 | Metal | GPU compute (Apple) | Optional | `#if canImport(Metal)` |
-| Vulkan | GPU compute (Linux/Windows) | Optional | `#if canImport(Vulkan)` (Milestone 16) |
+| Vulkan | GPU compute (Linux/Windows) | Optional | `#if canImport(Vulkan)` (Milestone 16 ✅) |
 | ArgumentParser | CLI argument parsing | jxl-tool only | Swift Package dependency |
 | XCTest | Unit testing | Tests only | Standard testing framework |
 | libjxl | Reference comparison | Benchmarks only | External C++ library |

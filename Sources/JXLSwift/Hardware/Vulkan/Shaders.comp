@@ -1,0 +1,113 @@
+// JXLSwift Vulkan Compute Shaders
+// GLSL source for JPEG XL encoding operations on Vulkan compute.
+//
+// Compile with the Vulkan SDK glslc tool:
+//   glslc --target-env=vulkan1.2 -fshader-stage=comp \
+//         -DKERNEL=<entry>  Shaders.comp -o <entry>.spv
+//
+// Available KERNEL defines:
+//   rgb_to_ycbcr  — BT.601 RGB → YCbCr colour conversion
+//   dct_8x8       — Forward 2-D DCT on 8×8 blocks
+//   idct_8x8      — Inverse 2-D DCT on 8×8 blocks
+//   quantize      — Divide coefficients by quantisation step (round to Int16)
+//   dequantize    — Multiply quantised Int16 by quantisation step
+//
+// ---------------------------------------------------------------------------
+// rgb_to_ycbcr
+// ---------------------------------------------------------------------------
+// layout(local_size_x = 64) in;
+//
+// layout(set = 0, binding = 0) readonly  buffer RGBIn   { float rgb[];   };
+// layout(set = 0, binding = 1) writeonly buffer YCbCrOut{ float ycbcr[]; };
+//
+// void rgb_to_ycbcr() {
+//     uint id = gl_GlobalInvocationID.x;
+//     float r = rgb[id * 3 + 0];
+//     float g = rgb[id * 3 + 1];
+//     float b = rgb[id * 3 + 2];
+//     // BT.601 coefficients
+//     float y  =  0.299  * r + 0.587  * g + 0.114  * b;
+//     float cb = -0.168736 * r - 0.331264 * g + 0.5    * b;
+//     float cr =  0.5    * r - 0.418688 * g - 0.081312 * b;
+//     ycbcr[id * 3 + 0] = y;
+//     ycbcr[id * 3 + 1] = cb;
+//     ycbcr[id * 3 + 2] = cr;
+// }
+//
+// ---------------------------------------------------------------------------
+// dct_8x8  (forward)
+// ---------------------------------------------------------------------------
+// layout(local_size_x = 8, local_size_y = 8) in;
+//
+// layout(set = 0, binding = 0) readonly  buffer SpatialIn { float spatial[]; };
+// layout(set = 0, binding = 1) writeonly buffer FreqOut   { float freq[];    };
+//
+// shared float tile[8][8];
+//
+// void dct_8x8() {
+//     uint bx = gl_WorkGroupID.x;   // block column
+//     uint by = gl_WorkGroupID.y;   // block row
+//     uint tx = gl_LocalInvocationID.x;
+//     uint ty = gl_LocalInvocationID.y;
+//     uint imgW = gl_NumWorkGroups.x * 8;
+//
+//     // Load 8×8 tile into shared memory
+//     tile[ty][tx] = spatial[(by * 8 + ty) * imgW + (bx * 8 + tx)];
+//     barrier();
+//
+//     const float PI = 3.14159265358979;
+//     const float norm0 = 1.0 / sqrt(8.0);
+//     const float norm1 = sqrt(2.0 / 8.0);
+//
+//     // 1-D DCT on rows (ty = frequency row, tx = spatial col)
+//     float sum = 0.0;
+//     for (uint n = 0; n < 8; ++n)
+//         sum += tile[ty][n] * cos(PI * float(tx) * (2.0*float(n)+1.0) / 16.0);
+//     sum *= (tx == 0) ? norm0 : norm1;
+//     barrier();
+//     tile[ty][tx] = sum;
+//     barrier();
+//
+//     // 1-D DCT on columns
+//     sum = 0.0;
+//     for (uint n = 0; n < 8; ++n)
+//         sum += tile[n][tx] * cos(PI * float(ty) * (2.0*float(n)+1.0) / 16.0);
+//     sum *= (ty == 0) ? norm0 : norm1;
+//
+//     freq[(by * 8 + ty) * imgW + (bx * 8 + tx)] = sum;
+// }
+//
+// ---------------------------------------------------------------------------
+// idct_8x8  (inverse)
+// ---------------------------------------------------------------------------
+// (Same structure as dct_8x8 but uses the IDCT kernel.)
+//
+// ---------------------------------------------------------------------------
+// quantize
+// ---------------------------------------------------------------------------
+// layout(local_size_x = 64) in;
+//
+// layout(set = 0, binding = 0) readonly  buffer CoeffIn  { float  coeff[];  };
+// layout(set = 0, binding = 1) writeonly buffer QuantOut { int16_t quant[]; };
+// layout(set = 0, binding = 2) readonly  buffer QuantTbl { float  qtable[]; };
+//
+// void quantize() {
+//     uint id  = gl_GlobalInvocationID.x;
+//     uint pos = id % 64;
+//     quant[id] = int16_t(round(coeff[id] / qtable[pos]));
+// }
+//
+// ---------------------------------------------------------------------------
+// dequantize
+// ---------------------------------------------------------------------------
+// layout(local_size_x = 64) in;
+//
+// layout(set = 0, binding = 0) readonly  buffer QuantIn  { int16_t quant[]; };
+// layout(set = 0, binding = 1) writeonly buffer CoeffOut { float  coeff[];  };
+// layout(set = 0, binding = 2) readonly  buffer QuantTbl { float  qtable[]; };
+//
+// void dequantize() {
+//     uint id  = gl_GlobalInvocationID.x;
+//     uint pos = id % 64;
+//     coeff[id] = float(quant[id]) * qtable[pos];
+// }

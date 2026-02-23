@@ -37,6 +37,9 @@ let package = Package(
         .target(
             name: "JXLSwift",
             dependencies: [],
+            exclude: [
+                "Hardware/Vulkan/Shaders.comp"
+            ],
             resources: [
                 .process("Hardware/Metal/Shaders.metal")
             ]

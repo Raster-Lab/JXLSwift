@@ -59,6 +59,7 @@ final class DispatchBackendTests: XCTestCase {
 
     func testDispatchBackend_RequiresGPU() {
         XCTAssertTrue(DispatchBackend.metal.requiresGPU)
+        XCTAssertTrue(DispatchBackend.vulkan.requiresGPU)
         XCTAssertFalse(DispatchBackend.scalar.requiresGPU)
         XCTAssertFalse(DispatchBackend.neon.requiresGPU)
         XCTAssertFalse(DispatchBackend.sse2.requiresGPU)
@@ -81,7 +82,26 @@ final class DispatchBackendTests: XCTestCase {
 
     // MARK: - CaseIterable Tests
 
-    func testDispatchBackend_AllCases_ContainsSixBackends() {
-        XCTAssertEqual(DispatchBackend.allCases.count, 6)
+    func testDispatchBackend_AllCases_ContainsSevenBackends() {
+        XCTAssertEqual(DispatchBackend.allCases.count, 7)
+    }
+
+    // MARK: - Vulkan Tests
+
+    func testDispatchBackend_Vulkan_RequiresGPU() {
+        XCTAssertTrue(DispatchBackend.vulkan.requiresGPU,
+                      "Vulkan backend must require a GPU")
+    }
+
+    func testDispatchBackend_Vulkan_DisplayNameNotEmpty() {
+        XCTAssertFalse(DispatchBackend.vulkan.displayName.isEmpty)
+    }
+
+    func testDispatchBackend_Vulkan_NotAvailableOnApple() {
+        // Vulkan is not available on Apple platforms (Metal is used instead)
+        #if canImport(Metal)
+        XCTAssertFalse(DispatchBackend.vulkan.isAvailable,
+                       "Vulkan should not appear available on Apple platforms")
+        #endif
     }
 }
