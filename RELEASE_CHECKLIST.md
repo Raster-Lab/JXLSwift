@@ -96,13 +96,16 @@ git push origin v1.0.0
 
 ### 7. Create GitHub Release
 
-Go to https://github.com/Raster-Lab/JXLSwift/releases/new
+Pushing the tag in step 6 automatically triggers the
+`.github/workflows/release.yml` workflow which:
 
-- **Tag:** `v1.0.0`
-- **Title:** `JXLSwift 1.0.0 - Initial Stable Release`
-- **Description:** Copy content from `RELEASE_NOTES_1.0.0.md`
-- **Attachments:** None required (Swift Package Manager will use the tag)
-- **Mark as latest release:** ✓
+1. Validates the tag format (`vX.Y.Z`) and checks it matches the `VERSION` file.
+2. Builds the project in release mode.
+3. Extracts the matching section from `CHANGELOG.md`.
+4. Creates the GitHub Release with those notes.
+
+Monitor the workflow run at
+https://github.com/Raster-Lab/JXLSwift/actions/workflows/release.yml
 
 ### 8. Update Main Branch
 ```bash
