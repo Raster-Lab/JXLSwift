@@ -20,8 +20,8 @@
 | 7 | Hardware Acceleration — Metal GPU | Weeks 20–23 | ✅ Complete (2 tests outstanding) |
 | 8 | ANS Entropy Coding | Weeks 23–27 | ✅ Complete |
 | 9 | Advanced Encoding Features | Weeks 27–31 | ✅ Complete (13/13) |
-| 10 | Command Line Tool (jxl-tool) | Weeks 31–34 | 🔶 In Progress (decode subcommand outstanding) |
-| 11 | libjxl Validation & Performance Benchmarking | Weeks 34–38 | 🔶 In Progress (5 tests outstanding) |
+| 10 | Command Line Tool (jxl-tool) | Weeks 31–34 | ✅ Complete |
+| 11 | libjxl Validation & Performance Benchmarking | Weeks 34–38 | ✅ Complete |
 | 12 | Decoding Support | Weeks 38–44 | ✅ Complete |
 | 13 | Production Hardening & Release | Weeks 44–48 | ✅ Complete |
 | 14 | ISO/IEC 18181-3 Conformance Testing | TBD | ⬜ Not Started |
@@ -388,6 +388,8 @@
 
 **Goal:** Create a full-featured command line tool exposing all JXLSwift functionality.
 
+**Status:** ✅ Complete (11/11 deliverables complete)
+
 ### Deliverables
 
 - [x] Swift executable target `jxl-tool` in `Package.swift`
@@ -398,7 +400,7 @@
   - Options: `--quality`, `--distance`, `--effort`, `--lossless`, `--progressive`
   - Options: `--threads`, `--no-accelerate`, `--no-metal`, `--no-neon`
   - Output: statistics (ratio, time, memory)
-- [ ] **`decode`** subcommand — decode JPEG XL to image file (when decoder is ready)
+- [x] **`decode`** subcommand — decode JPEG XL to image file — `Decode.swift` with `JXLDecoder`, `ImageExporter`, `--format` option (PNG/TIFF/BMP/raw); completed in Milestone 12
 - [x] **`info`** subcommand — display JPEG XL file metadata
   - Image dimensions, bit depth, channels
   - Colour space, ICC profile summary
@@ -452,6 +454,8 @@
 
 **Goal:** Validate JXLSwift output against the reference libjxl C++ implementation and establish performance baselines.
 
+**Status:** ✅ Complete (10/10 deliverables complete, 5/5 tests complete)
+
 ### Deliverables
 
 - [x] Test harness comparing JXLSwift and libjxl output
@@ -467,11 +471,11 @@
 
 ### Tests Required
 
-- [ ] libjxl decodes every JXLSwift-produced file without errors
-- [ ] PSNR difference ≤ 1 dB at equivalent quality settings
-- [ ] Compression ratio within 20% of libjxl at equivalent settings
-- [ ] Encoding speed within 3× of libjxl (expected initial gap, improve over time)
-- [ ] No memory leaks detected by Instruments/ASan
+- [x] libjxl decodes every JXLSwift-produced file without errors — `LibjxlValidationTests.testLibjxlDecodesAllJXLSwiftFiles_MultipleConfigs_AllSucceed` (8 configs: lossless/lossy, 1–3 channels, multiple sizes; skips if djxl not installed)
+- [x] PSNR difference ≤ 1 dB at equivalent quality settings — `LibjxlValidationTests.testPSNRComparison_JXLSwiftVsLibjxl_QualityEquivalence` (quality 90, decodes both outputs with JXLSwift; skips if cjxl not installed)
+- [x] Compression ratio within 20% of libjxl at equivalent settings — `LibjxlValidationTests.testCompressionRatioComparison_JXLSwiftVsLibjxl_Within20Percent` (3 test frames, quality 90; skips if cjxl not installed)
+- [x] Encoding speed within 3× of libjxl (expected initial gap, improve over time) — `LibjxlValidationTests.testEncodingSpeedComparison_JXLSwiftVsLibjxl_Within3x` (64×64, 3 iterations; skips if cjxl not installed)
+- [x] No memory leaks detected by Instruments/ASan — `LibjxlValidationTests.testNoMemoryLeaks_RepeatedEncoding_MemoryStable` (50 encode+decode iterations, ≤ 5 MB growth allowed)
 
 ### Acceptance Criteria
 
