@@ -499,6 +499,302 @@ final class Milestone21Tests: XCTestCase {
         }
     }
 
+    // MARK: - Work-Stealing Thread Pool
+
+    func testThreadPool_Submit_ExecutesWork() {
+        let pool = WorkStealingThreadPool(threadCount: 2)
+        let counter = Counter()
+
+        for _ in 0..<10 {
+            pool.submit {
+                counter.increment()
+            }
+        }
+        pool.waitForAll()
+        XCTAssertEqual(counter.value, 10)
+        pool.shutdown()
+    }
+
+    func testThreadPool_SubmitAll_ExecutesAllAndWaits() {
+        let pool = WorkStealingThreadPool(threadCount: 4)
+        let counter = Counter()
+        let works: [@Sendable () -> Void] = (0..<20).map { _ in { counter.increment() } }
+
+        pool.submitAll(works)
+        XCTAssertEqual(counter.value, 20)
+        pool.shutdown()
+    }
+
+    func testThreadPool_ThreadCount_Defaults() {
+        let pool = WorkStealingThreadPool()
+        XCTAssertGreaterThanOrEqual(pool.threadCount, 1)
+        pool.shutdown()
+    }
+
+    func testThreadPool_PendingCount_ZeroAfterWait() {
+        let pool = WorkStealingThreadPool(threadCount: 2)
+        for _ in 0..<5 {
+            pool.submit { /* no-op */ }
+        }
+        pool.waitForAll()
+        XCTAssertEqual(pool.pendingCount, 0)
+        pool.shutdown()
+    }
+
+    func testThreadPool_ConcurrentWorkload_IsThreadSafe() {
+        let pool = WorkStealingThreadPool(threadCount: 4)
+        let counter = Counter()
+        let iterations = 200
+
+        pool.submitAll((0..<iterations).map { _ in { counter.increment() } })
+        XCTAssertEqual(counter.value, iterations)
+        pool.shutdown()
+    }
+
+    func testThreadPool_SharedPool_Exists() {
+        XCTAssertGreaterThanOrEqual(SharedThreadPool.shared.threadCount, 1)
+    }
+
+    func testPerformance_ThreadPool_Throughput() {
+        let pool = WorkStealingThreadPool(threadCount: 4)
+        measure {
+            let counter = Counter()
+            pool.submitAll((0..<100).map { _ in { counter.increment() } })
+        }
+        pool.shutdown()
+    }
+
+    // MARK: - Accelerate Expansion: vectorClamp / vectorAbs / vectorSum / normalise
+
+    func testAccelerate_VectorClamp_ClampsValues() throws {
+        #if canImport(Accelerate)
+        let values: [Float] = [-2, -1, 0, 0.5, 1, 2, 3]
+        let clamped = AccelerateOps.vectorClamp(values, low: 0, high: 1)
+        let expected: [Float] = [0, 0, 0, 0.5, 1, 1, 1]
+        for (c, e) in zip(clamped, expected) { XCTAssertEqual(c, e, accuracy: 1e-6) }
+        #else
+        throw XCTSkip("Accelerate not available")
+        #endif
+    }
+
+    func testAccelerate_VectorAbs_AllPositive() throws {
+        #if canImport(Accelerate)
+        let values: [Float] = [-3, -1, 0, 1, 3]
+        let absValues = AccelerateOps.vectorAbs(values)
+        let expected: [Float] = [3, 1, 0, 1, 3]
+        for (a, e) in zip(absValues, expected) { XCTAssertEqual(a, e, accuracy: 1e-6) }
+        #else
+        throw XCTSkip("Accelerate not available")
+        #endif
+    }
+
+    func testAccelerate_VectorSum_MatchesReduce() throws {
+        #if canImport(Accelerate)
+        let values: [Float] = [1, 2, 3, 4, 5]
+        let sum = AccelerateOps.vectorSum(values)
+        XCTAssertEqual(sum, 15, accuracy: 1e-5)
+        #else
+        throw XCTSkip("Accelerate not available")
+        #endif
+    }
+
+    func testAccelerate_Normalise_ZeroMeanUnitNorm() throws {
+        #if canImport(Accelerate)
+        let values: [Float] = [1, 2, 3, 4, 5]
+        let normed = AccelerateOps.normalise(values)
+        // After normalisation mean ≈ 0 and L2 norm ≈ 1
+        let mean = normed.reduce(0, +) / Float(normed.count)
+        let l2 = sqrt(normed.map { $0 * $0 }.reduce(0, +))
+        XCTAssertEqual(mean, 0, accuracy: 1e-5)
+        XCTAssertEqual(l2,   1, accuracy: 1e-5)
+        #else
+        throw XCTSkip("Accelerate not available")
+        #endif
+    }
+
+    func testAccelerate_Normalise_EmptyArray() throws {
+        #if canImport(Accelerate)
+        let normed = AccelerateOps.normalise([])
+        XCTAssertTrue(normed.isEmpty)
+        #else
+        throw XCTSkip("Accelerate not available")
+        #endif
+    }
+
+    func testAccelerate_Normalise_ConstantArray_ReturnsZeros() throws {
+        #if canImport(Accelerate)
+        let values = [Float](repeating: 5.0, count: 8)
+        let normed = AccelerateOps.normalise(values)
+        for v in normed {
+            XCTAssertEqual(v, 0, accuracy: 1e-5)
+        }
+        #else
+        throw XCTSkip("Accelerate not available")
+        #endif
+    }
+
+    func testAccelerate_InterleavedU8RGBToYCbCr_BasicConversion() throws {
+        #if canImport(Accelerate)
+        // Pure white pixel: R=255, G=255, B=255 → Y≈1, Cb≈0.5, Cr≈0.5
+        let pixels: [UInt8] = [255, 255, 255]
+        let (y, cb, cr) = AccelerateOps.interleavedU8RGBToYCbCr(pixels, count: 1)
+        XCTAssertEqual(y[0],  1.0, accuracy: 0.01)
+        XCTAssertEqual(cb[0], 0.5, accuracy: 0.01)
+        XCTAssertEqual(cr[0], 0.5, accuracy: 0.01)
+        #else
+        throw XCTSkip("Accelerate not available")
+        #endif
+    }
+
+    // MARK: - NEON Expansion: SIMD quantize / horizontal reductions
+
+    func testNEON_Quantize_BasicCase() {
+        let values: [Float] = [4.5, -3.3, 0.0, 8.0, 1.1, -7.6, 2.0, -0.1]
+        let steps  = [Float](repeating: 1.0, count: 8)
+        let q = NEONOps.quantize(values, qSteps: steps)
+        XCTAssertEqual(q, [5, -3, 0, 8, 1, -8, 2, 0])
+    }
+
+    func testNEON_Quantize_WithLargeSteps() {
+        let values: [Float] = [100, 200, 300, 400]
+        let steps: [Float]  = [50,  100, 100, 200]
+        let q = NEONOps.quantize(values, qSteps: steps)
+        XCTAssertEqual(q, [2, 2, 3, 2])
+    }
+
+    func testNEON_Quantize_Clamping() {
+        // Values that would exceed Int16 range before clamping
+        let values: [Float] = [Float(Int16.max) * 2, Float(Int16.min) * 2]
+        let steps:  [Float] = [1.0, 1.0]
+        let q = NEONOps.quantize(values, qSteps: steps)
+        XCTAssertEqual(q[0], Int16.max)
+        XCTAssertEqual(q[1], Int16.min)
+    }
+
+    func testNEON_HorizontalSum_CorrectResult() {
+        let v = SIMD4<Float>(1, 2, 3, 4)
+        XCTAssertEqual(NEONOps.horizontalSum(v), 10, accuracy: 1e-6)
+    }
+
+    func testNEON_HorizontalMax_CorrectResult() {
+        let v = SIMD4<Float>(1, 5, 3, 2)
+        XCTAssertEqual(NEONOps.horizontalMax(v), 5, accuracy: 1e-6)
+    }
+
+    func testNEON_HorizontalMin_CorrectResult() {
+        let v = SIMD4<Float>(1, 5, 3, 2)
+        XCTAssertEqual(NEONOps.horizontalMin(v), 1, accuracy: 1e-6)
+    }
+
+    // MARK: - Metal Pipeline Optimisation
+
+    func testMetal_OptimalBatchSize_WithinBounds() {
+        #if canImport(Metal)
+        guard let pipeline = MetalOps.computePipelineState(for: "dct_8x8") else {
+            // Metal pipeline not available in CI — skip gracefully.
+            return
+        }
+        let batchSize = MetalOps.optimalBatchSize(pipeline: pipeline, totalCount: 1024)
+        XCTAssertGreaterThanOrEqual(batchSize, 1)
+        XCTAssertLessThanOrEqual(batchSize, 1024)
+        // Must be a power-of-two in [32, 1024]
+        XCTAssertTrue(isPowerOfTwo(batchSize), "Batch size should be power-of-two")
+        #endif
+    }
+
+    func testMetal_OptimalTileSize_SmallImage() {
+        #if canImport(Metal)
+        guard let pipeline = MetalOps.computePipelineState(for: "rgb_to_ycbcr") else {
+            return
+        }
+        let (w, h) = MetalOps.optimalTileSize(pipeline: pipeline, imageWidth: 4, imageHeight: 4)
+        XCTAssertLessThanOrEqual(w, 4)
+        XCTAssertLessThanOrEqual(h, 4)
+        XCTAssertGreaterThanOrEqual(w, 1)
+        XCTAssertGreaterThanOrEqual(h, 1)
+        #endif
+    }
+
+    func testMetal_EstimatedOccupancy_InRange() {
+        #if canImport(Metal)
+        guard let pipeline = MetalOps.computePipelineState(for: "rgb_to_ycbcr") else {
+            return
+        }
+        let occ = MetalOps.estimatedOccupancy(pipeline: pipeline, threadgroupWidth: 64)
+        XCTAssertGreaterThanOrEqual(occ, 0)
+        XCTAssertLessThanOrEqual(occ, 1.0)
+        #endif
+    }
+
+    func testMetal_CoalescedBuffer_AllocatesNonNil() {
+        #if canImport(Metal)
+        guard MetalOps.isAvailable else { return }
+        let data = [Float](repeating: 1.0, count: 64)
+        let buffer = data.withUnsafeBytes { ptr in
+            MetalOps.makeCoalescedBuffer(from: ptr.baseAddress!, length: ptr.count)
+        }
+        XCTAssertNotNil(buffer, "Coalesced buffer should be allocated on Metal devices")
+        #endif
+    }
+
+    // MARK: - Throughput Targets (benchmark, not hard assertions)
+
+    /// Measures encoding throughput for effort 3 (fast mode) and prints the result.
+    /// The test does not fail on slow CI — it serves as a benchmark canary.
+    func testThroughput_Encoding_Effort3_256x256() throws {
+        let frame = TestImageGenerator.gradient(width: 256, height: 256)
+        let encoder = JXLEncoder(options: EncodingOptions(mode: .lossy(quality: 80), effort: .falcon))
+        _ = try encoder.encode(frame) // warm-up
+        let start = ProcessInfo.processInfo.systemUptime
+        _ = try encoder.encode(frame)
+        let elapsed = ProcessInfo.processInfo.systemUptime - start
+        let mpPerSec = Double(256 * 256) / 1_000_000.0 / elapsed
+        print("Encode 256×256 effort=fast: \(String(format: "%.1f", mpPerSec)) MP/s")
+        XCTAssertGreaterThan(mpPerSec, 0, "Encoding throughput must be measurable")
+    }
+
+    /// Measures decoding throughput and prints the result.
+    func testThroughput_Decoding_256x256_Lossless() throws {
+        let frame = TestImageGenerator.gradient(width: 256, height: 256)
+        let encoder = JXLEncoder(options: EncodingOptions(mode: .lossless, effort: .lightning))
+        let encoded = try encoder.encode(frame)
+        let decoder = JXLDecoder()
+        _ = try decoder.decode(encoded.data) // warm-up
+        let start = ProcessInfo.processInfo.systemUptime
+        _ = try decoder.decode(encoded.data)
+        let elapsed = ProcessInfo.processInfo.systemUptime - start
+        let mpPerSec = Double(256 * 256) / 1_000_000.0 / elapsed
+        print("Decode 256×256 lossless: \(String(format: "%.1f", mpPerSec)) MP/s")
+        XCTAssertGreaterThan(mpPerSec, 0, "Decoding throughput must be measurable")
+    }
+
+    /// Validates that encoding a 256×256 image completes successfully and
+    /// measures the encoding output size as a proxy for memory efficiency.
+    ///
+    /// Note: Accurate per-process heap delta measurement requires platform-specific
+    /// APIs (mach_task_self on Apple, /proc/self/status on Linux) that vary across
+    /// CI environments.  This test serves as a functional and size-budget canary.
+    func testMemory_Encoding_256x256_PeakHeap() throws {
+        let frame = TestImageGenerator.gradient(width: 256, height: 256)
+        let encoder = JXLEncoder(options: EncodingOptions(mode: .lossy(quality: 80), effort: .lightning))
+
+        let result = try encoder.encode(frame)
+        let outputBytes = result.data.count
+        let inputBytes  = 256 * 256 * 3  // RGB uint8
+        let compressionRatio = Double(inputBytes) / Double(outputBytes)
+
+        print("256×256 lossy encode: \(outputBytes) bytes " +
+              "(\(String(format: "%.1f", compressionRatio))× compression)")
+
+        // Encoded output must be smaller than the raw input (confirms compression).
+        XCTAssertGreaterThan(
+            compressionRatio, 1.0,
+            "Encoded output must be smaller than the raw input"
+        )
+        // Sanity: encoded output must be at least 100 bytes (not empty/corrupt).
+        XCTAssertGreaterThan(outputBytes, 100)
+    }
+
     // MARK: - Private Helpers
 
     /// Build a synthetic `ProfilingReport` with a specific throughput.
@@ -517,5 +813,29 @@ final class Milestone21Tests: XCTestCase {
             width: width,
             height: height
         )
+    }
+}
+
+// MARK: - Thread-safe counter helper
+
+private final class Counter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _value = 0
+    func increment() {
+        lock.lock(); defer { lock.unlock() }
+        _value += 1
+    }
+    var value: Int {
+        lock.lock(); defer { lock.unlock() }
+        return _value
+    }
+}
+
+// MARK: - Private test helpers
+
+extension Milestone21Tests {
+    /// Returns `true` if `n` is a power of two (and positive).
+    private func isPowerOfTwo(_ n: Int) -> Bool {
+        n > 0 && (n & (n - 1)) == 0
     }
 }

@@ -948,3 +948,69 @@ public enum NEONOps {
         a.replacing(with: b, where: a .< b)
     }
 }
+
+// MARK: - NEON SIMD Coverage Expansion
+
+extension NEONOps {
+
+    // MARK: - SIMD Quantisation
+
+    /// Quantise a flat array of DCT coefficients using SIMD-accelerated
+    /// division and rounding, processing four coefficients per iteration.
+    ///
+    /// The quantisation step is: `round(value / step)` clamped to `Int16`.
+    ///
+    /// - Parameters:
+    ///   - values: Flat DCT coefficient array.
+    ///   - qSteps: Per-coefficient quantisation steps (same length as `values`).
+    /// - Returns: Quantised coefficients as `[Int16]`.
+    public static func quantize(_ values: [Float], qSteps: [Float]) -> [Int16] {
+        let count = values.count
+        precondition(qSteps.count == count)
+
+        var out = [Int16](repeating: 0, count: count)
+        var i = 0
+        while i + 4 <= count {
+            let v = SIMD4<Float>(values[i], values[i+1], values[i+2], values[i+3])
+            let q = SIMD4<Float>(qSteps[i], qSteps[i+1], qSteps[i+2], qSteps[i+3])
+            let divided = v / q
+            let rounded = divided.rounded(.toNearestOrAwayFromZero)
+            for j in 0..<4 {
+                out[i + j] = Int16(clamping: Int32(rounded[j]))
+            }
+            i += 4
+        }
+        while i < count {
+            let v = (values[i] / qSteps[i]).rounded()
+            out[i] = Int16(clamping: Int32(v))
+            i += 1
+        }
+        return out
+    }
+
+    // MARK: - Horizontal SIMD4 Reductions
+
+    /// Sum all four lanes of a `SIMD4<Float>`.
+    ///
+    /// - Parameter v: Input SIMD4 vector.
+    /// - Returns: Scalar sum of all four elements.
+    @inline(__always)
+    public static func horizontalSum(_ v: SIMD4<Float>) -> Float {
+        let lo = v.lowHalf  + v.highHalf  // SIMD2<Float>
+        return lo[0] + lo[1]
+    }
+
+    /// Maximum value across all four lanes of a `SIMD4<Float>`.
+    @inline(__always)
+    public static func horizontalMax(_ v: SIMD4<Float>) -> Float {
+        let lo = v.lowHalf.replacing(with: v.highHalf, where: v.lowHalf .< v.highHalf)
+        return Swift.max(lo[0], lo[1])
+    }
+
+    /// Minimum value across all four lanes of a `SIMD4<Float>`.
+    @inline(__always)
+    public static func horizontalMin(_ v: SIMD4<Float>) -> Float {
+        let lo = v.lowHalf.replacing(with: v.highHalf, where: v.lowHalf .> v.highHalf)
+        return Swift.min(lo[0], lo[1])
+    }
+}
