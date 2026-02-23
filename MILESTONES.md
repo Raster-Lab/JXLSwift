@@ -13,17 +13,25 @@
 | 0 | Project Foundation & Infrastructure | Weeks 1–2 | ✅ Complete |
 | 1 | Core Data Structures & Bitstream I/O | Weeks 2–4 | ✅ Complete |
 | 2 | Lossless Compression (Modular Mode) | Weeks 4–7 | ✅ Complete |
-| 3 | Lossy Compression (VarDCT Mode) | Weeks 7–11 | ✅ Complete |
-| 4 | JPEG XL File Format & Container | Weeks 11–14 | ✅ Complete |
-| 5 | Hardware Acceleration — Apple Accelerate | Weeks 14–17 | ✅ Complete |
+| 3 | Lossy Compression (VarDCT Mode) | Weeks 7–11 | 🔶 In Progress (11/14 deliverables) |
+| 4 | JPEG XL File Format & Container | Weeks 11–14 | ✅ Complete (2 tests outstanding) |
+| 5 | Hardware Acceleration — Apple Accelerate | Weeks 14–17 | 🔶 In Progress (8/10 deliverables) |
 | 6 | Hardware Acceleration — ARM NEON / SIMD | Weeks 17–20 | ✅ Complete |
-| 7 | Hardware Acceleration — Metal GPU | Weeks 20–23 | ✅ Complete |
+| 7 | Hardware Acceleration — Metal GPU | Weeks 20–23 | ✅ Complete (2 tests outstanding) |
 | 8 | ANS Entropy Coding | Weeks 23–27 | ✅ Complete |
 | 9 | Advanced Encoding Features | Weeks 27–31 | ✅ Complete (13/13) |
-| 10 | Command Line Tool (jxl-tool) | Weeks 31–34 | ✅ Complete |
-| 11 | libjxl Validation & Performance Benchmarking | Weeks 34–38 | ✅ Complete |
+| 10 | Command Line Tool (jxl-tool) | Weeks 31–34 | 🔶 In Progress (decode subcommand outstanding) |
+| 11 | libjxl Validation & Performance Benchmarking | Weeks 34–38 | 🔶 In Progress (5 tests outstanding) |
 | 12 | Decoding Support | Weeks 38–44 | ✅ Complete |
 | 13 | Production Hardening & Release | Weeks 44–48 | ✅ Complete |
+| 14 | ISO/IEC 18181-3 Conformance Testing | TBD | ⬜ Not Started |
+| 15 | Intel x86-64 SIMD Optimisation (SSE/AVX) | TBD | ⬜ Not Started |
+| 16 | Vulkan GPU Compute (Linux/Windows) | TBD | ⬜ Not Started |
+| 17 | DICOM Awareness (DICOM Independent) | TBD | ⬜ Not Started |
+| 18 | Internationalisation & Spelling Support | TBD | ⬜ Not Started |
+| 19 | J2KSwift API Consistency | TBD | ⬜ Not Started |
+| 20 | Documentation & Examples Refresh | TBD | ⬜ Not Started |
+| 21 | Performance: Exceeding libjxl | TBD | ⬜ Not Started |
 
 ---
 
@@ -556,9 +564,328 @@
 
 ---
 
+## Milestone 14 — ISO/IEC 18181-3 Conformance Testing
+
+**Goal:** Systematically validate the JXLSwift core coding system (Part 1) and file format (Part 2) against the conformance requirements defined in ISO/IEC 18181-3:2024 (Part 3). Ensure bidirectional interoperability with libjxl.
+
+**Status:** ⬜ Not Started
+
+### Deliverables
+
+- [ ] Conformance test vector suite sourced from ISO/IEC 18181-3 and/or libjxl conformance corpus
+- [ ] Automated conformance runner that validates JXLSwift output against reference test vectors
+- [ ] Core coding system conformance (Part 1 §6–§11): bitstream structure, entropy coding, headers
+- [ ] File format conformance (Part 2): ISOBMFF container, metadata boxes, MIME type, codestream embedding
+- [ ] Bidirectional libjxl interoperability: JXLSwift-encoded → libjxl decode (all modes)
+- [ ] Bidirectional libjxl interoperability: libjxl-encoded → JXLSwift decode (all modes)
+- [ ] Conformance report generation (pass/fail per test vector, summary statistics)
+- [ ] CI integration for conformance regression detection
+- [ ] Address remaining unchecked items from Milestones 3, 4, and 11 that affect conformance:
+  - M3: Variable block sizes, coefficient reordering, full VarDCT frame header per §6
+  - M4: Codestream header parsing with libjxl, container format validation
+  - M11: libjxl decode validation, PSNR/compression/speed comparisons, memory leak checks
+
+### Tests Required
+
+- [ ] JXLSwift Modular output passes ISO/IEC 18181-3 conformance checks
+- [ ] JXLSwift VarDCT output passes ISO/IEC 18181-3 conformance checks
+- [ ] JXLSwift container format passes ISO/IEC 18181-3 file format checks
+- [ ] libjxl decodes every JXLSwift-produced file without errors (all modes, all effort levels)
+- [ ] JXLSwift decodes every libjxl-produced file without errors (Modular and VarDCT)
+- [ ] Round-trip: encode with JXLSwift → decode with libjxl → re-encode with libjxl → decode with JXLSwift (no degradation beyond tolerance)
+- [ ] Metadata preservation: EXIF, XMP, ICC survive bidirectional round-trips
+- [ ] Conformance tests pass on both ARM64 and x86-64 architectures
+
+### Acceptance Criteria
+
+- 100% pass rate on applicable ISO/IEC 18181-3 conformance test vectors
+- Bidirectional interoperability with libjxl for all supported encoding modes
+- Conformance status tracked in CI with zero regressions
+
+---
+
+## Milestone 15 — Intel x86-64 SIMD Optimisation (SSE/AVX)
+
+**Goal:** Implement x86-64 specific SIMD-optimised code paths using SSE2/SSE4.1 and AVX2 for critical inner loops, matching the ARM NEON optimisation approach from Milestone 6.
+
+**Status:** ⬜ Not Started
+
+### Deliverables
+
+- [ ] `Hardware/x86/SSEOps.swift` — SSE2/SSE4.1 operations via Swift SIMD types
+- [ ] SSE-optimised pixel prediction (4-wide processing)
+- [ ] SSE-optimised MED predictor
+- [ ] SSE-optimised DCT butterfly operations
+- [ ] SSE-optimised colour space conversion (RGB ↔ YCbCr)
+- [ ] SSE-optimised quantisation (vectorised divide + round)
+- [ ] SSE-optimised zigzag reordering
+- [ ] `Hardware/x86/AVXOps.swift` — AVX2 operations for wider vector processing (where available)
+- [ ] AVX2-optimised 8-wide DCT and colour conversion
+- [ ] `#if arch(x86_64)` guards with scalar fallback in `#else`
+- [ ] Runtime CPU feature detection for AVX2 availability
+- [ ] All x86 code isolated in `Hardware/x86/` directory for clean removal
+
+### Tests Required
+
+- [ ] SSE prediction matches scalar prediction exactly
+- [ ] SSE DCT matches scalar DCT within tolerance
+- [ ] SSE colour conversion matches scalar conversion within tolerance
+- [ ] AVX2 operations match SSE results (wider vector, same result)
+- [ ] Edge cases: odd image widths (non-multiple of SIMD width)
+- [ ] Performance: SSE path ≥ 2× faster than scalar on x86-64
+- [ ] Performance: AVX2 path ≥ 3× faster than scalar (where available)
+- [ ] Graceful fallback when AVX2 is not available
+
+### Acceptance Criteria
+
+- x86-64 builds use SSE paths automatically
+- AVX2 paths used when hardware supports them
+- All x86 code is isolated under `#if arch(x86_64)` and cleanly removable
+- No correctness regressions compared to scalar implementations
+- Architecture directory structure matches the separation plan
+
+---
+
+## Milestone 16 — Vulkan GPU Compute (Linux/Windows)
+
+**Goal:** Implement GPU-accelerated encoding/decoding via Vulkan compute shaders, providing cross-platform GPU acceleration for Linux and Windows where Metal is unavailable.
+
+**Status:** ⬜ Not Started
+
+### Deliverables
+
+- [ ] Vulkan compute shader for 2D DCT on 8×8 blocks
+- [ ] Vulkan compute shader for RGB ↔ YCbCr colour conversion
+- [ ] Vulkan compute shader for quantisation
+- [ ] Vulkan buffer management for image data transfer (CPU ↔ GPU)
+- [ ] Vulkan device selection and queue management
+- [ ] Async GPU encoding pipeline
+- [ ] Vulkan availability check with CPU fallback
+- [ ] Cross-platform GPU abstraction layer (Metal on Apple, Vulkan on Linux/Windows)
+- [ ] `#if canImport(Metal)` / `#if canImport(Vulkan)` conditional compilation
+- [ ] SwiftPM integration for Vulkan SDK dependency (Linux/Windows)
+- [ ] Vulkan validation layer support for development/debugging
+
+### Tests Required
+
+- [ ] Vulkan DCT matches CPU DCT within tolerance
+- [ ] Vulkan colour conversion matches CPU conversion within tolerance
+- [ ] Vulkan quantisation matches CPU quantisation
+- [ ] Large image (4K) encoding produces valid output via Vulkan
+- [ ] GPU memory is properly released after encoding
+- [ ] Fallback to CPU on systems without Vulkan support
+- [ ] Performance: Vulkan path ≥ 3× faster than CPU-only for large images on supported hardware
+- [ ] Cross-platform: same input produces equivalent output on Metal and Vulkan
+
+### Acceptance Criteria
+
+- Vulkan acceleration available on Linux with compatible GPU
+- Windows support via Vulkan (future, after Linux)
+- Results numerically equivalent (within tolerance) to CPU-only and Metal paths
+- No GPU memory leaks
+- Clean build on platforms without Vulkan (graceful degradation)
+
+---
+
+## Milestone 17 — DICOM Awareness (DICOM Independent)
+
+**Goal:** Ensure the library supports pixel formats, colour spaces, bit depths, and metadata patterns commonly used in DICOM medical imaging workflows, whilst remaining a fully independent library with zero DICOM dependencies.
+
+**Status:** ⬜ Not Started
+
+### Deliverables
+
+- [ ] Monochrome (grayscale) pixel format support optimised for medical imaging (single-channel encoding)
+- [ ] Extended bit depth support: 12-bit and 16-bit unsigned integer pixel data (common in DICOM)
+- [ ] Signed integer pixel data support (e.g., CT Hounsfield units, typically int16)
+- [ ] High-precision floating-point pixel data for dose maps and parametric images
+- [ ] Lossless encoding verified as bit-perfect for all medical bit depths (critical for diagnostic use)
+- [ ] Photometric interpretation awareness: MONOCHROME1/MONOCHROME2 mapping to appropriate colour space
+- [ ] Window/level metadata passthrough (encoded as application-specific metadata, not interpreted)
+- [ ] Multi-frame support optimised for medical image series (CT/MR slices, temporal sequences)
+- [ ] Large image support: validated for typical medical image sizes (up to 16384×16384, 16-bit)
+- [ ] Documentation: DICOM integration guide with examples for common medical imaging use cases
+- [ ] API design note: library remains DICOM-independent; no DICOM parsing, no DICOM dependencies
+
+### Tests Required
+
+- [ ] 12-bit unsigned integer lossless round-trip (pixel-perfect)
+- [ ] 16-bit unsigned integer lossless round-trip (pixel-perfect)
+- [ ] 16-bit signed integer lossless round-trip (pixel-perfect)
+- [ ] Float32 pixel data lossless round-trip (within floating-point tolerance)
+- [ ] Monochrome encoding produces valid single-channel JPEG XL
+- [ ] Large medical image (4096×4096, 16-bit) encodes within memory targets
+- [ ] Multi-frame medical series encoding (e.g., 100 frames of 512×512 16-bit)
+- [ ] Lossy encoding of medical images with quality metrics (PSNR ≥ 45 dB at quality 95)
+- [ ] Metadata passthrough: application-specific data survives encode/decode cycle
+
+### Acceptance Criteria
+
+- All common DICOM pixel formats encode and decode correctly
+- Lossless mode is bit-perfect for all supported bit depths
+- No DICOM library dependency introduced
+- Library API remains general-purpose; DICOM-specific concerns handled by consumer (e.g., DICOMkit)
+- Performance targets met for medical image sizes
+
+---
+
+## Milestone 18 — Internationalisation & Spelling Support
+
+**Goal:** Ensure consistent use of British English across all comments, help text, and documentation. Support both British and American spellings for CLI options and parameters.
+
+**Status:** ⬜ Not Started
+
+### Deliverables
+
+- [ ] Audit and convert all source code comments to British English (e.g., colour, optimise, serialise, initialise)
+- [ ] Audit and convert all CLI help text and descriptions to British English
+- [ ] Audit and convert all error messages to British English
+- [ ] Dual-spelling CLI options: support both British and American spellings
+  - `--colour` / `--color`
+  - `--colour-space` / `--color-space`
+  - `--optimise` / `--optimize`
+  - `--organisation` / `--organization`
+  - (and others as identified in the audit)
+- [ ] API type aliases for British spellings where appropriate (e.g., `ColourSpace` alongside `ColorSpace`)
+- [ ] Audit and convert all documentation files to British English
+- [ ] Spelling consistency checker script (CI integration)
+- [ ] British English style guide added to `CONTRIBUTING.md`
+
+### Tests Required
+
+- [ ] CLI accepts both `--colour` and `--color` and produces identical output
+- [ ] CLI accepts both `--colour-space` and `--color-space`
+- [ ] All dual-spelling options validated in CLI tests
+- [ ] All help text renders correctly with British English
+- [ ] API type aliases compile and behave identically to originals
+
+### Acceptance Criteria
+
+- All comments, help text, and documentation use British English consistently
+- Both British and American spellings accepted for all applicable CLI options
+- No existing API contracts broken (American spellings remain valid)
+- CI checks for spelling consistency
+
+---
+
+## Milestone 19 — J2KSwift API Consistency
+
+**Goal:** Align the JXLSwift API design, naming conventions, documentation patterns, and project structure with the J2KSwift project for consistency across the Raster-Lab codec libraries.
+
+**Status:** ⬜ Not Started
+
+### Deliverables
+
+- [ ] API naming audit against J2KSwift (encoder/decoder API surface, options, error types)
+- [ ] Consistent naming conventions: method names, parameter labels, type names
+- [ ] Consistent error handling patterns: error types, error descriptions, recovery suggestions
+- [ ] Consistent encoding options pattern: presets, quality, effort, hardware control
+- [ ] Consistent CLI subcommand structure and option naming
+- [ ] Consistent documentation structure: README sections, examples, API documentation
+- [ ] Shared protocol definitions where appropriate (e.g., `ImageEncoder`, `ImageDecoder`)
+- [ ] Cross-reference documentation between JXLSwift and J2KSwift
+- [ ] Migration guide for users of both libraries
+
+### Tests Required
+
+- [ ] API surface matches agreed conventions (automated check or documented audit)
+- [ ] Shared protocol conformance tests (if shared protocols are introduced)
+- [ ] CLI subcommand parity validated
+- [ ] Documentation structure matches J2KSwift pattern
+
+### Acceptance Criteria
+
+- A developer familiar with J2KSwift can use JXLSwift with minimal learning curve
+- Consistent naming across both libraries
+- Shared documentation patterns
+- No breaking API changes without major version bump
+
+---
+
+## Milestone 20 — Documentation & Examples Refresh
+
+**Goal:** Comprehensively update all library documentation, usage examples, and sample code to reflect the current state of the project. Ensure British English is used throughout and all examples are tested and working.
+
+**Status:** ⬜ Not Started
+
+### Deliverables
+
+- [ ] README.md refresh: features list, usage examples, architecture tree, roadmap, requirements
+- [ ] Updated code examples in `Examples/` directory covering all major features
+- [ ] Sample code for: lossless encoding, lossy encoding, decoding, progressive encoding/decoding
+- [ ] Sample code for: animation, alpha channels, extra channels, HDR, ROI, patches, noise, splines
+- [ ] Sample code for: CLI usage, batch processing, benchmarking, hardware detection
+- [ ] Sample code for: DICOM-compatible workflows (when Milestone 17 is complete)
+- [ ] API documentation review: all public APIs have `///` doc comments with `Parameters`, `Returns`, `Throws`
+- [ ] TECHNICAL.md refresh: updated architecture diagrams, data flow, algorithm descriptions
+- [ ] CONTRIBUTING.md refresh: updated build instructions, test instructions, style guide
+- [ ] CHANGELOG.md brought up to date with all milestones
+- [ ] British English throughout all documentation (coordinated with Milestone 18)
+- [ ] All code examples compile and produce expected output (verified in CI)
+
+### Tests Required
+
+- [ ] All `Examples/` code compiles without errors
+- [ ] Example output matches documented expected results
+- [ ] DocC generation succeeds without warnings
+- [ ] All links in documentation are valid (no broken links)
+
+### Acceptance Criteria
+
+- Complete, accurate, British English documentation for all features
+- Every public API has documentation
+- All examples are working and tested
+- New users can get started from README alone
+
+---
+
+## Milestone 21 — Performance: Exceeding libjxl
+
+**Goal:** Systematically profile, optimise, and benchmark JXLSwift to achieve and then exceed libjxl performance on Apple Silicon, with competitive performance on x86-64.
+
+**Status:** ⬜ Not Started
+
+### Deliverables
+
+- [ ] Comprehensive profiling of encoding hot paths (DCT, quantisation, entropy coding, colour conversion)
+- [ ] Comprehensive profiling of decoding hot paths (entropy decoding, dequantisation, IDCT, colour conversion)
+- [ ] Memory allocation profiling and optimisation (reduce heap allocations in inner loops)
+- [ ] Accelerate framework usage audit and expansion (ensure all applicable operations use vDSP/vImage)
+- [ ] NEON SIMD coverage audit and expansion (ensure all applicable loops are vectorised)
+- [ ] Metal GPU pipeline optimisation (batch size tuning, occupancy analysis, memory coalescing)
+- [ ] Thread pool and work-stealing optimisation for multi-core scaling
+- [ ] Copy-on-write and buffer reuse optimisation for large images
+- [ ] Targeted micro-benchmarks for each stage of the encoding/decoding pipeline
+- [ ] Automated comparison benchmark suite: JXLSwift vs libjxl across all effort levels and image sizes
+- [ ] Performance regression CI gate: no PR merges with > 10% slowdown
+- [ ] Resolve remaining performance tests from earlier milestones:
+  - M3: 256×256 encoding < 2s
+  - M5: Accelerate DCT ≥ 2× faster than scalar, Accelerate vs scalar benchmarks
+  - M7: GPU path ≥ 5× faster than CPU-only for large images, 4K encoding validation
+
+### Tests Required
+
+- [ ] Apple Silicon encoding speed ≥ libjxl for effort 1–3 (fast modes)
+- [ ] Apple Silicon encoding speed within 80% of libjxl for effort 7–9 (quality modes)
+- [ ] Apple Silicon decoding speed ≥ libjxl
+- [ ] x86-64 encoding speed within 2× of libjxl (with SSE/AVX, Milestone 15)
+- [ ] Memory usage ≤ libjxl for equivalent operations
+- [ ] Encoding throughput: ≥ 200 MP/s on Apple M1 for effort 3
+- [ ] Decoding throughput: ≥ 500 MP/s on Apple M1
+- [ ] No performance regressions in CI (automated benchmark tracking)
+
+### Acceptance Criteria
+
+- JXLSwift outperforms libjxl on Apple Silicon for common use cases
+- Competitive performance on x86-64 with SIMD optimisations
+- All performance targets documented and tracked in CI
+- Performance results published in benchmark reports (JSON/HTML)
+
+---
+
 ## Architecture-Specific Code Separation Plan
 
-The project maintains strict separation of architecture-specific code to allow future removal of x86-64 support:
+The project maintains strict separation of architecture-specific and GPU-specific code to allow independent removal of any acceleration path:
 
 ```
 Sources/JXLSwift/
@@ -566,16 +893,32 @@ Sources/JXLSwift/
 ├── Encoding/       ← Architecture-independent algorithms
 ├── Hardware/
 │   ├── Accelerate.swift    ← #if canImport(Accelerate) guarded
-│   ├── ARM/                ← #if arch(arm64) guarded (future)
+│   ├── ARM/                ← #if arch(arm64) guarded (removable)
 │   │   ├── NEONOps.swift
 │   │   └── NEONDct.swift
-│   └── x86/                ← #if arch(x86_64) guarded (removable)
-│       ├── AVXOps.swift
-│       └── SSEDct.swift
-└── Format/         ← Architecture-independent
+│   ├── x86/                ← #if arch(x86_64) guarded (removable)
+│   │   ├── SSEOps.swift
+│   │   ├── AVXOps.swift
+│   │   └── SSEDct.swift
+│   ├── Metal/              ← #if canImport(Metal) guarded (Apple GPU, removable)
+│   │   ├── MetalOps.swift
+│   │   ├── MetalCompute.swift
+│   │   └── Shaders.metal
+│   └── Vulkan/             ← #if canImport(Vulkan) guarded (Linux/Windows GPU, removable)
+│       ├── VulkanOps.swift
+│       ├── VulkanCompute.swift
+│       └── Shaders.comp
+├── Format/         ← Architecture-independent
+└── Export/         ← Architecture-independent
 ```
 
-**Removal process:** Delete the `Hardware/x86/` directory and remove `#elseif arch(x86_64)` branches. The `#else` fallback (scalar) implementations remain as universal fallbacks.
+**Removal process:**
+- **ARM NEON:** Delete `Hardware/ARM/` and remove `#if arch(arm64)` branches.
+- **x86-64 SIMD:** Delete `Hardware/x86/` and remove `#elseif arch(x86_64)` branches.
+- **Metal GPU:** Delete `Hardware/Metal/` and remove `#if canImport(Metal)` branches.
+- **Vulkan GPU:** Delete `Hardware/Vulkan/` and remove `#if canImport(Vulkan)` branches.
+
+The `#else` fallback (scalar) implementations remain as universal fallbacks in all cases.
 
 ---
 
@@ -585,27 +928,28 @@ Sources/JXLSwift/
 |-----------|---------|----------|-------|
 | Foundation | Core types, Data, Date | Yes | Apple platform standard |
 | Accelerate | vDSP, vImage | Optional | `#if canImport(Accelerate)` |
-| Metal | GPU compute | Optional | `#if canImport(Metal)` |
+| Metal | GPU compute (Apple) | Optional | `#if canImport(Metal)` |
+| Vulkan | GPU compute (Linux/Windows) | Optional | `#if canImport(Vulkan)` (Milestone 16) |
 | ArgumentParser | CLI argument parsing | jxl-tool only | Swift Package dependency |
 | XCTest | Unit testing | Tests only | Standard testing framework |
 | libjxl | Reference comparison | Benchmarks only | External C++ library |
 
-**Zero runtime C/C++ dependencies** for the core library.
+**Zero runtime C/C++ dependencies** for the core library. Vulkan support requires the Vulkan SDK on non-Apple platforms.
 
 ---
 
 ## Performance Targets
 
-| Scenario | Target (Apple Silicon M1) | Target (x86-64) |
-|----------|--------------------------|-----------------|
-| Lossless 256×256 | < 50 ms | < 150 ms |
-| Lossy 256×256 (effort 3) | < 30 ms | < 100 ms |
-| Lossy 256×256 (effort 7) | < 200 ms | < 700 ms |
-| Lossy 1920×1080 (effort 3) | < 200 ms | < 700 ms |
-| Lossy 1920×1080 (effort 7) | < 2 s | < 7 s |
-| Lossy 4K (effort 3) | < 500 ms | < 2 s |
-| Decode 4K | < 100 ms | < 300 ms |
-| Memory: 4K image | < 100 MB | < 150 MB |
+| Scenario | Target (Apple Silicon M1) | Target (x86-64) | vs libjxl Target |
+|----------|--------------------------|-----------------|------------------|
+| Lossless 256×256 | < 50 ms | < 150 ms | ≥ 1.0× (match or beat) |
+| Lossy 256×256 (effort 3) | < 30 ms | < 100 ms | ≥ 1.2× faster |
+| Lossy 256×256 (effort 7) | < 200 ms | < 700 ms | ≥ 0.8× (within 20%) |
+| Lossy 1920×1080 (effort 3) | < 200 ms | < 700 ms | ≥ 1.2× faster |
+| Lossy 1920×1080 (effort 7) | < 2 s | < 7 s | ≥ 0.8× (within 20%) |
+| Lossy 4K (effort 3) | < 500 ms | < 2 s | ≥ 1.5× faster (Metal/Vulkan) |
+| Decode 4K | < 100 ms | < 300 ms | ≥ 1.0× (match or beat) |
+| Memory: 4K image | < 100 MB | < 150 MB | ≤ libjxl |
 
 ---
 
@@ -640,6 +984,8 @@ Sources/JXLSwift/
 | §11 | Image header | M4 |
 | Annex A | ANS coding | M8 |
 | Part 2 | File format | M4 |
+| Part 3 | Conformance testing | M14 |
+| Part 4 | Reference software | M11, M14 |
 
 ---
 
@@ -653,10 +999,16 @@ Sources/JXLSwift/
 | Performance gap vs libjxl | Medium | High | Accept initial gap; optimise iteratively; leverage Apple hardware |
 | Swift 6 concurrency strictness | Low | Low | Already enabled; maintain `Sendable` conformance throughout |
 | x86-64 maintenance burden | Low | Medium | Keep x86 code minimal; prefer architecture-independent solutions |
+| Vulkan SDK availability | Medium | Medium | Vulkan is optional; CPU fallback always available; document SDK installation |
+| ISO/IEC 18181-3 conformance gaps | High | Medium | Prioritise core conformance first; track per-test-vector status |
+| DICOM pixel format edge cases | Medium | Low | Comprehensive test suite for all bit depths; validated against DICOM test images |
+| British/American spelling maintenance | Low | Low | Automated spelling consistency checker in CI |
+| J2KSwift API divergence | Medium | Medium | Regular cross-project reviews; shared protocol definitions |
 
 ---
 
-*Document version: 1.0*
+*Document version: 2.0*
+*Updated: 2026-02-23*
 *Created: 2026-02-16*
 *Project: JXLSwift (Raster-Lab/JXLSwift)*
-*Standard: ISO/IEC 18181-1:2024*
+*Standard: ISO/IEC 18181:2024 (Parts 1–4)*
