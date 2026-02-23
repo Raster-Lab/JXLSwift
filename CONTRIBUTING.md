@@ -102,22 +102,23 @@ When adding platform-specific code, use conditional compilation:
 
 ### Running Tests
 ```bash
-swift test                    # Run all tests
-swift test --filter <name>    # Run specific test
+swift test                          # Run all tests
+swift test --filter <name>          # Run a specific test class or method
+make coverage                       # Text coverage summary (requires llvm-cov)
+make coverage-html                  # HTML line-by-line coverage report
 ```
 
 ### Writing Tests
-- Add tests for new features
-- Test both ARM64 and x86-64 paths
-- Include performance benchmarks
-- Test edge cases and error conditions
+- Add tests for new features in the appropriate `*Tests.swift` file under `Tests/JXLSwiftTests/`
+- Follow the naming convention `test<Unit>_<Scenario>_<ExpectedResult>`
+- Test both ARM64 and x86-64 code paths where applicable
+- Include `measure {}` blocks for performance-critical paths
+- Test edge cases and error conditions with `XCTAssertThrowsError`
 
 ### Test Coverage
-Aim for good test coverage, especially for:
-- Core compression algorithms
-- Platform-specific optimizations
-- Error handling
-- Edge cases
+Target **≥ 95% branch coverage** on all public and internal APIs.  See
+[Documentation/COVERAGE.md](Documentation/COVERAGE.md) for guidance on
+measuring and improving coverage.
 
 ## Pull Request Process
 
@@ -157,25 +158,19 @@ Aim for good test coverage, especially for:
 ## Areas for Contribution
 
 ### High Priority
-- [ ] Complete ANS entropy coding implementation
-- [ ] Metal GPU acceleration
-- [ ] Progressive encoding support
-- [ ] Additional DCT optimizations
-- [ ] Memory usage optimization
+- [ ] Performance: exceed libjxl on Apple Silicon for effort 1–3 (Milestone 21)
+- [ ] Performance regression CI gate: detect > 10% slowdown automatically
+- [ ] Complete ISO/IEC 18181-3 conformance (interactive test vector generation)
 
 ### Medium Priority
-- [ ] JPEG XL file format (.jxl) support
-- [ ] Metadata handling (EXIF, XMP)
-- [ ] Animation support
-- [ ] Additional color space support
-- [ ] Better error messages
+- [ ] Additional DICOM photometric interpretations (PALETTE COLOR, YBR_FULL_422)
+- [ ] Animated GIF / APNG import helper (convert to `[ImageFrame]`)
+- [ ] `ImageExporter` HEIC output (requires iOS 17+ / macOS 14+)
 
 ### Low Priority
-- [ ] Decoding support
-- [ ] Additional documentation
-- [ ] More examples
-- [ ] Performance benchmarks
-- [ ] Cross-platform testing
+- [ ] Additional documentation examples
+- [ ] Wider platform CI (Windows with Vulkan)
+- [ ] WASM / Embedded Swift target investigation
 
 ## Hardware-Specific Contributions
 

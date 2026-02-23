@@ -7,6 +7,86 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-02-23
+
+### Added
+
+#### Documentation & Examples Refresh (Milestone 20)
+- 16 new example scripts in `Examples/` covering every major feature:
+  `LosslessEncoding`, `LossyEncoding`, `DecodingExample`,
+  `AnimationExample`, `AlphaChannelExample`, `ExtraChannelsExample`,
+  `HDRExample`, `ROIExample`, `PatchEncodingExample`,
+  `NoiseSynthesisExample`, `SplineEncodingExample`,
+  `HardwareDetectionExample`, `DICOMWorkflowExample`,
+  `BatchProcessingExample`, `BenchmarkingExample`
+- `ExamplesTests.swift` — 18 tests verifying example logic compiles and runs
+- `Examples/README.md` refreshed with descriptions of all 16 examples
+- `TECHNICAL.md` comprehensively refreshed with current architecture tree,
+  compression pipeline diagrams, hardware acceleration section, and test
+  coverage summary
+- `CONTRIBUTING.md` updated: Areas for Contribution reflects completed work;
+  testing section points to `make coverage` / `make coverage-html`
+- `CHANGELOG.md` now includes entries for Milestones 14–19 (previously missing)
+
+#### J2KSwift API Consistency (Milestone 19)
+- `RasterImageEncoder`, `RasterImageDecoder`, and `RasterImageCodec` shared protocols
+  in `Sources/JXLSwift/Core/CodecProtocols.swift`
+- `JXLEncoder` conforms via `encode(frame:)` / `encode(frames:)`
+- `JXLDecoder` conforms via `decode(data:)`
+- 17 tests in `J2KSwiftConsistencyTests.swift`
+- `Documentation/J2KSWIFT_MIGRATION.md` migration guide for cross-library developers
+- Cross-library usage section added to README
+
+#### Internationalisation & Spelling Support (Milestone 18)
+- British English throughout all source code comments, help text, and error messages
+- Dual-spelling CLI options on the `encode` subcommand:
+  `--colour-space` / `--color-space`, `--optimise` / `--optimize`
+- `ColourPrimaries` type alias alongside `ColorPrimaries` in `BritishSpelling.swift`
+- `scripts/check-spelling.sh` spelling consistency checker (with `--fix` mode)
+- British English style guide section added to `CONTRIBUTING.md`
+- 18 tests in `InternationalisationTests.swift`
+- CI spelling-check job
+
+#### DICOM Awareness (Milestone 17)
+- `PixelType.int16` for signed 16-bit Hounsfield units
+- `getPixelSigned` / `setPixelSigned` / `getPixelFloat` / `setPixelFloat` accessors
+- `PhotometricInterpretation` enum (MONOCHROME1, MONOCHROME2, RGB, YCbCr)
+- `WindowLevel` struct with built-in CT presets (bone, lung, abdomen, brain, liver)
+- `MedicalImageMetadata` pass-through struct
+- `MedicalImageValidator` with dimension / bit-depth / channel checks
+- `MedicalImageSeries` for CT / MR stacks
+- Convenience initialisers: `ImageFrame.medical12bit`, `medical16bit`, `medicalSigned16bit`
+- `EncodingOptions.medicalLossless` preset
+- 30 tests in `DICOMTests.swift`
+- `Documentation/DICOM_INTEGRATION.md` integration guide
+
+#### Vulkan GPU Compute (Milestone 16)
+- `VulkanOps.swift` — Vulkan device, queue, buffer management
+- `VulkanCompute.swift` — DCT, colour conversion, quantisation, async pipeline
+- `Shaders.comp` — GLSL compute shaders (SPIR-V via glslc)
+- `GPUCompute.swift` — cross-platform abstraction routing Metal ↔ Vulkan
+- `DispatchBackend.vulkan` case (7 backends total)
+- `HardwareCapabilities.hasVulkan` / `vulkanDeviceName`
+- Vulkan dispatch path in `VarDCTEncoder`
+- 25 tests in `VulkanComputeTests.swift`
+
+#### Intel x86-64 SIMD Optimisation (Milestone 15)
+- `SSEOps.swift` — SSE2 4-wide SIMD operations (DCT, colour conversion, quantisation,
+  MED prediction, RCT, Squeeze) via `SIMD4<Float>`
+- `AVXOps.swift` — AVX2 8-wide operations (wider DCT, colour conversion) via `SIMD8<Float>`
+- Runtime AVX2 detection in `Architecture.swift`
+- `#if arch(x86_64)` dispatch in `VarDCTEncoder` and `ModularEncoder` with scalar fallback
+- 58 tests in `SSEOpsTests.swift`
+
+#### ISO/IEC 18181-3 Conformance Testing (Milestone 14)
+- `ConformanceTestSuite.swift` — `ConformanceRunner` with 17 synthetic test vectors
+  covering 9 categories: bitstream structure, image header, frame header, container
+  format, lossless round-trip, lossy round-trip, progressive encoding, animation,
+  and bidirectional libjxl interoperability
+- `ConformanceReport` with per-category pass/fail results
+- 37 tests in `ConformanceTests.swift`
+- CI `conformance` job in `.github/workflows/ci.yml`
+
 ## [1.0.0] - 2026-02-19
 
 🎉 **Initial stable release of JXLSwift!**
@@ -411,7 +491,9 @@ The 1.0.0 release is API-stable and ready for production use. If you're upgradin
 
 ---
 
-[Unreleased]: https://github.com/Raster-Lab/JXLSwift/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/Raster-Lab/JXLSwift/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/Raster-Lab/JXLSwift/compare/v1.0.0...v1.1.0
+[1.0.0]: https://github.com/Raster-Lab/JXLSwift/compare/v0.12.0...v1.0.0
 [0.12.0]: https://github.com/Raster-Lab/JXLSwift/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/Raster-Lab/JXLSwift/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/Raster-Lab/JXLSwift/compare/v0.9.0...v0.10.0
