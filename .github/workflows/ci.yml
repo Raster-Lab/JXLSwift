@@ -153,6 +153,81 @@ jobs:
             echo "❌ Memory safety issues detected. Check logs for details." >> "$GITHUB_STEP_SUMMARY"
           fi
 
+  conformance:
+    name: Conformance Testing
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Swift
+        uses: swift-actions/setup-swift@v3
+        with:
+          swift-version: "6.2"
+          skip-verify-signature: true
+
+      - name: Swift version
+        run: swift --version
+
+      - name: Install libjxl tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libjxl-tools || echo "libjxl-tools not available; interoperability tests will be skipped"
+
+      - name: Build
+        run: swift build
+
+      - name: Run conformance tests
+        run: swift test --filter ConformanceTests --xunit-output conformance-results.xml
+        continue-on-error: true
+
+      - name: Publish conformance report
+        uses: mikepenz/action-junit-report@v5
+        if: always()
+        with:
+          report_paths: conformance-results.xml
+          check_name: Conformance Report
+
+      - name: Upload conformance results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: conformance-results
+          path: conformance-results.xml
+
+      - name: Generate job summary
+        if: always()
+        run: |
+          echo "## Conformance Testing Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Item | Detail |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|------|--------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Standard** | ISO/IEC 18181-3 |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Categories** | Bitstream, Header, Frame, Container, Round-trip |" >> "$GITHUB_STEP_SUMMARY"
+          if command -v cjxl &>/dev/null && command -v djxl &>/dev/null; then
+            echo "| **libjxl** | Available (interoperability tests enabled) |" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "| **libjxl** | Not available (interoperability tests skipped) |" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f conformance-results.xml ]; then
+            tests=$(grep -c '<testcase' conformance-results.xml || echo "0")
+            failures=$(grep -c '<failure' conformance-results.xml || echo "0")
+            skipped=$(grep -c 'skipped' conformance-results.xml || echo "0")
+            echo "| **Vectors run** | $tests |" >> "$GITHUB_STEP_SUMMARY"
+            echo "| **Failures** | $failures |" >> "$GITHUB_STEP_SUMMARY"
+            echo "| **Skipped** | $skipped |" >> "$GITHUB_STEP_SUMMARY"
+            if [ "$failures" -eq 0 ]; then
+              echo "" >> "$GITHUB_STEP_SUMMARY"
+              echo "✅ All conformance vectors passed." >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "" >> "$GITHUB_STEP_SUMMARY"
+              echo "❌ $failures conformance vector(s) failed." >> "$GITHUB_STEP_SUMMARY"
+            fi
+          else
+            echo "⚠️ No conformance results file found." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   security:
     name: Security Scanning
     runs-on: macos-15
