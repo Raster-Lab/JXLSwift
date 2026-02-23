@@ -555,4 +555,142 @@ final class ConformanceTests: XCTestCase {
         let status = try runner.decodeTempWithDjxl(inputURL: jxlURL, outputURL: ppmURL)
         XCTAssertEqual(status, 0, "djxl must decode JXLSwift output")
     }
+
+    // MARK: - Metadata Preservation (ISO/IEC 18181-2 Part 2 §3)
+
+    /// EXIF metadata must survive a JXLContainer serialise → parse round-trip
+    /// (ISO/IEC 18181-2 §3.4 — Exif box).
+    func testConformance_MetadataPreservation_EXIF_RoundTrip() throws {
+        let frame = TestImageGenerator.gradient(width: 16, height: 16)
+        let encoded = try JXLEncoder(options: .lossless).encode(frame)
+
+        // Minimal TIFF-II EXIF header (little-endian, magic 42, IFD offset 8)
+        let exifData = Data([0x49, 0x49, 0x2A, 0x00, 0x08, 0x00, 0x00, 0x00])
+
+        let containerData = JXLContainerBuilder(codestream: encoded.data)
+            .withEXIF(exifData)
+            .build()
+            .serialise()
+
+        let parsed = try JXLDecoder().parseContainer(containerData)
+        let checks = runner.metadataBoxChecks(container: parsed, expectedEXIF: exifData)
+
+        for check in checks {
+            XCTAssertTrue(check.passed, "EXIF preservation — \(check.name): \(check.message)")
+        }
+    }
+
+    /// XMP metadata must survive a JXLContainer serialise → parse round-trip
+    /// (ISO/IEC 18181-2 §3.5 — xml  box).
+    func testConformance_MetadataPreservation_XMP_RoundTrip() throws {
+        let frame = TestImageGenerator.gradient(width: 16, height: 16)
+        let encoded = try JXLEncoder(options: .lossless).encode(frame)
+
+        let xmpString = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <x:xmpmeta xmlns:x="adobe:ns:meta/">
+          <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+            <rdf:Description rdf:about="" xmlns:dc="http://purl.org/dc/elements/1.1/"
+              dc:title="ISO 18181-3 Conformance Test"/>
+          </rdf:RDF>
+        </x:xmpmeta>
+        """
+        let xmpData = Data(xmpString.utf8)
+
+        let containerData = JXLContainerBuilder(codestream: encoded.data)
+            .withXMP(xmlString: xmpString)
+            .build()
+            .serialise()
+
+        let parsed = try JXLDecoder().parseContainer(containerData)
+        let checks = runner.metadataBoxChecks(container: parsed, expectedXMP: xmpData)
+
+        for check in checks {
+            XCTAssertTrue(check.passed, "XMP preservation — \(check.name): \(check.message)")
+        }
+    }
+
+    /// ICC colour profile must survive a JXLContainer serialise → parse round-trip
+    /// (ISO/IEC 18181-2 §3.3 — colr box).
+    func testConformance_MetadataPreservation_ICC_RoundTrip() throws {
+        let frame = TestImageGenerator.gradient(width: 16, height: 16)
+        let encoded = try JXLEncoder(options: .lossless).encode(frame)
+
+        // Synthetic 128-byte ICC profile
+        let iccData = Data((0..<128).map { UInt8($0 & 0xFF) })
+
+        let containerData = JXLContainerBuilder(codestream: encoded.data)
+            .withICCProfile(iccData)
+            .build()
+            .serialise()
+
+        let parsed = try JXLDecoder().parseContainer(containerData)
+        let checks = runner.metadataBoxChecks(container: parsed, expectedICC: iccData)
+
+        for check in checks {
+            XCTAssertTrue(check.passed, "ICC preservation — \(check.name): \(check.message)")
+        }
+    }
+
+    /// EXIF + XMP + ICC must all survive the same container round-trip simultaneously.
+    func testConformance_MetadataPreservation_AllMetadata_RoundTrip() throws {
+        let frame = TestImageGenerator.gradient(width: 16, height: 16)
+        let encoded = try JXLEncoder(options: .lossless).encode(frame)
+
+        let exifData = Data([0x49, 0x49, 0x2A, 0x00, 0x08, 0x00, 0x00, 0x00])
+        let xmpString = "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"/>"
+        let xmpData = Data(xmpString.utf8)
+        let iccData = Data(repeating: 0xAB, count: 64)
+
+        let containerData = JXLContainerBuilder(codestream: encoded.data)
+            .withEXIF(exifData)
+            .withXMP(xmlString: xmpString)
+            .withICCProfile(iccData)
+            .build()
+            .serialise()
+
+        let parsed = try JXLDecoder().parseContainer(containerData)
+        let checks = runner.metadataBoxChecks(
+            container: parsed,
+            expectedEXIF: exifData,
+            expectedXMP: xmpData,
+            expectedICC: iccData
+        )
+
+        for check in checks {
+            XCTAssertTrue(check.passed, "All-metadata preservation — \(check.name): \(check.message)")
+        }
+    }
+
+    /// Codestream inside a metadata-bearing container must still decode correctly.
+    func testConformance_MetadataPreservation_CodestreamDecodesAfterMetadata() throws {
+        let original = TestImageGenerator.gradient(width: 8, height: 8)
+        let encoded = try JXLEncoder(options: .lossless).encode(original)
+
+        let containerData = JXLContainerBuilder(codestream: encoded.data)
+            .withEXIF(Data([0x49, 0x49, 0x2A, 0x00]))
+            .withXMP(xmlString: "<x:xmpmeta/>")
+            .withICCProfile(Data([0xAA, 0xBB, 0xCC]))
+            .build()
+            .serialise()
+
+        let decoder = JXLDecoder()
+        let parsed = try decoder.parseContainer(containerData)
+        let decoded = try decoder.decode(parsed.codestream)
+
+        XCTAssertEqual(decoded.width, original.width)
+        XCTAssertEqual(decoded.height, original.height)
+
+        for y in 0..<original.height {
+            for x in 0..<original.width {
+                for c in 0..<min(original.channels, decoded.channels) {
+                    XCTAssertEqual(
+                        original.getPixel(x: x, y: y, channel: c),
+                        decoded.getPixel(x: x, y: y, channel: c),
+                        "Pixel mismatch at (\(x),\(y),ch\(c)) after metadata round-trip"
+                    )
+                }
+            }
+        }
+    }
 }
