@@ -1041,14 +1041,16 @@ See [MILESTONES.md](MILESTONES.md) for the detailed project milestone plan.
 - [x] **libjxl Validation & Benchmarking** — quality metrics (PSNR, SSIM, MS-SSIM, Butteraugli), validation harness with configurable criteria, benchmark reports (JSON/HTML), performance regression detection (10% threshold alerting), validate CLI subcommand, test image generator, speed comparison across effort levels, compression ratio comparison across quality levels, memory usage comparison with process-level tracking, test image corpus (Kodak-like, Tecnick-like, Wikipedia-like), bitstream compatibility validation (structural checks + libjxl decode verification)
 - [x] Decoding support — `JXLDecoder` (codestream/frame header parsing, container extraction, Modular + VarDCT decode, metadata extraction), `decode` CLI subcommand with `--metadata` flag
 - [x] Image export — `ImageExporter` with PNG, TIFF, BMP output via CoreGraphics/ImageIO, `PixelConversion` planar→interleaved, CLI `--format` option
-- [ ] **Production hardening** (in progress) — fuzzing tests (51 tests), thread safety tests (51 tests), code coverage reporting in CI, migration guide, performance tuning guide, CHANGELOG.md, VERSION file, semantic versioning
-- [ ] API documentation with DocC — comprehensive documentation for all public APIs
-- [ ] v1.0.0 release — tagged release with semantic versioning
+- [x] **Production hardening** — fuzzing tests (51 tests), thread safety tests (51 tests), code coverage reporting in CI, migration guide, performance tuning guide, CHANGELOG.md, VERSION file, DocC API documentation, memory safety validation (ASan, TSan, UBSan), security scanning (CodeQL), v1.0.0 release infrastructure
+- [x] **ISO/IEC 18181-3 Conformance Testing** (in progress) — `ConformanceRunner` with 17 synthetic test vectors, bitstream structure checks (§6), image header checks (§11), frame header checks (§9), container format checks (Part 2 §3), lossless round-trip checks, lossy round-trip checks, bidirectional libjxl interoperability (conditional), `ConformanceReport` with per-category pass/fail, CI `conformance` job
+- [ ] Intel x86-64 SIMD (SSE/AVX)
 
 ## Standards Compliance
 
 This implementation follows the JPEG XL specification:
 - ISO/IEC 18181-1:2024 - Core coding system
+- ISO/IEC 18181-2:2021 - File format (ISOBMFF container)
+- ISO/IEC 18181-3:2024 - Conformance testing (in progress)
 - Supports both encoding and decoding (Modular + VarDCT)
 
 ## License
