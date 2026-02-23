@@ -768,7 +768,10 @@ Sources/JXLSwift/
 ├── Hardware/          # Platform optimizations
 │   ├── Accelerate.swift       # Apple Accelerate framework (vDSP)
 │   ├── NEONOps.swift          # ARM NEON SIMD via Swift SIMD types
-│   └── DispatchBackend.swift  # Runtime backend selection
+│   ├── DispatchBackend.swift  # Runtime backend selection
+│   └── x86/                   # Intel x86-64 SIMD (#if arch(x86_64) guarded)
+│       ├── SSEOps.swift       # SSE2 4-wide operations (DCT, colour conversion, etc.)
+│       └── AVXOps.swift       # AVX2 8-wide operations (wider DCT, colour conversion)
 └── Format/            # JPEG XL file format (ISO/IEC 18181-2)
     ├── CodestreamHeader.swift # SizeHeader, ImageMetadata, ColourEncoding
     ├── FrameHeader.swift      # Frame header, section/group framing
@@ -792,6 +795,7 @@ Sources/JXLTool/
 JXLSwift is optimized for Apple Silicon:
 
 - **ARM NEON SIMD** - Vectorized DCT, colour conversion, quantisation, prediction, RCT, and squeeze transforms via Swift SIMD types (both Modular and VarDCT pipelines)
+- **Intel SSE2/AVX2** - Parallel x86-64 code paths: SSE2 4-wide operations in `SSEOps`, AVX2 8-wide DCT and colour conversion in `AVXOps`; runtime AVX2 detection
 - **Apple Accelerate** - vDSP DCT transforms and matrix operations; vImage high-quality Lanczos resampling
 - **Metal GPU** - Parallel block processing with compute shaders for DCT, color conversion, and quantization (batch operations with async pipeline)
 
@@ -1043,7 +1047,7 @@ See [MILESTONES.md](MILESTONES.md) for the detailed project milestone plan.
 - [x] Image export — `ImageExporter` with PNG, TIFF, BMP output via CoreGraphics/ImageIO, `PixelConversion` planar→interleaved, CLI `--format` option
 - [x] **Production hardening** — fuzzing tests (51 tests), thread safety tests (51 tests), code coverage reporting in CI, migration guide, performance tuning guide, CHANGELOG.md, VERSION file, DocC API documentation, memory safety validation (ASan, TSan, UBSan), security scanning (CodeQL), v1.0.0 release infrastructure
 - [x] **ISO/IEC 18181-3 Conformance Testing** (in progress) — `ConformanceRunner` with 17 synthetic test vectors, bitstream structure checks (§6), image header checks (§11), frame header checks (§9), container format checks (Part 2 §3), lossless round-trip checks, lossy round-trip checks, bidirectional libjxl interoperability (conditional), `ConformanceReport` with per-category pass/fail, CI `conformance` job
-- [ ] Intel x86-64 SIMD (SSE/AVX)
+- [x] **Intel x86-64 SIMD Optimisation (SSE/AVX)** — `SSEOps` with SSE2 4-wide operations (DCT, colour conversion, quantisation, MED prediction, RCT, squeeze) in `Hardware/x86/SSEOps.swift`; `AVXOps` with AVX2 8-wide DCT and colour conversion in `Hardware/x86/AVXOps.swift`; runtime AVX2 CPU detection; `#if arch(x86_64)` dispatch in VarDCTEncoder and ModularEncoder with scalar `#else` fallback
 
 ## Standards Compliance
 

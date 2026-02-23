@@ -364,6 +364,12 @@ class VarDCTEncoder {
         }
         #endif
         
+        #if arch(x86_64)
+        if options.useHardwareAcceleration {
+            return convertToYCbCrSSE(frame: frame)
+        }
+        #endif
+        
         // Scalar fallback
         return convertToYCbCrScalar(frame: frame)
     }
@@ -454,6 +460,12 @@ class VarDCTEncoder {
         }
         #endif
         
+        #if arch(x86_64)
+        if options.useHardwareAcceleration {
+            return convertToXYBSSE(frame: frame)
+        }
+        #endif
+        
         return convertToXYBScalar(frame: frame)
     }
     
@@ -516,6 +528,12 @@ class VarDCTEncoder {
         #if arch(arm64)
         if hardware.hasNEON && options.useHardwareAcceleration {
             return convertFromXYBNEON(frame: frame)
+        }
+        #endif
+        
+        #if arch(x86_64)
+        if options.useHardwareAcceleration {
+            return convertFromXYBSSE(frame: frame)
         }
         #endif
         
@@ -1515,9 +1533,34 @@ class VarDCTEncoder {
             return applyDCTAccelerate(block: block)
         } else if hardware.hasNEON && options.useHardwareAcceleration {
             return applyDCTNEON(block: block)
-        } else {
-            return applyDCTScalar(block: block)
         }
+        #if arch(x86_64)
+        if options.useHardwareAcceleration {
+            if hardware.hasAVX2 {
+                return applyDCTAVX(block: block)
+            }
+            return applyDCTSSE(block: block)
+        }
+        #endif
+        return applyDCTScalar(block: block)
+    }
+    
+    /// SSE-accelerated DCT for x86-64 processors.
+    private func applyDCTSSE(block: [[Float]]) -> [[Float]] {
+        #if arch(x86_64)
+        return SSEOps.dct2D(block)
+        #else
+        return applyDCTScalar(block: block)
+        #endif
+    }
+    
+    /// AVX2-accelerated DCT for x86-64 processors with AVX2 support.
+    private func applyDCTAVX(block: [[Float]]) -> [[Float]] {
+        #if arch(x86_64)
+        return AVXOps.dct2D(block)
+        #else
+        return applyDCTScalar(block: block)
+        #endif
     }
     
     /// Apply DCT to multiple 8×8 blocks in parallel using Metal GPU
@@ -1819,6 +1862,12 @@ class VarDCTEncoder {
         #if arch(arm64)
         if hardware.hasNEON && options.useHardwareAcceleration {
             return NEONOps.quantize(block: block, qMatrix: qMatrix)
+        }
+        #endif
+        
+        #if arch(x86_64)
+        if options.useHardwareAcceleration {
+            return SSEOps.quantize(block: block, qMatrix: qMatrix)
         }
         #endif
         
@@ -2607,4 +2656,117 @@ class VarDCTEncoder {
         return rgbFrame
     }
     #endif
+    
+    // MARK: - SSE Colour Conversion (x86-64)
+    
+    /// SSE-accelerated YCbCr conversion.
+    private func convertToYCbCrSSE(frame: ImageFrame) -> ImageFrame {
+        var ycbcrFrame = frame
+        let pixelCount = frame.width * frame.height
+        
+        var rChannel = [Float](repeating: 0, count: pixelCount)
+        var gChannel = [Float](repeating: 0, count: pixelCount)
+        var bChannel = [Float](repeating: 0, count: pixelCount)
+        
+        for y in 0..<frame.height {
+            for x in 0..<frame.width {
+                let idx = y * frame.width + x
+                rChannel[idx] = Float(frame.getPixel(x: x, y: y, channel: 0)) / 65535.0
+                gChannel[idx] = Float(frame.getPixel(x: x, y: y, channel: 1)) / 65535.0
+                bChannel[idx] = Float(frame.getPixel(x: x, y: y, channel: 2)) / 65535.0
+            }
+        }
+        
+        let (yArr, cbArr, crArr) = SSEOps.rgbToYCbCr(
+            r: rChannel, g: gChannel, b: bChannel
+        )
+        
+        for y in 0..<frame.height {
+            for x in 0..<frame.width {
+                let idx = y * frame.width + x
+                ycbcrFrame.setPixel(x: x, y: y, channel: 0,
+                                    value: UInt16(max(0, min(65535, yArr[idx]  * 65535))))
+                ycbcrFrame.setPixel(x: x, y: y, channel: 1,
+                                    value: UInt16(max(0, min(65535, cbArr[idx] * 65535))))
+                ycbcrFrame.setPixel(x: x, y: y, channel: 2,
+                                    value: UInt16(max(0, min(65535, crArr[idx] * 65535))))
+            }
+        }
+        
+        return ycbcrFrame
+    }
+    
+    /// SSE-accelerated XYB conversion.
+    private func convertToXYBSSE(frame: ImageFrame) -> ImageFrame {
+        var xybFrame = frame
+        let pixelCount = frame.width * frame.height
+        
+        var rChannel = [Float](repeating: 0, count: pixelCount)
+        var gChannel = [Float](repeating: 0, count: pixelCount)
+        var bChannel = [Float](repeating: 0, count: pixelCount)
+        
+        for y in 0..<frame.height {
+            for x in 0..<frame.width {
+                let idx = y * frame.width + x
+                rChannel[idx] = Float(frame.getPixel(x: x, y: y, channel: 0)) / 65535.0
+                gChannel[idx] = Float(frame.getPixel(x: x, y: y, channel: 1)) / 65535.0
+                bChannel[idx] = Float(frame.getPixel(x: x, y: y, channel: 2)) / 65535.0
+            }
+        }
+        
+        let (xArr, yArr, bArr) = SSEOps.rgbToXYB(
+            r: rChannel, g: gChannel, b: bChannel
+        )
+        
+        for y in 0..<frame.height {
+            for x in 0..<frame.width {
+                let idx = y * frame.width + x
+                xybFrame.setPixel(x: x, y: y, channel: 0,
+                                  value: UInt16(max(0, min(65535, xArr[idx] * 65535))))
+                xybFrame.setPixel(x: x, y: y, channel: 1,
+                                  value: UInt16(max(0, min(65535, yArr[idx] * 65535))))
+                xybFrame.setPixel(x: x, y: y, channel: 2,
+                                  value: UInt16(max(0, min(65535, bArr[idx] * 65535))))
+            }
+        }
+        
+        return xybFrame
+    }
+    
+    /// SSE-accelerated inverse XYB conversion.
+    private func convertFromXYBSSE(frame: ImageFrame) -> ImageFrame {
+        var rgbFrame = frame
+        let pixelCount = frame.width * frame.height
+        
+        var xChannel = [Float](repeating: 0, count: pixelCount)
+        var yChannel = [Float](repeating: 0, count: pixelCount)
+        var bChannel = [Float](repeating: 0, count: pixelCount)
+        
+        for y in 0..<frame.height {
+            for x in 0..<frame.width {
+                let idx = y * frame.width + x
+                xChannel[idx] = Float(frame.getPixel(x: x, y: y, channel: 0)) / 65535.0
+                yChannel[idx] = Float(frame.getPixel(x: x, y: y, channel: 1)) / 65535.0
+                bChannel[idx] = Float(frame.getPixel(x: x, y: y, channel: 2)) / 65535.0
+            }
+        }
+        
+        let (rArr, gArr, bArr) = SSEOps.xybToRGB(
+            x: xChannel, y: yChannel, b: bChannel
+        )
+        
+        for y in 0..<frame.height {
+            for x in 0..<frame.width {
+                let idx = y * frame.width + x
+                rgbFrame.setPixel(x: x, y: y, channel: 0,
+                                  value: UInt16(max(0, min(65535, rArr[idx] * 65535))))
+                rgbFrame.setPixel(x: x, y: y, channel: 1,
+                                  value: UInt16(max(0, min(65535, gArr[idx] * 65535))))
+                rgbFrame.setPixel(x: x, y: y, channel: 2,
+                                  value: UInt16(max(0, min(65535, bArr[idx] * 65535))))
+            }
+        }
+        
+        return rgbFrame
+    }
 }
