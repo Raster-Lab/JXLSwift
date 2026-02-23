@@ -579,27 +579,41 @@ class VarDCTEncoder {
     
     #if canImport(Accelerate)
     /// Accelerate-based XYB conversion using vectorised operations.
+    ///
+    /// Uses `SharedEncodingPools.floatPool` to reuse channel-plane buffers
+    /// across encode calls, reducing heap allocation pressure.
     private func convertToXYBAccelerate(frame: ImageFrame) -> ImageFrame {
         var xybFrame = frame
         let pixelCount = frame.width * frame.height
-        
-        var rChannel = [Float](repeating: 0, count: pixelCount)
-        var gChannel = [Float](repeating: 0, count: pixelCount)
-        var bChannel = [Float](repeating: 0, count: pixelCount)
-        
+
+        // Borrow reusable channel-plane buffers from the shared float pool.
+        // Pool buffers are always returned empty (count=0, capacity>=minimumCapacity).
+        var rChannel = SharedEncodingPools.floatPool.acquire(minimumCapacity: pixelCount)
+        var gChannel = SharedEncodingPools.floatPool.acquire(minimumCapacity: pixelCount)
+        var bChannel = SharedEncodingPools.floatPool.acquire(minimumCapacity: pixelCount)
+
+        // Pre-size to pixelCount for subscript-based writes.
+        rChannel.reserveCapacity(pixelCount)
+        gChannel.reserveCapacity(pixelCount)
+        bChannel.reserveCapacity(pixelCount)
+
         for y in 0..<frame.height {
             for x in 0..<frame.width {
-                let idx = y * frame.width + x
-                rChannel[idx] = Float(frame.getPixel(x: x, y: y, channel: 0)) / 65535.0
-                gChannel[idx] = Float(frame.getPixel(x: x, y: y, channel: 1)) / 65535.0
-                bChannel[idx] = Float(frame.getPixel(x: x, y: y, channel: 2)) / 65535.0
+                rChannel.append(Float(frame.getPixel(x: x, y: y, channel: 0)) / 65535.0)
+                gChannel.append(Float(frame.getPixel(x: x, y: y, channel: 1)) / 65535.0)
+                bChannel.append(Float(frame.getPixel(x: x, y: y, channel: 2)) / 65535.0)
             }
         }
-        
+
         let (xArr, yArr, bArr) = AccelerateOps.rgbToXYB(
             r: rChannel, g: gChannel, b: bChannel
         )
-        
+
+        // Return borrowed buffers before writing results.
+        SharedEncodingPools.floatPool.release(&rChannel)
+        SharedEncodingPools.floatPool.release(&gChannel)
+        SharedEncodingPools.floatPool.release(&bChannel)
+
         for y in 0..<frame.height {
             for x in 0..<frame.width {
                 let idx = y * frame.width + x
@@ -611,32 +625,46 @@ class VarDCTEncoder {
                                   value: UInt16(max(0, min(65535, bArr[idx] * 65535))))
             }
         }
-        
+
         return xybFrame
     }
-    
+
     /// Accelerate-based inverse XYB conversion.
+    ///
+    /// Uses `SharedEncodingPools.floatPool` to reuse channel-plane buffers
+    /// across decode calls, reducing heap allocation pressure.
     private func convertFromXYBAccelerate(frame: ImageFrame) -> ImageFrame {
         var rgbFrame = frame
         let pixelCount = frame.width * frame.height
-        
-        var xChannel = [Float](repeating: 0, count: pixelCount)
-        var yChannel = [Float](repeating: 0, count: pixelCount)
-        var bChannel = [Float](repeating: 0, count: pixelCount)
-        
+
+        // Borrow reusable channel-plane buffers from the shared float pool.
+        // Pool buffers are always returned empty (count=0, capacity>=minimumCapacity).
+        var xChannel = SharedEncodingPools.floatPool.acquire(minimumCapacity: pixelCount)
+        var yChannel = SharedEncodingPools.floatPool.acquire(minimumCapacity: pixelCount)
+        var bChannel = SharedEncodingPools.floatPool.acquire(minimumCapacity: pixelCount)
+
+        // Pre-size to pixelCount for subscript-based writes.
+        xChannel.reserveCapacity(pixelCount)
+        yChannel.reserveCapacity(pixelCount)
+        bChannel.reserveCapacity(pixelCount)
+
         for y in 0..<frame.height {
             for x in 0..<frame.width {
-                let idx = y * frame.width + x
-                xChannel[idx] = Float(frame.getPixel(x: x, y: y, channel: 0)) / 65535.0
-                yChannel[idx] = Float(frame.getPixel(x: x, y: y, channel: 1)) / 65535.0
-                bChannel[idx] = Float(frame.getPixel(x: x, y: y, channel: 2)) / 65535.0
+                xChannel.append(Float(frame.getPixel(x: x, y: y, channel: 0)) / 65535.0)
+                yChannel.append(Float(frame.getPixel(x: x, y: y, channel: 1)) / 65535.0)
+                bChannel.append(Float(frame.getPixel(x: x, y: y, channel: 2)) / 65535.0)
             }
         }
-        
+
         let (rArr, gArr, bArr) = AccelerateOps.xybToRGB(
             x: xChannel, y: yChannel, b: bChannel
         )
-        
+
+        // Return borrowed buffers before writing results.
+        SharedEncodingPools.floatPool.release(&xChannel)
+        SharedEncodingPools.floatPool.release(&yChannel)
+        SharedEncodingPools.floatPool.release(&bChannel)
+
         for y in 0..<frame.height {
             for x in 0..<frame.width {
                 let idx = y * frame.width + x
@@ -648,7 +676,7 @@ class VarDCTEncoder {
                                   value: UInt16(max(0, min(65535, bArr[idx] * 65535))))
             }
         }
-        
+
         return rgbFrame
     }
     #endif

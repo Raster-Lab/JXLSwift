@@ -31,7 +31,7 @@
 | 18 | Internationalisation & Spelling Support | TBD | ✅ Complete |
 | 19 | J2KSwift API Consistency | TBD | ✅ Complete |
 | 20 | Documentation & Examples Refresh | TBD | ✅ Complete |
-| 21 | Performance: Exceeding libjxl | TBD | ⬜ Not Started |
+| 21 | Performance: Exceeding libjxl | TBD | 🔶 In Progress |
 
 ---
 
@@ -845,21 +845,21 @@
 
 **Goal:** Systematically profile, optimise, and benchmark JXLSwift to achieve and then exceed libjxl performance on Apple Silicon, with competitive performance on x86-64.
 
-**Status:** ⬜ Not Started
+**Status:** 🔶 In Progress
 
 ### Deliverables
 
-- [ ] Comprehensive profiling of encoding hot paths (DCT, quantisation, entropy coding, colour conversion)
-- [ ] Comprehensive profiling of decoding hot paths (entropy decoding, dequantisation, IDCT, colour conversion)
-- [ ] Memory allocation profiling and optimisation (reduce heap allocations in inner loops)
+- [x] Comprehensive profiling of encoding hot paths (DCT, quantisation, entropy coding, colour conversion)
+- [x] Comprehensive profiling of decoding hot paths (entropy decoding, dequantisation, IDCT, colour conversion)
+- [x] Memory allocation profiling and optimisation (reduce heap allocations in inner loops)
 - [ ] Accelerate framework usage audit and expansion (ensure all applicable operations use vDSP/vImage)
 - [ ] NEON SIMD coverage audit and expansion (ensure all applicable loops are vectorised)
 - [ ] Metal GPU pipeline optimisation (batch size tuning, occupancy analysis, memory coalescing)
 - [ ] Thread pool and work-stealing optimisation for multi-core scaling
-- [ ] Copy-on-write and buffer reuse optimisation for large images
-- [ ] Targeted micro-benchmarks for each stage of the encoding/decoding pipeline
-- [ ] Automated comparison benchmark suite: JXLSwift vs libjxl across all effort levels and image sizes
-- [ ] Performance regression CI gate: no PR merges with > 10% slowdown
+- [x] Copy-on-write and buffer reuse optimisation for large images (`EncoderBufferPool`, `SharedEncodingPools`)
+- [x] Targeted micro-benchmarks for each stage of the encoding/decoding pipeline
+- [x] Automated comparison benchmark suite: JXLSwift vs libjxl across all effort levels and image sizes
+- [x] Performance regression CI gate: no PR merges with > 10% slowdown
 - [ ] Resolve remaining performance tests from earlier milestones:
   - M3: 256×256 encoding < 2s
   - M5: Accelerate DCT ≥ 2× faster than scalar, Accelerate vs scalar benchmarks
@@ -867,6 +867,14 @@
 
 ### Tests Required
 
+- [x] `PerformanceProfiler` stage timing, merge, reset, and report generation
+- [x] `PerformanceRegressionGate` passes/fails within/beyond the 10% threshold
+- [x] `EncoderBufferPool` acquire/release semantics, capacity, hit rate, drain, thread safety
+- [x] `SharedEncodingPools` float/byte/int32 pools and `drainAll`
+- [x] Encoding throughput benchmarks (64×64, 256×256, lightning effort)
+- [x] Decoding throughput benchmarks (64×64, 256×256, lossless/lossy)
+- [x] Real encode not slower than 10× of canary baseline (regression gate integration test)
+- [x] Performance `measure {}` blocks for profiler overhead and buffer pool acquire/release
 - [ ] Apple Silicon encoding speed ≥ libjxl for effort 1–3 (fast modes)
 - [ ] Apple Silicon encoding speed within 80% of libjxl for effort 7–9 (quality modes)
 - [ ] Apple Silicon decoding speed ≥ libjxl
@@ -874,7 +882,7 @@
 - [ ] Memory usage ≤ libjxl for equivalent operations
 - [ ] Encoding throughput: ≥ 200 MP/s on Apple M1 for effort 3
 - [ ] Decoding throughput: ≥ 500 MP/s on Apple M1
-- [ ] No performance regressions in CI (automated benchmark tracking)
+- [x] No performance regressions in CI (automated benchmark tracking)
 
 ### Acceptance Criteria
 
