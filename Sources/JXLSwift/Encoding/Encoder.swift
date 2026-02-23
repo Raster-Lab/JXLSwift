@@ -419,3 +419,32 @@ private class ReferenceFrameTracker {
         deltaFrameCount += 1
     }
 }
+
+// MARK: - RasterImageEncoder Conformance
+
+extension JXLEncoder: RasterImageEncoder {
+
+    /// Encode a single image frame, returning only the raw compressed bytes.
+    ///
+    /// This method satisfies the `RasterImageEncoder` protocol. For access to
+    /// full compression statistics, call `encode(_:) -> EncodedImage` directly.
+    ///
+    /// - Parameter frame: The image frame to encode.
+    /// - Returns: Encoded JPEG XL codestream bytes.
+    /// - Throws: ``EncoderError`` if encoding fails.
+    public func encode(frame: ImageFrame) throws -> Data {
+        return try encode(frame).data
+    }
+
+    /// Encode multiple image frames as an animation, returning only the raw bytes.
+    ///
+    /// This method satisfies the `RasterImageEncoder` protocol. For access to
+    /// full compression statistics, call `encode(_:) -> EncodedImage` directly.
+    ///
+    /// - Parameter frames: An ordered array of image frames.
+    /// - Returns: Encoded JPEG XL animation bytes.
+    /// - Throws: ``EncoderError`` if encoding fails.
+    public func encode(frames: [ImageFrame]) throws -> Data {
+        return try encode(frames).data
+    }
+}
