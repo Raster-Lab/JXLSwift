@@ -86,6 +86,24 @@ struct Encode: ParsableCommand {
     @Option(name: .long, help: "Spline preset: subtle, moderate, artistic (default: moderate)")
     var splinePreset: String?
 
+    // MARK: - British / American dual-spelling options
+
+    /// Colour space for the encoded image.
+    /// Accepts both American (`--color-space`) and British (`--colour-space`) spellings.
+    @Option(
+        name: [.customLong("color-space"), .customLong("colour-space")],
+        help: "Colour space for the test image: sRGB, linearRGB, grayscale, displayP3 (default: sRGB)"
+    )
+    var colorSpace: String?
+
+    /// Maximise compression at the cost of encoding speed (equivalent to `--effort 9`).
+    /// Accepts both American (`--optimize`) and British (`--optimise`) spellings.
+    @Flag(
+        name: [.customLong("optimize"), .customLong("optimise")],
+        help: "Maximise compression ratio (sets effort to 9 — tortoise). Accepts both --optimize and --optimise."
+    )
+    var optimise: Bool = false
+
     @Flag(name: .long, help: "Show verbose output")
     var verbose: Bool = false
 
@@ -109,7 +127,9 @@ struct Encode: ParsableCommand {
             mode = .lossy(quality: quality)
         }
 
-        guard let effortLevel = EncodingEffort(rawValue: effort) else {
+        // --optimise/--optimize overrides --effort to maximum (9)
+        let resolvedEffort = optimise ? 9 : effort
+        guard let effortLevel = EncodingEffort(rawValue: resolvedEffort) else {
             print("Error: Effort must be between 1 and 9", to: &standardError)
             throw JXLExitCode.invalidArguments
         }
@@ -287,12 +307,38 @@ struct Encode: ParsableCommand {
             throw JXLExitCode.invalidArguments
         }
 
+        // Resolve --color-space / --colour-space option
+        let resolvedColorSpace: ColorSpace
+        let isGrayscale: Bool
+        if let cs = colorSpace {
+            switch cs.lowercased() {
+            case "srgb":
+                resolvedColorSpace = .sRGB
+                isGrayscale = false
+            case "linearrgb", "linear":
+                resolvedColorSpace = .linearRGB
+                isGrayscale = false
+            case "grayscale", "greyscale":
+                resolvedColorSpace = .grayscale
+                isGrayscale = true
+            case "displayp3", "display-p3":
+                resolvedColorSpace = .displayP3
+                isGrayscale = false
+            default:
+                print("Error: Unknown colour space '\(cs)'. Supported values: sRGB, linearRGB, grayscale, displayP3", to: &standardError)
+                throw JXLExitCode.invalidArguments
+            }
+        } else {
+            resolvedColorSpace = .sRGB
+            isGrayscale = false
+        }
+
         var frame = ImageFrame(
             width: width,
             height: height,
-            channels: 3,
+            channels: isGrayscale ? 1 : 3,
             pixelType: .uint8,
-            colorSpace: .sRGB,
+            colorSpace: resolvedColorSpace,
             orientation: UInt32(orientation)
         )
 
@@ -301,9 +347,15 @@ struct Encode: ParsableCommand {
                 let r = UInt16((x * 255) / max(frame.width - 1, 1))
                 let g = UInt16((y * 255) / max(frame.height - 1, 1))
                 let b = UInt16(128)
-                frame.setPixel(x: x, y: y, channel: 0, value: r)
-                frame.setPixel(x: x, y: y, channel: 1, value: g)
-                frame.setPixel(x: x, y: y, channel: 2, value: b)
+                if frame.channels == 1 {
+                    // Grayscale: use a simple luminance approximation
+                    let luma = UInt16((UInt32(r) * 299 + UInt32(g) * 587 + UInt32(b) * 114) / 1000)
+                    frame.setPixel(x: x, y: y, channel: 0, value: luma)
+                } else {
+                    frame.setPixel(x: x, y: y, channel: 0, value: r)
+                    frame.setPixel(x: x, y: y, channel: 1, value: g)
+                    frame.setPixel(x: x, y: y, channel: 2, value: b)
+                }
             }
         }
 
@@ -325,7 +377,8 @@ struct Encode: ParsableCommand {
 
             if verbose {
                 print("  Mode:        \(lossless ? "lossless" : "lossy")\(progressive ? " (progressive)" : "")")
-                print("  Effort:      \(effortLevel) (\(effort))")
+                print("  Effort:      \(effortLevel) (\(resolvedEffort))\(optimise ? " (maximised via --optimise)" : "")")
+                print("  Colour space: \(colorSpace ?? "sRGB")")
                 print("  Orientation: \(orientation)")
                 if let roi = regionOfInterest {
                     print("  ROI:         (\(roi.x),\(roi.y)) \(roi.width)×\(roi.height)")

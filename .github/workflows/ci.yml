@@ -270,3 +270,37 @@ jobs:
           else
             echo "❌ Security scan failed. Check logs for details." >> "$GITHUB_STEP_SUMMARY"
           fi
+
+  spelling:
+    name: Spelling Consistency Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ripgrep
+        run: |
+          sudo apt-get install -y ripgrep
+          chmod +x scripts/check-spelling.sh
+
+      - name: Run spelling checker
+        # Advisory only: report spelling inconsistencies without failing the build.
+        # Many existing identifiers intentionally keep American spellings (e.g.
+        # ColorSpace, colorSpace) because they are part of stable public API.
+        # Run with --fix locally to auto-correct new occurrences in comments/docs.
+        run: ./scripts/check-spelling.sh || true
+
+      - name: Generate job summary
+        if: always()
+        run: |
+          echo "## Spelling Consistency Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Item | Detail |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|------|--------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Standard** | British English |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Script** | scripts/check-spelling.sh |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if ./scripts/check-spelling.sh 2>/dev/null; then
+            echo "✅ No spelling inconsistencies found." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "⚠️ Spelling inconsistencies detected. Run \`./scripts/check-spelling.sh --fix\` to auto-correct." >> "$GITHUB_STEP_SUMMARY"
+          fi

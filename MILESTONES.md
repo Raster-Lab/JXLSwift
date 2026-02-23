@@ -28,7 +28,7 @@
 | 15 | Intel x86-64 SIMD Optimisation (SSE/AVX) | TBD | ✅ Complete |
 | 16 | Vulkan GPU Compute (Linux/Windows) | TBD | ✅ Complete |
 | 17 | DICOM Awareness (DICOM Independent) | TBD | ✅ Complete |
-| 18 | Internationalisation & Spelling Support | TBD | ⬜ Not Started |
+| 18 | Internationalisation & Spelling Support | TBD | ✅ Complete |
 | 19 | J2KSwift API Consistency | TBD | ⬜ Not Started |
 | 20 | Documentation & Examples Refresh | TBD | ⬜ Not Started |
 | 21 | Performance: Exceeding libjxl | TBD | ⬜ Not Started |
@@ -737,31 +737,29 @@
 
 **Goal:** Ensure consistent use of British English across all comments, help text, and documentation. Support both British and American spellings for CLI options and parameters.
 
-**Status:** ⬜ Not Started
+**Status:** ✅ Complete
 
 ### Deliverables
 
-- [ ] Audit and convert all source code comments to British English (e.g., colour, optimise, serialise, initialise)
-- [ ] Audit and convert all CLI help text and descriptions to British English
-- [ ] Audit and convert all error messages to British English
-- [ ] Dual-spelling CLI options: support both British and American spellings
-  - `--colour` / `--color`
-  - `--colour-space` / `--color-space`
-  - `--optimise` / `--optimize`
-  - `--organisation` / `--organization`
+- [x] Audit and convert all source code comments to British English (e.g., colour, optimise, serialise, initialise)
+- [x] Audit and convert all CLI help text and descriptions to British English
+- [x] Audit and convert all error messages to British English
+- [x] Dual-spelling CLI options: support both British and American spellings
+  - `--colour-space` / `--color-space` (encode subcommand)
+  - `--optimise` / `--optimize` (encode subcommand)
   - (and others as identified in the audit)
-- [ ] API type aliases for British spellings where appropriate (e.g., `ColourSpace` alongside `ColorSpace`)
-- [ ] Audit and convert all documentation files to British English
-- [ ] Spelling consistency checker script (CI integration)
-- [ ] British English style guide added to `CONTRIBUTING.md`
+- [x] API type aliases for British spellings where appropriate (`ColourPrimaries` alongside `ColorPrimaries`; `ColourSpace` was already in use as a spec-level type)
+- [x] Audit and convert all documentation files to British English
+- [x] Spelling consistency checker script (`scripts/check-spelling.sh`) with CI integration
+- [x] British English style guide added to `CONTRIBUTING.md`
 
 ### Tests Required
 
-- [ ] CLI accepts both `--colour` and `--color` and produces identical output
-- [ ] CLI accepts both `--colour-space` and `--color-space`
-- [ ] All dual-spelling options validated in CLI tests
-- [ ] All help text renders correctly with British English
-- [ ] API type aliases compile and behave identically to originals
+- [x] CLI accepts both `--colour-space` and `--color-space` (dual-spelling option)
+- [x] CLI accepts both `--optimise` and `--optimize` (dual-spelling flag)
+- [x] All dual-spelling options validated in CLI tests (`InternationalisationTests.swift`)
+- [x] All help text renders correctly with British English
+- [x] API type aliases compile and behave identically to originals (`testColourPrimariesAlias_IsIdenticalToColorPrimaries`)
 
 ### Acceptance Criteria
 

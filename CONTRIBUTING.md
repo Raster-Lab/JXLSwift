@@ -28,6 +28,51 @@ The project is organized into several modules:
 
 ## Coding Guidelines
 
+### British English Style Guide
+
+JXLSwift uses **British English** throughout all source code comments, documentation,
+error messages, and CLI help text. Please follow these conventions when contributing.
+
+#### Preferred spellings
+
+| ✅ British (use this) | ❌ American (avoid) |
+|----------------------|---------------------|
+| colour               | color               |
+| colour space         | color space         |
+| optimise             | optimize            |
+| organisation         | organization        |
+| serialise            | serialize           |
+| initialise           | initialize          |
+| synchronise          | synchronize         |
+| recognise            | recognize           |
+| behaviour            | behavior            |
+| neighbour            | neighbor            |
+| centre               | center              |
+
+#### Exceptions — identifiers that keep American spellings
+
+Swift standard library, Apple framework, and ArgumentParser **identifiers** retain
+their canonical American spelling because they are not under our control:
+
+- `ColorSpace`, `colorSpace` (note: `ColourSpace` is already used as a spec-level enum in the codebase)
+- `ColorPrimaries` (public API, mirrored by the `ColourPrimaries` British alias)
+- `CGColor`, `UIColor`, `NSColor`, `NSColorSpace`
+- `EncodingOptions`, `CompressionMode` (stable public API, unchanged for backward compat.)
+
+The British-English **type alias** `ColourPrimaries` is provided in
+`Sources/JXLSwift/Core/BritishSpelling.swift` alongside the American `ColorPrimaries`.
+
+#### Checking spelling
+
+Run the spelling checker from the repo root:
+
+```bash
+./scripts/check-spelling.sh            # report issues
+./scripts/check-spelling.sh --fix      # auto-fix issues (review with git diff)
+```
+
+CI runs this check automatically on every pull request.
+
 ### Swift Style
 - Follow Swift API Design Guidelines
 - Use meaningful variable and function names
@@ -39,11 +84,11 @@ When adding platform-specific code, use conditional compilation:
 
 ```swift
 #if arch(arm64)
-    // Apple Silicon / ARM optimizations
-    func optimizedOperation() { ... }
+    // Apple Silicon / ARM optimisations
+    func optimisedOperation() { ... }
 #elseif arch(x86_64)
     // x86-64 fallback
-    func optimizedOperation() { ... }
+    func optimisedOperation() { ... }
 #endif
 ```
 
