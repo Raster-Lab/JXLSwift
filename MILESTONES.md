@@ -25,7 +25,7 @@
 | 12 | Decoding Support | Weeks 38–44 | ✅ Complete |
 | 13 | Production Hardening & Release | Weeks 44–48 | ✅ Complete |
 | 14 | ISO/IEC 18181-3 Conformance Testing | TBD | ✅ Complete |
-| 15 | Intel x86-64 SIMD Optimisation (SSE/AVX) | TBD | ⬜ Not Started |
+| 15 | Intel x86-64 SIMD Optimisation (SSE/AVX) | TBD | ✅ Complete |
 | 16 | Vulkan GPU Compute (Linux/Windows) | TBD | ⬜ Not Started |
 | 17 | DICOM Awareness (DICOM Independent) | TBD | ⬜ Not Started |
 | 18 | Internationalisation & Spelling Support | TBD | ⬜ Not Started |
@@ -612,33 +612,33 @@
 
 **Goal:** Implement x86-64 specific SIMD-optimised code paths using SSE2/SSE4.1 and AVX2 for critical inner loops, matching the ARM NEON optimisation approach from Milestone 6.
 
-**Status:** ⬜ Not Started
+**Status:** ✅ Complete
 
 ### Deliverables
 
-- [ ] `Hardware/x86/SSEOps.swift` — SSE2/SSE4.1 operations via Swift SIMD types
-- [ ] SSE-optimised pixel prediction (4-wide processing)
-- [ ] SSE-optimised MED predictor
-- [ ] SSE-optimised DCT butterfly operations
-- [ ] SSE-optimised colour space conversion (RGB ↔ YCbCr)
-- [ ] SSE-optimised quantisation (vectorised divide + round)
-- [ ] SSE-optimised zigzag reordering
-- [ ] `Hardware/x86/AVXOps.swift` — AVX2 operations for wider vector processing (where available)
-- [ ] AVX2-optimised 8-wide DCT and colour conversion
-- [ ] `#if arch(x86_64)` guards with scalar fallback in `#else`
-- [ ] Runtime CPU feature detection for AVX2 availability
-- [ ] All x86 code isolated in `Hardware/x86/` directory for clean removal
+- [x] `Hardware/x86/SSEOps.swift` — SSE2/SSE4.1 operations via Swift SIMD types
+- [x] SSE-optimised pixel prediction (4-wide processing)
+- [x] SSE-optimised MED predictor
+- [x] SSE-optimised DCT butterfly operations
+- [x] SSE-optimised colour space conversion (RGB ↔ YCbCr)
+- [x] SSE-optimised quantisation (vectorised divide + round)
+- [x] SSE-optimised zigzag reordering
+- [x] `Hardware/x86/AVXOps.swift` — AVX2 operations for wider vector processing (where available)
+- [x] AVX2-optimised 8-wide DCT and colour conversion
+- [x] `#if arch(x86_64)` guards with scalar fallback in `#else`
+- [x] Runtime CPU feature detection for AVX2 availability
+- [x] All x86 code isolated in `Hardware/x86/` directory for clean removal
 
 ### Tests Required
 
-- [ ] SSE prediction matches scalar prediction exactly
-- [ ] SSE DCT matches scalar DCT within tolerance
-- [ ] SSE colour conversion matches scalar conversion within tolerance
-- [ ] AVX2 operations match SSE results (wider vector, same result)
-- [ ] Edge cases: odd image widths (non-multiple of SIMD width)
-- [ ] Performance: SSE path ≥ 2× faster than scalar on x86-64
-- [ ] Performance: AVX2 path ≥ 3× faster than scalar (where available)
-- [ ] Graceful fallback when AVX2 is not available
+- [x] SSE prediction matches scalar prediction exactly
+- [x] SSE DCT matches scalar DCT within tolerance
+- [x] SSE colour conversion matches scalar conversion within tolerance
+- [x] AVX2 operations match SSE results (wider vector, same result)
+- [x] Edge cases: odd image widths (non-multiple of SIMD width)
+- [x] Performance: SSE path ≥ 2× faster than scalar on x86-64
+- [x] Performance: AVX2 path ≥ 3× faster than scalar (where available)
+- [x] Graceful fallback when AVX2 is not available
 
 ### Acceptance Criteria
 

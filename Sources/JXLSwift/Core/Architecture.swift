@@ -69,12 +69,30 @@ public struct HardwareCapabilities: Sendable {
         // ARM NEON is standard on all ARM64
         let hasNEON = arch == .arm64
         
-        // AVX2 detection for x86-64
+        // AVX2 runtime detection for x86-64
         let hasAVX2: Bool = {
             #if arch(x86_64)
-            // On macOS, we can assume AVX2 support on modern chips
-            // For Linux, would need CPU flags detection
-            return true
+            #if os(macOS) || os(iOS) || os(tvOS) || os(watchOS) || os(visionOS)
+            // Darwin: query sysctl for confirmed AVX2 support
+            var avx2: Int32 = 0
+            var size = MemoryLayout<Int32>.size
+            let ret = sysctlbyname("hw.optional.avx2_0", &avx2, &size, nil, 0)
+            return ret == 0 && avx2 != 0
+            #elseif os(Linux)
+            // Linux: scan /proc/cpuinfo flags line for "avx2" token
+            if let cpuInfo = try? String(contentsOfFile: "/proc/cpuinfo", encoding: .utf8) {
+                for line in cpuInfo.components(separatedBy: "\n") {
+                    let lower = line.lowercased()
+                    if lower.hasPrefix("flags") {
+                        // Match " avx2" as a whole token
+                        return lower.contains(" avx2") || lower.hasSuffix("\tavx2")
+                    }
+                }
+            }
+            return false
+            #else
+            return false
+            #endif
             #else
             return false
             #endif
