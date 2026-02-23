@@ -1,0 +1,77 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate tag format
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Tag '$TAG' does not match expected format 'vX.Y.Z'"
+            exit 1
+          fi
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
+
+      - name: Verify VERSION file matches tag
+        run: |
+          FILE_VERSION=$(tr -d '[:space:]' < VERSION)
+          if [ "$FILE_VERSION" != "$VERSION" ]; then
+            echo "::error::VERSION file ($FILE_VERSION) does not match tag ($VERSION)"
+            exit 1
+          fi
+
+      - name: Setup Swift
+        uses: swift-actions/setup-swift@v3
+        with:
+          swift-version: "6.2"
+          skip-verify-signature: true
+
+      - name: Build
+        run: swift build -c release
+
+      - name: Extract changelog
+        run: |
+          SECTION=$(awk "/^## \[$VERSION\]/{found=1; next} /^## \[/{if(found) exit} found" CHANGELOG.md)
+          if [ -z "$SECTION" ]; then
+            SECTION="Release $TAG"
+          fi
+          printf '%s\n' "$SECTION" > release-notes.md
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$TAG" \
+            --title "JXLSwift $TAG" \
+            --notes-file release-notes.md \
+            --verify-tag
+
+      - name: Generate job summary
+        if: always()
+        run: |
+          echo "## Release Results — ${{ env.TAG }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Item | Detail |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|------|--------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Tag** | ${{ env.TAG }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Version** | ${{ env.VERSION }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "✅ Release created successfully." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "❌ Release creation failed. Check logs for details." >> "$GITHUB_STEP_SUMMARY"
+          fi
