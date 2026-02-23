@@ -539,9 +539,9 @@ public struct EncodingOptions: Sendable {
     /// This follows ISO/IEC 18181-1 Annex A.
     public var useANS: Bool
     
-    /// Use XYB colour space instead of YCbCr in VarDCT mode.
+    /// Use XYB color space instead of YCbCr in VarDCT mode.
     ///
-    /// XYB is JPEG XL's native perceptual colour space (ISO/IEC 18181-1 §5.3).
+    /// XYB is JPEG XL's native perceptual color space (ISO/IEC 18181-1 §5.3).
     /// It provides better perceptual quality at the same bitrate compared
     /// to YCbCr, but is slower to encode. Default is false (YCbCr).
     public var useXYBColorSpace: Bool
