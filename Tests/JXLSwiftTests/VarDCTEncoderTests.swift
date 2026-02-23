@@ -2211,4 +2211,464 @@ final class VarDCTEncoderTests: XCTestCase {
         XCTAssertTrue(options.adaptiveQuantization,
                       "Lossless preset should have adaptive quantisation enabled (unused in modular)")
     }
+
+    // MARK: - DCT Block Size Tests
+
+    func testDCTBlockSize_AllCases_HaveCorrectDimensions() {
+        let expected: [(DCTBlockSize, Int, Int)] = [
+            (.dct8x8, 8, 8), (.dct16x16, 16, 16), (.dct32x32, 32, 32),
+            (.dct16x8, 16, 8), (.dct8x16, 8, 16), (.dct32x8, 32, 8),
+            (.dct8x32, 8, 32), (.dct32x16, 32, 16), (.dct16x32, 16, 32)
+        ]
+        for (size, w, h) in expected {
+            XCTAssertEqual(size.width, w, "\(size) width")
+            XCTAssertEqual(size.height, h, "\(size) height")
+        }
+    }
+
+    func testDCTBlockSize_CoefficientCount_MatchesArea() {
+        for size in DCTBlockSize.allCases {
+            XCTAssertEqual(size.coefficientCount, size.width * size.height,
+                           "\(size) coefficientCount should equal width × height")
+        }
+    }
+
+    func testDCTBlockSize_SubBlockCount_IsCorrect() {
+        XCTAssertEqual(DCTBlockSize.dct8x8.subBlockCount, 1)
+        XCTAssertEqual(DCTBlockSize.dct16x16.subBlockCount, 4)
+        XCTAssertEqual(DCTBlockSize.dct32x32.subBlockCount, 16)
+        XCTAssertEqual(DCTBlockSize.dct16x8.subBlockCount, 2)
+        XCTAssertEqual(DCTBlockSize.dct8x16.subBlockCount, 2)
+    }
+
+    func testDCTBlockSize_RawValues_AreUnique() {
+        let rawValues = DCTBlockSize.allCases.map { $0.rawValue }
+        XCTAssertEqual(rawValues.count, Set(rawValues).count,
+                       "All DCTBlockSize raw values should be unique")
+    }
+
+    // MARK: - Natural Order Scan Tests
+
+    func testNaturalOrderScan_CoversAll64Coefficients() {
+        let order = VarDCTEncoder.naturalOrder8x8
+        XCTAssertEqual(order.count, 64)
+
+        // All 64 unique (row, col) positions
+        let positions = Set(order.map { "\($0.0),\($0.1)" })
+        XCTAssertEqual(positions.count, 64)
+    }
+
+    func testNaturalOrderScan_DCIsFirst() {
+        let order = VarDCTEncoder.naturalOrder8x8
+        XCTAssertEqual(order[0].0, 0, "First coefficient should be DC (row 0)")
+        XCTAssertEqual(order[0].1, 0, "First coefficient should be DC (col 0)")
+    }
+
+    func testNaturalOrderScan_FrequencyIncreases() {
+        let order = VarDCTEncoder.naturalOrder8x8
+        // Each coefficient's frequency magnitude should be >= the previous
+        for i in 1..<order.count {
+            let prevFreq = order[i-1].0 * order[i-1].0 + order[i-1].1 * order[i-1].1
+            let currFreq = order[i].0 * order[i].0 + order[i].1 * order[i].1
+            XCTAssertGreaterThanOrEqual(currFreq, prevFreq,
+                "Coefficient \(i) frequency should be >= coefficient \(i-1)")
+        }
+    }
+
+    func testNaturalOrderScan_MatchesBlock() {
+        let encoder = makeEncoder()
+        // Create a block with known values
+        var block = [[Int16]](repeating: [Int16](repeating: 0, count: 8), count: 8)
+        block[0][0] = 100  // DC
+        block[0][1] = 10
+        block[1][0] = 20
+
+        let scanned = encoder.naturalOrderScan(block: block)
+        XCTAssertEqual(scanned[0], 100, "DC should be first")
+        // (0,1) and (1,0) should appear early since they have frequency 1
+        XCTAssertTrue(scanned.prefix(3).contains(10))
+        XCTAssertTrue(scanned.prefix(3).contains(20))
+    }
+
+    func testNaturalOrder_VariableSize_16x16() {
+        let order = VarDCTEncoder.naturalOrder(width: 16, height: 16)
+        XCTAssertEqual(order.count, 256)
+        XCTAssertEqual(order[0].0, 0)
+        XCTAssertEqual(order[0].1, 0)
+
+        let positions = Set(order.map { "\($0.0),\($0.1)" })
+        XCTAssertEqual(positions.count, 256)
+    }
+
+    func testNaturalOrder_Rectangular_16x8() {
+        let order = VarDCTEncoder.naturalOrder(width: 16, height: 8)
+        XCTAssertEqual(order.count, 128)
+        XCTAssertEqual(order[0].0, 0)
+        XCTAssertEqual(order[0].1, 0)
+    }
+
+    // MARK: - Variable-Size DCT Tests
+
+    func testVariableDCT_16x16_RoundTrip() {
+        let encoder = makeEncoder()
+        let size = 16
+        var block = [[Float]](repeating: [Float](repeating: 0, count: size), count: size)
+        for y in 0..<size {
+            for x in 0..<size {
+                block[y][x] = Float(x + y) / Float(2 * size - 2)
+            }
+        }
+
+        let dct = encoder.applyDCTVariable(block: block, blockWidth: size, blockHeight: size)
+        let reconstructed = encoder.applyIDCTVariable(block: dct, blockWidth: size, blockHeight: size)
+
+        for y in 0..<size {
+            for x in 0..<size {
+                XCTAssertEqual(reconstructed[y][x], block[y][x], accuracy: 1e-3,
+                               "Variable DCT 16×16 round-trip failed at (\(x),\(y))")
+            }
+        }
+    }
+
+    func testVariableDCT_32x32_RoundTrip() {
+        let encoder = makeEncoder()
+        let size = 32
+        var block = [[Float]](repeating: [Float](repeating: 0.5, count: size), count: size)
+        block[0][0] = 1.0  // One distinct value
+
+        let dct = encoder.applyDCTVariable(block: block, blockWidth: size, blockHeight: size)
+        let reconstructed = encoder.applyIDCTVariable(block: dct, blockWidth: size, blockHeight: size)
+
+        for y in 0..<size {
+            for x in 0..<size {
+                XCTAssertEqual(reconstructed[y][x], block[y][x], accuracy: 1e-2,
+                               "Variable DCT 32×32 round-trip failed at (\(x),\(y))")
+            }
+        }
+    }
+
+    func testVariableDCT_16x8_Rectangular_RoundTrip() {
+        let encoder = makeEncoder()
+        let w = 16, h = 8
+        var block = [[Float]](repeating: [Float](repeating: 0, count: w), count: h)
+        for y in 0..<h {
+            for x in 0..<w {
+                block[y][x] = Float((x * 3 + y * 7) % 256) / 255.0
+            }
+        }
+
+        let dct = encoder.applyDCTVariable(block: block, blockWidth: w, blockHeight: h)
+        let reconstructed = encoder.applyIDCTVariable(block: dct, blockWidth: w, blockHeight: h)
+
+        for y in 0..<h {
+            for x in 0..<w {
+                XCTAssertEqual(reconstructed[y][x], block[y][x], accuracy: 1e-3,
+                               "Variable DCT 16×8 round-trip failed at (\(x),\(y))")
+            }
+        }
+    }
+
+    func testVariableDCT_8x8_DelegatesToScalar() {
+        let encoder = makeEncoder()
+        let block = [[Float]](repeating: [Float](repeating: 0.5, count: 8), count: 8)
+
+        let variable = encoder.applyDCTVariable(block: block, blockWidth: 8, blockHeight: 8)
+        let scalar = encoder.applyDCTScalar(block: block)
+
+        for y in 0..<8 {
+            for x in 0..<8 {
+                XCTAssertEqual(variable[y][x], scalar[y][x], accuracy: 1e-6,
+                               "8×8 variable DCT should match scalar DCT")
+            }
+        }
+    }
+
+    // MARK: - Variable Block Extraction Tests
+
+    func testExtractVariableBlock_16x16_MatchesExpected() {
+        let encoder = makeEncoder()
+        // Create a small 32×32 image
+        var data = [[Float]](repeating: [Float](repeating: 0, count: 32), count: 32)
+        for y in 0..<32 {
+            for x in 0..<32 {
+                data[y][x] = Float(y * 32 + x) / 1024.0
+            }
+        }
+
+        let block = encoder.extractVariableBlock(
+            data: data, startX: 0, startY: 0,
+            blockWidth: 16, blockHeight: 16, width: 32, height: 32
+        )
+        XCTAssertEqual(block.count, 16)
+        XCTAssertEqual(block[0].count, 16)
+        XCTAssertEqual(block[0][0], data[0][0], accuracy: 1e-6)
+        XCTAssertEqual(block[15][15], data[15][15], accuracy: 1e-6)
+    }
+
+    func testExtractVariableBlock_EdgeClamping() {
+        let encoder = makeEncoder()
+        let data = [[Float]](repeating: [Float](repeating: 1.0, count: 10), count: 10)
+
+        // Request a 16×16 block starting at (0,0) in a 10×10 image
+        let block = encoder.extractVariableBlock(
+            data: data, startX: 0, startY: 0,
+            blockWidth: 16, blockHeight: 16, width: 10, height: 10
+        )
+        XCTAssertEqual(block.count, 16)
+        XCTAssertEqual(block[0].count, 16)
+        // All values should be 1.0 due to edge clamping
+        for y in 0..<16 {
+            for x in 0..<16 {
+                XCTAssertEqual(block[y][x], 1.0, accuracy: 1e-6)
+            }
+        }
+    }
+
+    // MARK: - Variable Quantization Matrix Tests
+
+    func testVariableQuantizationMatrix_16x16_HasCorrectDimensions() {
+        let encoder = makeEncoder()
+        let matrix = encoder.generateVariableQuantizationMatrix(
+            blockWidth: 16, blockHeight: 16, channel: 0
+        )
+        XCTAssertEqual(matrix.count, 16)
+        XCTAssertEqual(matrix[0].count, 16)
+    }
+
+    func testVariableQuantizationMatrix_ChromaIsMoreAggressive() {
+        let encoder = makeEncoder()
+        let lumaMatrix = encoder.generateVariableQuantizationMatrix(
+            blockWidth: 16, blockHeight: 16, channel: 0
+        )
+        let chromaMatrix = encoder.generateVariableQuantizationMatrix(
+            blockWidth: 16, blockHeight: 16, channel: 1
+        )
+        // Chroma should have 1.5× larger quantization steps
+        for y in 0..<16 {
+            for x in 0..<16 {
+                XCTAssertEqual(chromaMatrix[y][x], lumaMatrix[y][x] * 1.5, accuracy: 1e-4)
+            }
+        }
+    }
+
+    // MARK: - Block Size Selection Tests
+
+    func testBlockSizeSelection_SmoothRegion_SelectsLargerBlock() {
+        let encoder = makeEncoder()
+        // Create a smooth (constant) 64×64 image
+        let data = [[Float]](repeating: [Float](repeating: 0.5, count: 64), count: 64)
+        let size = encoder.selectBlockSize(data: data, blockX: 0, blockY: 0, width: 64, height: 64)
+        // Should select a larger block for smooth content
+        XCTAssertNotEqual(size, .dct8x8, "Smooth region should use larger block than 8×8")
+    }
+
+    func testBlockSizeSelection_TexturedRegion_Selects8x8() {
+        let encoder = makeEncoder()
+        // Create a noisy 64×64 image
+        var data = [[Float]](repeating: [Float](repeating: 0, count: 64), count: 64)
+        for y in 0..<64 {
+            for x in 0..<64 {
+                data[y][x] = Float((x * 17 + y * 31 + 7) % 256) / 255.0
+            }
+        }
+        let size = encoder.selectBlockSize(data: data, blockX: 0, blockY: 0, width: 64, height: 64)
+        XCTAssertEqual(size, .dct8x8, "Textured region should use 8×8 blocks")
+    }
+
+    func testBlockSizeSelection_SmallImage_DefaultsTo8x8() {
+        let encoder = makeEncoder()
+        let data = [[Float]](repeating: [Float](repeating: 0.5, count: 12), count: 12)
+        let size = encoder.selectBlockSize(data: data, blockX: 0, blockY: 0, width: 12, height: 12)
+        XCTAssertEqual(size, .dct8x8, "Images smaller than 16×16 should use 8×8 blocks")
+    }
+
+    // MARK: - Frame Header Tests
+
+    func testVarDCTFrameHeader_WriteRead_RoundTrip() {
+        let encoder = makeEncoder()
+        var frame = ImageFrame(width: 128, height: 64, channels: 3)
+        // Fill a pixel so the frame is valid
+        frame.setPixel(x: 0, y: 0, channel: 0, value: UInt16(100))
+
+        var writer = BitstreamWriter()
+        encoder.writeVarDCTFrameHeader(writer: &writer, frame: frame)
+        writer.flushByte()
+
+        var reader = BitstreamReader(data: writer.data)
+        let header = try! VarDCTEncoder.readVarDCTFrameHeader(reader: &reader)
+
+        XCTAssertFalse(header.isModular)
+        XCTAssertEqual(header.width, 128)
+        XCTAssertEqual(header.height, 64)
+        XCTAssertEqual(header.channels, 3)
+        XCTAssertEqual(header.distance, 1.0, accuracy: 1e-6)
+        XCTAssertTrue(header.adaptiveQuantization)
+        XCTAssertFalse(header.useANS)
+        XCTAssertEqual(header.numPasses, 1)
+    }
+
+    func testVarDCTFrameHeader_VariableBlockSize_Flag() {
+        let options = EncodingOptions(
+            mode: .lossy(quality: 90),
+            variableBlockSize: true
+        )
+        let encoder = VarDCTEncoder(
+            hardware: HardwareCapabilities.detect(),
+            options: options,
+            distance: 1.0
+        )
+        let frame = ImageFrame(width: 32, height: 32, channels: 3)
+
+        var writer = BitstreamWriter()
+        encoder.writeVarDCTFrameHeader(writer: &writer, frame: frame)
+        writer.flushByte()
+
+        var reader = BitstreamReader(data: writer.data)
+        let header = try! VarDCTEncoder.readVarDCTFrameHeader(reader: &reader)
+
+        XCTAssertTrue(header.hasVariableBlocks)
+    }
+
+    func testVarDCTFrameHeader_ProgressivePasses() {
+        let options = EncodingOptions(
+            mode: .lossy(quality: 90),
+            progressive: true
+        )
+        let encoder = VarDCTEncoder(
+            hardware: HardwareCapabilities.detect(),
+            options: options,
+            distance: 1.0
+        )
+        let frame = ImageFrame(width: 32, height: 32, channels: 3)
+
+        var writer = BitstreamWriter()
+        encoder.writeVarDCTFrameHeader(writer: &writer, frame: frame)
+        writer.flushByte()
+
+        var reader = BitstreamReader(data: writer.data)
+        let header = try! VarDCTEncoder.readVarDCTFrameHeader(reader: &reader)
+
+        XCTAssertEqual(header.numPasses, 3)
+    }
+
+    // MARK: - Quality Level Tests
+
+    func testQualityLevel_100_NearLossless() throws {
+        let options = EncodingOptions(mode: .lossy(quality: 100))
+        let encoder = JXLEncoder(options: options)
+
+        var frame = ImageFrame(width: 16, height: 16, channels: 3)
+        for y in 0..<16 {
+            for x in 0..<16 {
+                frame.setPixel(x: x, y: y, channel: 0, value: UInt16(x * 16 * 257))
+                frame.setPixel(x: x, y: y, channel: 1, value: UInt16(y * 16 * 257))
+                frame.setPixel(x: x, y: y, channel: 2, value: UInt16((x + y) * 8 * 257))
+            }
+        }
+
+        let result = try encoder.encode(frame)
+        // Quality 100 should produce some data — near-lossless
+        XCTAssertGreaterThan(result.data.count, 0)
+        XCTAssertGreaterThan(result.stats.compressionRatio, 0)
+    }
+
+    func testQualityLevel_50_HighCompression() throws {
+        let options = EncodingOptions(mode: .lossy(quality: 50))
+        let encoder = JXLEncoder(options: options)
+
+        var frame = ImageFrame(width: 16, height: 16, channels: 3)
+        for y in 0..<16 {
+            for x in 0..<16 {
+                frame.setPixel(x: x, y: y, channel: 0, value: UInt16(x * 16 * 257))
+                frame.setPixel(x: x, y: y, channel: 1, value: UInt16(y * 16 * 257))
+                frame.setPixel(x: x, y: y, channel: 2, value: UInt16((x + y) * 8 * 257))
+            }
+        }
+
+        let result = try encoder.encode(frame)
+        XCTAssertGreaterThan(result.data.count, 0)
+        XCTAssertGreaterThan(result.stats.compressionRatio, 1.0,
+                             "Quality 50 should achieve > 1× compression")
+    }
+
+    func testQualityLevel_10_MaximumCompression() throws {
+        let options = EncodingOptions(mode: .lossy(quality: 10))
+        let encoder = JXLEncoder(options: options)
+
+        var frame = ImageFrame(width: 16, height: 16, channels: 3)
+        for y in 0..<16 {
+            for x in 0..<16 {
+                frame.setPixel(x: x, y: y, channel: 0, value: UInt16(x * 16 * 257))
+                frame.setPixel(x: x, y: y, channel: 1, value: UInt16(y * 16 * 257))
+                frame.setPixel(x: x, y: y, channel: 2, value: UInt16((x + y) * 8 * 257))
+            }
+        }
+
+        let result = try encoder.encode(frame)
+        XCTAssertGreaterThan(result.data.count, 0)
+    }
+
+    func testQualityLevels_HigherQuality_ProducesLargerOutput() throws {
+        var frame = ImageFrame(width: 32, height: 32, channels: 3)
+        for y in 0..<32 {
+            for x in 0..<32 {
+                frame.setPixel(x: x, y: y, channel: 0, value: UInt16(x * 8 * 257))
+                frame.setPixel(x: x, y: y, channel: 1, value: UInt16(y * 8 * 257))
+                frame.setPixel(x: x, y: y, channel: 2, value: UInt16((x + y) * 4 * 257))
+            }
+        }
+
+        let q10 = try JXLEncoder(options: EncodingOptions(mode: .lossy(quality: 10))).encode(frame)
+        let q50 = try JXLEncoder(options: EncodingOptions(mode: .lossy(quality: 50))).encode(frame)
+        let q100 = try JXLEncoder(options: EncodingOptions(mode: .lossy(quality: 100))).encode(frame)
+
+        // Higher quality should generally produce larger output
+        XCTAssertLessThanOrEqual(q10.data.count, q50.data.count,
+                                 "Quality 10 should produce smaller or equal output than quality 50")
+        XCTAssertLessThanOrEqual(q50.data.count, q100.data.count,
+                                 "Quality 50 should produce smaller or equal output than quality 100")
+    }
+
+    // MARK: - Encoding Options Tests
+
+    func testEncodingOptions_VariableBlockSize_DefaultsFalse() {
+        let options = EncodingOptions()
+        XCTAssertFalse(options.variableBlockSize)
+    }
+
+    func testEncodingOptions_UseXYBColorSpace_DefaultsFalse() {
+        let options = EncodingOptions()
+        XCTAssertFalse(options.useXYBColorSpace)
+    }
+
+    // MARK: - Performance Test
+
+    func testPerformance_256x256_CompletesInTime() throws {
+        let options = EncodingOptions(
+            mode: .lossy(quality: 85),
+            effort: .falcon,
+            useHardwareAcceleration: true,
+            useAccelerate: true,
+            adaptiveQuantization: false,
+            useANS: false
+        )
+        let encoder = JXLEncoder(options: options)
+
+        var frame = ImageFrame(width: 256, height: 256, channels: 3)
+        for y in 0..<256 {
+            for x in 0..<256 {
+                frame.setPixel(x: x, y: y, channel: 0, value: UInt16(x * 257))
+                frame.setPixel(x: x, y: y, channel: 1, value: UInt16(y * 257))
+                frame.setPixel(x: x, y: y, channel: 2, value: UInt16(((x + y) / 2) * 257))
+            }
+        }
+
+        let start = ProcessInfo.processInfo.systemUptime
+        let result = try encoder.encode(frame)
+        let elapsed = ProcessInfo.processInfo.systemUptime - start
+
+        XCTAssertGreaterThan(result.data.count, 0)
+        XCTAssertLessThan(elapsed, 2.0,
+                          "256×256 encoding should complete in < 2 seconds (took \(String(format: "%.2f", elapsed))s)")
+    }
 }
