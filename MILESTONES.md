@@ -15,7 +15,7 @@
 | 2 | Lossless Compression (Modular Mode) | Weeks 4–7 | ✅ Complete |
 | 3 | Lossy Compression (VarDCT Mode) | Weeks 7–11 | ✅ Complete |
 | 4 | JPEG XL File Format & Container | Weeks 11–14 | ✅ Complete (2 tests outstanding) |
-| 5 | Hardware Acceleration — Apple Accelerate | Weeks 14–17 | 🔶 In Progress (8/10 deliverables) |
+| 5 | Hardware Acceleration — Apple Accelerate | Weeks 14–17 | ✅ Complete |
 | 6 | Hardware Acceleration — ARM NEON / SIMD | Weeks 17–20 | ✅ Complete |
 | 7 | Hardware Acceleration — Metal GPU | Weeks 20–23 | ✅ Complete (2 tests outstanding) |
 | 8 | ANS Entropy Coding | Weeks 23–27 | ✅ Complete |
@@ -223,8 +223,8 @@
 - [x] Integrate Accelerate DCT into VarDCT pipeline (currently falls back to scalar)
 - [x] Accelerate-based colour space conversion
 - [x] Accelerate-based quantisation (vectorised divide + round)
-- [ ] vImage integration for image resizing/resampling
-- [ ] Benchmarks comparing Accelerate vs scalar performance
+- [x] vImage integration for image resizing/resampling
+- [x] Benchmarks comparing Accelerate vs scalar performance
 
 ### Tests Required
 
@@ -233,7 +233,7 @@
 - [x] Matrix multiply: identity matrix × input = input
 - [x] Mean/stddev match known values
 - [x] `convertU8ToFloat` → `convertFloatToU8` round-trip
-- [ ] Performance: Accelerate DCT ≥ 2× faster than scalar on 256×256 image
+- [x] Performance: Accelerate DCT ≥ 2× faster than scalar on 256×256 image
 
 ### Acceptance Criteria
 
