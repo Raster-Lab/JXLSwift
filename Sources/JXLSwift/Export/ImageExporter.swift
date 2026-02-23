@@ -111,7 +111,7 @@ public enum PixelConversion {
         case .uint8:
             bytesPerComponent = 1
             result = planarToInterleaved8(frame, componentCount: componentCount, hasAlpha: hasAlpha, isGrayscale: isGrayscale)
-        case .uint16:
+        case .uint16, .int16:
             bytesPerComponent = 2
             result = planarToInterleaved16(frame, componentCount: componentCount, hasAlpha: hasAlpha, isGrayscale: isGrayscale)
         case .float32:

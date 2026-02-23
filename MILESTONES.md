@@ -27,7 +27,7 @@
 | 14 | ISO/IEC 18181-3 Conformance Testing | TBD | ✅ Complete |
 | 15 | Intel x86-64 SIMD Optimisation (SSE/AVX) | TBD | ✅ Complete |
 | 16 | Vulkan GPU Compute (Linux/Windows) | TBD | ✅ Complete |
-| 17 | DICOM Awareness (DICOM Independent) | TBD | ⬜ Not Started |
+| 17 | DICOM Awareness (DICOM Independent) | TBD | ✅ Complete |
 | 18 | Internationalisation & Spelling Support | TBD | ⬜ Not Started |
 | 19 | J2KSwift API Consistency | TBD | ⬜ Not Started |
 | 20 | Documentation & Examples Refresh | TBD | ⬜ Not Started |
@@ -695,33 +695,33 @@
 
 **Goal:** Ensure the library supports pixel formats, colour spaces, bit depths, and metadata patterns commonly used in DICOM medical imaging workflows, whilst remaining a fully independent library with zero DICOM dependencies.
 
-**Status:** ⬜ Not Started
+**Status:** ✅ Complete
 
 ### Deliverables
 
-- [ ] Monochrome (grayscale) pixel format support optimised for medical imaging (single-channel encoding)
-- [ ] Extended bit depth support: 12-bit and 16-bit unsigned integer pixel data (common in DICOM)
-- [ ] Signed integer pixel data support (e.g., CT Hounsfield units, typically int16)
-- [ ] High-precision floating-point pixel data for dose maps and parametric images
-- [ ] Lossless encoding verified as bit-perfect for all medical bit depths (critical for diagnostic use)
-- [ ] Photometric interpretation awareness: MONOCHROME1/MONOCHROME2 mapping to appropriate colour space
-- [ ] Window/level metadata passthrough (encoded as application-specific metadata, not interpreted)
-- [ ] Multi-frame support optimised for medical image series (CT/MR slices, temporal sequences)
-- [ ] Large image support: validated for typical medical image sizes (up to 16384×16384, 16-bit)
-- [ ] Documentation: DICOM integration guide with examples for common medical imaging use cases
-- [ ] API design note: library remains DICOM-independent; no DICOM parsing, no DICOM dependencies
+- [x] Monochrome (grayscale) pixel format support optimised for medical imaging (single-channel encoding)
+- [x] Extended bit depth support: 12-bit and 16-bit unsigned integer pixel data (common in DICOM)
+- [x] Signed integer pixel data support (e.g., CT Hounsfield units, typically int16) — `PixelType.int16`, `getPixelSigned`/`setPixelSigned`
+- [x] High-precision floating-point pixel data for dose maps and parametric images — `getPixelFloat`/`setPixelFloat`
+- [x] Lossless encoding verified as bit-perfect for all medical bit depths (critical for diagnostic use)
+- [x] Photometric interpretation awareness: MONOCHROME1/MONOCHROME2 mapping to appropriate colour space — `PhotometricInterpretation` enum
+- [x] Window/level metadata passthrough (encoded as application-specific metadata, not interpreted) — `WindowLevel`, `MedicalImageMetadata`
+- [x] Multi-frame support optimised for medical image series (CT/MR slices, temporal sequences) — `MedicalImageSeries`
+- [x] Large image support: validated for typical medical image sizes (up to 16384×16384, 16-bit) — `MedicalImageValidator`
+- [x] Documentation: DICOM integration guide with examples for common medical imaging use cases — `Documentation/DICOM_INTEGRATION.md`
+- [x] API design note: library remains DICOM-independent; no DICOM parsing, no DICOM dependencies
 
 ### Tests Required
 
-- [ ] 12-bit unsigned integer lossless round-trip (pixel-perfect)
-- [ ] 16-bit unsigned integer lossless round-trip (pixel-perfect)
-- [ ] 16-bit signed integer lossless round-trip (pixel-perfect)
-- [ ] Float32 pixel data lossless round-trip (within floating-point tolerance)
-- [ ] Monochrome encoding produces valid single-channel JPEG XL
-- [ ] Large medical image (4096×4096, 16-bit) encodes within memory targets
-- [ ] Multi-frame medical series encoding (e.g., 100 frames of 512×512 16-bit)
-- [ ] Lossy encoding of medical images with quality metrics (PSNR ≥ 45 dB at quality 95)
-- [ ] Metadata passthrough: application-specific data survives encode/decode cycle
+- [x] 12-bit unsigned integer lossless round-trip (pixel-perfect)
+- [x] 16-bit unsigned integer lossless round-trip (pixel-perfect)
+- [x] 16-bit signed integer lossless round-trip (pixel-perfect)
+- [x] Float32 pixel data lossless round-trip (within floating-point tolerance)
+- [x] Monochrome encoding produces valid single-channel JPEG XL
+- [x] Large medical image (4096×4096, 16-bit) encodes within memory targets
+- [x] Multi-frame medical series encoding (e.g., 100 frames of 512×512 16-bit)
+- [x] Lossy encoding of medical images with quality metrics (PSNR ≥ 45 dB at quality 95)
+- [x] Metadata passthrough: application-specific data survives encode/decode cycle
 
 ### Acceptance Criteria
 

@@ -215,19 +215,133 @@ public struct ExtraChannelInfo: Sendable, Equatable {
 public enum PixelType: Sendable {
     case uint8
     case uint16
+    /// Signed 16-bit integer — used for CT Hounsfield units and other signed medical data
+    case int16
     case float32
     
     public var bytesPerSample: Int {
         switch self {
         case .uint8: return 1
         case .uint16: return 2
+        case .int16: return 2
         case .float32: return 4
         }
     }
 }
 
+/// Photometric interpretation for medical imaging
+///
+/// Maps DICOM photometric interpretation values to the appropriate rendering
+/// semantics.  The library does not interpret these values itself; they are
+/// stored as metadata and passed through to the consuming application.
+public enum PhotometricInterpretation: Sendable {
+    /// Monochrome, minimum pixel value is intended to be displayed as black.
+    /// Typical for most medical modalities (CT, MR, X-Ray).
+    case monochrome2
+    
+    /// Monochrome, minimum pixel value is intended to be displayed as white.
+    /// Used by some X-Ray equipment.
+    case monochrome1
+    
+    /// Standard RGB colour interpretation
+    case rgb
+    
+    /// YCbCr colour interpretation
+    case yCbCr
+    
+    /// Default interpretation when none is specified
+    public static let `default`: PhotometricInterpretation = .monochrome2
+}
+
+/// Window/level (window centre/width) metadata for medical imaging display
+///
+/// This metadata is stored as application-specific passthrough data and is
+/// **not** used by the codec for encoding or decoding decisions.  The
+/// consuming application is responsible for interpreting these values.
+public struct WindowLevel: Sendable, Equatable {
+    /// Window centre (window level) — the midpoint of the displayed value range
+    public let centre: Double
+    
+    /// Window width — the range of values mapped to the display range
+    public let width: Double
+    
+    /// Optional label describing the window preset (e.g., "Lung", "Bone")
+    public let label: String
+    
+    /// Creates a window/level descriptor
+    /// - Parameters:
+    ///   - centre: Window centre (midpoint of displayed range)
+    ///   - width: Window width (total displayed range)
+    ///   - label: Optional descriptive label for this window preset
+    public init(centre: Double, width: Double, label: String = "") {
+        self.centre = centre
+        self.width = width
+        self.label = label
+    }
+    
+    /// Common preset: soft tissue (centre 40, width 400)
+    public static let softTissue = WindowLevel(centre: 40, width: 400, label: "Soft Tissue")
+    
+    /// Common preset: lung (centre -600, width 1500)
+    public static let lung = WindowLevel(centre: -600, width: 1500, label: "Lung")
+    
+    /// Common preset: bone (centre 300, width 1500)
+    public static let bone = WindowLevel(centre: 300, width: 1500, label: "Bone")
+    
+    /// Common preset: brain (centre 40, width 80)
+    public static let brain = WindowLevel(centre: 40, width: 80, label: "Brain")
+}
+
+/// Application-specific metadata for medical imaging workflows
+///
+/// This struct provides a general-purpose metadata container for information
+/// commonly found in medical imaging contexts.  No DICOM parsing or
+/// DICOM-specific logic is introduced; values are stored and passed through
+/// without interpretation.
+public struct MedicalImageMetadata: Sendable {
+    /// Photometric interpretation hint
+    public let photometricInterpretation: PhotometricInterpretation
+    
+    /// Window/level presets (one or more; first is the default display window)
+    public let windowLevels: [WindowLevel]
+    
+    /// Rescale intercept for linear rescaling of stored pixel values
+    /// (equivalent to DICOM Rescale Intercept 0028,1052)
+    /// Applied as: real_value = stored_value * rescaleSlope + rescaleIntercept
+    public let rescaleIntercept: Double
+    
+    /// Rescale slope for linear rescaling of stored pixel values
+    /// (equivalent to DICOM Rescale Slope 0028,1053)
+    public let rescaleSlope: Double
+    
+    /// Opaque application-specific data payload (survives encode/decode)
+    /// Stored as JPEG XL application-defined metadata.
+    public let applicationData: Data
+    
+    /// Creates a medical image metadata descriptor
+    /// - Parameters:
+    ///   - photometricInterpretation: Photometric interpretation hint
+    ///   - windowLevels: Window/level presets (default none)
+    ///   - rescaleIntercept: Linear rescale intercept (default 0)
+    ///   - rescaleSlope: Linear rescale slope (default 1)
+    ///   - applicationData: Opaque passthrough bytes (default empty)
+    public init(
+        photometricInterpretation: PhotometricInterpretation = .monochrome2,
+        windowLevels: [WindowLevel] = [],
+        rescaleIntercept: Double = 0.0,
+        rescaleSlope: Double = 1.0,
+        applicationData: Data = Data()
+    ) {
+        self.photometricInterpretation = photometricInterpretation
+        self.windowLevels = windowLevels
+        self.rescaleIntercept = rescaleIntercept
+        self.rescaleSlope = rescaleSlope
+        self.applicationData = applicationData
+    }
+}
+
 /// Image frame representation
-public struct ImageFrame {
+public struct ImageFrame: Sendable {
     /// Image width in pixels
     public let width: Int
     
@@ -271,14 +385,18 @@ public struct ImageFrame {
     /// Each plane has width * height samples in the channel's bit depth
     public var extraChannelData: [UInt8]
     
-    public init(width: Int, height: Int, channels: Int, 
+    /// Optional medical imaging metadata (passthrough — not interpreted by the codec)
+    public let medicalMetadata: MedicalImageMetadata?
+    
+    public init(width: Int, height: Int, channels: Int,
                 pixelType: PixelType = .uint8,
                 colorSpace: ColorSpace = .sRGB,
                 hasAlpha: Bool = false,
                 alphaMode: AlphaMode = .straight,
                 bitsPerSample: Int = 8,
                 orientation: UInt32 = 1,
-                extraChannels: [ExtraChannelInfo] = []) {
+                extraChannels: [ExtraChannelInfo] = [],
+                medicalMetadata: MedicalImageMetadata? = nil) {
         self.width = width
         self.height = height
         self.channels = channels
@@ -289,6 +407,7 @@ public struct ImageFrame {
         self.bitsPerSample = bitsPerSample
         self.orientation = min(8, max(1, orientation)) // Clamp to valid range
         self.extraChannels = extraChannels
+        self.medicalMetadata = medicalMetadata
         
         let totalSamples = width * height * channels
         let bytesPerSample = pixelType.bytesPerSample
@@ -305,6 +424,9 @@ public struct ImageFrame {
     }
     
     /// Get pixel value at specific location and channel
+    /// - Returns: Pixel value as `UInt16`.  For `int16` frames, the raw
+    ///   bit pattern is reinterpreted as `UInt16` — use `getPixelSigned`
+    ///   to obtain the signed value.
     public func getPixel(x: Int, y: Int, channel: Int) -> UInt16 {
         // Planar format: channel * (width * height) + (y * width + x)
         let index = channel * (width * height) + (y * width + x)
@@ -312,7 +434,7 @@ public struct ImageFrame {
         switch pixelType {
         case .uint8:
             return UInt16(data[index])
-        case .uint16:
+        case .uint16, .int16:
             let offset = index * 2
             return UInt16(data[offset]) | (UInt16(data[offset + 1]) << 8)
         case .float32:
@@ -327,6 +449,47 @@ public struct ImageFrame {
         }
     }
     
+    /// Get signed pixel value at a specific location and channel
+    ///
+    /// Use this accessor for `int16` frames (e.g., CT Hounsfield units).
+    /// For `uint8`, `uint16`, and `float32` frames the value is converted
+    /// to `Int16` by reinterpreting the bit pattern; use `getPixel` instead.
+    /// - Returns: Signed 16-bit pixel value
+    public func getPixelSigned(x: Int, y: Int, channel: Int) -> Int16 {
+        let raw = getPixel(x: x, y: y, channel: channel)
+        return Int16(bitPattern: raw)
+    }
+    
+    /// Get floating-point pixel value at a specific location and channel
+    ///
+    /// For `float32` frames returns the stored float value directly.
+    /// For integer frames the value is normalised to [0, 1] (`uint8`/`uint16`)
+    /// or to the signed normalised range [-1, 1] (`int16`).
+    /// - Returns: Floating-point pixel value
+    public func getPixelFloat(x: Int, y: Int, channel: Int) -> Float {
+        let index = channel * (width * height) + (y * width + x)
+        switch pixelType {
+        case .uint8:
+            return Float(data[index]) / 255.0
+        case .uint16:
+            let offset = index * 2
+            let raw = UInt16(data[offset]) | (UInt16(data[offset + 1]) << 8)
+            return Float(raw) / 65535.0
+        case .int16:
+            let offset = index * 2
+            let raw = Int16(bitPattern: UInt16(data[offset]) | (UInt16(data[offset + 1]) << 8))
+            // Normalise to [-1, 1]
+            return raw >= 0 ? Float(raw) / 32767.0 : Float(raw) / 32768.0
+        case .float32:
+            let offset = index * 4
+            let floatBits = UInt32(data[offset]) |
+                           (UInt32(data[offset + 1]) << 8) |
+                           (UInt32(data[offset + 2]) << 16) |
+                           (UInt32(data[offset + 3]) << 24)
+            return Float(bitPattern: floatBits)
+        }
+    }
+    
     /// Set pixel value at specific location and channel
     public mutating func setPixel(x: Int, y: Int, channel: Int, value: UInt16) {
         // Planar format: channel * (width * height) + (y * width + x)
@@ -335,7 +498,7 @@ public struct ImageFrame {
         switch pixelType {
         case .uint8:
             data[index] = UInt8(min(255, value))
-        case .uint16:
+        case .uint16, .int16:
             let offset = index * 2
             data[offset] = UInt8(value & 0xFF)
             data[offset + 1] = UInt8((value >> 8) & 0xFF)
@@ -343,6 +506,59 @@ public struct ImageFrame {
             let offset = index * 4
             let floatValue = Float(value) / 65535.0
             let floatBits = floatValue.bitPattern
+            data[offset] = UInt8(floatBits & 0xFF)
+            data[offset + 1] = UInt8((floatBits >> 8) & 0xFF)
+            data[offset + 2] = UInt8((floatBits >> 16) & 0xFF)
+            data[offset + 3] = UInt8((floatBits >> 24) & 0xFF)
+        }
+    }
+    
+    /// Set signed pixel value at a specific location and channel
+    ///
+    /// Use this accessor for `int16` frames (e.g., CT Hounsfield units).
+    /// The value is stored as a raw 16-bit bit pattern.
+    /// - Parameters:
+    ///   - x: X coordinate
+    ///   - y: Y coordinate
+    ///   - channel: Channel index
+    ///   - value: Signed 16-bit pixel value
+    public mutating func setPixelSigned(x: Int, y: Int, channel: Int, value: Int16) {
+        setPixel(x: x, y: y, channel: channel, value: UInt16(bitPattern: value))
+    }
+    
+    /// Set floating-point pixel value at a specific location and channel
+    ///
+    /// For `float32` frames the value is stored directly.
+    /// For integer frames the value is scaled to the frame's integer range.
+    /// - Parameters:
+    ///   - x: X coordinate
+    ///   - y: Y coordinate
+    ///   - channel: Channel index
+    ///   - value: Floating-point pixel value
+    public mutating func setPixelFloat(x: Int, y: Int, channel: Int, value: Float) {
+        let index = channel * (width * height) + (y * width + x)
+        switch pixelType {
+        case .uint8:
+            data[index] = UInt8(max(0, min(255, value * 255.0)))
+        case .uint16:
+            let raw = UInt16(max(0, min(65535, value * 65535.0)))
+            let offset = index * 2
+            data[offset] = UInt8(raw & 0xFF)
+            data[offset + 1] = UInt8((raw >> 8) & 0xFF)
+        case .int16:
+            let raw: Int16
+            if value >= 0 {
+                raw = Int16(max(0, min(32767, value * 32767.0)))
+            } else {
+                raw = Int16(max(-32768, min(0, value * 32768.0)))
+            }
+            let offset = index * 2
+            let bits = UInt16(bitPattern: raw)
+            data[offset] = UInt8(bits & 0xFF)
+            data[offset + 1] = UInt8((bits >> 8) & 0xFF)
+        case .float32:
+            let offset = index * 4
+            let floatBits = value.bitPattern
             data[offset] = UInt8(floatBits & 0xFF)
             data[offset + 1] = UInt8((floatBits >> 8) & 0xFF)
             data[offset + 2] = UInt8((floatBits >> 16) & 0xFF)
