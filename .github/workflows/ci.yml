@@ -228,6 +228,63 @@ jobs:
             echo "⚠️ No conformance results file found." >> "$GITHUB_STEP_SUMMARY"
           fi
 
+  performance:
+    name: Performance Regression Gate (Milestone 21)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Swift
+        uses: swift-actions/setup-swift@v3
+        with:
+          swift-version: "6.2"
+          skip-verify-signature: true
+
+      - name: Swift version
+        run: swift --version
+
+      - name: Run Milestone 21 performance tests
+        run: swift test --filter Milestone21Tests --xunit-output performance-results.xml
+        # Advisory only: performance tests record throughput numbers but are not
+        # expected to fail on CI runners (which are slower than developer hardware).
+        # If a regression is detected on developer hardware, update the baselines
+        # in PerformanceRegressionGate before merging.
+        continue-on-error: true
+
+      - name: Upload performance results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: performance-results
+          path: performance-results.xml
+
+      - name: Generate job summary
+        if: always()
+        run: |
+          echo "## Performance Regression Gate — Milestone 21" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Item | Detail |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|------|--------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Goal** | No PR merges with > 10% throughput slowdown |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Milestone** | 21 — Performance: Exceeding libjxl |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f performance-results.xml ]; then
+            tests=$(grep -c '<testcase' performance-results.xml || echo "0")
+            failures=$(grep -c '<failure' performance-results.xml || echo "0")
+            echo "| **Tests run** | $tests |" >> "$GITHUB_STEP_SUMMARY"
+            echo "| **Failures** | $failures |" >> "$GITHUB_STEP_SUMMARY"
+            if [ "$failures" -eq 0 ]; then
+              echo "" >> "$GITHUB_STEP_SUMMARY"
+              echo "✅ All performance gate tests passed." >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "" >> "$GITHUB_STEP_SUMMARY"
+              echo "⚠️ $failures performance test(s) reported regressions. Review throughput numbers." >> "$GITHUB_STEP_SUMMARY"
+            fi
+          else
+            echo "⚠️ No performance results file found." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   security:
     name: Security Scanning
     runs-on: macos-15
