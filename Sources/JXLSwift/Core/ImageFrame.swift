@@ -478,7 +478,10 @@ public struct ImageFrame: Sendable {
         case .int16:
             let offset = index * 2
             let raw = Int16(bitPattern: UInt16(data[offset]) | (UInt16(data[offset + 1]) << 8))
-            // Normalise to [-1, 1]
+            // Normalise to [-1, 1] using the standard asymmetric Int16 approach:
+            // positive range [0, 32767] → [0.0, 1.0] (÷32767 ensures 32767 → 1.0)
+            // negative range [-32768, 0] → [-1.0, 0.0] (÷32768 ensures -32768 → -1.0)
+            // This matches Int16's inherent asymmetry (min = -32768, max = 32767).
             return raw >= 0 ? Float(raw) / 32767.0 : Float(raw) / 32768.0
         case .float32:
             let offset = index * 4
@@ -547,6 +550,8 @@ public struct ImageFrame: Sendable {
             data[offset + 1] = UInt8((raw >> 8) & 0xFF)
         case .int16:
             let raw: Int16
+            // Inverse of getPixelFloat asymmetric normalisation:
+            // [0.0, 1.0] → [0, 32767] (×32767); [-1.0, 0.0] → [-32768, 0] (×32768)
             if value >= 0 {
                 raw = Int16(max(0, min(32767, value * 32767.0)))
             } else {
