@@ -17,6 +17,17 @@ The **public API must be backend-agnostic**. Consumers should never need to know
 
 ---
 
+## Scope of Work
+
+> **You must only work on tasks that are explicitly defined in [`MILESTONES.md`](MILESTONES.md).**
+
+- **Do not** implement features, fix bugs, refactor code, add tests, or make any other changes that are not part of a milestone listed in `MILESTONES.md`.
+- **Do not** add new milestones, deliverables, or acceptance criteria without explicit instruction from the project maintainer.
+- Before starting any task, verify that it maps to an active (⬜ Not Started or 🔶 In Progress) milestone in `MILESTONES.md`.
+- If a requested task falls outside the defined milestones, **stop and ask the maintainer** rather than proceeding.
+
+---
+
 ## Architecture Rules
 
 ### No UI Frameworks in Core Targets
