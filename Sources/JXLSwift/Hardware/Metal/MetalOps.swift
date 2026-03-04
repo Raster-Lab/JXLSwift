@@ -341,7 +341,7 @@ public enum MetalOps {
     private static func alignedBufferLength(_ length: Int) -> Int {
         let safeLength = max(length, 1)
         if safeLength >= coalescingThreshold {
-            let pageSize = Int(vm_page_size)
+            nonisolated(unsafe) let pageSize = Int(vm_page_size)
             return (safeLength + pageSize - 1) & ~(pageSize - 1)
         } else {
             // 64-byte cache-line alignment for small buffers.
