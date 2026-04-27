@@ -1476,6 +1476,97 @@ final class FoundationTests: XCTestCase {
 
 }
 
+// MARK: - LZ77Config (§C.6.5)
+
+extension FoundationTests {
+
+    /// Disabled LZ77 emits a single bit (0). Round-trip recovers the
+    /// disabled state.
+    func testLZ77Config_RoundTrip_Disabled() throws {
+        var w = BitWriter()
+        try LZ77Config.disabled.write(to: &w, logAlpha: 8)
+        let bytes = [UInt8](w.finishToData())
+        // Single bit (0) padded to a byte → 0x00.
+        XCTAssertEqual(bytes, [0x00])
+        var r = BitReader(w.finishToData())
+        let parsed = try LZ77Config.read(from: &r, logAlpha: 8)
+        XCTAssertFalse(parsed.enabled)
+    }
+
+    /// Enabled LZ77 with default values: round-trip every field,
+    /// including the embedded distance HybridUintConfig.
+    func testLZ77Config_RoundTrip_EnabledDefaults() throws {
+        let cfg = LZ77Config(
+            enabled: true,
+            minSymbol: 224,
+            minLength: 3,
+            distanceConfig: HybridUintConfig.defaultConfig
+        )
+        var w = BitWriter()
+        try cfg.write(to: &w, logAlpha: 8)
+        var r = BitReader(w.finishToData())
+        let parsed = try LZ77Config.read(from: &r, logAlpha: 8)
+        XCTAssertTrue(parsed.enabled)
+        XCTAssertEqual(parsed.minSymbol, 224)
+        XCTAssertEqual(parsed.minLength, 3)
+        XCTAssertEqual(parsed.distanceConfig.splitExponent, 4)
+        XCTAssertEqual(parsed.distanceConfig.msbInToken, 2)
+        XCTAssertEqual(parsed.distanceConfig.lsbInToken, 0)
+    }
+
+    /// Sweep across a few representative (minSymbol, minLength,
+    /// distanceConfig) tuples to exercise the variable-width
+    /// distanceConfig field at different `logAlpha` settings.
+    func testLZ77Config_RoundTrip_Sweep() throws {
+        struct Case { let logAlpha: Int; let cfg: LZ77Config }
+        let cases: [Case] = [
+            Case(logAlpha: 5, cfg: LZ77Config(
+                enabled: true, minSymbol: 16, minLength: 5,
+                distanceConfig: HybridUintConfig(splitExponent: 3,
+                                                  msbInToken: 1,
+                                                  lsbInToken: 1))),
+            Case(logAlpha: 6, cfg: LZ77Config(
+                enabled: true, minSymbol: 100, minLength: 4,
+                distanceConfig: HybridUintConfig(splitExponent: 6,
+                                                  msbInToken: 0,
+                                                  lsbInToken: 0))),
+            Case(logAlpha: 8, cfg: LZ77Config(
+                enabled: true, minSymbol: 65535, minLength: 65535,
+                distanceConfig: HybridUintConfig(splitExponent: 4,
+                                                  msbInToken: 2,
+                                                  lsbInToken: 0))),
+        ]
+        for c in cases {
+            var w = BitWriter()
+            try c.cfg.write(to: &w, logAlpha: c.logAlpha)
+            var r = BitReader(w.finishToData())
+            let parsed = try LZ77Config.read(from: &r, logAlpha: c.logAlpha)
+            XCTAssertEqual(parsed.enabled, c.cfg.enabled)
+            XCTAssertEqual(parsed.minSymbol, c.cfg.minSymbol,
+                "minSymbol mismatch at logAlpha=\(c.logAlpha)")
+            XCTAssertEqual(parsed.minLength, c.cfg.minLength,
+                "minLength mismatch at logAlpha=\(c.logAlpha)")
+            XCTAssertEqual(parsed.distanceConfig.splitExponent,
+                           c.cfg.distanceConfig.splitExponent)
+            XCTAssertEqual(parsed.distanceConfig.msbInToken,
+                           c.cfg.distanceConfig.msbInToken)
+            XCTAssertEqual(parsed.distanceConfig.lsbInToken,
+                           c.cfg.distanceConfig.lsbInToken)
+        }
+    }
+
+    /// Encoder rejects out-of-range minSymbol / minLength (above the
+    /// u(16) placeholder limit).
+    func testLZ77Config_RejectsOutOfRange() {
+        var w = BitWriter()
+        let cfg = LZ77Config(
+            enabled: true, minSymbol: 0x1_0000, minLength: 3,
+            distanceConfig: .defaultConfig
+        )
+        XCTAssertThrowsError(try cfg.write(to: &w, logAlpha: 8))
+    }
+}
+
 // MARK: - ContextMap (§C.6.4)
 
 extension FoundationTests {
