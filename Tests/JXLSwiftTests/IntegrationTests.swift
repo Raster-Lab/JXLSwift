@@ -199,6 +199,38 @@ final class FoundationTests: XCTestCase {
         )
     }
 
+    /// Diagnostic: linear transfer function file. Tests sRGB
+    /// primaries + Linear transfer function path.
+    func testDiagnostic_DumpCjxlLinearTransfer() throws {
+        guard let cjxl = whichTool("cjxl") else {
+            try XCTSkipIf(true, "cjxl not on PATH")
+            return
+        }
+        let pnmPath = NSTemporaryDirectory() + "diag-lin.ppm"
+        let jxlPath = NSTemporaryDirectory() + "diag-lin.jxl"
+        defer {
+            try? FileManager.default.removeItem(atPath: pnmPath)
+            try? FileManager.default.removeItem(atPath: jxlPath)
+        }
+        try makeSyntheticPNM(
+            width: 16, height: 16, channels: 3, bitDepth: 8,
+            generator: { x, y, c in UInt16((x &+ y &+ Int(c)) & 0xFF) }
+        ).write(to: URL(fileURLWithPath: pnmPath))
+        let proc = Process()
+        proc.launchPath = cjxl
+        proc.arguments = ["-q", "100", "-x", "color_space=RGB_D65_SRG_Rel_Lin",
+                          pnmPath, jxlPath]
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        try proc.run()
+        proc.waitUntilExit()
+        let data = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
+        let inspect = try JXLDecoder().inspect(data)
+        if let m = inspect.metadata {
+            print("DIAG cjxl-linear: cs=\(m.colorEncoding.colorSpace) wp=\(String(describing: m.colorEncoding.whitePoint)) prim=\(String(describing: m.colorEncoding.primaries)) tf=\(m.colorEncoding.transferFunction) ri=\(m.colorEncoding.renderingIntent)")
+        }
+    }
+
     /// Diagnostic: print the ColorEncoding + intensity-target our
     /// parser extracts from a cjxl-produced Rec.2100-PQ HDR file.
     /// This exercises BT2100 primaries, PQ transfer function, and
@@ -374,6 +406,47 @@ final class FoundationTests: XCTestCase {
             width: 371, height: 219, channels: 1, bitDepth: 8,
             generator: { _, y, _ in UInt16(y & 0xFF) }
         )
+    }
+
+    /// `--intensity_target=4000` exercises the ToneMapping (HDR
+    /// metadata) parsing path. cjxl writes intensityTarget=4000
+    /// nits (non-default 255.0) which forces our parser to take
+    /// the toneDefault=0 branch and read the half-float intensity
+    /// value.
+    func testCrossValidate_Cjxl_IntensityTarget_TonemappingMatch() throws {
+        guard let cjxl = whichTool("cjxl") else {
+            try XCTSkipIf(true, "cjxl not on PATH")
+            return
+        }
+        let pnmPath = NSTemporaryDirectory() + "tone-\(UUID().uuidString).ppm"
+        let jxlPath = NSTemporaryDirectory() + "tone-\(UUID().uuidString).jxl"
+        defer {
+            try? FileManager.default.removeItem(atPath: pnmPath)
+            try? FileManager.default.removeItem(atPath: jxlPath)
+        }
+        try makeSyntheticPNM(
+            width: 16, height: 16, channels: 3, bitDepth: 8,
+            generator: { x, y, c in UInt16((x &+ y &+ Int(c)) & 0xFF) }
+        ).write(to: URL(fileURLWithPath: pnmPath))
+        let proc = Process()
+        proc.launchPath = cjxl
+        proc.arguments = ["-q", "100", "--intensity_target=4000", pnmPath, jxlPath]
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        try proc.run()
+        proc.waitUntilExit()
+        guard proc.terminationStatus == 0 else {
+            XCTFail("cjxl failed with status \(proc.terminationStatus)")
+            return
+        }
+        let data = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
+        let inspect = try JXLDecoder().inspect(data)
+        guard let m = inspect.metadata else {
+            XCTFail("inspect() returned nil ImageMetadata")
+            return
+        }
+        XCTAssertEqual(m.intensityTarget, 4000.0, accuracy: 1.0,
+            "tone-mapping intensityTarget should match cjxl --intensity_target=4000")
     }
 
     /// Float32 grayscale via PFM input — exercises the float branch

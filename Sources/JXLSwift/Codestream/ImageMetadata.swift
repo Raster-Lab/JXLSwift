@@ -405,10 +405,10 @@ extension ColorEncoding {
 
         if colorSpace != .grayscale {
             let prim = primaries ?? .srgb
-            // Primaries: spec-specific distribution (literal(1),
-            // literal(2), literal(9), literal(11)) — not Enum().
+            // Primaries: spec distribution
+            // `(literal(11), literal(1), literal(9), literal(2))`.
             try w.writeU32(prim.rawValue, distributions: (
-                .literal(1), .literal(2), .literal(9), .literal(11)
+                .literal(11), .literal(1), .literal(9), .literal(2)
             ))
             if prim == .custom, let cp = customPrimaries {
                 func writeChrom(_ ch: (UInt32, UInt32)) throws {
