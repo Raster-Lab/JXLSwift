@@ -41,7 +41,8 @@ For users who need a working JXL pipeline today, switch to the `libjxl-backend` 
 |---|---|---|---|
 | Hybrid uint encoding | §C.5 | ✅ encode + decode | round-trip on every value 0…255 with default config + power-of-two boundary values 1…2³¹ + sweep over (split, msb, lsb) configs + hand-derived spec-formula vectors |
 | HybridUintConfig serialisation (read/write the 3 params) | §C.5.1 | ⏳ deferred until distributions land — config is parsed per-distribution, not standalone |
-| Prefix codes | §C.6.2 | ⏳ |
+| Prefix codes (canonical Huffman) | §C.6.2 | ✅ encode + decode | hand-derived 4-symbol code matches canonical assignment exactly; round-trip across 16-symbol equal-length, mixed-length {1,3,3,3,3}, and 256-symbol streams; rejects oversubscribed and undersubscribed lengths (Kraft); single-symbol degenerate code consumes 0 bits |
+| Prefix-code-table serialisation (the bitstream encoding of the per-symbol lengths array) | §C.6.2.1 | ⏳ |
 | rANS distributions | §C.6.3 | ⏳ |
 | Histogram clustering | §C.6.4 | ⏳ |
 | LZ77 hybrid | §C.6.5 | ⏳ |

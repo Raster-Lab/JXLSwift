@@ -576,6 +576,118 @@ final class FoundationTests: XCTestCase {
         XCTAssertEqual(v1024.extraBits, 0)
     }
 
+    // MARK: - Phase E2: Prefix codes (§C.6.2)
+
+    /// Hand-derived test: a 4-symbol code with lengths {2, 1, 3, 3}.
+    /// Canonical assignment (sort by (length asc, symbol asc)):
+    ///   symbol 1 (len 1) → 0
+    ///   symbol 0 (len 2) → 10
+    ///   symbol 2 (len 3) → 110
+    ///   symbol 3 (len 3) → 111
+    /// Verify the table built from the lengths produces these exact
+    /// codewords, then a round-trip through encode/decode recovers
+    /// the original symbol stream.
+    func testPrefixCode_HandDerived_4Symbols() throws {
+        let lengths: [UInt8] = [2, 1, 3, 3]
+        let table = try PrefixCodeTable(lengths: lengths)
+        // Canonical codewords (MSB-first stored in the low bits).
+        XCTAssertEqual(table.codewords[1], 0b0,   "symbol 1 codeword")
+        XCTAssertEqual(table.codewords[0], 0b10,  "symbol 0 codeword")
+        XCTAssertEqual(table.codewords[2], 0b110, "symbol 2 codeword")
+        XCTAssertEqual(table.codewords[3], 0b111, "symbol 3 codeword")
+
+        // Round-trip: emit each symbol, decode them all back.
+        let symbols = [1, 0, 2, 3, 1, 1, 0, 3]
+        var w = BitWriter()
+        for s in symbols { try table.encode(s, to: &w) }
+        var r = BitReader(w.finishToData())
+        var decoded: [Int] = []
+        for _ in symbols { decoded.append(try table.decode(from: &r)) }
+        XCTAssertEqual(decoded, symbols)
+    }
+
+    /// Round-trip with a richer 16-symbol alphabet — verifies the
+    /// canonical assignment and decoding LUT scale correctly.
+    /// All lengths = 4: 16 * 2^11 = 2^15 ✓ Kraft.
+    func testPrefixCode_RoundTrip_16Symbols() throws {
+        let lengths = [UInt8](repeating: 4, count: 16)
+        let table = try PrefixCodeTable(lengths: lengths)
+        let stream = [0, 1, 2, 0, 5, 8, 0, 12, 4, 0, 0, 9, 7, 15, 14, 13]
+        var w = BitWriter()
+        for s in stream { try table.encode(s, to: &w) }
+        var r = BitReader(w.finishToData())
+        var decoded: [Int] = []
+        for _ in stream { decoded.append(try table.decode(from: &r)) }
+        XCTAssertEqual(decoded, stream)
+    }
+
+    /// Mixed-length code: lengths [1, 3, 3, 3, 3] → 1·16384 + 4·4096 = 32768 ✓
+    func testPrefixCode_RoundTrip_MixedLengths() throws {
+        let lengths: [UInt8] = [1, 3, 3, 3, 3]
+        let table = try PrefixCodeTable(lengths: lengths)
+        let stream = [0, 1, 2, 3, 4, 0, 0, 1, 2, 0, 4, 3, 1]
+        var w = BitWriter()
+        for s in stream { try table.encode(s, to: &w) }
+        var r = BitReader(w.finishToData())
+        var decoded: [Int] = []
+        for _ in stream { decoded.append(try table.decode(from: &r)) }
+        XCTAssertEqual(decoded, stream)
+    }
+
+    /// Single-symbol "degenerate" code: only one symbol has non-zero
+    /// length (in fact length 0, since a 1-symbol code emits nothing).
+    /// The decoder should always return that symbol regardless of the
+    /// bitstream.
+    func testPrefixCode_SingleSymbolDegenerate() throws {
+        let lengths: [UInt8] = [0, 0, 0, 0, 0]   // no symbols present
+        // We model this as "degenerate" — when all lengths are 0, any
+        // decode reads nothing and returns symbol 0. (libjxl uses the
+        // same convention: a single-symbol distribution emits no bits.)
+        let table = try PrefixCodeTable(lengths: lengths)
+        XCTAssertEqual(table.usedMaxLength, 0)
+        var r = BitReader(Data([0xFF]))   // any input
+        let s = try table.decode(from: &r)
+        XCTAssertEqual(s, 0)
+        XCTAssertEqual(r.position, 0, "degenerate code consumed no bits")
+    }
+
+    /// Oversubscribed lengths must throw — Kraft inequality violation.
+    func testPrefixCode_RejectsOversubscribed() {
+        let lengths: [UInt8] = [1, 1, 1]   // 3 * 2^14 > 2^15
+        XCTAssertThrowsError(try PrefixCodeTable(lengths: lengths)) { err in
+            guard let pcErr = err as? PrefixCodeError else {
+                XCTFail("expected PrefixCodeError, got \(err)"); return
+            }
+            if case .oversubscribed = pcErr {} else { XCTFail("expected .oversubscribed") }
+        }
+    }
+
+    /// Undersubscribed must also throw.
+    func testPrefixCode_RejectsUndersubscribed() {
+        let lengths: [UInt8] = [3, 3]   // 2 * 2^12 = 2^13 ≠ 2^15
+        XCTAssertThrowsError(try PrefixCodeTable(lengths: lengths)) { err in
+            if case PrefixCodeError.undersubscribed = err {} else { XCTFail("expected .undersubscribed, got \(err)") }
+        }
+    }
+
+    /// Larger alphabet, full sweep of 100 random symbols. Stress test
+    /// that exercises the LUT decode path and codeword reversal.
+    func testPrefixCode_RoundTrip_LargerAlphabet() throws {
+        // 256-symbol alphabet with 8-bit equal lengths: every symbol
+        // gets a unique 8-bit codeword. Sum = 256 * 2^7 = 2^15. ✓
+        let lengths = [UInt8](repeating: 8, count: 256)
+        let table = try PrefixCodeTable(lengths: lengths)
+        var rng = SystemRandomNumberGenerator()
+        var stream: [Int] = []
+        for _ in 0..<100 { stream.append(Int(rng.next(upperBound: UInt32(256)))) }
+        var w = BitWriter()
+        for s in stream { try table.encode(s, to: &w) }
+        var r = BitReader(w.finishToData())
+        var decoded: [Int] = []
+        for _ in stream { decoded.append(try table.decode(from: &r)) }
+        XCTAssertEqual(decoded, stream)
+    }
+
     // MARK: - DICOM (still works — pure Swift, codec-agnostic)
 
     /// Sanity: the DICOM reader is unchanged by the libjxl removal.
