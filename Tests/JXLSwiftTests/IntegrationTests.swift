@@ -1956,6 +1956,136 @@ extension FoundationTests {
         XCTAssertEqual(decoded.data, frame.data)
     }
 
+    /// All-zero image: every residual is 0 → 1 distinct token → the
+    /// auto-selected `simple([0])` shape gives the entire rANS stream
+    /// to that one symbol. Output should be tiny — just header
+    /// overhead plus 4 bytes for the rANS final state.
+    func testM0_AllZeroImage_CompressesToHeadersPlusTinyTail() throws {
+        let frame = ImageFrame(
+            width: 32, height: 32, channels: 1,
+            pixelType: .uint8, colorSpace: .grayscale
+        )
+        // Default-init leaves all bytes at 0.
+        let encoded = try MinimalLosslessCodec.encode(frame)
+        // 32×32 raw = 1024 bytes. Auto-selected simple([0]) means
+        // every token costs effectively 0 bits; the entropy stream is
+        // bounded by overhead. 200 bytes is generous and lets us
+        // assert "dramatic compression" without pinning the exact
+        // size to header byte counts that may shift.
+        XCTAssertLessThan(encoded.count, 200,
+            "all-zero 32×32 image should compress to under 200 bytes; got \(encoded.count)")
+        let decoded = try MinimalLosslessCodec.decode(encoded)
+        XCTAssertEqual(decoded.data, frame.data)
+    }
+
+    /// Smooth-gradient 16-bit image (large per-step delta = 1024) —
+    /// the case that previously failed because flat distribution costs
+    /// 7 bits per token regardless of value, and the residuals here
+    /// exceed the literal-token range. With auto-shape selection, if
+    /// the residuals collapse to ≤ 4 distinct tokens, the simple path
+    /// kicks in and wins; if not, we fall back to flat (no regression
+    /// vs the previous behaviour).
+    ///
+    /// For our synthetic linear-gradient pattern, the gradient
+    /// predictor's clamping produces a constant residual of ~1024 for
+    /// the interior — so the histogram has ~2 distinct tokens (the
+    /// edge tokens + the interior token). Simple-distribution should
+    /// kick in.
+    func testM0_LargeStepGradient16bit_AutoShapeWins() throws {
+        var frame = ImageFrame(
+            width: 32, height: 32, channels: 1,
+            pixelType: .uint16, colorSpace: .grayscale
+        )
+        for y in 0..<32 {
+            for x in 0..<32 {
+                let v = UInt16(min(65535, (x + y) * 1024))
+                frame.setPixel(x: x, y: y, channel: 0, value: v)
+            }
+        }
+        let encoded = try MinimalLosslessCodec.encode(frame)
+        // Raw is 2048 bytes. Previously this case encoded to 2074
+        // bytes (worse than raw) because of the flat-distribution
+        // cost. With auto-shape selection it should fit comfortably
+        // below raw.
+        XCTAssertLessThan(encoded.count, 2048,
+            "large-step gradient 16-bit should now compress below raw " +
+            "(\(encoded.count) vs raw 2048) thanks to auto-shape selection")
+        let decoded = try MinimalLosslessCodec.decode(encoded)
+        XCTAssertEqual(decoded.data, frame.data)
+    }
+
+    /// Stress test for the > 4-token fallback: an image with high
+    /// per-pixel variation produces > 4 distinct residual tokens, so
+    /// auto-select must fall back to flat. Round-trip must still work
+    /// and output must not regress dramatically.
+    func testM0_HighVariation_FallsBackToFlat() throws {
+        var frame = ImageFrame(
+            width: 16, height: 16, channels: 1,
+            pixelType: .uint8, colorSpace: .grayscale
+        )
+        // Pseudo-random fill — many distinct residuals after
+        // prediction, well over 4 distinct tokens.
+        var seed: UInt32 = 0x1234_5678
+        for y in 0..<16 {
+            for x in 0..<16 {
+                // Linear-congruential PRNG, deterministic.
+                seed = seed &* 1664525 &+ 1013904223
+                let v = UInt16(seed & 0xFF)
+                frame.setPixel(x: x, y: y, channel: 0, value: v)
+            }
+        }
+        let encoded = try MinimalLosslessCodec.encode(frame)
+        // Fallback path — round-trip must still work.
+        let decoded = try MinimalLosslessCodec.decode(encoded)
+        XCTAssertEqual(decoded.data, frame.data,
+            "high-variation image must still round-trip in the flat-fallback path")
+    }
+
+    /// `autoSelectShape` unit test: exact shape decisions per token-
+    /// histogram cardinality.
+    func testM0_AutoSelectShape_DecisionLogic() {
+        let cfg = HybridUintConfig.defaultConfig
+
+        // 0 values → flat (no tokens to anchor a simple shape).
+        let s0 = MinimalLosslessCodec.autoSelectShape(values: [], hybridConfig: cfg)
+        switch s0 {
+        case .flat: break
+        default: XCTFail("expected .flat for empty values, got \(s0)")
+        }
+
+        // 1 distinct token → simple([token]).
+        let s1 = MinimalLosslessCodec.autoSelectShape(
+            values: [UInt32](repeating: 5, count: 100), hybridConfig: cfg
+        )
+        if case .simple(let syms) = s1 {
+            XCTAssertEqual(syms, [Int(cfg.encode(5).token)])
+        } else { XCTFail("expected .simple([token-of-5]), got \(s1)") }
+
+        // 3 distinct tokens — the most-frequent should be reordered to
+        // position 2 (where `tab/2` is allocated).
+        // Build values so token-of-1 appears 100x (most), token-of-2
+        // appears 50x, token-of-3 appears 10x.
+        var v3: [UInt32] = []
+        v3 += [UInt32](repeating: 1, count: 100)
+        v3 += [UInt32](repeating: 2, count: 50)
+        v3 += [UInt32](repeating: 3, count: 10)
+        let s3 = MinimalLosslessCodec.autoSelectShape(values: v3, hybridConfig: cfg)
+        if case .simple(let syms) = s3 {
+            XCTAssertEqual(syms.count, 3)
+            // Most-frequent (token-of-1) must be in the last slot.
+            XCTAssertEqual(syms[2], Int(cfg.encode(1).token),
+                "3-symbol case must put the most-frequent token at position 2 (tab/2 slot)")
+        } else { XCTFail("expected .simple(3 symbols), got \(s3)") }
+
+        // 5 distinct tokens → flat (over the simple-path limit of 4).
+        let v5: [UInt32] = [1, 2, 3, 4, 5, 6, 7, 8]   // 8 distinct
+        let s5 = MinimalLosslessCodec.autoSelectShape(values: v5, hybridConfig: cfg)
+        switch s5 {
+        case .flat: break
+        default: XCTFail("expected .flat for >4 distinct, got \(s5)")
+        }
+    }
+
     /// Float32 isn't supported by M0 — encoder should throw cleanly.
     func testM0_RejectsFloat32() {
         let frame = ImageFrame(

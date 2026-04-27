@@ -122,18 +122,43 @@ public struct MinimalLosslessCodec {
         w.alignToByte()
         w.write(bits: 16, value: placeholderMarker)
 
-        // 5. Pixel stream. Convert ImageFrame samples to a flat
-        // [UInt32] in row-major channel-interleaved order. Alphabet is
-        // sized to `HybridUintConfig.defaultConfig.maxToken + 1`, not
-        // to the value range — the HybridUint layer compresses values
-        // to small tokens + extra bits.
+        // 5. Pixel stream. Convert ImageFrame samples to row-major
+        // residuals and pack them via HybridUint into tokens + extras.
+        // Alphabet is sized to `HybridUintConfig.defaultConfig.maxToken
+        // + 1`, not to the value range — the HybridUint layer
+        // compresses values to small tokens + extra bits.
         let values = pixelStream(from: frame)
         let alphabetSize = HybridUintConfig.defaultConfig.maxToken + 1
-        // Build a flat distribution (we don't yet have full-mode
-        // distribution serialisation — see Phase E4b-full).
+
+        // Pick the best-fit distribution shape from the existing
+        // shortcut palette. When the actual token histogram has 1–4
+        // distinct symbols, the simple-distribution path encodes each
+        // token in 1–2 bits instead of the ~7 bits flat costs. For
+        // wider histograms we fall back to flat. (The full per-symbol-
+        // frequency mode that would handle arbitrary skewed
+        // histograms is Phase E4b-full, deferred.)
+        let shape = autoSelectShape(
+            values: values,
+            hybridConfig: HybridUintConfig.defaultConfig
+        )
+
+        // Build the matching `ANSDistribution`. We round-trip the
+        // header bits through the format so the encoder's distribution
+        // exactly matches what the decoder will reconstruct from the
+        // serialised bytes.
         var distBits = BitWriter()
-        do { try ANSDistributionFormat.encodeFlat(alphabetSize: alphabetSize, to: &distBits) }
-        catch let e as ANSDistributionFormatError {
+        do {
+            switch shape {
+            case .flat:
+                try ANSDistributionFormat.encodeFlat(
+                    alphabetSize: alphabetSize, to: &distBits
+                )
+            case .simple(let syms):
+                try ANSDistributionFormat.encodeSimple(
+                    symbols: syms, alphabetSize: alphabetSize, to: &distBits
+                )
+            }
+        } catch let e as ANSDistributionFormatError {
             throw MinimalLosslessError.ansdist(e)
         }
         var distReader = BitReader(distBits.finishToData())
@@ -152,7 +177,7 @@ public struct MinimalLosslessCodec {
         let streamData: Data
         do {
             streamData = try SimpleEntropyStream.encode(
-                values: values, context: ctx, shape: .flat
+                values: values, context: ctx, shape: shape
             )
         } catch let e as SimpleEntropyStreamError {
             throw MinimalLosslessError.entropyStream(e)
@@ -226,6 +251,50 @@ public struct MinimalLosslessCodec {
         )
         writePixelStream(values: values, into: &frame)
         return frame
+    }
+
+    // MARK: - Distribution-shape selection
+
+    /// Inspect the actual token histogram produced by running `values`
+    /// through `hybridConfig`, and return the entropy-coder shape that
+    /// will compress them best within the existing simple+flat
+    /// shortcut palette:
+    ///
+    ///   • 1–4 distinct tokens → `.simple(symbols)`. The simple
+    ///     distribution gives each listed symbol a predefined slice of
+    ///     the rANS table (`[tab]`, `[tab/2]×2`, `[tab/4, tab/4,
+    ///     tab/2]`, `[tab/4]×4`), so each token costs 1–2 bits instead
+    ///     of the ~7 bits flat costs.
+    ///   • Anything wider → `.flat` (uniform across the alphabet).
+    ///
+    /// For the 3-symbol case the predefined split is asymmetric — the
+    /// last position gets `tab/2`. We reorder so the most-frequent
+    /// token lands there.
+    static func autoSelectShape(
+        values: [UInt32], hybridConfig: HybridUintConfig
+    ) -> SimpleEntropyDistributionShape {
+        if values.isEmpty { return .flat }
+        var counts: [Int: Int] = [:]
+        for v in values {
+            let tok = Int(hybridConfig.encode(v).token)
+            counts[tok, default: 0] += 1
+        }
+        if counts.count > 4 { return .flat }
+        // Sort tokens by frequency descending, ties broken by token
+        // index for determinism.
+        let sortedDesc = counts.sorted {
+            $0.value > $1.value || ($0.value == $1.value && $0.key < $1.key)
+        }.map { $0.key }
+        switch sortedDesc.count {
+        case 1, 2, 4:
+            return .simple(symbols: sortedDesc)
+        case 3:
+            // Reorder so the most-frequent token is at position 2 and
+            // gets the `tab/2` slice.
+            return .simple(symbols: [sortedDesc[1], sortedDesc[2], sortedDesc[0]])
+        default:
+            return .flat
+        }
     }
 
     // MARK: - Pixel ↔ value-stream conversion (with gradient prediction)

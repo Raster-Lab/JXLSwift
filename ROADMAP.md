@@ -98,7 +98,7 @@ JXLSwift is designed to be:
 
 ## Implementation status
 
-Spec sections from ISO/IEC 18181-1 and ISO/IEC 18181-2. Each row is verified by a test (where ✅) or a milestone target (where ⏳). The current test suite is **103 / 103 passing** — every ✅ row has a round-trip test that fails when the row stops working.
+Spec sections from ISO/IEC 18181-1 and ISO/IEC 18181-2. Each row is verified by a test (where ✅) or a milestone target (where ⏳). The current test suite is **107 / 107 passing** — every ✅ row has a round-trip test that fails when the row stops working.
 
 ### Phase F — Foundation ✅
 
@@ -144,7 +144,7 @@ Spec sections from ISO/IEC 18181-1 and ISO/IEC 18181-2. Each row is verified by 
 
 | Section | Spec ref | Status |
 |---|---|---|
-| **M0 vertical slice** (project-internal) | n/a — placeholder | ✅ — `MinimalLosslessCodec.encode/decode` round-trips 1×1 / 8×8 / full-16-bit-range / smooth-gradient / constant-fill grayscale frames end-to-end. Buffer layout: signature + SizeHeader + ImageMetadata + 'M0' marker + `SimpleEntropyStream`. **Now uses gradient prediction**: each pixel is encoded as `ZigZag.pack(actual − Predictor.gradient(W, N, NW))`, so residuals cluster near zero and compress meaningfully (8-bit smooth gradient: 32×32 raw 1024 B → encoded smaller; 16-bit constant fill: 32×32 raw 2048 B → encoded smaller). **Not** a JXL-spec-compliant file. |
+| **M0 vertical slice** (project-internal) | n/a — placeholder | ✅ — `MinimalLosslessCodec.encode/decode` round-trips 1×1 / 8×8 / full-16-bit-range / smooth-gradient / constant-fill / large-step-gradient / high-variation grayscale frames end-to-end. Buffer layout: signature + SizeHeader + ImageMetadata + 'M0' marker + `SimpleEntropyStream`. **Pipeline: gradient prediction → ZigZag-packed residuals → auto-selected distribution shape**: when the actual token histogram has 1–4 distinct symbols, the simple-distribution shortcut kicks in (each token costs 1–2 bits via predefined `[tab]` / `[tab/2]×2` / `[tab/4, tab/4, tab/2]` / `[tab/4]×4` splits, with the most-frequent token reordered into the `tab/2` slot for the 3-symbol case); wider histograms fall back to flat. Compression: 32×32 all-zero 8-bit (raw 1 024 B) compresses to < 200 B; 32×32 large-step gradient 16-bit (raw 2 048 B) now compresses below raw too. **Not** a JXL-spec-compliant file. |
 | Frame header | §C.8.1 | ✅ all_default path; partial non-default path | `FrameHeader` covers `all_default=true` (single bit, **provably spec-correct**). Non-default path serialises frame_type, encoding, flags, group_size_shift, is_last, have_crop with project-internal placeholder layout — round-trips through our own encoder/decoder but is **not byte-for-byte spec compliant**: real spec uses `U64()` for flags, has do_YCbCr/upsampling/ec_upsampling/blending-info/animation/name/restoration-filter fields not yet modelled. Hand-derived bit pattern verifies all_default=true → `0x01`; matrix sweep across every `(frameType, encoding)` pair round-trips. |
 | Channel grouping & sub-bitstream | §C.7.2 | ⏳ |
 | Modular tree (MA-tree) | §C.7.4 | ⏳ |

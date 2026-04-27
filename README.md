@@ -47,7 +47,7 @@ See [ROADMAP.md](ROADMAP.md) for the spec-section status grid.
 
 ```bash
 swift build -c release
-swift test  -c release           # 103 tests (foundation + headers + entropy primitives + serialisation), ~50 ms
+swift test  -c release           # 107 tests (foundation + headers + entropy primitives + serialisation), ~50 ms
 .build/release/jxl-tool --version
 .build/release/jxl-tool info path/to/file.jxl
 ```
@@ -131,7 +131,7 @@ Sources/JXLSwift/Codec/       JXLEncoder / JXLDecoder (currently stubs;
                               ImageFrame, EncodingOptions
 Sources/JXLTool/              jxl-tool CLI (info works; encode/decode
                               throw .notImplemented until the codec lands)
-Tests/JXLSwiftTests/          103 tests across foundation, headers, entropy
+Tests/JXLSwiftTests/          107 tests across foundation, headers, entropy
 ```
 
 JXLSwift is **not DICOM-aware** — DICOM file format / metadata / transfer-syntax handling lives in DICOMkit, not here. JXLSwift accepts and emits raw pixel buffers (`ImageFrame`) at the bit depths medical imaging needs (8/10/12/16-bit, grayscale or RGB).
