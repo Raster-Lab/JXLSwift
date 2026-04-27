@@ -364,7 +364,30 @@ extension ImageMetadata {
 }
 
 extension ColorEncoding {
+    /// True iff this colour encoding is the spec default — sRGB,
+    /// D65, sRGB primaries, sRGB transfer, Relative intent, no ICC,
+    /// no custom white/primaries. The encoder emits a single
+    /// `all_default = 1` bit when this holds (see §C.3.4).
+    var isAllDefault: Bool {
+        guard !useICC, colorSpace == .rgb,
+              whitePoint == .d65, primaries == .srgb,
+              renderingIntent == .relative,
+              customWhite == nil, customPrimaries == nil else {
+            return false
+        }
+        if case .srgb = transferFunction { return true }
+        return false
+    }
+
     public func write(to w: inout BitWriter) throws {
+        // Per spec §C.3.4: ColorEncoding has its own all_default bit
+        // (distinct from ImageMetadata's). Single-bit shortcut for
+        // the spec-default sRGB case.
+        if isAllDefault {
+            w.writeBit(true)
+            return
+        }
+        w.writeBit(false)
         w.writeBit(useICC)
         try w.writeU32(colorSpace.rawValue, distributions: (
             .literal(0), .literal(1), .literal(2),

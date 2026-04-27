@@ -104,8 +104,16 @@ public struct ColorEncoding: Sendable {
     )
 
     /// Read a `ColorEncoding` per §C.3.4. Position must be at the
-    /// `use_icc` bit when called.
+    /// `all_default` bit when called.
     public static func read(from r: inout BitReader) throws -> ColorEncoding {
+        // Per spec §C.3.4: ColorEncoding has its own all_default bit
+        // (distinct from ImageMetadata.allDefault). When set, the
+        // ColorEncoding equals the spec default — sRGB / D65 / sRGB
+        // primaries / sRGB transfer / Relative intent.
+        let allDefault = try r.readBit()
+        if allDefault {
+            return .srgb
+        }
         let useICC = try r.readBit()
         // 2-bit ColorSpace selector. The spec uses a U32(0,1,2,1+u(4))
         // pattern that maps 0→RGB, 1→Gray, 2→XYB, 3→Unknown for the first

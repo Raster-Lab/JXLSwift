@@ -178,6 +178,156 @@ final class FoundationTests: XCTestCase {
         XCTAssertGreaterThan(inspection.ysize, 0)
     }
 
+    // MARK: - Cross-validation against `cjxl`
+    //
+    // CLAUDE.md sanctions shelling out to libjxl tools as a *test-time*
+    // oracle. The tests below dynamically encode synthetic PNMs with
+    // `cjxl`, then verify our parsers extract matching geometry, bit
+    // depth, channel count, and colour-space metadata. Catches
+    // bit-layout disagreements between our header parsers and the
+    // spec.
+    //
+    // Skips silently if `cjxl` isn't on `PATH` (e.g. CI without
+    // libjxl installed).
+
+    /// 8-bit grayscale: our `inspect()` agrees with cjxl-produced
+    /// dimensions, bit depth, and grayscale colour space.
+    func testCrossValidate_Cjxl_8bitGrayscale_HeadersMatch() throws {
+        try runCjxlCrossValidation(
+            width: 64, height: 48, channels: 1, bitDepth: 8,
+            generator: { x, y, _ in UInt16((x &+ y) & 0xFF) }
+        )
+    }
+
+    /// 16-bit grayscale (the medical-imaging shape): cjxl produces a
+    /// 16-bit JXL, our parser recovers `bitsPerSample == 16`.
+    func testCrossValidate_Cjxl_16bitGrayscale_HeadersMatch() throws {
+        try runCjxlCrossValidation(
+            width: 32, height: 32, channels: 1, bitDepth: 16,
+            generator: { x, y, _ in UInt16(min(65535, (x &+ y) &* 1024)) }
+        )
+    }
+
+    /// 8-bit RGB: cjxl-produced 3-channel sRGB, our parser recovers
+    /// non-grayscale colour space + 3 channel inference.
+    func testCrossValidate_Cjxl_8bitRGB_HeadersMatch() throws {
+        try runCjxlCrossValidation(
+            width: 32, height: 32, channels: 3, bitDepth: 8,
+            generator: { x, y, c in
+                let base = UInt16((x &+ y) & 0xFF)
+                return base &+ UInt16(c) &* 16
+            }
+        )
+    }
+
+    /// Helper: write a synthetic PNM, run cjxl, then verify our
+    /// `JXLDecoder.inspect()` extracts the expected fields. Skips if
+    /// cjxl isn't installed.
+    private func runCjxlCrossValidation(
+        width: Int, height: Int, channels: Int, bitDepth: Int,
+        generator: (_ x: Int, _ y: Int, _ c: Int) -> UInt16
+    ) throws {
+        guard let cjxl = whichTool("cjxl") else {
+            try XCTSkipIf(true, "cjxl not on PATH")
+            return
+        }
+        // Build the synthetic PNM.
+        let pnm = NSTemporaryDirectory() + "jxlswift-xv-\(UUID().uuidString).\(channels == 1 ? "pgm" : "ppm")"
+        let jxl = NSTemporaryDirectory() + "jxlswift-xv-\(UUID().uuidString).jxl"
+        defer {
+            try? FileManager.default.removeItem(atPath: pnm)
+            try? FileManager.default.removeItem(atPath: jxl)
+        }
+        let pnmBytes = makeSyntheticPNM(
+            width: width, height: height,
+            channels: channels, bitDepth: bitDepth,
+            generator: generator
+        )
+        try pnmBytes.write(to: URL(fileURLWithPath: pnm))
+
+        // Run cjxl.
+        let proc = Process()
+        proc.launchPath = cjxl
+        proc.arguments = ["-q", "100", pnm, jxl]
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        try proc.run()
+        proc.waitUntilExit()
+        guard proc.terminationStatus == 0 else {
+            XCTFail("cjxl failed with status \(proc.terminationStatus)")
+            return
+        }
+
+        // Parse with our inspect.
+        let data = try Data(contentsOf: URL(fileURLWithPath: jxl))
+        let inspection = try JXLDecoder().inspect(data)
+
+        XCTAssertEqual(Int(inspection.xsize), width,
+            "dimension mismatch: our xsize=\(inspection.xsize) vs expected \(width)")
+        XCTAssertEqual(Int(inspection.ysize), height,
+            "dimension mismatch: our ysize=\(inspection.ysize) vs expected \(height)")
+        guard let m = inspection.metadata else {
+            XCTFail("our inspect() returned nil ImageMetadata for a valid JXL file")
+            return
+        }
+        XCTAssertEqual(Int(m.bitDepth.bitsPerSample), bitDepth,
+            "bitsPerSample mismatch: our \(m.bitDepth.bitsPerSample) vs expected \(bitDepth)")
+        XCTAssertFalse(m.bitDepth.floatingPoint,
+            "synthetic PNM is integer; floatingPoint should be false")
+        // Channel inference: grayscale colour space implies 1
+        // colour channel; non-grayscale implies 3.
+        switch (channels, m.colorEncoding.colorSpace) {
+        case (1, .grayscale): break
+        case (3, _) where m.colorEncoding.colorSpace != .grayscale: break
+        default:
+            XCTFail("colorSpace inference mismatch: channels=\(channels), got colorSpace=\(m.colorEncoding.colorSpace)")
+        }
+    }
+
+    /// Returns the absolute path of `tool` if it's on `PATH`, else nil.
+    private func whichTool(_ tool: String) -> String? {
+        let proc = Process()
+        proc.launchPath = "/usr/bin/which"
+        proc.arguments = [tool]
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = FileHandle.nullDevice
+        do { try proc.run() } catch { return nil }
+        proc.waitUntilExit()
+        guard proc.terminationStatus == 0 else { return nil }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let path = String(data: data, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return path.isEmpty ? nil : path
+    }
+
+    /// Build a binary PNM (PGM for 1ch, PPM for 3ch) with the given
+    /// per-pixel generator. The generator returns a sample value in
+    /// the range supported by the bit depth (8 or 16-bit).
+    private func makeSyntheticPNM(
+        width: Int, height: Int, channels: Int, bitDepth: Int,
+        generator: (Int, Int, Int) -> UInt16
+    ) -> Data {
+        let magic = (channels == 1) ? "P5" : "P6"
+        let maxval = (bitDepth == 8) ? 255 : 65535
+        var out = Data("\(magic)\n\(width) \(height)\n\(maxval)\n".utf8)
+        for y in 0..<height {
+            for x in 0..<width {
+                for c in 0..<channels {
+                    let v = generator(x, y, c)
+                    if bitDepth == 8 {
+                        out.append(UInt8(v & 0xFF))
+                    } else {
+                        // PNM 16-bit is big-endian.
+                        out.append(UInt8((v >> 8) & 0xFF))
+                        out.append(UInt8(v & 0xFF))
+                    }
+                }
+            }
+        }
+        return out
+    }
+
     // MARK: - Encoder / decoder stubs throw clearly
 
     func testEncoder_ThrowsNotImplemented() {
