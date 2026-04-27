@@ -205,6 +205,87 @@ final class FoundationTests: XCTestCase {
         }
     }
 
+    // MARK: - Header structures (Phase H)
+
+    /// BitDepth round-trip across the standard cases medical imaging
+    /// cares about: 8-bit, 12-bit, 16-bit unsigned, plus float32.
+    func testBitDepth_RoundTrip() throws {
+        let cases: [BitDepth] = [
+            BitDepth(floatingPoint: false, bitsPerSample: 8),
+            BitDepth(floatingPoint: false, bitsPerSample: 10),
+            BitDepth(floatingPoint: false, bitsPerSample: 12),
+            BitDepth(floatingPoint: false, bitsPerSample: 16),
+            BitDepth(floatingPoint: true,  bitsPerSample: 16, exponentBitsPerSample: 5),
+            BitDepth(floatingPoint: true,  bitsPerSample: 32, exponentBitsPerSample: 8),
+        ]
+        for bd in cases {
+            var w = BitWriter()
+            try bd.write(to: &w)
+            let data = w.finishToData()
+            var r = BitReader(data)
+            let parsed = try BitDepth.read(from: &r)
+            XCTAssertEqual(parsed.floatingPoint, bd.floatingPoint, "fp mismatch for \(bd)")
+            XCTAssertEqual(parsed.bitsPerSample, bd.bitsPerSample, "bps mismatch for \(bd)")
+            if bd.floatingPoint {
+                XCTAssertEqual(parsed.exponentBitsPerSample, bd.exponentBitsPerSample,
+                               "exp mismatch for \(bd)")
+            }
+        }
+    }
+
+    /// `ImageMetadata.default` exposes the values the JXL spec defines
+    /// when `all_default == true` is signalled.
+    func testImageMetadata_DefaultMatchesSpec() {
+        let d = ImageMetadata.default
+        XCTAssertTrue(d.allDefault)
+        XCTAssertEqual(d.orientation, 1)
+        XCTAssertNil(d.intrinsicSize)
+        XCTAssertNil(d.preview)
+        XCTAssertNil(d.animation)
+        XCTAssertEqual(d.bitDepth.bitsPerSample, 8)
+        XCTAssertFalse(d.bitDepth.floatingPoint)
+        XCTAssertTrue(d.modular16BitBufferSufficient)
+        XCTAssertTrue(d.extraChannels.isEmpty)
+        XCTAssertFalse(d.hasAlpha)
+        XCTAssertEqual(d.intensityTarget, 255.0)
+    }
+
+    /// All-default ImageMetadata round-trips through a 1-bit-only stream.
+    func testImageMetadata_AllDefaultRoundTrip() throws {
+        // Build a stream with just the all_default = 1 bit set.
+        var w = BitWriter()
+        w.writeBit(true)
+        let data = w.finishToData()
+        var r = BitReader(data)
+        let m = try ImageMetadata.read(from: &r)
+        XCTAssertTrue(m.allDefault)
+        XCTAssertEqual(m.totalChannels, 3)        // default RGB
+    }
+
+    /// `inspect()` returns a non-nil metadata value on a real cjxl-
+    /// produced file (parser doesn't trap on real input). We don't
+    /// assert specific field values here because parser verification
+    /// against libjxl's exact bit layout is still ongoing — for now we
+    /// just guarantee the API doesn't crash on real input.
+    func testInspect_ParsesMetadataWithoutTrapping_OnRealFile() throws {
+        let candidates = ["/tmp/cmp-cjxl.jxl"]
+        guard let path = candidates.first(where: { FileManager.default.fileExists(atPath: $0) }) else {
+            try XCTSkipIf(true, "no real cjxl-produced .jxl on this machine")
+            return
+        }
+        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        let info = try JXLDecoder().inspect(data)
+        XCTAssertGreaterThan(info.xsize, 0)
+        XCTAssertGreaterThan(info.ysize, 0)
+        // Metadata should at least parse without throwing/trapping.
+        XCTAssertNotNil(info.metadata)
+        if let m = info.metadata {
+            // BitDepth bps is in 1...32 (we only ship realistic widths).
+            XCTAssertGreaterThan(m.bitDepth.bitsPerSample, 0)
+            XCTAssertLessThanOrEqual(m.bitDepth.bitsPerSample, 32)
+        }
+    }
+
     // MARK: - DICOM (still works — pure Swift, codec-agnostic)
 
     /// Sanity: the DICOM reader is unchanged by the libjxl removal.

@@ -1,7 +1,6 @@
-// `jxl-tool info` — parse a JXL file's container + SizeHeader and report
-// what the foundation can already extract. Does not require the full
-// codec, so this works against the pure-Swift implementation as it
-// stands.
+// `jxl-tool info` — parse a JXL file's container, SizeHeader, and
+// ImageMetadata. Reports what the foundation can extract without
+// running the codec layer.
 
 import ArgumentParser
 import Foundation
@@ -9,7 +8,7 @@ import JXLSwift
 
 struct Info: ParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "Print container + SizeHeader info from a JPEG XL file"
+        abstract: "Print container + header info from a JPEG XL file"
     )
 
     @Argument(help: "JPEG XL file path")
@@ -24,12 +23,33 @@ struct Info: ParsableCommand {
         let data = try Data(contentsOf: url)
         let inspection = try JXLDecoder().inspect(data)
 
-        print("File:       \(input)")
-        print("Bytes:      \(formatBytes(data.count))")
-        print("Form:       \(inspection.form == .naked ? "naked codestream" : "ISOBMFF container")")
-        print("Dimensions: \(inspection.xsize)×\(inspection.ysize)")
+        print("File:         \(input)")
+        print("Size:         \(formatBytes(data.count))")
+        print("Form:         \(inspection.form == .naked ? "naked codestream" : "ISOBMFF container")")
+        print("Dimensions:   \(inspection.xsize)×\(inspection.ysize)")
         if !inspection.boxTypes.isEmpty {
-            print("Boxes:      \(inspection.boxTypes.joined(separator: ", "))")
+            print("Boxes:        \(inspection.boxTypes.joined(separator: ", "))")
+        }
+        if let m = inspection.metadata {
+            print()
+            print("--- ImageMetadata (best-effort, parser verification ongoing) ---")
+            print("All-default:  \(m.allDefault ? "yes" : "no")")
+            print("Bit depth:    \(formatBitDepth(m.bitDepth))")
+            print("Orientation:  \(m.orientation)")
+            // The fields below are correctly read for files where the
+            // straight-line parse path applies; some optional branches
+            // (extra_fields, ICC, custom primaries) still need round-trip
+            // verification before we display them as authoritative.
+        } else {
+            print()
+            print("(ImageMetadata could not be parsed — codestream may use header features not yet implemented)")
         }
     }
+}
+
+private func formatBitDepth(_ bd: BitDepth) -> String {
+    if bd.floatingPoint {
+        return "\(bd.bitsPerSample)-bit float (exp=\(bd.exponentBitsPerSample))"
+    }
+    return "\(bd.bitsPerSample)-bit unsigned"
 }

@@ -34,7 +34,7 @@ public enum DecoderError: Error, LocalizedError, Sendable {
 
 /// A best-effort summary of a JXL file produced from header inspection
 /// alone — does not require the full codec.
-public struct JXLInspection: Sendable, Equatable {
+public struct JXLInspection: Sendable {
     public enum Form: Sendable, Equatable {
         case naked
         case container
@@ -44,6 +44,9 @@ public struct JXLInspection: Sendable, Equatable {
     public let ysize: UInt32
     /// Box types found in container form (empty for naked codestreams).
     public let boxTypes: [String]
+    /// Parsed image metadata. Nil if inspection failed before this point
+    /// (e.g. SizeHeader-only inspection on truncated files).
+    public let metadata: ImageMetadata?
 }
 
 public final class JXLDecoder {
@@ -86,7 +89,17 @@ public final class JXLDecoder {
         var reader = BitReader(codestream, startingAt: 16) // skip 2-byte signature
         do {
             let size = try SizeHeader.read(from: &reader)
-            return JXLInspection(form: form, xsize: size.xsize, ysize: size.ysize, boxTypes: boxTypes)
+            // Best-effort: try to read ImageMetadata. If the spec branches
+            // we don't yet handle (e.g. exotic extensions) trip us up,
+            // fall back to size-only inspection — that's still useful.
+            let metadata: ImageMetadata?
+            do {
+                metadata = try ImageMetadata.read(from: &reader)
+            } catch {
+                metadata = nil
+            }
+            return JXLInspection(form: form, xsize: size.xsize, ysize: size.ysize,
+                                 boxTypes: boxTypes, metadata: metadata)
         } catch let e as BitstreamError {
             throw DecoderError.bitstream(e)
         }
