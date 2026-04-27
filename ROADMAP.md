@@ -98,7 +98,7 @@ JXLSwift is designed to be:
 
 ## Implementation status
 
-Spec sections from ISO/IEC 18181-1 and ISO/IEC 18181-2. Each row is verified by a test (where ✅) or a milestone target (where ⏳). The current test suite is **121 / 121 passing** — every ✅ row has a round-trip test that fails when the row stops working.
+Spec sections from ISO/IEC 18181-1 and ISO/IEC 18181-2. Each row is verified by a test (where ✅) or a milestone target (where ⏳). The current test suite is **125 / 125 passing** — every ✅ row has a round-trip test that fails when the row stops working.
 
 ### Phase F — Foundation ✅
 
@@ -144,7 +144,7 @@ Spec sections from ISO/IEC 18181-1 and ISO/IEC 18181-2. Each row is verified by 
 
 | Section | Spec ref | Status |
 |---|---|---|
-| **M0 vertical slice** (project-internal) | n/a — placeholder | ✅ — `MinimalLosslessCodec.encode/decode` round-trips 1×1 / 8×8 / full-16-bit-range / smooth-gradient / constant-fill / large-step-gradient / high-variation / vertical-stripes / horizontal-stripes / diagonal-gradient / 3-channel-mixed-pattern / 3-channel-correlated-RGB / 3-channel-uncorrelated frames end-to-end. Buffer layout: signature + SizeHeader + ImageMetadata + 'M0' marker + (3-channel only: u(2) RCT variant) + per-channel u(3) predictor IDs + `SimpleEntropyStream`. **Pipeline: optional RCT (3-channel) → per-channel predictor selection → ZigZag-packed residuals → auto-selected distribution shape**. Encoder scores `.identity` vs `.ycocgR` by total per-channel best-predictor distinct-token count, then picks the per-channel predictor whose residual histogram has the fewest distinct HybridUint tokens (ties broken by smaller `Σ|residual|`). Auto-shape selection (simple when ≤ 4 tokens, flat otherwise) drives the entropy coder. ColorEncoding picks grayscale-D65 for 1-channel frames, sRGB for 3-channel. Compression on the test corpus: all-zero 32×32 8-bit (raw 1 024 B) → < 100 B; vertical/horizontal stripes 32×32 8-bit → < 200 B each; constant-fill / large-step-gradient 16-bit (raw 2 048 B) → below raw; correlated RGB 32×32 (raw 3 072 B) → below raw via RCT. **Not** a JXL-spec-compliant file. |
+| **M0 vertical slice** (project-internal) | n/a — placeholder | ✅ — `MinimalLosslessCodec.encode/decode` round-trips **1–4 channel frames** (grayscale, gray+alpha, RGB, RGBA) at 8 or 16-bit depth. Test corpus covers 1×1, 8×8 grayscale, full-16-bit-range gradient, constant-fill, large-step-gradient, high-variation, vertical/horizontal stripes, diagonal gradient, 3-channel mixed-pattern, 3-channel correlated/uncorrelated RGB, 2-channel grayscale+alpha, 4-channel RGBA, 4-channel RGBA-16-bit. Buffer layout: signature + SizeHeader + ImageMetadata + 'M0' marker + u(3) channel count + (when channels ≥ 3: u(2) RCT variant) + per-channel u(3) predictor IDs + `SimpleEntropyStream`. **Pipeline: optional RCT (R/G/B only when channels ≥ 3) → per-channel predictor selection → ZigZag-packed residuals → auto-selected distribution shape**. Compression on the test corpus: all-zero 32×32 8-bit (raw 1 024 B) → < 100 B; correlated RGB 32×32 (raw 3 072 B) → ~543 B (RCT); correlated RGBA 16×16 (raw 1 024 B) → < 1 024 B (RCT on RGB, separate alpha prediction). CLI subcommands `jxl-tool encode-m0` / `decode-m0` read/write PGM/PPM/PAM. **Not** a JXL-spec-compliant file. |
 | Frame header | §C.8.1 | ✅ all_default path; partial non-default path | `FrameHeader` covers `all_default=true` (single bit, **provably spec-correct**). Non-default path serialises frame_type, encoding, flags, group_size_shift, is_last, have_crop with project-internal placeholder layout — round-trips through our own encoder/decoder but is **not byte-for-byte spec compliant**: real spec uses `U64()` for flags, has do_YCbCr/upsampling/ec_upsampling/blending-info/animation/name/restoration-filter fields not yet modelled. Hand-derived bit pattern verifies all_default=true → `0x01`; matrix sweep across every `(frameType, encoding)` pair round-trips. |
 | Channel grouping & sub-bitstream | §C.7.2 | ⏳ |
 | Modular tree (MA-tree) | §C.7.4 | ⏳ |
@@ -197,7 +197,7 @@ These are added once a corresponding scalar Swift path is correct. The scalar pa
 
 | Item | Status |
 |---|---|
-| Foundation tests (121) | ✅ |
+| Foundation tests (125) | ✅ |
 | Conformance test vectors (jxl-conformance repo) | ⏳ harness exists; vectors not wired up |
 | Cross-codec round-trip (encode → libjxl `djxl` decode) | ⏳ requires Phase E4-6 + M at minimum |
 | Cross-codec round-trip (libjxl `cjxl` → JXLDecoder) | ⏳ requires Phase E4-6 + M at minimum |

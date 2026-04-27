@@ -20,8 +20,9 @@
 //     ImageMetadata                    // §C.3.3 (spec)
 //     'M0' marker         u(16)        // 0x4D30, makes the placeholder explicit
 //     align to byte
-//     if channels == 3:
-//         rct_variant     u(2)         // RCTVariant.identity or .ycocgR
+//     channels            u(3)         // 1..4 (grayscale / gray+alpha / RGB / RGBA)
+//     if channels >= 3:
+//         rct_variant     u(2)         // RCTVariant.identity or .ycocgR (R/G/B only)
 //     align to byte
 //     per-channel predictor IDs        // u(3) per channel; see PredictorID
 //     align to byte
@@ -78,6 +79,7 @@ import Foundation
 
 public enum MinimalLosslessError: Error, Sendable {
     case unsupportedPixelType
+    case unsupportedChannelCount(Int)
     case missingSignature
     case missingMarker
     case truncated
@@ -101,6 +103,9 @@ public struct MinimalLosslessCodec {
         guard frame.pixelType == .uint8 || frame.pixelType == .uint16 else {
             throw MinimalLosslessError.unsupportedPixelType
         }
+        guard (1...4).contains(frame.channels) else {
+            throw MinimalLosslessError.unsupportedChannelCount(frame.channels)
+        }
 
         // 1. JXL signature (spec — `FF 0A`).
         var w = BitWriter()
@@ -113,17 +118,18 @@ public struct MinimalLosslessCodec {
         do { try size.write(to: &w) }
         catch let e as BitstreamError { throw MinimalLosslessError.bitstream(e) }
 
-        // 3. ImageMetadata. Pick the colour encoding to match the
-        // frame's channel count — grayscale for 1-channel frames,
-        // sRGB for 3-channel ones. The decoder uses the recovered
-        // colour-space tag to reconstruct the channel count, so this
-        // must match what the encoder saw.
+        // 3. ImageMetadata. ColorEncoding picks grayscale for
+        // grayscale-shaped frames (1 or 2 channels — the second is
+        // alpha), sRGB for RGB-shaped (3 or 4 channels — the fourth
+        // is alpha). The actual channel count is then carried
+        // explicitly in the M0 header (step 5a) so we don't have to
+        // infer it from colour-space at decode time.
         let bd = BitDepth(
             floatingPoint: false,
             bitsPerSample: UInt32(frame.pixelType.bitsPerSample)
         )
         let colorEnc: ColorEncoding =
-            (frame.channels == 1) ? .grayscaleD65 : .srgb
+            (frame.channels <= 2) ? .grayscaleD65 : .srgb
         let meta = ImageMetadata(
             allDefault: false,
             orientation: 1,
@@ -149,18 +155,21 @@ public struct MinimalLosslessCodec {
         w.alignToByte()
         w.write(bits: 16, value: placeholderMarker)
 
-        // 5a. Optional RCT (3-channel frames only). We score
-        // .identity against .ycocgR by summing the per-channel
-        // best-predictor distinct-token counts after each transform,
-        // and pick the one with the smaller sum.
+        // 5a. Channel count + optional RCT (RGB part only). RCT runs
+        // when channels >= 3 and operates on the first three
+        // channels (treated as R, G, B); the alpha channel (if any)
+        // is left untouched so the chroma transform doesn't tangle
+        // brightness with transparency.
         w.alignToByte()
+        w.write(bits: 3, value: UInt32(frame.channels))
         var channelBuffers = (0..<frame.channels).map {
             buildChannelBuffer(frame, channel: $0)
         }
         let rctVariant: RCTVariant
-        if frame.channels == 3 {
+        if frame.channels >= 3 {
+            let rgb = Array(channelBuffers.prefix(3))
             rctVariant = bestRCTVariant(
-                channelBuffers: channelBuffers, width: frame.width,
+                channelBuffers: rgb, width: frame.width,
                 hybridConfig: HybridUintConfig.defaultConfig
             )
             if rctVariant != .identity {
@@ -174,7 +183,7 @@ public struct MinimalLosslessCodec {
             }
             w.write(bits: 2, value: rctVariant.rawValue)
         } else {
-            rctVariant = .identity   // not emitted for 1-channel frames
+            rctVariant = .identity   // not emitted for ≤2-channel frames
         }
 
         // 5b. Per-channel predictor selection. For each channel we
@@ -292,23 +301,27 @@ public struct MinimalLosslessCodec {
             throw MinimalLosslessError.missingMarker
         }
 
-        // Determine the channel count (must match what the encoder
-        // wrote — see step 5 below) before reading predictor IDs.
         let pixelType: PixelType =
             meta.bitDepth.bitsPerSample == 8 ? .uint8 :
             (meta.bitDepth.floatingPoint ? .float32 : .uint16)
         guard pixelType != .float32 else {
             throw MinimalLosslessError.unsupportedPixelType
         }
-        let channels = (meta.colorEncoding.colorSpace == .grayscale) ? 1 : 3
 
-        // 5a. Optional RCT variant — only present in the 3-channel
-        // case. In all other cases the decoder treats the variant as
-        // identity.
+        // 5a. Channel count + optional RCT variant. The encoder
+        // writes the channel count explicitly; decoder reads it
+        // before any per-channel field. RCT variant is only emitted
+        // when channels >= 3.
         do { try r.alignToByte() }
         catch let e as BitstreamError { throw MinimalLosslessError.bitstream(e) }
+        let channels: Int
+        do { channels = Int(try r.read(bits: 3)) }
+        catch let e as BitstreamError { throw MinimalLosslessError.bitstream(e) }
+        guard (1...4).contains(channels) else {
+            throw MinimalLosslessError.unsupportedChannelCount(channels)
+        }
         let rctVariant: RCTVariant
-        if channels == 3 {
+        if channels >= 3 {
             let raw: UInt32
             do { raw = try r.read(bits: 2) }
             catch let e as BitstreamError { throw MinimalLosslessError.bitstream(e) }
@@ -348,14 +361,20 @@ public struct MinimalLosslessCodec {
             throw MinimalLosslessError.entropyStream(e)
         }
 
-        // Reconstruct ImageFrame.
+        // Reconstruct ImageFrame. Channel counts:
+        //   1 → grayscale,  2 → grayscale + alpha,
+        //   3 → RGB,        4 → RGBA.
+        // alphaChannels is always 0 or 1 (per ImageFrame's contract).
+        let isGrayShaped = channels <= 2
+        let alphaChannels = (channels == 2 || channels == 4) ? 1 : 0
+        let frameColorSpace: ColorSpace = isGrayShaped ? .grayscale : .sRGB
         var frame = ImageFrame(
             width: Int(size.xsize),
             height: Int(size.ysize),
             channels: channels,
             pixelType: pixelType,
-            colorSpace: pixelType == .uint8 ? .sRGB : .grayscale,
-            alphaChannels: 0,
+            colorSpace: frameColorSpace,
+            alphaChannels: alphaChannels,
             iccProfile: nil
         )
         // 7. Recover per-channel Int32 buffers from the residual
@@ -364,8 +383,9 @@ public struct MinimalLosslessCodec {
             values: values, predictors: channelPredictors,
             channels: channels, width: frame.width, height: frame.height
         )
-        // 8. Inverse RCT if the encoder applied it.
-        if rctVariant != .identity, channels == 3 {
+        // 8. Inverse RCT — only the first three channels (R, G, B) when
+        //    channels >= 3. Alpha (channel 3 of RGBA) is left alone.
+        if rctVariant != .identity, channels >= 3 {
             var c0 = channelBuffers[0]
             var c1 = channelBuffers[1]
             var c2 = channelBuffers[2]

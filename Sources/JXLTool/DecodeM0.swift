@@ -47,7 +47,7 @@ struct DecodeM0: ParsableCommand {
 
         print(
             "decoded \(frame.width)×\(frame.height) " +
-            "\(frame.channels == 1 ? "grayscale" : "RGB")" +
+            "\(channelDescription(frame.channels))" +
             " \(frame.pixelType.bitsPerSample)-bit"
         )
     }

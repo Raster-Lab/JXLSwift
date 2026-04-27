@@ -60,7 +60,7 @@ struct EncodeM0: ParsableCommand {
         let pct = Double(encSize) * 100 / Double(rawSize)
         print(
             "encoded \(frame.width)×\(frame.height) " +
-            "\(frame.channels == 1 ? "grayscale" : "RGB")" +
+            "\(channelDescription(frame.channels))" +
             " \(frame.pixelType.bitsPerSample)-bit: " +
             "\(formatBytes(rawSize)) → \(formatBytes(encSize)) " +
             "(\(String(format: "%.1f", pct))% of source)"
