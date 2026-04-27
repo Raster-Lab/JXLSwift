@@ -13,7 +13,7 @@
 //   3. Full     — explicit per-symbol log-counts encoded via a
 //                 prefix code (recursive). Not yet implemented.
 //
-// Bit layout (this implementation, per spec interpretation):
+// Bit layout (this implementation):
 //
 //     is_simple        u(1)
 //     if is_simple == 1:
@@ -26,9 +26,20 @@
 //             // the spec emits an alphabet_size_log here for the
 //             // standalone histogram form. Callers that need the
 //             // standalone form should serialise alphabet_size_log
-//             // separately for now (deferred to the full mode).
+//             // separately for now (deferred).
 //         else:
-//             throw .fullDistributionNotImplemented
+//             // **Project-internal full mode** (see caveat).
+//             freq[0..<alphabet_size] each u(13)   // sum = tabSize
+//
+// **Caveat on the full path:** the JXL spec encodes per-symbol
+// frequencies via a `log_counts` prefix code with a `shift`
+// parameter (§C.6.3.2 full branch). Implementing that requires spec
+// text I don't have. To unblock M0 compression on natural-image-
+// shaped histograms, this file ships a *simpler*, **project-internal**
+// full layout: one u(13) frequency per symbol, in order. Frequencies
+// must sum to exactly `ANSConstants.tabSize` (4 096). This is
+// round-trip-tested but **NOT byte-for-byte spec compliant**;
+// replacing it with the spec's log-counts encoding is future work.
 //
 // Frequency assignment by simple-shape (my interpretation of §C.6.3.2):
 //
@@ -57,7 +68,7 @@ public enum ANSDistributionFormatError: Error, Sendable, Equatable {
     case alphabetTooSmall(Int)
     case duplicateSymbol(Int)
     case symbolOutOfRange(Int)
-    case fullDistributionNotImplemented
+    case invalidFullSum(expected: UInt32, got: UInt32)
     case bitstream(BitstreamError)
 }
 
@@ -137,6 +148,86 @@ public struct ANSDistributionFormat {
         w.writeBit(true)                   // is_flat   = 1
     }
 
+    /// Encode a full per-symbol-frequency distribution. **Project-
+    /// internal layout** (see file-top caveat): `is_simple=0,
+    /// is_flat=0, freq[0..<alphabetSize] each u(13)`. Each frequency
+    /// must be ≥ 0 and the sum must equal `ANSConstants.tabSize`
+    /// (4 096) exactly. Use `normaliseToTabSize` to coerce a raw
+    /// histogram into a valid distribution.
+    public static func encodeFull(
+        frequencies: [UInt32],
+        alphabetSize: Int,
+        to w: inout BitWriter
+    ) throws {
+        guard alphabetSize >= 2 else {
+            throw ANSDistributionFormatError.alphabetTooSmall(alphabetSize)
+        }
+        guard alphabetSize <= Int(ANSConstants.tabSize) else {
+            throw ANSDistributionFormatError.alphabetTooLarge(alphabetSize)
+        }
+        guard frequencies.count == alphabetSize else {
+            throw ANSDistributionFormatError.alphabetTooLarge(alphabetSize)
+        }
+        let sum = frequencies.reduce(UInt32(0), &+)
+        guard sum == ANSConstants.tabSize else {
+            throw ANSDistributionFormatError.invalidFullSum(
+                expected: ANSConstants.tabSize, got: sum
+            )
+        }
+        w.writeBit(false)              // is_simple = 0
+        w.writeBit(false)              // is_flat   = 0
+        for freq in frequencies {
+            // u(13) holds 0..8191; tabSize is 4096, so freq ≤ 4096
+            // fits easily.
+            guard freq <= 0x1FFF else {
+                throw ANSDistributionFormatError.invalidFullSum(
+                    expected: 0x1FFF, got: freq
+                )
+            }
+            w.write(bits: 13, value: freq)
+        }
+    }
+
+    /// Coerce a raw symbol histogram into a per-symbol frequency
+    /// array that sums to exactly `tabSize` (4 096). Symbols with
+    /// non-zero raw count get at least frequency 1 (so they're
+    /// encodable); rounding adjustment is absorbed by the symbol
+    /// with the largest current frequency. Useful for callers
+    /// preparing input to `encodeFull`.
+    public static func normaliseToTabSize(_ raw: [UInt32]) throws -> [UInt32] {
+        guard !raw.isEmpty else {
+            throw ANSDistributionFormatError.alphabetTooSmall(0)
+        }
+        let total = raw.reduce(UInt64(0)) { $0 &+ UInt64($1) }
+        guard total > 0 else {
+            throw ANSDistributionFormatError.alphabetTooSmall(0)
+        }
+        let tab = UInt64(ANSConstants.tabSize)
+        var normed = [UInt32](repeating: 0, count: raw.count)
+        for i in 0..<raw.count {
+            if raw[i] == 0 { continue }
+            let scaled = UInt64(raw[i]) * tab / total
+            normed[i] = UInt32(max(1, scaled))
+        }
+        var sum: Int64 = normed.reduce(Int64(0)) { $0 &+ Int64($1) }
+        let target = Int64(tab)
+        while sum != target {
+            var bestIdx = -1
+            var bestFreq: UInt32 = 0
+            for i in 0..<raw.count where normed[i] > bestFreq {
+                bestFreq = normed[i]; bestIdx = i
+            }
+            guard bestIdx >= 0 else { break }
+            if sum < target {
+                normed[bestIdx] &+= 1; sum &+= 1
+            } else {
+                if normed[bestIdx] <= 1 { break }
+                normed[bestIdx] &-= 1; sum &-= 1
+            }
+        }
+        return normed
+    }
+
     /// Decode a distribution. Caller supplies the alphabet size; on
     /// return, `frequencies.count == alphabetSize` and frequencies sum
     /// to `tabSize`.
@@ -184,7 +275,22 @@ public struct ANSDistributionFormat {
             return try buildFlatDistribution(alphabetSize: alphabetSize)
         }
 
-        throw ANSDistributionFormatError.fullDistributionNotImplemented
+        // Project-internal full mode: alphabet_size × u(13) frequencies.
+        var freqs = [UInt32](); freqs.reserveCapacity(alphabetSize)
+        var sum: UInt32 = 0
+        for _ in 0..<alphabetSize {
+            let f: UInt32
+            do { f = try r.read(bits: 13) }
+            catch let e as BitstreamError { throw ANSDistributionFormatError.bitstream(e) }
+            freqs.append(f)
+            sum &+= f
+        }
+        guard sum == ANSConstants.tabSize else {
+            throw ANSDistributionFormatError.invalidFullSum(
+                expected: ANSConstants.tabSize, got: sum
+            )
+        }
+        return try ANSDistribution(rawFrequencies: freqs)
     }
 
     // MARK: - Frequency assignment

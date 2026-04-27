@@ -1209,18 +1209,114 @@ final class FoundationTests: XCTestCase {
         XCTAssertEqual(decoded, stream)
     }
 
-    /// Decoder must reject the not-yet-implemented "full" path.
-    func testANSDistribution_FullPath_NotImplemented() throws {
+    /// Project-internal full per-symbol-frequency mode: round-trip a
+    /// realistic skewed histogram and verify exact frequency
+    /// recovery.
+    func testANSDistribution_RoundTrip_FullMode() throws {
+        // Heavy zero-bias histogram — the natural-image residual
+        // shape that flat distribution can't compress well.
+        // Frequencies must sum to exactly tabSize=4096 and be ≤ 8191.
+        let frequencies: [UInt32] = [
+            3500,   //  85%
+            300,    //  7%
+            150,    //  4%
+            80,     //  2%
+            40,     //  1%
+            20,     //  0.5%
+            6,      //  ~0%
+        ]
+        // Pad with zeros to alphabet_size=16, plus add 0 freqs.
+        var freqs = frequencies + [UInt32](repeating: 0, count: 9)
+        // Adjust to sum to tabSize.
+        let actualSum = freqs.reduce(UInt32(0), &+)
+        let target: UInt32 = ANSConstants.tabSize
+        if actualSum > target { freqs[0] -= (actualSum - target) }
+        else                  { freqs[0] += (target - actualSum) }
+        XCTAssertEqual(freqs.reduce(UInt32(0), &+), ANSConstants.tabSize)
+
         var w = BitWriter()
-        w.writeBit(false)   // is_simple = 0
-        w.writeBit(false)   // is_flat   = 0 → full mode
+        try ANSDistributionFormat.encodeFull(
+            frequencies: freqs, alphabetSize: 16, to: &w
+        )
         var r = BitReader(w.finishToData())
-        XCTAssertThrowsError(try ANSDistributionFormat.decode(
-            alphabetSize: 8, from: &r
+        let dist = try ANSDistributionFormat.decode(alphabetSize: 16, from: &r)
+        XCTAssertEqual(dist.alphabetSize, 16)
+        XCTAssertEqual(dist.frequencies, freqs,
+            "full-mode round-trip should recover frequencies exactly")
+    }
+
+    /// Encoder rejects a frequency array whose sum doesn't equal
+    /// tabSize. Caught at encode time so the decoder never sees a
+    /// malformed stream.
+    func testANSDistribution_FullMode_RejectsMalformedSum() {
+        var w = BitWriter()
+        let bogus: [UInt32] = [100, 200, 300]
+        XCTAssertThrowsError(try ANSDistributionFormat.encodeFull(
+            frequencies: bogus, alphabetSize: 3, to: &w
         )) { err in
-            XCTAssertEqual(err as? ANSDistributionFormatError,
-                           .fullDistributionNotImplemented)
+            guard let e = err as? ANSDistributionFormatError,
+                  case .invalidFullSum = e else {
+                XCTFail("expected invalidFullSum, got \(err)"); return
+            }
         }
+    }
+
+    /// `normaliseToTabSize` coerces any non-empty raw histogram into
+    /// a frequency array that sums to exactly tabSize, with non-zero
+    /// raw counts mapped to ≥ 1 (so they remain encodable).
+    func testANSDistribution_NormaliseToTabSize() throws {
+        let raw: [UInt32] = [100, 50, 0, 25, 1, 0, 0, 1]
+        let normed = try ANSDistributionFormat.normaliseToTabSize(raw)
+        XCTAssertEqual(normed.count, raw.count)
+        XCTAssertEqual(normed.reduce(UInt32(0), &+), ANSConstants.tabSize)
+        for i in 0..<raw.count where raw[i] > 0 {
+            XCTAssertGreaterThanOrEqual(normed[i], 1,
+                "non-zero raw count at \(i) must produce freq ≥ 1")
+        }
+        for i in 0..<raw.count where raw[i] == 0 {
+            XCTAssertEqual(normed[i], 0,
+                "zero raw count at \(i) must produce freq 0")
+        }
+    }
+
+    /// End-to-end: pack a skewed-histogram value stream through the
+    /// rANS encoder using a full-mode distribution, then decode it
+    /// back. Confirms the new path composes with the rANS coder.
+    func testANSDistribution_FullMode_EndToEndRANS() throws {
+        // Stream: 80 zeros + 20 ones — heavy bias.
+        var stream: [Int] = []
+        stream += Array(repeating: 0, count: 80)
+        stream += Array(repeating: 1, count: 20)
+
+        // Build the matching distribution (raw counts → normalised).
+        let freqs = try ANSDistributionFormat.normaliseToTabSize([80, 20])
+        // Pad the alphabet to 4 symbols so we have headroom.
+        let alphabetSize = 4
+        var fullFreqs = freqs + [UInt32](repeating: 0, count: alphabetSize - freqs.count)
+        // Re-normalise: padding mustn't change sum (we appended zeros).
+        XCTAssertEqual(fullFreqs.reduce(UInt32(0), &+), ANSConstants.tabSize)
+
+        // Round-trip the distribution through the bitstream so the
+        // encoder & decoder both see the exact same `ANSDistribution`.
+        var dw = BitWriter()
+        try ANSDistributionFormat.encodeFull(
+            frequencies: fullFreqs, alphabetSize: alphabetSize, to: &dw
+        )
+        var dr = BitReader(dw.finishToData())
+        let dist = try ANSDistributionFormat.decode(
+            alphabetSize: alphabetSize, from: &dr
+        )
+
+        // Encode the symbol stream.
+        var enc = ANSEncoder(distribution: dist)
+        for s in stream { try enc.write(s) }
+        let coded = enc.finish()
+
+        // Decode and verify.
+        var dec = try ANSDecoder(data: coded, distribution: dist)
+        var decoded: [Int] = []
+        for _ in 0..<stream.count { decoded.append(try dec.read()) }
+        XCTAssertEqual(decoded, stream)
     }
 
     /// Encoder must reject duplicate-symbol input in the simple path.
