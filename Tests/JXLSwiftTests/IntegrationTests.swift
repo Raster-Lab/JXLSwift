@@ -307,6 +307,62 @@ final class FoundationTests: XCTestCase {
         )
     }
 
+    /// Float32 grayscale via PFM input — exercises the float branch
+    /// of `BitDepth` (isFloat=1, bps via U32 distribution, exp via
+    /// the spec-specific `(2, 5, 10, 7+u(4))` distribution). Caught
+    /// the exp-distribution bug.
+    func testCrossValidate_Cjxl_Float32Grayscale_HeadersMatch() throws {
+        guard let cjxl = whichTool("cjxl") else {
+            try XCTSkipIf(true, "cjxl not on PATH")
+            return
+        }
+        let pfmPath = NSTemporaryDirectory() + "jxlswift-float-\(UUID().uuidString).pfm"
+        let jxlPath = NSTemporaryDirectory() + "jxlswift-float-\(UUID().uuidString).jxl"
+        defer {
+            try? FileManager.default.removeItem(atPath: pfmPath)
+            try? FileManager.default.removeItem(atPath: jxlPath)
+        }
+        // Build a 16×16 float32 PFM (Pf magic, big-endian).
+        var pfm = Data("Pf\n16 16\n1.0\n".utf8)
+        for y in 0..<16 {
+            for x in 0..<16 {
+                let v = Float(x &+ y) / 30.0
+                let bits = v.bitPattern
+                // Big-endian.
+                pfm.append(UInt8((bits >> 24) & 0xFF))
+                pfm.append(UInt8((bits >> 16) & 0xFF))
+                pfm.append(UInt8((bits >> 8) & 0xFF))
+                pfm.append(UInt8(bits & 0xFF))
+            }
+        }
+        try pfm.write(to: URL(fileURLWithPath: pfmPath))
+
+        let proc = Process()
+        proc.launchPath = cjxl
+        proc.arguments = ["-q", "100", pfmPath, jxlPath]
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        try proc.run()
+        proc.waitUntilExit()
+        guard proc.terminationStatus == 0 else {
+            XCTFail("cjxl failed with status \(proc.terminationStatus)")
+            return
+        }
+
+        let data = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
+        let inspection = try JXLDecoder().inspect(data)
+        XCTAssertEqual(inspection.xsize, 16)
+        XCTAssertEqual(inspection.ysize, 16)
+        guard let m = inspection.metadata else {
+            XCTFail("inspect() returned nil ImageMetadata for the float file")
+            return
+        }
+        XCTAssertTrue(m.bitDepth.floatingPoint, "should be float")
+        XCTAssertEqual(m.bitDepth.bitsPerSample, 32, "float32")
+        XCTAssertEqual(m.bitDepth.exponentBitsPerSample, 8,
+            "float32 exponent should be 8 — spec uses (2, 5, 10, 7+u(4)) distribution")
+    }
+
     /// **Writer-side cross-validation (RGB only)**: an M0 file with
     /// default-sRGB headers (i.e. our 3-channel path that takes the
     /// `ColorEncoding.allDefault = 1` shortcut) parses cleanly
