@@ -159,3 +159,100 @@ extension HybridUintConfig {
         return (UInt32(1) &<< UInt32(n)) &+ m
     }
 }
+
+// MARK: - HybridUintConfig bitstream serialisation (§C.5.1)
+//
+// Each rANS distribution carries its own HybridUintConfig describing
+// the (split_exponent, msb_in_token, lsb_in_token) parameters used for
+// integer encoding into that distribution's alphabet. The bit layout
+// is sized adaptively against the distribution's alphabet size:
+//
+//     split_exponent   u(ceilLog2(log_alpha + 1))
+//     if split_exponent == log_alpha:
+//         msb_in_token = 0; lsb_in_token = 0
+//     else:
+//         msb_in_token  u(ceilLog2(split_exponent + 1))
+//         lsb_in_token  u(ceilLog2(split_exponent - msb_in_token + 1))
+//
+// `log_alpha` is the log2 of the distribution's alphabet size and is
+// known from the surrounding codestream context. Spec range: 5..8.
+
+public enum HybridUintConfigError: Error, Sendable, Equatable {
+    case logAlphaOutOfRange(Int)
+    case splitOutOfRange(split: Int, logAlpha: Int)
+    case msbOutOfRange(msb: Int, split: Int)
+    case lsbOutOfRange(lsb: Int, splitMinusMsb: Int)
+    case bitstream(BitstreamError)
+}
+
+extension HybridUintConfig {
+
+    /// Serialise this config against an alphabet of size `2^logAlpha`.
+    /// `logAlpha` is the log-alphabet-size of the distribution that
+    /// will use this config; spec range is 5..8.
+    public func write(to w: inout BitWriter, logAlpha: Int) throws {
+        guard logAlpha >= 0 && logAlpha <= 30 else {
+            throw HybridUintConfigError.logAlphaOutOfRange(logAlpha)
+        }
+        guard splitExponent >= 0 && splitExponent <= logAlpha else {
+            throw HybridUintConfigError.splitOutOfRange(
+                split: splitExponent, logAlpha: logAlpha)
+        }
+        let nBitsSplit = Int(ceilLog2(UInt32(logAlpha + 1)))
+        w.write(bits: nBitsSplit, value: UInt32(splitExponent))
+        if splitExponent == logAlpha {
+            // Spec: msb / lsb implicitly zero — emit nothing.
+            guard msbInToken == 0 && lsbInToken == 0 else {
+                throw HybridUintConfigError.msbOutOfRange(
+                    msb: msbInToken, split: splitExponent)
+            }
+            return
+        }
+        guard msbInToken >= 0 && msbInToken <= splitExponent else {
+            throw HybridUintConfigError.msbOutOfRange(
+                msb: msbInToken, split: splitExponent)
+        }
+        let nBitsMsb = Int(ceilLog2(UInt32(splitExponent + 1)))
+        w.write(bits: nBitsMsb, value: UInt32(msbInToken))
+        guard lsbInToken >= 0 && lsbInToken <= splitExponent - msbInToken else {
+            throw HybridUintConfigError.lsbOutOfRange(
+                lsb: lsbInToken, splitMinusMsb: splitExponent - msbInToken)
+        }
+        let nBitsLsb = Int(ceilLog2(UInt32(splitExponent - msbInToken + 1)))
+        w.write(bits: nBitsLsb, value: UInt32(lsbInToken))
+    }
+
+    /// Deserialise a config given the surrounding `logAlpha`. Mirror of
+    /// `write(to:logAlpha:)`.
+    public static func read(from r: inout BitReader, logAlpha: Int) throws -> HybridUintConfig {
+        guard logAlpha >= 0 && logAlpha <= 30 else {
+            throw HybridUintConfigError.logAlphaOutOfRange(logAlpha)
+        }
+        let nBitsSplit = Int(ceilLog2(UInt32(logAlpha + 1)))
+        let split: Int
+        do { split = Int(try r.read(bits: nBitsSplit)) }
+        catch let e as BitstreamError { throw HybridUintConfigError.bitstream(e) }
+        guard split <= logAlpha else {
+            throw HybridUintConfigError.splitOutOfRange(split: split, logAlpha: logAlpha)
+        }
+        if split == logAlpha {
+            return HybridUintConfig(splitExponent: split, msbInToken: 0, lsbInToken: 0)
+        }
+        let nBitsMsb = Int(ceilLog2(UInt32(split + 1)))
+        let msb: Int
+        do { msb = Int(try r.read(bits: nBitsMsb)) }
+        catch let e as BitstreamError { throw HybridUintConfigError.bitstream(e) }
+        guard msb <= split else {
+            throw HybridUintConfigError.msbOutOfRange(msb: msb, split: split)
+        }
+        let nBitsLsb = Int(ceilLog2(UInt32(split - msb + 1)))
+        let lsb: Int
+        do { lsb = Int(try r.read(bits: nBitsLsb)) }
+        catch let e as BitstreamError { throw HybridUintConfigError.bitstream(e) }
+        guard lsb <= split - msb else {
+            throw HybridUintConfigError.lsbOutOfRange(
+                lsb: lsb, splitMinusMsb: split - msb)
+        }
+        return HybridUintConfig(splitExponent: split, msbInToken: msb, lsbInToken: lsb)
+    }
+}

@@ -98,7 +98,7 @@ JXLSwift is designed to be:
 
 ## Implementation status
 
-Spec sections from ISO/IEC 18181-1 and ISO/IEC 18181-2. Each row is verified by a test (where ✅) or a milestone target (where ⏳). The current test suite is **59 / 59 passing** — every ✅ row has a round-trip test that fails when the row stops working.
+Spec sections from ISO/IEC 18181-1 and ISO/IEC 18181-2. Each row is verified by a test (where ✅) or a milestone target (where ⏳). The current test suite is **67 / 67 passing** — every ✅ row has a round-trip test that fails when the row stops working.
 
 ### Phase F — Foundation ✅
 
@@ -107,7 +107,7 @@ Spec sections from ISO/IEC 18181-1 and ISO/IEC 18181-2. Each row is verified by 
 | Bitstream primitives (LSB-first) | §2.4 | `BitReader`, `BitWriter`, throws on EOF; 32-bit corner-case fixed |
 | `U32(d0, d1, d2, d3)` | §C.2.4 | round-trip tested |
 | `U64()` | §C.2.5 | round-trip tested across all 4 selectors (zero, small, mid, escape) |
-| `Enum()` | §C.2.6 | reader path; writer is a small follow-up |
+| `Enum()` | §C.2.6 | round-trip across the full 0…16 spec range; rejects out-of-range values; hand-derived bit patterns for values 0 and 5 |
 | ISOBMFF container parse / build | ISO/IEC 18181-2 | `ftyp`, `jxlc`, `jxlp` (split), naked codestream; verified against real `cjxl`-produced files |
 | Codestream signature `FF 0A` | §C.3.1 | constant + helpers |
 | `SizeHeader` (xsize / ysize) | §C.3.2 | small + large + aspect-ratio shortcuts |
@@ -130,7 +130,7 @@ Spec sections from ISO/IEC 18181-1 and ISO/IEC 18181-2. Each row is verified by 
 | Section | Spec ref | Status | Notes |
 |---|---|---|---|
 | Hybrid uint encoding | §C.5 | ✅ | round-trip on every value 0…255 with default config + power-of-two boundaries 1…2³¹ + sweep over (split, msb, lsb) configs + hand-derived spec-formula vectors |
-| HybridUintConfig serialisation | §C.5.1 | ⏳ | deferred until distributions land — config is parsed per-distribution |
+| HybridUintConfig serialisation | §C.5.1 | ✅ | adaptive bit widths against `logAlpha` (`split` u(ceilLog2(logAlpha+1)), `msb` u(ceilLog2(split+1)), `lsb` u(ceilLog2(split-msb+1))); split==logAlpha shortcut omits msb/lsb fields; round-trip sweep over (logAlpha, split, msb, lsb) tuples; hand-derived bit pattern (default config @ logAlpha=8 → `0x24 0x00`) |
 | Prefix codes (canonical Huffman) | §C.6.2 | ✅ | hand-derived 4-symbol code matches canonical assignment exactly; round-trip across 16-symbol equal-length, mixed-length {1,3,3,3,3}, and 256-symbol streams; rejects oversubscribed and undersubscribed lengths (Kraft); single-symbol degenerate code consumes 0 bits |
 | Prefix-code-table simple format | §C.6.2.1 simple branch | ✅ | round-trip across all 4 shapes (1/2/3/4 symbols, both 4-symbol variants); hand-derived bit pattern (sym=[0,3], alphabet=4) → byte 0xC5 |
 | Prefix-code-table complex format | §C.6.2.1 complex branch | ✅ decode + (basic) encode | round-trip on 6-symbol mixed-length, 32-symbol uniform, and 16-symbol many-zeros cases; **hand-derived bit pattern verifies the symbol-17 zero-run decoder path** (`3 + read(3)` expansion). Encoder is correct but doesn't yet emit run-length symbols 16/17 — every literal is an explicit length-symbol. The cll encoding (raw `u(3)`) is one defensible reading of the spec text and is the area that most benefits from future libjxl byte cross-check. |
@@ -194,7 +194,7 @@ These are added once a corresponding scalar Swift path is correct. The scalar pa
 
 | Item | Status |
 |---|---|
-| Foundation tests (59) | ✅ |
+| Foundation tests (67) | ✅ |
 | Conformance test vectors (jxl-conformance repo) | ⏳ harness exists; vectors not wired up |
 | Cross-codec round-trip (encode → libjxl `djxl` decode) | ⏳ requires Phase E4-6 + M at minimum |
 | Cross-codec round-trip (libjxl `cjxl` → JXLDecoder) | ⏳ requires Phase E4-6 + M at minimum |

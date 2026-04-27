@@ -65,7 +65,9 @@ extension BitReader {
     }
 
     /// Decode an enum from the spec's "Enum()" pattern (ISO/IEC 18181-1
-    /// §C.2.6): `U32(0, 1, 2, 1+u(4))`. Result range is 0…20.
+    /// §C.2.6): `U32(0, 1, 2, 1+u(4))`. Result range is 0…16
+    /// (selectors 0–2 yield 0, 1, 2 directly; selector 3 yields
+    /// `1 + u(4)` which spans 1..16).
     public mutating func readEnum() throws -> UInt32 {
         try readU32((
             .literal(0), .literal(1), .literal(2),
@@ -92,6 +94,17 @@ extension BitWriter {
             }
         }
         throw BitstreamError.malformedValue("U32 value \(value) does not fit any distribution")
+    }
+
+    /// Encode an enum value via the spec's "Enum()" pattern (ISO/IEC
+    /// 18181-1 §C.2.6): `U32(0, 1, 2, 1+u(4))`. Result range is 0…16.
+    /// Throws `BitstreamError.malformedValue` for values outside that
+    /// range.
+    public mutating func writeEnum(_ value: UInt32) throws {
+        try writeU32(value, distributions: (
+            .literal(0), .literal(1), .literal(2),
+            .offset(constant: 1, extraBits: 4)
+        ))
     }
 
     /// Encode a `U64()` value (ISO/IEC 18181-1 §C.2.5).

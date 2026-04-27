@@ -1251,4 +1251,135 @@ final class FoundationTests: XCTestCase {
         }
     }
 
+    // MARK: - HybridUintConfig serialisation (§C.5.1)
+
+    /// Round-trip the default and a sweep of representative configs
+    /// against several `logAlpha` values that arise in practice (5..8).
+    func testHybridUintConfig_RoundTrip_Sweep() throws {
+        // Each (split, msb, lsb) tuple must satisfy:
+        //   split <= logAlpha,  msb <= split,  lsb <= split - msb.
+        let cases: [(logAlpha: Int, configs: [(Int, Int, Int)])] = [
+            (logAlpha: 5, configs: [(0,0,0), (3,1,1), (5,0,0), (4,2,1)]),
+            (logAlpha: 6, configs: [(2,0,2), (6,0,0), (4,2,2)]),
+            (logAlpha: 8, configs: [(4,2,0), (8,0,0), (4,0,0), (6,3,1), (1,0,1)]),
+        ]
+        for (logAlpha, configs) in cases {
+            for (split, msb, lsb) in configs {
+                let cfg = HybridUintConfig(
+                    splitExponent: split, msbInToken: msb, lsbInToken: lsb
+                )
+                var w = BitWriter()
+                try cfg.write(to: &w, logAlpha: logAlpha)
+                var r = BitReader(w.finishToData())
+                let parsed = try HybridUintConfig.read(from: &r, logAlpha: logAlpha)
+                XCTAssertEqual(parsed.splitExponent, cfg.splitExponent,
+                    "split mismatch for (logAlpha=\(logAlpha), split=\(split))")
+                XCTAssertEqual(parsed.msbInToken, cfg.msbInToken,
+                    "msb mismatch for (logAlpha=\(logAlpha), split=\(split))")
+                XCTAssertEqual(parsed.lsbInToken, cfg.lsbInToken,
+                    "lsb mismatch for (logAlpha=\(logAlpha), split=\(split))")
+            }
+        }
+    }
+
+    /// Hand-derived bit pattern: default config (split=4, msb=2, lsb=0)
+    /// against logAlpha=8.
+    ///
+    ///   nBitsForSplit = ceilLog2(8 + 1) = 4 → write 4 = 0b0100
+    ///   nBitsForMsb   = ceilLog2(4 + 1) = 3 → write 2 = 0b010
+    ///   nBitsForLsb   = ceilLog2(4 - 2 + 1) = 2 → write 0 = 0b00
+    ///
+    /// Bits emitted (LSB-first within each field):
+    ///   split=4 → 0,0,1,0
+    ///   msb=2   → 0,1,0
+    ///   lsb=0   → 0,0
+    ///
+    /// Combined LSB-first: 0,0,1,0,0,1,0,0,0 (9 bits, padded to 16 bits).
+    /// Bit 0 = 0, bit 1 = 0, bit 2 = 1, bit 3 = 0,
+    /// bit 4 = 0, bit 5 = 1, bit 6 = 0, bit 7 = 0,
+    /// bit 8 = 0, bits 9..15 = 0.
+    /// Byte 0 = 0b0010_0100 = 0x24
+    /// Byte 1 = 0b0000_0000 = 0x00
+    func testHybridUintConfig_HandDerived_DefaultConfig() throws {
+        var w = BitWriter()
+        try HybridUintConfig.defaultConfig.write(to: &w, logAlpha: 8)
+        let bytes = [UInt8](w.finishToData())
+        XCTAssertEqual(bytes, [0x24, 0x00],
+            "default config (split=4, msb=2, lsb=0) at logAlpha=8 should be 0x24 0x00; got \(bytes)")
+    }
+
+    /// Edge case: `splitExponent == logAlpha` triggers the implicit-zero
+    /// branch — only the split field is emitted.
+    func testHybridUintConfig_SplitEqualsLogAlpha_OmitsMsbLsb() throws {
+        let cfg = HybridUintConfig(splitExponent: 8, msbInToken: 0, lsbInToken: 0)
+        var w = BitWriter()
+        try cfg.write(to: &w, logAlpha: 8)
+        // Only the 4-bit split field is emitted: 0b1000.
+        // Bits LSB-first: 0,0,0,1 (4 bits) → bit 3 set → byte = 0x08.
+        let bytes = [UInt8](w.finishToData())
+        XCTAssertEqual(bytes, [0x08])
+
+        var r = BitReader(w.finishToData())
+        let parsed = try HybridUintConfig.read(from: &r, logAlpha: 8)
+        XCTAssertEqual(parsed.splitExponent, 8)
+        XCTAssertEqual(parsed.msbInToken, 0)
+        XCTAssertEqual(parsed.lsbInToken, 0)
+    }
+
+    /// Encoder rejects an out-of-range `splitExponent`.
+    func testHybridUintConfig_RejectsSplitOutOfRange() {
+        let cfg = HybridUintConfig(splitExponent: 6, msbInToken: 0, lsbInToken: 0)
+        var w = BitWriter()
+        XCTAssertThrowsError(try cfg.write(to: &w, logAlpha: 5)) { err in
+            guard let e = err as? HybridUintConfigError,
+                  case .splitOutOfRange(let split, let logAlpha) = e else {
+                XCTFail("expected splitOutOfRange, got \(err)"); return
+            }
+            XCTAssertEqual(split, 6)
+            XCTAssertEqual(logAlpha, 5)
+        }
+    }
+
+    // MARK: - Enum() writer (§C.2.6)
+
+    /// Round-trip every Enum() value 0…16 (full spec range — selectors
+    /// 0–2 emit 0, 1, 2 directly; selector 3 emits `1 + u(4)` ∈ 1..16).
+    func testEnum_RoundTrip_FullRange() throws {
+        for value in 0...16 {
+            var w = BitWriter()
+            try w.writeEnum(UInt32(value))
+            var r = BitReader(w.finishToData())
+            let parsed = try r.readEnum()
+            XCTAssertEqual(parsed, UInt32(value),
+                "Enum() round-trip failed for \(value)")
+        }
+    }
+
+    /// Values above 16 fall outside Enum()'s representable range and
+    /// must throw rather than silently producing an aliased encoding.
+    func testEnum_RejectsOutOfRange() {
+        var w = BitWriter()
+        XCTAssertThrowsError(try w.writeEnum(17))
+        XCTAssertThrowsError(try w.writeEnum(100))
+    }
+
+    /// Hand-derived: writeEnum(0) emits selector 0, no extra bits → 2 bits total.
+    func testEnum_HandDerived_Zero() throws {
+        var w = BitWriter()
+        try w.writeEnum(0)
+        let bytes = [UInt8](w.finishToData())
+        // Selector 0 = 0b00 (2 bits). Padded to 8 → 0x00.
+        XCTAssertEqual(bytes, [0x00])
+    }
+
+    /// Hand-derived: writeEnum(5) goes via the offset(1, u(4)) branch:
+    /// selector 3 = 0b11, then `5 - 1 = 4` as u(4) = 0b0100.
+    /// LSB-first: 1,1,0,0,1,0 → byte = 0b0001_0011 = 0x13.
+    func testEnum_HandDerived_Five() throws {
+        var w = BitWriter()
+        try w.writeEnum(5)
+        let bytes = [UInt8](w.finishToData())
+        XCTAssertEqual(bytes, [0x13])
+    }
+
 }
