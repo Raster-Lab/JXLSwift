@@ -1476,6 +1476,116 @@ final class FoundationTests: XCTestCase {
 
 }
 
+// MARK: - RCT reversible colour transform (§C.7.7)
+
+extension FoundationTests {
+
+    /// Identity variant: pixel triples pass through unchanged.
+    func testRCT_Identity_RoundTrip() {
+        for (r, g, b) in [
+            (0, 0, 0), (255, 255, 255), (100, 50, 200), (-10, 10, 5),
+        ] as [(Int32, Int32, Int32)] {
+            let (y, co, cg) = RCT.forwardPixel(.identity, r: r, g: g, b: b)
+            XCTAssertEqual(y, r); XCTAssertEqual(co, g); XCTAssertEqual(cg, b)
+            let (r2, g2, b2) = RCT.inversePixel(.identity, y: y, co: co, cg: cg)
+            XCTAssertEqual(r2, r); XCTAssertEqual(g2, g); XCTAssertEqual(b2, b)
+        }
+    }
+
+    /// YCoCg-R: hand-computed value for one specific triple, plus
+    /// round-trip across an interesting range.
+    ///
+    /// Hand-computed for (R, G, B) = (200, 100, 50):
+    ///   Co  = 200 - 50  = 150
+    ///   tmp = 50 + (150 >> 1) = 50 + 75 = 125
+    ///   Cg  = 100 - 125 = -25
+    ///   Y   = 125 + (-25 >> 1) = 125 + (-13) = 112
+    ///
+    /// Note: arithmetic right shift of -25 by 1 is -13 (floor-toward
+    /// -∞ on 2's complement), which matches Swift's `&>>` on `Int32`.
+    func testRCT_YCoCgR_HandValueAndRoundTrip() {
+        let (y, co, cg) = RCT.forwardPixel(.ycocgR, r: 200, g: 100, b: 50)
+        XCTAssertEqual(y, 112, "YCoCg-R Y for (200, 100, 50)")
+        XCTAssertEqual(co, 150, "YCoCg-R Co for (200, 100, 50)")
+        XCTAssertEqual(cg, -25, "YCoCg-R Cg for (200, 100, 50)")
+        let (r, g, b) = RCT.inversePixel(.ycocgR, y: y, co: co, cg: cg)
+        XCTAssertEqual(r, 200); XCTAssertEqual(g, 100); XCTAssertEqual(b, 50)
+    }
+
+    /// Round-trip every (R, G, B) triple in 0…31³ — exhaustive small-
+    /// range coverage that catches any bit-shift / sign-handling bug
+    /// in either direction of the transform.
+    func testRCT_YCoCgR_RoundTripExhaustiveSmallRange() {
+        for r in 0...31 {
+            for g in 0...31 {
+                for b in 0...31 {
+                    let (y, co, cg) = RCT.forwardPixel(
+                        .ycocgR, r: Int32(r), g: Int32(g), b: Int32(b)
+                    )
+                    let (r2, g2, b2) = RCT.inversePixel(
+                        .ycocgR, y: y, co: co, cg: cg
+                    )
+                    if (r2, g2, b2) != (Int32(r), Int32(g), Int32(b)) {
+                        XCTFail("YCoCg-R round-trip failed for (\(r), \(g), \(b))")
+                        return
+                    }
+                }
+            }
+        }
+    }
+
+    /// Round-trip across full 16-bit-range pixel values.
+    func testRCT_YCoCgR_RoundTripFull16BitBoundaries() {
+        let triples: [(Int32, Int32, Int32)] = [
+            (0, 0, 0), (65535, 65535, 65535), (65535, 0, 0),
+            (0, 65535, 0), (0, 0, 65535), (32768, 32767, 32766),
+            (1, 65535, 32767), (-1, -1, -1), (-32768, -32767, -32766),
+        ]
+        for (r, g, b) in triples {
+            let (y, co, cg) = RCT.forwardPixel(.ycocgR, r: r, g: g, b: b)
+            let (r2, g2, b2) = RCT.inversePixel(.ycocgR, y: y, co: co, cg: cg)
+            XCTAssertEqual([r2, g2, b2], [r, g, b],
+                "YCoCg-R round-trip failed for (\(r), \(g), \(b))")
+        }
+    }
+
+    /// Decorrelation property: when R, G, B are correlated (R ≈ G ≈ B
+    /// ≈ base), the transformed Co and Cg channels are *small*
+    /// regardless of base brightness. This is the property that
+    /// makes RCT useful for compression.
+    func testRCT_YCoCgR_DecorrelatesCorrelatedChannels() {
+        // R = base, G = base + 1, B = base - 1 across many bases.
+        // Derivation:
+        //   Co  = R - B = base - (base - 1) = 1
+        //   tmp = B + (Co >> 1) = (base - 1) + 0 = base - 1
+        //   Cg  = G - tmp = (base + 1) - (base - 1) = 2
+        for base in stride(from: Int32(0), through: 65000, by: 1000) {
+            let (_, co, cg) = RCT.forwardPixel(
+                .ycocgR, r: base, g: base &+ 1, b: base &- 1
+            )
+            XCTAssertEqual(co, 1, "Co should be 1 regardless of base; got \(co) at base=\(base)")
+            XCTAssertEqual(cg, 2, "Cg should be 2 regardless of base; got \(cg) at base=\(base)")
+        }
+    }
+
+    /// Buffer-level forward+inverse round-trip on a small image.
+    func testRCT_YCoCgR_BufferRoundTrip() {
+        var ch0: [Int32] = [10, 20, 30, 40]
+        var ch1: [Int32] = [15, 25, 35, 45]
+        var ch2: [Int32] = [5,  15, 25, 35]
+        let originalCh0 = ch0
+        let originalCh1 = ch1
+        let originalCh2 = ch2
+        RCT.forward(.ycocgR, channel0: &ch0, channel1: &ch1, channel2: &ch2)
+        // Mutated.
+        XCTAssertNotEqual(ch0, originalCh0)
+        RCT.inverse(.ycocgR, channel0: &ch0, channel1: &ch1, channel2: &ch2)
+        XCTAssertEqual(ch0, originalCh0)
+        XCTAssertEqual(ch1, originalCh1)
+        XCTAssertEqual(ch2, originalCh2)
+    }
+}
+
 // MARK: - Modular predictors + ZigZag (§C.7.5)
 
 extension FoundationTests {
