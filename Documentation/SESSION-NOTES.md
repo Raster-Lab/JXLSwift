@@ -45,6 +45,8 @@ Followed by:
 | `085cd8d` | Phase E milestone: entropy-primitive layer complete (docs) |
 | `ded7da6` | Reconcile codebase to project-summary scope (DICOMReader → legacy, libjxl-backend reframed as historical) |
 | `e9fc0ee` | Phase E4a-simple: simple prefix-code-table bitstream format (§C.6.2.1) |
+| `51be29f` | Update SESSION-NOTES with E4a-simple completion |
+| `c07bbfd` | Phase E4a-complex: complex prefix-code-table format with run-length symbols 16/17 |
 
 ### Branches and tags preserved
 
@@ -121,7 +123,9 @@ The reason I stopped at the primitives boundary: E4 onwards benefits substantial
 
 The primitives are landed. **Phase E4a-simple is also now committed** (commit e9fc0ee — 1-to-4-symbol prefix-code shortcut format). The remaining road, in order:
 
-1. **Phase E4a-complex — Complex prefix-code-table serialisation (§C.6.2.1 complex branch)**: when there are 5+ symbols or non-trivial codeword lengths, the spec uses a meta-Huffman over symbols 0…18 to encode the lengths array. Symbols 0…15 are literal lengths; symbol 16 means "repeat previous non-zero length 3 + read(2) times", symbol 17 is "zero-run 3 + read(3)", symbol 18 is "long zero-run". Roughly 150–200 lines, but the run-length semantics need careful spec-text alignment. *Strongly recommend libjxl byte-for-byte cross-validation before declaring done.*
+1. ✅ **Phase E4a-complex** is now done (commit c07bbfd). Decoder + basic encoder for the complex prefix-code-table branch of §C.6.2.1, with a hand-derived bit-pattern test for the symbol-17 zero-run path. The encoder is correct but doesn't yet emit run-length symbols 16/17 — every literal length is an explicit symbol. An optimising encoder is future work and the cll-encoding format (raw `u(3)` per cll) would benefit from libjxl byte cross-check.
+
+The next phases are now:
 
 2. **Phase E4b — rANS distribution serialisation (§C.6.3.2)**: bit-level encoding of per-symbol frequencies, with shortcut modes for "trivial" (uniform) and "constant" (single-symbol) distributions. ~100 lines.
 
