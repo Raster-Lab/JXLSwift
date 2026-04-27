@@ -45,16 +45,21 @@ Sources/JXLSwift/Bitstream/   BitReader, BitWriter (LSB-first per §2.4),
 Sources/JXLSwift/Container/   ISOBMFF box parser/builder (ISO/IEC 18181-2)
 Sources/JXLSwift/Codestream/  Signature, SizeHeader, BitDepth,
                               ColorEncoding, ExtraChannelInfo,
-                              ImageMetadata
+                              ImageMetadata, FrameHeader
 Sources/JXLSwift/Entropy/     HybridUint, PrefixCodeTable, ANSDistribution,
-                              ANSEncoder, ANSDecoder
+                              ANSEncoder, ANSDecoder, ContextMap,
+                              LZ77Config, SimpleEntropyStream
+Sources/JXLSwift/Modular/     Predictors (W/N/NW/NE/avgWN/gradient/MED),
+                              Neighbourhood, ZigZag pack/unpack
 Sources/JXLSwift/Codec/       JXLEncoder, JXLDecoder (currently stubs;
                               JXLDecoder.inspect(_:) IS implemented),
-                              ImageFrame, EncodingOptions
+                              ImageFrame, EncodingOptions,
+                              MinimalLosslessCodec (M0 placeholder
+                              vertical slice with gradient prediction)
 Sources/JXLTool/              jxl-tool CLI (info works; encode/decode
                               throw .notImplemented until the codec lands)
-Tests/JXLSwiftTests/          44 round-trip tests across foundation,
-                              headers, and entropy primitives
+Tests/JXLSwiftTests/          103 round-trip tests across foundation,
+                              headers, entropy, modular primitives, M0
 Documentation/                ARCHITECTURE.md, SESSION-NOTES.md, legacy/
 ```
 
@@ -62,7 +67,7 @@ Documentation/                ARCHITECTURE.md, SESSION-NOTES.md, legacy/
 
 ```bash
 swift build -c release
-swift test  -c release           # 94 tests, ~50 ms
+swift test  -c release           # 103 tests, ~50 ms
 .build/release/jxl-tool --version
 ```
 

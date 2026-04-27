@@ -1898,6 +1898,64 @@ extension FoundationTests {
         }
     }
 
+    /// Compression-win sanity check: a smooth-gradient 32×32 image
+    /// should encode to substantially fewer bytes with gradient
+    /// prediction than its raw-pixel byte count. This is the headline
+    /// "prediction works" assertion — without prediction the output
+    /// would be roughly the raw byte count plus header overhead.
+    func testM0_GradientPredictionReducesOutputSize_8bit() throws {
+        var frame = ImageFrame(
+            width: 32, height: 32, channels: 1,
+            pixelType: .uint8, colorSpace: .grayscale
+        )
+        // Smooth gradient: pixel value = (x + y) * 4. Highly
+        // predictable — gradient predictor recovers each pixel almost
+        // exactly so residuals are tiny.
+        for y in 0..<32 {
+            for x in 0..<32 {
+                let v = UInt16(min(255, (x + y) * 4))
+                frame.setPixel(x: x, y: y, channel: 0, value: v)
+            }
+        }
+        let encoded = try MinimalLosslessCodec.encode(frame)
+        let rawByteCount = 32 * 32   // 1024 bytes raw
+        XCTAssertLessThan(encoded.count, rawByteCount,
+            "smooth-gradient image should compress below raw byte count " +
+            "(\(encoded.count) vs raw \(rawByteCount))")
+        // And it must still round-trip exactly.
+        let decoded = try MinimalLosslessCodec.decode(encoded)
+        XCTAssertEqual(decoded.data, frame.data)
+    }
+
+    /// 16-bit mostly-constant image — the case where prediction truly
+    /// shines. Gradient predictor predicts every interior pixel
+    /// exactly, producing zero-residuals that the entropy coder packs
+    /// into the literal-token range (no extra bits). Smooth-gradient
+    /// 16-bit images need a *non-flat* distribution to exploit the
+    /// residual skew (deferred to E4b-full); this test isolates the
+    /// regime where the existing entropy stack already wins.
+    func testM0_GradientPredictionReducesOutputSize_16bit() throws {
+        var frame = ImageFrame(
+            width: 32, height: 32, channels: 1,
+            pixelType: .uint16, colorSpace: .grayscale
+        )
+        // Single fill value across the whole image. First pixel's
+        // residual = the fill value (W and N fall back to 0); every
+        // other residual = 0.
+        for y in 0..<32 {
+            for x in 0..<32 {
+                frame.setPixel(x: x, y: y, channel: 0, value: 12345)
+            }
+        }
+        let encoded = try MinimalLosslessCodec.encode(frame)
+        let rawByteCount = 32 * 32 * 2   // 2048 bytes raw
+        XCTAssertLessThan(encoded.count, rawByteCount,
+            "constant-fill 16-bit image should compress below raw byte count " +
+            "(\(encoded.count) vs raw \(rawByteCount))")
+        let decoded = try MinimalLosslessCodec.decode(encoded)
+        XCTAssertEqual(decoded.data, frame.data)
+    }
+
     /// Float32 isn't supported by M0 — encoder should throw cleanly.
     func testM0_RejectsFloat32() {
         let frame = ImageFrame(

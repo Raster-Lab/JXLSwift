@@ -29,20 +29,29 @@
 // regression-test fixture.
 //
 // Pixel encoding strategy (lossless):
-//   • Pixel values are treated as `UInt32` and fed into the
-//     `SimpleEntropyStream` together with the default
-//     `HybridUintConfig` (split=4, msb=2, lsb=0). The HybridUint layer
-//     compresses each value to a small token (alphabet bounded by
-//     `HybridUintConfig.defaultConfig.maxToken + 1` — 128 in this
-//     setup) plus zero or more extra bits, so the rANS alphabet stays
-//     small regardless of the input bit depth. This is the standard
-//     JXL lossless-Modular pattern: small fixed-alphabet entropy
-//     coder + per-token extra-bits dispatch.
-//   • Uint8 and uint16 (up to 32-bit values, really) all flow through
-//     the same alphabet. Float32 is not supported by M0.
+//   • Each channel is processed separately in row-major order. For
+//     every pixel we compute `predicted = Predictor.gradient(W, N, NW)`
+//     using already-encoded neighbours, then emit
+//     `ZigZag.pack(actual - predicted)` to the entropy stream. The
+//     decoder reverses: decode the residual, predict from already-
+//     decoded neighbours, recover `actual = predicted + residual`.
+//   • Residuals cluster near zero on natural-looking images, so the
+//     `HybridUint` token alphabet sees mostly small values (which
+//     pack into the literal-token range and consume no extra bits)
+//     instead of the full pixel-value range. This is the standard JXL
+//     lossless-Modular pattern: prediction + zigzag-encoded residuals
+//     into a small-alphabet entropy coder.
+//   • Uint8 and uint16 are supported. Float32 is not.
 //
-// This is intentionally simple — no prediction, no MA-tree, no
-// squeeze. Compression ratio is poor but lossless.
+// Compared with the pre-prediction version of M0 (which encoded raw
+// pixel values), the gradient-predicted output is meaningfully
+// smaller on smooth-gradient images — the test
+// `testM0_GradientPredictionReducesOutputSize_*` exercises this.
+//
+// **Predictor choice is fixed to `gradient`** in this M0 path. The
+// per-pixel adaptive selection driven by the MA-tree (§C.7.4) is
+// future work — when that lands, this file should either be deleted
+// or kept as a regression-test fixture for the predictor primitive.
 
 import Foundation
 
@@ -219,22 +228,28 @@ public struct MinimalLosslessCodec {
         return frame
     }
 
-    // MARK: - Pixel ↔ value-stream conversion
+    // MARK: - Pixel ↔ value-stream conversion (with gradient prediction)
+    //
+    // Channels are processed independently. For each channel we walk
+    // pixels in row-major order, look up the gradient-predicted value
+    // from already-encoded neighbours, subtract to get a signed
+    // residual, and zig-zag-pack it into the unsigned token stream.
 
     private static func pixelStream(from frame: ImageFrame) -> [UInt32] {
-        let n = frame.width * frame.height * frame.channels
-        var out = [UInt32](); out.reserveCapacity(n)
-        let bps = frame.pixelType.bytesPerSample
-        for i in 0..<n {
-            switch bps {
-            case 1:
-                out.append(UInt32(frame.data[i]))
-            case 2:
-                let lo = UInt32(frame.data[i * 2])
-                let hi = UInt32(frame.data[i * 2 + 1])
-                out.append((hi << 8) | lo)
-            default:
-                out.append(0)   // unsupported; encoder rejected upstream
+        let total = frame.width * frame.height * frame.channels
+        var out = [UInt32](); out.reserveCapacity(total)
+        for c in 0..<frame.channels {
+            // Build the channel's pixel buffer as Int32.
+            var buf = [Int32](repeating: 0, count: frame.width * frame.height)
+            for y in 0..<frame.height {
+                for x in 0..<frame.width {
+                    let actual = readChannelPixel(frame, x: x, y: y, channel: c)
+                    let nbh = Neighbourhood(at: x, y, in: buf, width: frame.width)
+                    let pred = Predictor.gradient.apply(to: nbh)
+                    let residual = actual &- pred
+                    out.append(ZigZag.pack(residual))
+                    buf[y * frame.width + x] = actual
+                }
             }
         }
         return out
@@ -243,18 +258,61 @@ public struct MinimalLosslessCodec {
     private static func writePixelStream(
         values: [UInt32], into frame: inout ImageFrame
     ) {
-        let bps = frame.pixelType.bytesPerSample
-        for (i, v) in values.enumerated() {
-            switch bps {
-            case 1:
-                frame.data[i] = UInt8(v & 0xFF)
-            case 2:
-                frame.data[i * 2]     = UInt8(v & 0xFF)
-                frame.data[i * 2 + 1] = UInt8((v >> 8) & 0xFF)
-            default:
-                break
+        let pixelsPerChannel = frame.width * frame.height
+        for c in 0..<frame.channels {
+            var buf = [Int32](repeating: 0, count: pixelsPerChannel)
+            for y in 0..<frame.height {
+                for x in 0..<frame.width {
+                    let i = c * pixelsPerChannel + y * frame.width + x
+                    let residual = ZigZag.unpack(values[i])
+                    let nbh = Neighbourhood(at: x, y, in: buf, width: frame.width)
+                    let pred = Predictor.gradient.apply(to: nbh)
+                    let actual = pred &+ residual
+                    buf[y * frame.width + x] = actual
+                    writeChannelPixel(&frame, x: x, y: y, channel: c, value: actual)
+                }
             }
         }
     }
+
+    /// Read one channel's pixel as `Int32` (wide enough for any
+    /// supported bit depth, signed for residual arithmetic).
+    private static func readChannelPixel(
+        _ frame: ImageFrame, x: Int, y: Int, channel c: Int
+    ) -> Int32 {
+        let bps = frame.pixelType.bytesPerSample
+        let i = (y * frame.width + x) * frame.channels + c
+        switch bps {
+        case 1:
+            return Int32(frame.data[i])
+        case 2:
+            let lo = Int32(frame.data[i * 2])
+            let hi = Int32(frame.data[i * 2 + 1])
+            return (hi << 8) | lo
+        default:
+            return 0
+        }
+    }
+
+    /// Write one channel's pixel from an `Int32`. The decoder is
+    /// responsible for ensuring `value` lies in the channel's
+    /// representable range — for the test images we use it does.
+    private static func writeChannelPixel(
+        _ frame: inout ImageFrame, x: Int, y: Int, channel c: Int, value: Int32
+    ) {
+        let bps = frame.pixelType.bytesPerSample
+        let i = (y * frame.width + x) * frame.channels + c
+        switch bps {
+        case 1:
+            frame.data[i] = UInt8(truncatingIfNeeded: value)
+        case 2:
+            let v = UInt32(bitPattern: value)
+            frame.data[i * 2]     = UInt8(v & 0xFF)
+            frame.data[i * 2 + 1] = UInt8((v >> 8) & 0xFF)
+        default:
+            break
+        }
+    }
+
 }
 
