@@ -1,5 +1,9 @@
 # Session notes — pure-Swift restart
 
+> **Update (Phase E pass):** Phase E1 (HybridUint), E2 (Prefix codes), and E3 (rANS) primitives now committed. 44 tests pass. See "What was actually delivered" — the headline numbers are updated below.
+
+
+
 This is a contemporaneous record of what was delivered in the autonomous push-further session that restarted the pure-Swift implementation. It's here so the next contributor (human or AI) can pick up cleanly without re-deriving context.
 
 ## What was asked
@@ -12,9 +16,16 @@ Followed by:
 
 ## What was honestly deliverable in this session
 
-**Done:** Phase F (Foundation) + Phase H (Image Headers). The pre-codec spec layer of ISO/IEC 18181 — everything that doesn't require entropy coding. Two clean commits, 26/26 tests green, parsers and writers paired and round-trip-verified.
+**Done:**
+- Phase F (Foundation) — bitstream, U32/U64, ISOBMFF container, signature, SizeHeader.
+- Phase H (Image Headers) — BitDepth, ColorEncoding, ExtraChannelInfo, ImageMetadata. Parsers AND writers, round-trip verified.
+- Phase E1 (HybridUint encoding §C.5) — variable-length integer codec.
+- Phase E2 (Prefix codes §C.6.2) — canonical Huffman with O(1) encode + decode via lookup tables.
+- Phase E3 (rANS encoder + decoder §C.6.3) — 32-bit state, 16-bit renorm, tabSize=4096. Including the distribution normalisation (rawFrequencies → exact tabSize).
 
-**Not done:** A working codec. The user explicitly acknowledged "multi-person-year"; that holds. Entropy coding (rANS, prefix codes, histogram clustering, LZ77), the Modular sub-codec (MA-tree, predictors, squeeze, RCT), VarDCT (XYB, adaptive blocks, CfL, quantisation), and restoration filters (gabor, EPF) each take substantial dedicated engineering. None of it is started.
+**44 tests pass** across all the above. Every primitive has at least one round-trip test; Phase H has 6 round-trip tests covering the medical-imaging cases; Phase E has 18 tests covering the entropy primitives.
+
+**Not done:** A working codec. Phases E4 (distribution serialisation), E5 (histogram clustering), E6 (LZ77 hybrid), then M (Modular sub-codec), V (VarDCT), R (restoration filters) are still ahead. The primitives are now in place; the missing work is mostly *integration* of those primitives against the spec's bitstream-level layouts.
 
 **Explicitly refused:** Fabricating a codec comparison. The user asked for "world-class production ready comparing with multiple codecs" — but with no working codec there's nothing to compare. Faking comparison numbers would be the kind of thing the previous v1.0.0 did, and it's why the previous attempt was rolled back. Honest no > convincing yes.
 
@@ -27,6 +38,10 @@ Followed by:
 | `68ca11e` | Restart pure-Swift: drop libjxl, ship the foundation |
 | `ff5ca5f` | Phase H: image-header structures (parsers) |
 | `4bfc486` | Phase H writers + round-trip verification |
+| `c0e3357` | README + session notes: Phase F + Phase H complete |
+| `f2207ca` | Phase E1: HybridUint encoding (§C.5) |
+| `71aadae` | Phase E2: Prefix codes (canonical Huffman) — §C.6.2 |
+| `34322db` | Phase E3: rANS encoder + decoder (§C.6.3) |
 
 ### Branches and tags preserved
 
@@ -90,25 +105,35 @@ Useful for sanity-checking medical-imaging archives.
 
 ## Why I stopped here, not further
 
-After Phase F + Phase H, the next required thing is **entropy coding**. The smallest meaningful entropy unit is `HybridUint` encoding (§C.5), maybe 100 lines. After that comes prefix codes (§C.6.2 — several hundred lines), then rANS distributions (§C.6.3 — many hundreds, plus the decoder state machine), then histogram clustering (§C.6.4 — hundreds more, with non-trivial algorithms). Each layer requires the previous to test against, and none of them produces meaningful end-user output without all the layers above them landing.
+After Phase E1+E2+E3, the next required pieces are:
+- **Phase E4** — bitstream serialisation of prefix-code-table lengths arrays (§C.6.2.1) and rANS distribution tables (§C.6.3.2). These are recursive bit-level structures.
+- **Phase E5** — histogram clustering / context maps (§C.6.4).
+- **Phase E6** — LZ77 hybrid mode (§C.6.5).
 
-Adding partial entropy coding without the complete chain produces unverified code that I can't round-trip-test. That's exactly the failure mode of the previous v1.0.0 attempt — claiming progress on the basis of "it compiles" rather than "it round-trips correctly". Honest "stop here" beats unverified "look how much I added".
+E4 is the most useful next step — without it, my rANS primitive can only be paired with hardcoded distributions, which won't read real .jxl files. Implementing E4 means recursive prefix-code structure where a "code length code" prefix-code encodes the lengths array of a "main" prefix-code. ~150–200 lines.
+
+The reason I stopped at the primitives boundary: E4 onwards benefits substantially from byte-for-byte cross-validation against libjxl-produced bitstreams, which I'm not set up for in-session. Pushing further would risk shipping self-consistent code that disagrees with the JXL spec at the byte level — exactly the failure mode of the previous v1.0.0. Tests I can run (encode → decode round-trip) prove encoder/decoder agreement but not spec compliance. The verified-and-tested primitives are a real milestone; the unverified-against-spec integration layer isn't.
 
 ## What "next" looks like for the next contributor
 
-1. **Phase E1 — HybridUint encoding (§C.5)** — small, foundational. Round-trip-test directly with hand-crafted byte sequences from the spec.
+The primitives are landed. The remaining road, in order:
 
-2. **Phase E2 — Prefix codes (§C.6.2)** — read prefix-code distributions, write them. Test against libjxl by encoding a small fixed alphabet and comparing bytes (or by hand-crafting a known-good byte sequence from the spec).
+1. **Phase E4a — Prefix-code-table serialisation (§C.6.2.1)**: bit-level encoding of the lengths array. Two formats: "simple" (1–4 fixed-length symbols) and "complex" (lengths encoded by a sub-prefix-code over symbols 0…18, with 7 of those being the literal lengths and the others being run-length codes). ~150 lines.
 
-3. **Phase E3 — rANS (§C.6.3)** — the deep one. Histograms, cumulative sums, the encode/decode state. Plan on at least a week of focused work. Use libjxl's [unit tests](https://github.com/libjxl/libjxl/tree/main/lib/jxl) as test vectors.
+2. **Phase E4b — rANS distribution serialisation (§C.6.3.2)**: bit-level encoding of per-symbol frequencies, with shortcut modes for "trivial" (uniform) and "constant" (single-symbol) distributions. ~100 lines.
 
-4. **Phase E4 — Histogram clustering / context maps (§C.6.4)** — needed for any real codec output. Adaptive: distributions are clustered by context.
+3. **Phase E5 — Histogram clustering / context maps (§C.6.4)**: when multiple distributions are used (one per context), the codestream stores a context map that groups contexts into clusters. ~150 lines.
 
-5. **Phase M0 — Smallest possible Modular path** — once E1–E4 land, target a 1×1 pixel grayscale lossless image. Encode it; verify `djxl` decodes it to the expected pixel. That's the "vertical slice" milestone.
+4. **Phase E6 — LZ77 hybrid (§C.6.5)**: alphabet extension that emits a (length, distance) back-reference instead of a literal symbol. ~150 lines.
 
-After M0 the work is largely "more of the same" — predictors, squeeze, RCT, then the bulk of the Modular pipeline at scale, then VarDCT for the lossy side.
+5. **Phase M0 — Smallest possible Modular path**: once E1–E6 land, target a 1×1 pixel grayscale lossless image. Encode it; verify `djxl` decodes it to the expected pixel. That's the "vertical slice" milestone — the first end-to-end real-world output.
 
-The libjxl C++ source is the reference oracle throughout. The conformance test vectors at https://github.com/libjxl/conformance are the formal validation set.
+After M0 the Modular pipeline scales up: predictors, squeeze (multi-resolution), RCT (reversible color transform), MA-tree (the actual context model that selects which distribution to use). Then VarDCT for the lossy side, then restoration filters.
+
+**Methodology:**
+- libjxl C++ source is the reference oracle. lib/jxl/dec_ans.cc and lib/jxl/dec_huffman.cc are the closest analogues for E4–E5.
+- The official [conformance test vectors](https://github.com/libjxl/conformance) are the formal validation set — pull them in, decode each, compare expected output.
+- For each new primitive: write the code, write the round-trip test, then write a "decode a hand-crafted byte sequence from the spec or libjxl" test.
 
 ## What this session did NOT change
 

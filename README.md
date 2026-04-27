@@ -21,6 +21,13 @@ The codec layer (Modular tree, VarDCT, rANS entropy coding, color transforms) is
 
 Every parser is paired with a writer; round-trip tests cover the medical-imaging cases (16-bit grayscale, RGBA16, EXIF orientation, float HDR, animation header).
 
+**Phase E — Entropy primitives (§C.5–§C.6.3):**
+- `HybridUintConfig` (§C.5) — variable-length integer split into (token, extra bits)
+- `PrefixCodeTable` (§C.6.2) — canonical Huffman with O(1) encode + decode via lookup tables
+- `ANSDistribution` + `ANSEncoder` + `ANSDecoder` (§C.6.3) — 32-bit-state rANS with 16-bit renormalisation, tabSize=4096
+
+Each primitive has round-trip tests; the compression-ratio sanity test confirms rANS reaches near-Shannon-entropy bounds on highly-skewed distributions (1000 symbols → < 50 bytes for a 0.08-bit-entropy stream).
+
 `JXLDecoder.inspect(_:)` parses any spec-compliant `.jxl` and reports container form, box list, dimensions, bit depth, channel count, alpha, animation, and HDR metadata — useful as a JXL info tool today.
 
 `JXLEncoder.encode(_:)` / `JXLDecoder.decode(_:)` throw `.notImplemented` because the codec layer isn't done yet. For a working JXL pipeline switch to the `libjxl-backend` branch.
@@ -31,7 +38,7 @@ See [ROADMAP.md](ROADMAP.md) for the spec-section status grid.
 
 ```bash
 swift build -c release
-swift test  -c release           # 26 tests (foundation + headers), ~50 ms
+swift test  -c release           # 44 tests (foundation + headers + entropy primitives), ~50 ms
 .build/release/jxl-tool --version
 .build/release/jxl-tool info path/to/file.jxl
 ```
@@ -105,13 +112,18 @@ The trade-off: building a JPEG XL codec is comparable in scope to a small open-s
 ```
 Sources/JXLSwift/Bitstream/   BitReader, BitWriter, U32/U64 spec integers
 Sources/JXLSwift/Container/   ISOBMFF box parser/builder
-Sources/JXLSwift/Codestream/  Signature + headers (SizeHeader, more to come)
-Sources/JXLSwift/Codec/       JXLEncoder / JXLDecoder (currently stubs),
+Sources/JXLSwift/Codestream/  Signature + headers (SizeHeader, BitDepth,
+                              ColorEncoding, ExtraChannelInfo,
+                              ImageMetadata)
+Sources/JXLSwift/Entropy/     HybridUint, PrefixCodeTable, rANS encoder/
+                              decoder, ANSDistribution
+Sources/JXLSwift/Codec/       JXLEncoder / JXLDecoder (currently stubs;
+                              JXLDecoder.inspect(_:) IS implemented),
                               ImageFrame, EncodingOptions
 Sources/JXLSwift/Medical/     DICOMReader (pure Swift — unchanged from
                               earlier rounds, codec-agnostic)
 Sources/JXLTool/              jxl-tool CLI (info works; encode/decode stubbed)
-Tests/JXLSwiftTests/          Foundation tests + DICOM smoke
+Tests/JXLSwiftTests/          44 tests across foundation, headers, entropy
 ```
 
 ## Branches
