@@ -2119,6 +2119,108 @@ final class FoundationTests: XCTestCase {
 
 }
 
+// MARK: - Squeeze (§C.7.6)
+
+extension FoundationTests {
+
+    /// 1D forward + inverse round-trip across small even-length
+    /// buffers. Hand-derives both directions.
+    func testSqueeze_HorizontalRoundTrip_Even() {
+        let original: [Int32] = [10, 20, 30, 40, 50, 60, 70, 80]
+        let squeezed = Squeeze.forwardHorizontal(original)
+        // Pairs: (10,20)→avg=15,res=-10; (30,40)→avg=35,res=-10;
+        //        (50,60)→avg=55,res=-10; (70,80)→avg=75,res=-10.
+        // Layout: avg first, res second.
+        XCTAssertEqual(squeezed, [15, 35, 55, 75, -10, -10, -10, -10])
+        let recovered = Squeeze.inverseHorizontal(squeezed)
+        XCTAssertEqual(recovered, original,
+            "Squeeze.forwardHorizontal then inverseHorizontal must be identity")
+    }
+
+    /// Odd-length buffer — last element passes through unchanged.
+    func testSqueeze_HorizontalRoundTrip_Odd() {
+        let original: [Int32] = [10, 20, 30, 40, 50]
+        let squeezed = Squeeze.forwardHorizontal(original)
+        // Pairs: (10,20), (30,40). Last element 50 passes through.
+        // Layout: [avg0, avg1, 50, res0, res1]
+        XCTAssertEqual(squeezed[0], 15)
+        XCTAssertEqual(squeezed[1], 35)
+        XCTAssertEqual(squeezed[2], 50)   // odd tail in avg-half
+        XCTAssertEqual(squeezed[3], -10)
+        XCTAssertEqual(squeezed[4], -10)
+        let recovered = Squeeze.inverseHorizontal(squeezed)
+        XCTAssertEqual(recovered, original)
+    }
+
+    /// Negative values + odd residuals: stresses the
+    /// `(res + 1) >> 1` ceil-division for two's-complement
+    /// arithmetic shift.
+    func testSqueeze_NegativeAndOddResiduals() {
+        let original: [Int32] = [-5, 8, 100, -100, 0, -1, 1000000, 999999]
+        let squeezed = Squeeze.forwardHorizontal(original)
+        let recovered = Squeeze.inverseHorizontal(squeezed)
+        XCTAssertEqual(recovered, original,
+            "Squeeze must round-trip exactly for negative + odd-difference values")
+    }
+
+    /// Exhaustive round-trip across 0…31² value pairs.
+    func testSqueeze_ExhaustiveRoundTripPairs() {
+        for l in 0...31 {
+            for r in 0...31 {
+                let pair: [Int32] = [Int32(l), Int32(r)]
+                let s = Squeeze.forwardHorizontal(pair)
+                let u = Squeeze.inverseHorizontal(s)
+                if u != pair {
+                    XCTFail("Squeeze round-trip failed for (l=\(l), r=\(r))")
+                    return
+                }
+            }
+        }
+    }
+
+    /// 2D forward + inverse round-trip on a 4×4 buffer along axis 0
+    /// (horizontal). Each row is squeezed independently.
+    func testSqueeze_2D_Horizontal_RoundTrip() {
+        let original: [Int32] = [
+            10, 20, 30, 40,
+            50, 60, 70, 80,
+            90, 100, 110, 120,
+            130, 140, 150, 160,
+        ]
+        let squeezed = Squeeze.forward2D(original, width: 4, height: 4, axis: 0)
+        XCTAssertEqual(squeezed.count, original.count)
+        let recovered = Squeeze.inverse2D(squeezed, width: 4, height: 4, axis: 0)
+        XCTAssertEqual(recovered, original)
+    }
+
+    /// 2D vertical squeeze round-trip.
+    func testSqueeze_2D_Vertical_RoundTrip() {
+        let original: [Int32] = [
+            10, 20, 30, 40,
+            50, 60, 70, 80,
+            90, 100, 110, 120,
+            130, 140, 150, 160,
+        ]
+        let squeezed = Squeeze.forward2D(original, width: 4, height: 4, axis: 1)
+        let recovered = Squeeze.inverse2D(squeezed, width: 4, height: 4, axis: 1)
+        XCTAssertEqual(recovered, original)
+    }
+
+    /// Composed horizontal + vertical squeeze (the classic
+    /// 4-quadrant wavelet decomposition). Proves the two passes
+    /// commute exactly.
+    func testSqueeze_2D_HorizontalThenVertical_RoundTrip() {
+        let original: [Int32] = (0..<64).map { Int32($0 * 7 - 100) }
+        let h = Squeeze.forward2D(original, width: 8, height: 8, axis: 0)
+        let hv = Squeeze.forward2D(h, width: 8, height: 8, axis: 1)
+        // Inverse in reverse order.
+        let h2 = Squeeze.inverse2D(hv, width: 8, height: 8, axis: 1)
+        let recovered = Squeeze.inverse2D(h2, width: 8, height: 8, axis: 0)
+        XCTAssertEqual(recovered, original,
+            "horizontal-then-vertical squeeze must round-trip exactly")
+    }
+}
+
 // MARK: - RCT reversible colour transform (§C.7.7)
 
 extension FoundationTests {
