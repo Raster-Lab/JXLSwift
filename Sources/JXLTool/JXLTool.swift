@@ -12,7 +12,7 @@ struct JXLTool: ParsableCommand {
         abstract: "JPEG XL inspect/encode/decode (pure Swift, ISO/IEC 18181).",
         version: "jxl-tool \(JXLToolVersion) (pure-Swift, foundation only — see ROADMAP.md)",
         subcommands: [Info.self, Encode.self, Decode.self,
-                      EncodeM0.self, DecodeM0.self]
+                      EncodeM0.self, DecodeM0.self, Benchmark.self]
     )
 }
 
