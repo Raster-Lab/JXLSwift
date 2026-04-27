@@ -57,10 +57,26 @@ public struct SizeHeader: Sendable, Equatable {
         }
     }
 
-    /// Write a SizeHeader using the "explicit" path (no aspect-ratio
-    /// shortcut). Always uses large mode for simplicity; the small
-    /// variant is an optional optimisation.
+    /// Write a SizeHeader. Picks small mode when both dimensions are
+    /// multiples of 8 in 8…256 — that's the encoding cjxl uses, and
+    /// keeps the bytes compact + (apparently) more spec-pedantic
+    /// for downstream tools. Otherwise falls back to large mode.
     public func write(to writer: inout BitWriter) throws {
+        let canSmall = ysize >= 8 && ysize <= 256 && ysize % 8 == 0
+                     && xsize >= 8 && xsize <= 256 && xsize % 8 == 0
+        if canSmall {
+            writer.writeBit(true)                         // small_pic = 1
+            writer.write(bits: 5, value: (ysize / 8) - 1)
+            // Aspect-ratio code: 0 for explicit, 1 for square. Use
+            // square shortcut when xsize == ysize to match cjxl.
+            if xsize == ysize {
+                writer.write(bits: 3, value: 1)           // square
+            } else {
+                writer.write(bits: 3, value: 0)           // explicit
+                writer.write(bits: 5, value: (xsize / 8) - 1)
+            }
+            return
+        }
         writer.writeBit(false) // large mode
         try writeSizeField(&writer, value: ysize)
         writer.write(bits: 3, value: 0) // explicit xsize follows
