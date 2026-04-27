@@ -47,7 +47,7 @@ Followed by:
 | `e9fc0ee` | Phase E4a-simple: simple prefix-code-table bitstream format (§C.6.2.1) |
 | `51be29f` | Update SESSION-NOTES with E4a-simple completion |
 | `c07bbfd` | Phase E4a-complex: complex prefix-code-table format with run-length symbols 16/17 |
-| (next)    | Phase E4b: rANS distribution serialisation (§C.6.3.2) — simple + flat shortcuts |
+| `88b96f7` | Phase E4b: rANS distribution serialisation (§C.6.3.2) — simple + flat shortcuts |
 
 ### Branches and tags preserved
 
