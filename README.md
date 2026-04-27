@@ -2,27 +2,36 @@
 
 A pure-Swift implementation of JPEG XL (ISO/IEC 18181), targeting Swift 6.2 strict concurrency. **No C dependencies, no native libraries.**
 
-## Status: foundation only
+## Status: pre-codec spec layer complete
 
-The codec layer (Modular tree, VarDCT, rANS entropy coding, color transforms) is in active development as a multi-person-year project. What works today is the foundation:
+The codec layer (Modular tree, VarDCT, rANS entropy coding, color transforms) is the multi-person-year project ahead. Done today: every part of ISO/IEC 18181 that can be implemented *without* entropy coding.
 
-- LSB-first bitstream reader / writer (ISO/IEC 18181-1 §2.4)
-- Spec-defined `U32` / `U64` / `Enum` integer encodings (§C.2)
-- ISOBMFF container parse + build (parses real `cjxl`-produced files)
-- Codestream signature recognition (§C.3.1)
-- `SizeHeader` read + write (§C.3.2)
+**Phase F — Foundation (§2.4, §C.2, §C.3.1–§C.3.2):**
+- LSB-first bitstream reader / writer
+- Spec-defined `U32` / `U64` / `Enum` integer encodings
+- ISOBMFF container parse + build (`ftyp`, `jxlc`, `jxlp`, naked codestreams)
+- Codestream signature recognition
+- `SizeHeader` read + write
 
-Calling `JXLEncoder.encode(_:)` / `JXLDecoder.decode(_:)` throws `.notImplemented`. `JXLDecoder.inspect(_:)` does work and returns the dimensions and box list of any spec-compliant `.jxl` file — useful as a JXL info tool while the codec layers are built up.
+**Phase H — Image headers (§C.3.3–§C.3.7):**
+- `BitDepth` (uint8 / uint16 / float16 / float32 / custom)
+- `ColorEncoding` (named primaries, white points, transfer functions)
+- `ExtraChannelInfo` (alpha, depth, thermal, CFA, spot color, …)
+- `ImageMetadata` (orientation, intrinsic size, preview, animation, tone mapping, extensions)
 
-For a working JXL pipeline today, switch to the `libjxl-backend` branch (a libjxl-backed implementation preserved for users who need a functional codec while the pure-Swift codec is in progress).
+Every parser is paired with a writer; round-trip tests cover the medical-imaging cases (16-bit grayscale, RGBA16, EXIF orientation, float HDR, animation header).
 
-See [ROADMAP.md](ROADMAP.md) for a detailed mapping of spec sections to implementation status.
+`JXLDecoder.inspect(_:)` parses any spec-compliant `.jxl` and reports container form, box list, dimensions, bit depth, channel count, alpha, animation, and HDR metadata — useful as a JXL info tool today.
+
+`JXLEncoder.encode(_:)` / `JXLDecoder.decode(_:)` throw `.notImplemented` because the codec layer isn't done yet. For a working JXL pipeline switch to the `libjxl-backend` branch.
+
+See [ROADMAP.md](ROADMAP.md) for the spec-section status grid.
 
 ## Quickstart
 
 ```bash
 swift build -c release
-swift test  -c release           # 16 foundation tests, ~50 ms
+swift test  -c release           # 26 tests (foundation + headers), ~50 ms
 .build/release/jxl-tool --version
 .build/release/jxl-tool info path/to/file.jxl
 ```
