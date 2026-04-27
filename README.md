@@ -88,13 +88,13 @@ The pipeline is `optional RCT (R/G/B only when channels ≥ 3) → per-channel p
 
 `jxl-tool benchmark -i input.pgm` times the encode/decode loop and reports source-pixels-per-second throughput. Sample numbers on Apple Silicon (release build, 10 iterations):
 
-| Image                          | Encode      | Decode      |
+| Image                                      | Encode      | Decode      |
 |---|---|---|
-| 128×128 8-bit grayscale (gradient + noise) | 4.4 Mpx/s | 55 Mpx/s |
-| 256×256 8-bit grayscale                    | 8.3 Mpx/s | 76 Mpx/s |
-| 512×512 8-bit grayscale                    | 7.1 Mpx/s | 74 Mpx/s |
-| 1024×1024 8-bit grayscale                  | 7.6 Mpx/s | 73 Mpx/s |
-| 256×256 8-bit correlated RGB               | 1.5 Mpx/s | 30 Mpx/s |
+| 128×128 8-bit grayscale (gradient + noise) | 4.4 Mpx/s   | 54 Mpx/s    |
+| 256×256 8-bit grayscale                    | 8.2 Mpx/s   | 74 Mpx/s    |
+| 512×512 8-bit grayscale                    | 8.2 Mpx/s   | 74 Mpx/s    |
+| 1024×1024 8-bit grayscale                  | 7.9 Mpx/s   | 74 Mpx/s    |
+| 256×256 8-bit correlated RGB               | 2.2 Mpx/s   | 30 Mpx/s    |
 
 Decode is ~10× faster than encode because the encoder evaluates every predictor against the channel's pixels to pick the best one (and for RGB also evaluates each RCT variant). The decoder just applies whichever predictor + RCT the encoder picked.
 

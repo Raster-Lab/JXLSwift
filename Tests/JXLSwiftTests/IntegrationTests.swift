@@ -2335,7 +2335,7 @@ extension FoundationTests {
         let buf = MinimalLosslessCodec.buildChannelBuffer(frame, channel: 0)
         let chosen = MinimalLosslessCodec.bestPredictorForChannel(
             buf, width: 32, hybridConfig: .defaultConfig
-        )
+        ).id
         XCTAssertEqual(chosen, .north,
             "vertical-stripes image should pick the north predictor; got \(chosen)")
         // And the round-trip must work plus compress meaningfully.
@@ -2362,7 +2362,7 @@ extension FoundationTests {
         let buf = MinimalLosslessCodec.buildChannelBuffer(frame, channel: 0)
         let chosen = MinimalLosslessCodec.bestPredictorForChannel(
             buf, width: 32, hybridConfig: .defaultConfig
-        )
+        ).id
         XCTAssertEqual(chosen, .west,
             "horizontal-stripes image should pick the west predictor; got \(chosen)")
         let encoded = try MinimalLosslessCodec.encode(frame)
@@ -2384,7 +2384,7 @@ extension FoundationTests {
         let buf = MinimalLosslessCodec.buildChannelBuffer(frame, channel: 0)
         let chosen = MinimalLosslessCodec.bestPredictorForChannel(
             buf, width: 16, hybridConfig: .defaultConfig
-        )
+        ).id
         XCTAssertEqual(chosen, .zero,
             "all-zero image: every predictor scores identically; lowest-rawValue (.zero) wins")
         let encoded = try MinimalLosslessCodec.encode(frame)
@@ -2414,7 +2414,7 @@ extension FoundationTests {
         let buf = MinimalLosslessCodec.buildChannelBuffer(frame, channel: 0)
         let chosen = MinimalLosslessCodec.bestPredictorForChannel(
             buf, width: 32, hybridConfig: .defaultConfig
-        )
+        ).id
         // Any of the interior-residual=1 predictors is a valid choice;
         // by tie-break rules `.west` wins.
         let validChoices: Set<PredictorID> = [.west, .north, .gradient, .medianWNGradient]
