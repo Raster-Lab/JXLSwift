@@ -332,6 +332,143 @@ final class IntegrationTests: XCTestCase {
         }
     }
 
+    // MARK: - DICOM correctness (Phase 3a)
+
+    /// Build a minimal Implicit-VR-LE DICOM byte stream in memory, used
+    /// by the signed-pixel test below. Only sets the tags relevant to the
+    /// reader's correctness checks.
+    private func makeImplicitVRDICOM(
+        width: Int, height: Int,
+        bitsAllocated: Int = 16, bitsStored: Int = 12,
+        pixelRepresentation: Int = 0,
+        rescaleSlope: Double? = nil,
+        rescaleIntercept: Double? = nil,
+        photometric: String = "MONOCHROME2",
+        pixelData: [UInt16]
+    ) -> Data {
+        // 128-byte preamble + 'DICM'
+        var data = Data(count: 132)
+        data[128] = 0x44; data[129] = 0x49; data[130] = 0x43; data[131] = 0x4D
+
+        // File Meta Info — Explicit VR LE.
+        // (0002,0000) UL group length (we'll fill at the end)
+        // (0002,0010) UI TransferSyntaxUID = "1.2.840.10008.1.2" (Implicit VR LE)
+        var meta = Data()
+        func appendExplicit(_ group: UInt16, _ element: UInt16, vr: String, value: Data) {
+            var d = Data()
+            d.append(UInt8(group & 0xFF)); d.append(UInt8(group >> 8))
+            d.append(UInt8(element & 0xFF)); d.append(UInt8(element >> 8))
+            d.append(contentsOf: vr.utf8)
+            // Short-VR length = 2 bytes for everything we use here.
+            let len = UInt16(value.count)
+            d.append(UInt8(len & 0xFF)); d.append(UInt8(len >> 8))
+            d.append(value)
+            meta.append(d)
+        }
+        var ts = "1.2.840.10008.1.2".data(using: .ascii)!
+        if ts.count % 2 != 0 { ts.append(0) }
+        appendExplicit(0x0002, 0x0010, vr: "UI", value: ts)
+
+        // Group length placeholder; refine below.
+        var gl: UInt32 = UInt32(meta.count)
+        var glBytes = Data()
+        for i in 0..<4 { glBytes.append(UInt8((gl >> (i * 8)) & 0xFF)) }
+
+        var glElem = Data()
+        glElem.append(UInt8(0x02)); glElem.append(UInt8(0x00))   // group 0002
+        glElem.append(UInt8(0x00)); glElem.append(UInt8(0x00))   // element 0000
+        glElem.append(contentsOf: "UL".utf8)
+        glElem.append(UInt8(0x04)); glElem.append(UInt8(0x00))   // length 4
+        glElem.append(glBytes)
+
+        data.append(glElem)
+        data.append(meta)
+
+        // Implicit VR LE dataset: tag(4) length(4) value
+        func appendImplicit(_ group: UInt16, _ element: UInt16, value: Data) {
+            data.append(UInt8(group & 0xFF)); data.append(UInt8(group >> 8))
+            data.append(UInt8(element & 0xFF)); data.append(UInt8(element >> 8))
+            let l = UInt32(value.count)
+            for i in 0..<4 { data.append(UInt8((l >> (i * 8)) & 0xFF)) }
+            data.append(value)
+        }
+        func u16le(_ v: UInt16) -> Data {
+            Data([UInt8(v & 0xFF), UInt8((v >> 8) & 0xFF)])
+        }
+        func dsString(_ v: Double) -> Data {
+            var s = String(format: "%.4f", v)
+            // DS values must be even-length, ASCII.
+            if s.count % 2 != 0 { s.append(" ") }
+            return s.data(using: .ascii)!
+        }
+
+        appendImplicit(0x0028, 0x0002, value: u16le(1))                                  // SamplesPerPixel
+        var pmi = photometric
+        if pmi.count % 2 != 0 { pmi.append(" ") }
+        appendImplicit(0x0028, 0x0004, value: pmi.data(using: .ascii)!)                   // Photometric
+        appendImplicit(0x0028, 0x0010, value: u16le(UInt16(height)))                      // Rows
+        appendImplicit(0x0028, 0x0011, value: u16le(UInt16(width)))                       // Columns
+        appendImplicit(0x0028, 0x0100, value: u16le(UInt16(bitsAllocated)))               // BitsAllocated
+        appendImplicit(0x0028, 0x0101, value: u16le(UInt16(bitsStored)))                  // BitsStored
+        appendImplicit(0x0028, 0x0103, value: u16le(UInt16(pixelRepresentation)))         // PixelRepresentation
+        if let s = rescaleSlope { appendImplicit(0x0028, 0x1053, value: dsString(s)) }
+        if let i = rescaleIntercept { appendImplicit(0x0028, 0x1052, value: dsString(i)) }
+
+        // Pixel Data (7FE0,0010) — uint16 LE
+        var pixels = Data()
+        for v in pixelData {
+            pixels.append(UInt8(v & 0xFF))
+            pixels.append(UInt8((v >> 8) & 0xFF))
+        }
+        appendImplicit(0x7FE0, 0x0010, value: pixels)
+
+        return data
+    }
+
+    /// Phase 3a: signed-pixel DICOM (PixelRepresentation=1) must be biased
+    /// to unsigned before being handed to libjxl. The reader does that and
+    /// records the bias in `DICOMMetadata.signedBias`.
+    func testDICOMReader_SignedPixels_BiasedToUnsigned() throws {
+        let w = 4, h = 1
+        // 12-bit signed: range [-2048, 2047]. Pixels chosen at the boundaries.
+        let signedValues: [Int16] = [-2048, -1, 0, 2047]
+        // Two's-complement of `bitsStored` bits, packed in 16-bit container
+        // sign-extended to all 16 bits (DICOM spec §C.7.6.3).
+        let stored: [UInt16] = signedValues.map {
+            UInt16(bitPattern: $0)
+        }
+        let dcm = makeImplicitVRDICOM(
+            width: w, height: h,
+            bitsAllocated: 16, bitsStored: 12, pixelRepresentation: 1,
+            pixelData: stored
+        )
+        let (frame, meta) = try DICOMReader.parseWithMetadata(dcm)
+        XCTAssertEqual(meta.pixelRepresentation, 1)
+        XCTAssertEqual(meta.signedBias, 1 << 11) // 2048
+        // After bias, [-2048, -1, 0, 2047] becomes [0, 2047, 2048, 4095].
+        XCTAssertEqual(frame.getPixel(x: 0, y: 0, channel: 0), 0)
+        XCTAssertEqual(frame.getPixel(x: 1, y: 0, channel: 0), 2047)
+        XCTAssertEqual(frame.getPixel(x: 2, y: 0, channel: 0), 2048)
+        XCTAssertEqual(frame.getPixel(x: 3, y: 0, channel: 0), 4095)
+    }
+
+    /// Phase 3a: RescaleSlope/Intercept (Modality LUT) extraction from a
+    /// synthetic CT-style DICOM. The reader does NOT apply the LUT — that
+    /// would alter pixel values and break lossless encoding — but it
+    /// surfaces the constants so callers can interpret stored values
+    /// correctly.
+    func testDICOMReader_RescaleSlopeIntercept_Extracted() throws {
+        let dcm = makeImplicitVRDICOM(
+            width: 4, height: 1,
+            bitsAllocated: 16, bitsStored: 12,
+            rescaleSlope: 1.0, rescaleIntercept: -1024.0,
+            pixelData: [0, 1024, 2048, 4095]
+        )
+        let (_, meta) = try DICOMReader.parseWithMetadata(dcm)
+        XCTAssertEqual(meta.rescaleSlope, 1.0)
+        XCTAssertEqual(meta.rescaleIntercept, -1024.0)
+    }
+
     /// 16-bit multi-frame round-trip on a synthetic in-memory volume.
     /// Confirms the encoder and decoder both handle uint16 multi-frame
     /// bitstreams (the use case the multi-frame path was designed for).

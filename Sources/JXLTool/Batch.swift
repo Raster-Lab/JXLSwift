@@ -36,11 +36,20 @@ struct Batch: AsyncParsableCommand {
     @Flag(name: .long, help: "Recurse into subdirectories")
     var recursive: Bool = false
 
-    @Option(name: .long, help: "Number of files to encode concurrently (default: 4)")
+    @Option(name: .long, help: "Maximum number of files in flight (default: 4). Acts as an upper bound; actual parallelism may be lower if --max-memory is reached.")
     var parallel: Int = 4
 
     @Option(name: .long, help: "Per-encode worker threads (0 = libjxl default)")
     var threads: Int = 1
+
+    @Option(name: .long, help: "Memory budget in MB for concurrent encodes (default: 25% of physical RAM). Caps in-flight memory regardless of --parallel.")
+    var maxMemoryMB: Int?
+
+    @Option(name: .long, help: "Per-pixel-byte working-set multiplier used for admission control (default 4). libjxl typically uses 3-5× the input pixel buffer.")
+    var memoryOverhead: Double = 4.0
+
+    @Flag(name: .long, help: "Group DICOM slices that share a SeriesInstanceUID into a single multi-frame .jxl. The output is named after the series UID, ordered by InstanceNumber / SliceLocation.")
+    var volumeAware: Bool = false
 
     @Flag(name: .long, help: "Overwrite existing .jxl outputs")
     var overwrite: Bool = false
@@ -66,10 +75,48 @@ struct Batch: AsyncParsableCommand {
             try fm.createDirectory(at: outputURL, withIntermediateDirectories: true)
         }
 
-        let inputs = findInputs(in: inputURL, recursive: recursive)
+        var inputs = findInputs(in: inputURL, recursive: recursive)
         guard !inputs.isEmpty else {
             if !quiet { print("No supported images found in \(inputDirectory)") }
             return
+        }
+
+        // Volume-aware grouping (Phase 3b): merge DICOM slices that share a
+        // SeriesInstanceUID into one multi-frame .jxl. Non-DICOM inputs are
+        // passed through to the per-file path. Slice order: instanceNumber
+        // ascending, then sliceLocation ascending.
+        var volumeGroups: [(seriesUID: String, slices: [URL])] = []
+        if volumeAware {
+            var byUID: [String: [(URL, DICOMMetadata)]] = [:]
+            var nonDICOM: [URL] = []
+            for url in inputs {
+                guard url.pathExtension.lowercased() == "dcm" else {
+                    nonDICOM.append(url); continue
+                }
+                guard let (_, meta) = try? DICOMReader.readWithMetadata(url),
+                      let uid = meta.seriesInstanceUID, !uid.isEmpty else {
+                    nonDICOM.append(url); continue
+                }
+                byUID[uid, default: []].append((url, meta))
+            }
+            for (uid, slices) in byUID {
+                let sorted = slices.sorted { a, b in
+                    let inA = a.1.instanceNumber ?? Int.max
+                    let inB = b.1.instanceNumber ?? Int.max
+                    if inA != inB { return inA < inB }
+                    let slA = a.1.sliceLocation.isFinite ? a.1.sliceLocation : .infinity
+                    let slB = b.1.sliceLocation.isFinite ? b.1.sliceLocation : .infinity
+                    return slA < slB
+                }
+                volumeGroups.append((uid, sorted.map { $0.0 }))
+            }
+            // The flat `inputs` list now drives the non-DICOM path only;
+            // volumeGroups handles the DICOM side.
+            inputs = nonDICOM
+            if !quiet, !volumeGroups.isEmpty {
+                print("Volume-aware: \(volumeGroups.count) series, "
+                    + "\(volumeGroups.reduce(0) { $0 + $1.slices.count }) slices grouped")
+            }
         }
 
         let mode: CompressionMode = lossless
@@ -83,6 +130,10 @@ struct Batch: AsyncParsableCommand {
             mode: mode, effort: effortLevel, progressive: false, numThreads: threads
         )
 
+        let budgetBytes: Int = (maxMemoryMB.map { $0 * 1024 * 1024 })
+            ?? Self.defaultMemoryBudgetBytes()
+        let budget = MemoryBudget(totalBytes: budgetBytes)
+
         if !quiet {
             print("=== JXLSwift Batch ===")
             print("Input:        \(inputURL.path)")
@@ -90,15 +141,30 @@ struct Batch: AsyncParsableCommand {
             print("Files:        \(inputs.count)")
             print("Mode:         \(modeDescription(mode))")
             print("Effort:       \(effortLevel) (\(effort))")
-            print("Parallelism:  \(parallel) files × \(threads) threads/file")
+            print("Parallelism:  up to \(parallel) files × \(threads) threads/file")
+            print("Mem budget:   \(formatBytes(budgetBytes))  (overhead × \(memoryOverhead))")
             print()
         }
 
         let start = Date()
-        let summary = await runConcurrently(
+        var summary = await runConcurrently(
             inputs: inputs, inputBase: inputURL, outputBase: outputURL,
-            options: opts, parallel: max(1, parallel), overwrite: overwrite, quiet: quiet
+            options: opts, parallel: max(1, parallel), overwrite: overwrite, quiet: quiet,
+            budget: budget, overhead: memoryOverhead
         )
+        if !volumeGroups.isEmpty {
+            let volumeSummary = await runVolumeGroups(
+                volumeGroups, outputBase: outputURL, options: opts,
+                overwrite: overwrite, quiet: quiet,
+                budget: budget, overhead: memoryOverhead
+            )
+            summary.encoded += volumeSummary.encoded
+            summary.skipped += volumeSummary.skipped
+            summary.failed += volumeSummary.failed
+            summary.bytesIn += volumeSummary.bytesIn
+            summary.bytesOut += volumeSummary.bytesOut
+            summary.perFile.append(contentsOf: volumeSummary.perFile)
+        }
         let elapsed = Date().timeIntervalSince(start)
 
         if !quiet {
@@ -222,6 +288,59 @@ struct Batch: AsyncParsableCommand {
 
     // MARK: - Concurrent encode
 
+    /// Async semaphore that gates encode-task dispatch on a byte budget.
+    /// Each task must `acquire(bytes:)` before holding any pixel data and
+    /// `release(bytes:)` once that data is no longer live. The acquire
+    /// blocks until enough budget is free; if a single task's request
+    /// exceeds the total budget it is admitted regardless (otherwise the
+    /// run would deadlock — better to admit one over-budget request than
+    /// wedge the pipeline).
+    actor MemoryBudget {
+        private let total: Int
+        private var used: Int = 0
+        private var waiters: [(bytes: Int, cont: CheckedContinuation<Void, Never>)] = []
+
+        init(totalBytes: Int) { self.total = max(1, totalBytes) }
+
+        var capacity: Int { total }
+
+        func acquire(bytes: Int) async {
+            if used + bytes <= total || used == 0 {
+                used += bytes
+                return
+            }
+            await withCheckedContinuation { cont in
+                waiters.append((bytes, cont))
+            }
+            used += bytes
+        }
+
+        func release(bytes: Int) {
+            used = max(0, used - bytes)
+            // Wake any waiters that now fit, in FIFO order.
+            while let head = waiters.first, used + head.bytes <= total || used == 0 {
+                waiters.removeFirst()
+                head.cont.resume()
+            }
+        }
+    }
+
+    /// Default memory budget = 25% of physical RAM.
+    private static func defaultMemoryBudgetBytes() -> Int {
+        let ramBytes = Int(ProcessInfo.processInfo.physicalMemory)
+        return ramBytes / 4
+    }
+
+    /// Estimate the memory cost of encoding a single file. We don't read
+    /// the pixels yet at this point, so this is sized off the file size
+    /// — accurate for raw 8-bit imagery, 2× too large for 16-bit DICOM
+    /// (DICOM file = pixel bytes + small header), conservative for PNG
+    /// (where the file is already compressed). The libjxl working-set
+    /// multiplier handles the rest.
+    private func estimateEncodeBytes(forFile size: Int) -> Int {
+        Int(Double(size) * memoryOverhead)
+    }
+
     private struct EncodeResult: Sendable {
         let bytesIn: Int
         let bytesOut: Int
@@ -245,21 +364,30 @@ struct Batch: AsyncParsableCommand {
 
     private func runConcurrently(
         inputs: [URL], inputBase: URL, outputBase: URL,
-        options: EncodingOptions, parallel: Int, overwrite: Bool, quiet: Bool
+        options: EncodingOptions, parallel: Int, overwrite: Bool, quiet: Bool,
+        budget: MemoryBudget, overhead: Double
     ) async -> Summary {
         let total = inputs.count
-        // Throttle to `parallel` in-flight encodes by pairing TaskGroup
-        // submissions with completion drains.
         var summary = Summary()
         var idx = 0
         var done = 0
 
         await withTaskGroup(of: (URL, EncodeResult).self) { group in
-            // Seed.
+            // Pre-compute file sizes so we can quote the budget request.
+            // Seed up to `parallel` tasks, each gated by the memory budget
+            // before it touches pixel data.
             while idx < min(parallel, total) {
                 let url = inputs[idx]
                 idx += 1
-                group.addTask { (url, await Self.encodeOne(input: url, inputBase: inputBase, outputBase: outputBase, options: options, overwrite: overwrite)) }
+                let bytesEstimate = Self.estimateForFile(url, overhead: overhead)
+                group.addTask { [budget] in
+                    await budget.acquire(bytes: bytesEstimate)
+                    let r = await Self.encodeOne(input: url, inputBase: inputBase,
+                                                 outputBase: outputBase,
+                                                 options: options, overwrite: overwrite)
+                    await budget.release(bytes: bytesEstimate)
+                    return (url, r)
+                }
             }
             for await (inputURL, result) in group {
                 done += 1
@@ -287,11 +415,144 @@ struct Batch: AsyncParsableCommand {
 
                 if idx < total {
                     let next = inputs[idx]; idx += 1
-                    group.addTask { (next, await Self.encodeOne(input: next, inputBase: inputBase, outputBase: outputBase, options: options, overwrite: overwrite)) }
+                    let bytesEstimate = Self.estimateForFile(next, overhead: overhead)
+                    group.addTask { [budget] in
+                        await budget.acquire(bytes: bytesEstimate)
+                        let r = await Self.encodeOne(input: next, inputBase: inputBase,
+                                                     outputBase: outputBase,
+                                                     options: options, overwrite: overwrite)
+                        await budget.release(bytes: bytesEstimate)
+                        return (next, r)
+                    }
                 }
             }
         }
         return summary
+    }
+
+    /// Encode each (seriesUID, [slice URL]) group as a single multi-frame
+    /// .jxl file written under outputBase. Output names are
+    /// `<series-uid-suffix>_<count>.jxl` derived from the trailing UID
+    /// component (DICOM UIDs are typically dotted, with the slice/series
+    /// part at the end).
+    private func runVolumeGroups(
+        _ groups: [(seriesUID: String, slices: [URL])],
+        outputBase: URL, options: EncodingOptions,
+        overwrite: Bool, quiet: Bool,
+        budget: MemoryBudget, overhead: Double
+    ) async -> Summary {
+        var summary = Summary()
+        await withTaskGroup(of: (URL, EncodeResult).self) { group in
+            // Series are big jobs; we deliberately serialize them for now
+            // (parallelism inside libjxl is enough). This also keeps memory
+            // predictable since one volume already uses N×slice memory.
+            for (uid, slices) in groups {
+                let firstSlice = slices.first!
+                // Estimate volume memory: sum of slice file sizes × overhead.
+                let bytesEstimate = slices.reduce(0) { acc, u in
+                    let sz = (try? FileManager.default.attributesOfItem(atPath: u.path)[.size] as? Int) ?? 0
+                    return acc + Int(Double(sz) * overhead)
+                }
+                let outName = Self.shortUIDName(uid) + "_x\(slices.count).jxl"
+                let outURL = outputBase.appendingPathComponent(outName)
+
+                if !overwrite, FileManager.default.fileExists(atPath: outURL.path) {
+                    let szIn = slices.reduce(0) { acc, u in
+                        let s = (try? FileManager.default.attributesOfItem(atPath: u.path)[.size] as? Int) ?? 0
+                        return acc + s
+                    }
+                    let szOut = (try? FileManager.default.attributesOfItem(atPath: outURL.path)[.size] as? Int) ?? 0
+                    let result = EncodeResult(
+                        bytesIn: szIn, bytesOut: szOut, ok: false, skipped: true
+                    )
+                    summary.encoded += 0; summary.skipped += 1
+                    summary.bytesIn += szIn; summary.bytesOut += szOut
+                    summary.perFile.append((firstSlice, result))
+                    if !quiet { print("[skip] \(outName) (already exists; --overwrite to redo)") }
+                    continue
+                }
+
+                group.addTask { [budget] in
+                    await budget.acquire(bytes: bytesEstimate)
+                    let r = await Self.encodeVolume(slices: slices, outputURL: outURL, options: options)
+                    await budget.release(bytes: bytesEstimate)
+                    return (firstSlice, r)
+                }
+            }
+            for await (firstSlice, result) in group {
+                if result.ok {
+                    summary.encoded += 1
+                } else if result.skipped {
+                    summary.skipped += 1
+                } else {
+                    summary.failed += 1
+                }
+                summary.bytesIn += result.bytesIn
+                summary.bytesOut += result.bytesOut
+                summary.perFile.append((firstSlice, result))
+                if !quiet {
+                    let ratio = result.bytesOut > 0 ? Double(result.bytesIn) / Double(result.bytesOut) : 0
+                    let tag = result.ok ? String(format: "%.2f×", ratio) : "FAIL"
+                    print("[volume] \(result.frameCount) slices → \(tag)")
+                }
+            }
+        }
+        return summary
+    }
+
+    /// Compose a short, filesystem-friendly name from a DICOM UID. Falls
+    /// back to a hex hash if the UID is empty.
+    private static func shortUIDName(_ uid: String) -> String {
+        let parts = uid.split(separator: ".")
+        let tail = parts.suffix(3).joined(separator: ".")
+        return tail.isEmpty ? "series_\(abs(uid.hashValue))" : "series_\(tail)"
+    }
+
+    /// Read N DICOM slices, encode them as a single multi-frame JXL.
+    private static func encodeVolume(slices: [URL], outputURL: URL, options: EncodingOptions) async -> EncodeResult {
+        var frames: [ImageFrame] = []
+        var bytesIn = 0
+        for url in slices {
+            bytesIn += (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
+            if let dcm = try? DICOMReader.read(url) {
+                frames.append(dcm)
+            } else if let m = loadDICOMViaMagick(url) {
+                frames.append(m)
+            } else {
+                return EncodeResult(bytesIn: bytesIn, bytesOut: 0, ok: false, skipped: false)
+            }
+        }
+        // Verify dimensions match.
+        guard let first = frames.first else {
+            return EncodeResult(bytesIn: bytesIn, bytesOut: 0, ok: false, skipped: false)
+        }
+        for f in frames.dropFirst() {
+            guard f.width == first.width, f.height == first.height,
+                  f.channels == first.channels, f.pixelType == first.pixelType else {
+                return EncodeResult(bytesIn: bytesIn, bytesOut: 0, ok: false, skipped: false)
+            }
+        }
+        do {
+            try? FileManager.default.createDirectory(at: outputURL.deletingLastPathComponent(),
+                                                    withIntermediateDirectories: true)
+            let encoded = try JXLEncoder(options: options).encode(frames)
+            try encoded.data.write(to: outputURL)
+            return EncodeResult(
+                bytesIn: bytesIn, bytesOut: encoded.data.count,
+                width: first.width, height: first.height,
+                channels: first.channels, frameCount: frames.count,
+                bitDepth: first.pixelType.bitsPerSample,
+                encodingTime: encoded.stats.encodingTime,
+                ok: true, skipped: false
+            )
+        } catch {
+            return EncodeResult(bytesIn: bytesIn, bytesOut: 0, ok: false, skipped: false)
+        }
+    }
+
+    private static func estimateForFile(_ url: URL, overhead: Double) -> Int {
+        let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
+        return Int(Double(size) * overhead)
     }
 
     private static func encodeOne(

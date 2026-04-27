@@ -15,6 +15,34 @@
 
 import Foundation
 
+/// Metadata extracted from the DICOM dataset alongside the pixel buffer.
+/// The Modality LUT (`rescaleSlope`/`rescaleIntercept`) maps stored pixel
+/// values to "modality output" values like Hounsfield units; we surface
+/// it but do not apply it at read time so lossless round-trips preserve
+/// the original stored values.
+public struct DICOMMetadata: Sendable {
+    public let modality: String?
+    public let photometricInterpretation: String
+    /// Number of meaningful bits per pixel (e.g. 12 for 12-bit-stored).
+    public let bitsStored: Int
+    /// 0 = unsigned, 1 = signed. The reader biases signed pixels by
+    /// `2^(bitsStored-1)` so the resulting `ImageFrame` is always
+    /// unsigned. Recover original signed values via `signedBias`.
+    public let pixelRepresentation: Int
+    public var signedBias: Int { pixelRepresentation == 1 ? (1 << (bitsStored - 1)) : 0 }
+    /// `output_value = stored_value * rescaleSlope + rescaleIntercept`.
+    /// Default 1.0 / 0.0 means values are already in display units.
+    public let rescaleSlope: Double
+    public let rescaleIntercept: Double
+    /// SOP-instance grouping. Useful for batch tools that bundle slices
+    /// of the same volume.
+    public let seriesInstanceUID: String?
+    public let studyInstanceUID: String?
+    /// Slice ordering hint (DICOM (0020,1041) "Slice Location"). NaN if absent.
+    public let sliceLocation: Double
+    public let instanceNumber: Int?
+}
+
 public enum DICOMError: Error, LocalizedError {
     case invalidFile(String)
     case unsupportedTransferSyntax(String)
@@ -40,12 +68,25 @@ public enum DICOMReader {
     /// at read time so the caller always sees the standard "min = black"
     /// convention.
     public static func read(_ url: URL) throws -> ImageFrame {
-        let data = try Data(contentsOf: url)
-        return try parse(data)
+        try readWithMetadata(url).frame
     }
 
-    /// Parse an already-loaded DICOM byte stream.
+    /// Read both the pixel buffer and the medical metadata. The metadata
+    /// includes the signed-pixel bias and Modality LUT (RescaleSlope /
+    /// Intercept) — necessary for correct interpretation of CT / dose maps
+    /// where the encoded pixel values aren't directly displayable.
+    public static func readWithMetadata(_ url: URL) throws -> (frame: ImageFrame, metadata: DICOMMetadata) {
+        let data = try Data(contentsOf: url)
+        return try parseWithMetadata(data)
+    }
+
+    /// Parse an already-loaded DICOM byte stream (frame only).
     public static func parse(_ data: Data) throws -> ImageFrame {
+        try parseWithMetadata(data).frame
+    }
+
+    /// Parse an already-loaded DICOM byte stream returning frame + metadata.
+    public static func parseWithMetadata(_ data: Data) throws -> (frame: ImageFrame, metadata: DICOMMetadata) {
         guard data.count > 132 else { throw DICOMError.invalidFile("too small") }
         // Preamble (128 bytes) + DICM magic.
         let magic = data.subdata(in: 128..<132)
@@ -97,6 +138,14 @@ public enum DICOMReader {
         var samplesPerPixel: Int = 1
         var photometric = "MONOCHROME2"
         var pixelDataRange: Range<Int>? = nil
+        // Medical-imaging metadata (Phase 3a):
+        var modality: String? = nil
+        var rescaleSlope: Double = 1.0
+        var rescaleIntercept: Double = 0.0
+        var seriesUID: String? = nil
+        var studyUID: String? = nil
+        var sliceLocation: Double = .nan
+        var instanceNumber: Int? = nil
 
         while cursor < data.count {
             let group: UInt16
@@ -115,6 +164,18 @@ public enum DICOMReader {
             }
 
             switch (group, element) {
+            case (0x0008, 0x0060):
+                modality = readASCII(data, range: valueRange).trimmingCharacters(in: .whitespacesAndNewlines).trimmingNullBytes()
+            case (0x0020, 0x000D):
+                studyUID = readASCII(data, range: valueRange).trimmingNullBytes()
+            case (0x0020, 0x000E):
+                seriesUID = readASCII(data, range: valueRange).trimmingNullBytes()
+            case (0x0020, 0x0013):
+                instanceNumber = Int(readASCII(data, range: valueRange)
+                    .trimmingCharacters(in: .whitespacesAndNewlines).trimmingNullBytes())
+            case (0x0020, 0x1041):
+                sliceLocation = Double(readASCII(data, range: valueRange)
+                    .trimmingCharacters(in: .whitespacesAndNewlines).trimmingNullBytes()) ?? .nan
             case (0x0028, 0x0002):
                 samplesPerPixel = Int(u16(data, at: valueRange.lowerBound, bigEndian: isBigEndian))
             case (0x0028, 0x0004):
@@ -129,6 +190,12 @@ public enum DICOMReader {
                 bitsStored = Int(u16(data, at: valueRange.lowerBound, bigEndian: isBigEndian))
             case (0x0028, 0x0103):
                 pixelRepresentation = Int(u16(data, at: valueRange.lowerBound, bigEndian: isBigEndian))
+            case (0x0028, 0x1052):
+                rescaleIntercept = Double(readASCII(data, range: valueRange)
+                    .trimmingCharacters(in: .whitespacesAndNewlines).trimmingNullBytes()) ?? 0.0
+            case (0x0028, 0x1053):
+                rescaleSlope = Double(readASCII(data, range: valueRange)
+                    .trimmingCharacters(in: .whitespacesAndNewlines).trimmingNullBytes()) ?? 1.0
             case (0x7FE0, 0x0010):
                 pixelDataRange = valueRange
                 cursor = nextCursor
@@ -150,8 +217,8 @@ public enum DICOMReader {
             throw DICOMError.unsupportedTransferSyntax("samplesPerPixel=\(samplesPerPixel) (this reader is monochrome-only)")
         }
         let stored = bitsStored ?? ba
-        _ = pixelRepresentation
         let isMonochrome1 = (photometric == "MONOCHROME1")
+        let isSigned = (pixelRepresentation == 1)
 
         // Bit depth selects pixel type. 8-bit fits in uint8; 9-16 in uint16.
         let pixelType: PixelType = (ba <= 8) ? .uint8 : .uint16
@@ -192,6 +259,26 @@ public enum DICOMReader {
                 let mask: UInt16 = (1 << UInt16(stored)) - 1
                 for i in 0..<samples.count { samples[i] &= mask }
             }
+            // Signed pixel handling (PixelRepresentation = 1). DICOM stores
+            // signed values as two's-complement of `bitsStored` bits, sign-
+            // extended to BitsAllocated. We bias by 2^(stored-1) so the
+            // resulting buffer is always unsigned in [0, 2^stored). The
+            // bias is recorded in DICOMMetadata.signedBias so downstream
+            // tools can recover the original signed value.
+            if isSigned {
+                // Sign-extend `stored` bits, then add bias.
+                let signBit: UInt16 = 1 << UInt16(stored - 1)
+                let bias = signBit
+                let mask: UInt16 = (stored < 16) ? ((1 << UInt16(stored)) - 1) : .max
+                for i in 0..<samples.count {
+                    let s = samples[i] & mask
+                    let signed: Int32 = (s & signBit) != 0
+                        ? Int32(s) - Int32(1 << stored)
+                        : Int32(s)
+                    let biased = signed + Int32(bias)
+                    samples[i] = UInt16(clamping: biased)
+                }
+            }
             if isMonochrome1 {
                 let maxValue: UInt16 = (stored < 16) ? ((1 << UInt16(stored)) - 1) : .max
                 for i in 0..<samples.count { samples[i] = maxValue - samples[i] }
@@ -205,7 +292,19 @@ public enum DICOMReader {
             frame.data = bytes
         }
 
-        return frame
+        let metadata = DICOMMetadata(
+            modality: modality,
+            photometricInterpretation: photometric,
+            bitsStored: stored,
+            pixelRepresentation: pixelRepresentation,
+            rescaleSlope: rescaleSlope,
+            rescaleIntercept: rescaleIntercept,
+            seriesInstanceUID: seriesUID,
+            studyInstanceUID: studyUID,
+            sliceLocation: sliceLocation,
+            instanceNumber: instanceNumber
+        )
+        return (frame, metadata)
     }
 
     // MARK: - Explicit VR LE/BE

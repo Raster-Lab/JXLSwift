@@ -22,10 +22,18 @@ struct StandardError: TextOutputStream {
 nonisolated(unsafe) var standardError = StandardError()
 
 #if canImport(ImageIO)
-/// Load PNG/JPEG/TIFF/BMP from disk into an `ImageFrame`. Auto-selects
+/// Load PNG/JPEG/TIFF/BMP/PGM from disk into an `ImageFrame`. Auto-selects
 /// grayscale vs RGB based on the source colour space; alpha is preserved
-/// when present.
+/// when present. PGM (Netpbm P5) is handled by a direct parser because
+/// CoreGraphics silently downsamples 16-bit greymaps to 8-bit when loading
+/// them through ImageIO.
 func loadImageFrame(from url: URL) -> ImageFrame? {
+    if url.pathExtension.lowercased() == "pgm" {
+        if let data = try? Data(contentsOf: url) {
+            return parsePGM(data)
+        }
+        return nil
+    }
     guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
           let cg = CGImageSourceCreateImageAtIndex(src, 0, nil) else { return nil }
     let w = cg.width, h = cg.height
