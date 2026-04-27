@@ -62,7 +62,7 @@ Documentation/                ARCHITECTURE.md, SESSION-NOTES.md, legacy/
 
 ```bash
 swift build -c release
-swift test  -c release           # 67 tests, ~50 ms
+swift test  -c release           # 71 tests, ~50 ms
 .build/release/jxl-tool --version
 ```
 

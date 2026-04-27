@@ -1382,4 +1382,133 @@ final class FoundationTests: XCTestCase {
         XCTAssertEqual(bytes, [0x13])
     }
 
+    // MARK: - SimpleEntropyStream — integration of the entropy primitives
+
+    /// Round-trip a small mixed-magnitude value stream through the full
+    /// HybridUint + rANS + ANSDistribution pipeline. The stream covers
+    /// values that take the "token == value" path (small values) and
+    /// values that take the "token + extra bits" path (large values).
+    /// Exercises every primitive layer in lockstep.
+    func testSimpleEntropyStream_RoundTrip_MixedValues() throws {
+        let values: [UInt32] = [
+            0, 1, 2, 3, 7, 15,           // token-only, no extra bits
+            16, 31, 100, 255, 1000,      // small extra-bits widths
+            65535, 100_000, 1_000_000,   // larger extra-bits
+        ]
+        let config = HybridUintConfig.defaultConfig
+        let maxTok = values.map { config.encode($0).token }.max() ?? 0
+        let alphabetSize = Int(maxTok) + 1
+        let dist = try roundTripDistribution(
+            shape: .flat, alphabetSize: alphabetSize
+        )
+        let ctx = SimpleEntropyContext(
+            alphabetSize: alphabetSize,
+            hybridConfig: config,
+            distribution: dist
+        )
+        let encoded = try SimpleEntropyStream.encode(
+            values: values, context: ctx, shape: .flat
+        )
+        let decoded = try SimpleEntropyStream.decode(encoded)
+        XCTAssertEqual(decoded, values,
+            "SimpleEntropyStream round-trip failed: encoded \(values), got \(decoded)")
+    }
+
+    /// Round-trip a 1-symbol-dominant stream via the simple
+    /// distribution shape. Confirms that the simple `[tab]` shortcut
+    /// composes correctly with the rest of the pipeline.
+    func testSimpleEntropyStream_RoundTrip_ConstantSymbol() throws {
+        // All-zero stream of 100 values. The HybridUint default config
+        // maps 0 → token=0 with no extra bits. So every token is 0.
+        let values = [UInt32](repeating: 0, count: 100)
+        // alphabetSize=32 → logAlpha=5, so the default config (split=4,
+        // msb=2, lsb=0) lands in the "split < logAlpha" branch where
+        // msb/lsb are explicitly serialised.
+        let alphabetSize = 32
+        let dist = try roundTripDistribution(
+            shape: .simple(symbols: [0]), alphabetSize: alphabetSize
+        )
+        let ctx = SimpleEntropyContext(
+            alphabetSize: alphabetSize,
+            hybridConfig: HybridUintConfig.defaultConfig,
+            distribution: dist
+        )
+        let encoded = try SimpleEntropyStream.encode(
+            values: values, context: ctx, shape: .simple(symbols: [0])
+        )
+        let decoded = try SimpleEntropyStream.decode(encoded)
+        XCTAssertEqual(decoded, values)
+    }
+
+    /// Empty value stream — degenerate but should still round-trip
+    /// cleanly (header is emitted, no tokens follow).
+    func testSimpleEntropyStream_RoundTrip_Empty() throws {
+        let alphabetSize = 32
+        let dist = try roundTripDistribution(shape: .flat, alphabetSize: alphabetSize)
+        let ctx = SimpleEntropyContext(
+            alphabetSize: alphabetSize,
+            hybridConfig: HybridUintConfig.defaultConfig,
+            distribution: dist
+        )
+        let encoded = try SimpleEntropyStream.encode(
+            values: [], context: ctx, shape: .flat
+        )
+        let decoded = try SimpleEntropyStream.decode(encoded)
+        XCTAssertEqual(decoded, [UInt32]())
+    }
+
+    /// Truncated stream → decoder throws, doesn't trap.
+    func testSimpleEntropyStream_Truncated_Throws() throws {
+        let alphabetSize = 32
+        let dist = try roundTripDistribution(shape: .flat, alphabetSize: alphabetSize)
+        let ctx = SimpleEntropyContext(
+            alphabetSize: alphabetSize,
+            hybridConfig: HybridUintConfig.defaultConfig,
+            distribution: dist
+        )
+        let full = try SimpleEntropyStream.encode(
+            values: [1, 2, 3, 4, 5], context: ctx, shape: .flat
+        )
+        // Cut off the trailing rANS bytes.
+        let truncated = full.subdata(in: 0..<(full.count - 4))
+        XCTAssertThrowsError(try SimpleEntropyStream.decode(truncated))
+    }
+
+}
+
+/// Helper: serialise a distribution of the requested shape and
+/// immediately deserialise it back, returning the resulting
+/// `ANSDistribution`. The encoder/decoder both need the same
+/// distribution; this round-trip is the cleanest way to construct
+/// one whose frequencies exactly match what the decoder will derive.
+private func roundTripDistribution(
+    shape: SimpleEntropyDistributionShape, alphabetSize: Int
+) throws -> ANSDistribution {
+    var w = BitWriter()
+    switch shape {
+    case .flat:
+        try ANSDistributionFormat.encodeFlat(
+            alphabetSize: alphabetSize, to: &w
+        )
+    case .simple(let syms):
+        try ANSDistributionFormat.encodeSimple(
+            symbols: syms, alphabetSize: alphabetSize, to: &w
+        )
+    }
+    var r = BitReader(w.finishToData())
+    return try ANSDistributionFormat.decode(alphabetSize: alphabetSize, from: &r)
+}
+
+/// Helper: histogram of tokens produced when a value stream is run
+/// through a HybridUintConfig. Used to construct a non-pathological
+/// rANS distribution sized to the actual token alphabet.
+private func histogramOfTokens(
+    values: [UInt32], config: HybridUintConfig, alphabetSize: Int
+) -> [UInt32] {
+    var histo = [UInt32](repeating: 0, count: alphabetSize)
+    for v in values {
+        let t = config.encode(v)
+        histo[Int(t.token)] &+= 1
+    }
+    return histo
 }

@@ -98,7 +98,7 @@ JXLSwift is designed to be:
 
 ## Implementation status
 
-Spec sections from ISO/IEC 18181-1 and ISO/IEC 18181-2. Each row is verified by a test (where ✅) or a milestone target (where ⏳). The current test suite is **67 / 67 passing** — every ✅ row has a round-trip test that fails when the row stops working.
+Spec sections from ISO/IEC 18181-1 and ISO/IEC 18181-2. Each row is verified by a test (where ✅) or a milestone target (where ⏳). The current test suite is **71 / 71 passing** — every ✅ row has a round-trip test that fails when the row stops working.
 
 ### Phase F — Foundation ✅
 
@@ -136,6 +136,7 @@ Spec sections from ISO/IEC 18181-1 and ISO/IEC 18181-2. Each row is verified by 
 | Prefix-code-table complex format | §C.6.2.1 complex branch | ✅ decode + (basic) encode | round-trip on 6-symbol mixed-length, 32-symbol uniform, and 16-symbol many-zeros cases; **hand-derived bit pattern verifies the symbol-17 zero-run decoder path** (`3 + read(3)` expansion). Encoder is correct but doesn't yet emit run-length symbols 16/17 — every literal is an explicit length-symbol. The cll encoding (raw `u(3)`) is one defensible reading of the spec text and is the area that most benefits from future libjxl byte cross-check. |
 | rANS encoder + decoder | §C.6.3 | ✅ | 32-bit state, 16-bit renorm, tabSize = 4096; round-trip on uniform/skewed/full-256/highly-skewed alphabets; 1000 highly-skewed symbols compress to <50 bytes |
 | ANS distribution serialisation | §C.6.3.2 | ✅ simple + flat shortcuts | constant (1-symbol), simple (1–4 symbols with predefined splits `[tab]`, `[tab/2]×2`, `[tab/4, tab/4, tab/2]`, `[tab/4]×4`), and flat (uniform with first `tab % alphabet` symbols absorbing remainder); hand-derived bit pattern (constant sym=3 alphabet=4 → 0x19); end-to-end test that serialises a distribution, deserialises it, and uses the decoded distribution to round-trip an rANS symbol stream. **Full per-symbol-frequency mode is not yet implemented** — throws `.fullDistributionNotImplemented` on the corresponding bit pattern. |
+| Single-context entropy stream | integration | ✅ | `SimpleEntropyStream` wires HybridUint + HybridUintConfig serialisation + ANSDistribution serialisation + rANS into one round-trip path. Layout: header (alphabet, HybridUintConfig, ANSDistribution, num_values, extra-bits length) → byte-aligned extra-bits stream → rANS bytes consume the tail. Round-trip verified on mixed-magnitude streams (values up to 1 000 000), all-zero streams via the simple [tab] shortcut, empty streams, and truncation rejection. |
 | Histogram clustering | §C.6.4 | ⏳ |  |
 | LZ77 hybrid | §C.6.5 | ⏳ |  |
 
@@ -194,7 +195,7 @@ These are added once a corresponding scalar Swift path is correct. The scalar pa
 
 | Item | Status |
 |---|---|
-| Foundation tests (67) | ✅ |
+| Foundation tests (71) | ✅ |
 | Conformance test vectors (jxl-conformance repo) | ⏳ harness exists; vectors not wired up |
 | Cross-codec round-trip (encode → libjxl `djxl` decode) | ⏳ requires Phase E4-6 + M at minimum |
 | Cross-codec round-trip (libjxl `cjxl` → JXLDecoder) | ⏳ requires Phase E4-6 + M at minimum |

@@ -33,6 +33,7 @@ Every parser is paired with a writer; round-trip tests cover the medical-imaging
 - `SimplePrefixCodeFormat` + `ComplexPrefixCodeFormat` (§C.6.2.1) — bitstream serialisation of prefix-code tables, both simple (1–4 explicit symbols) and complex (meta-Huffman with run-length symbols 16/17) branches
 - `ANSDistribution` + `ANSEncoder` + `ANSDecoder` (§C.6.3) — 32-bit-state rANS with 16-bit renormalisation, tabSize=4096
 - `ANSDistributionFormat` (§C.6.3.2) — bitstream serialisation of rANS distributions: constant (1-symbol), simple (1–4 symbols with predefined splits), and flat (uniform). The full per-symbol-frequency mode is not yet implemented.
+- `SimpleEntropyStream` — the integration layer that wires the entropy primitives into a single-context "encode a `[UInt32]` stream into a byte buffer; decode it back" round-trip. Useful as a building block for Phase M.
 
 Each primitive has round-trip tests; the compression-ratio sanity test confirms rANS reaches near-Shannon-entropy bounds on highly-skewed distributions (1000 symbols → < 50 bytes for a 0.08-bit-entropy stream).
 
@@ -46,7 +47,7 @@ See [ROADMAP.md](ROADMAP.md) for the spec-section status grid.
 
 ```bash
 swift build -c release
-swift test  -c release           # 67 tests (foundation + headers + entropy primitives + serialisation), ~50 ms
+swift test  -c release           # 71 tests (foundation + headers + entropy primitives + serialisation), ~50 ms
 .build/release/jxl-tool --version
 .build/release/jxl-tool info path/to/file.jxl
 ```
@@ -130,7 +131,7 @@ Sources/JXLSwift/Codec/       JXLEncoder / JXLDecoder (currently stubs;
                               ImageFrame, EncodingOptions
 Sources/JXLTool/              jxl-tool CLI (info works; encode/decode
                               throw .notImplemented until the codec lands)
-Tests/JXLSwiftTests/          67 tests across foundation, headers, entropy
+Tests/JXLSwiftTests/          71 tests across foundation, headers, entropy
 ```
 
 JXLSwift is **not DICOM-aware** — DICOM file format / metadata / transfer-syntax handling lives in DICOMkit, not here. JXLSwift accepts and emits raw pixel buffers (`ImageFrame`) at the bit depths medical imaging needs (8/10/12/16-bit, grayscale or RGB).
