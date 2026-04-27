@@ -212,16 +212,14 @@ public struct MinimalLosslessCodec {
         )
         let alphabetSize = HybridUintConfig.defaultConfig.maxToken + 1
 
-        // Pick the best-fit distribution shape from the existing
-        // shortcut palette. When the actual token histogram has 1–4
-        // distinct symbols, the simple-distribution path encodes each
-        // token in 1–2 bits instead of the ~7 bits flat costs. For
-        // wider histograms we fall back to flat. (The full per-symbol-
-        // frequency mode that would handle arbitrary skewed
-        // histograms is Phase E4b-full, deferred.)
+        // Pick the best-fit distribution shape: simple for ≤4
+        // distinct tokens, otherwise estimate full vs flat by bit
+        // cost (Shannon entropy + alphabet × 13 overhead vs
+        // log2(alphabet) per token).
         let shape = autoSelectShape(
             values: values,
-            hybridConfig: HybridUintConfig.defaultConfig
+            hybridConfig: HybridUintConfig.defaultConfig,
+            alphabetSize: alphabetSize
         )
 
         // Build the matching `ANSDistribution`. We round-trip the
@@ -238,6 +236,10 @@ public struct MinimalLosslessCodec {
             case .simple(let syms):
                 try ANSDistributionFormat.encodeSimple(
                     symbols: syms, alphabetSize: alphabetSize, to: &distBits
+                )
+            case .full(let freqs):
+                try ANSDistributionFormat.encodeFull(
+                    frequencies: freqs, alphabetSize: alphabetSize, to: &distBits
                 )
             }
         } catch let e as ANSDistributionFormatError {
@@ -409,22 +411,28 @@ public struct MinimalLosslessCodec {
     // MARK: - Distribution-shape selection
 
     /// Inspect the actual token histogram produced by running `values`
-    /// through `hybridConfig`, and return the entropy-coder shape that
-    /// will compress them best within the existing simple+flat
-    /// shortcut palette:
+    /// through `hybridConfig`, and return the best-fitting entropy-
+    /// coder shape:
     ///
     ///   • 1–4 distinct tokens → `.simple(symbols)`. The simple
     ///     distribution gives each listed symbol a predefined slice of
     ///     the rANS table (`[tab]`, `[tab/2]×2`, `[tab/4, tab/4,
     ///     tab/2]`, `[tab/4]×4`), so each token costs 1–2 bits instead
     ///     of the ~7 bits flat costs.
-    ///   • Anything wider → `.flat` (uniform across the alphabet).
+    ///   • > 4 distinct tokens → estimate the bit cost of `.full`
+    ///     (per-symbol frequencies) versus `.flat` and pick the
+    ///     smaller. Full has a fixed `alphabet × 13`-bit overhead but
+    ///     pays the actual entropy per token; flat pays
+    ///     `log2(alphabet)` bits per token regardless of skew. For
+    ///     skewed real-image residual histograms the per-token saving
+    ///     amortises the overhead very quickly.
     ///
     /// For the 3-symbol case the predefined split is asymmetric — the
     /// last position gets `tab/2`. We reorder so the most-frequent
     /// token lands there.
     static func autoSelectShape(
-        values: [UInt32], hybridConfig: HybridUintConfig
+        values: [UInt32], hybridConfig: HybridUintConfig,
+        alphabetSize: Int
     ) -> SimpleEntropyDistributionShape {
         if values.isEmpty { return .flat }
         var counts: [Int: Int] = [:]
@@ -432,22 +440,62 @@ public struct MinimalLosslessCodec {
             let tok = Int(hybridConfig.encode(v).token)
             counts[tok, default: 0] += 1
         }
-        if counts.count > 4 { return .flat }
-        // Sort tokens by frequency descending, ties broken by token
-        // index for determinism.
-        let sortedDesc = counts.sorted {
-            $0.value > $1.value || ($0.value == $1.value && $0.key < $1.key)
-        }.map { $0.key }
-        switch sortedDesc.count {
-        case 1, 2, 4:
-            return .simple(symbols: sortedDesc)
-        case 3:
-            // Reorder so the most-frequent token is at position 2 and
-            // gets the `tab/2` slice.
-            return .simple(symbols: [sortedDesc[1], sortedDesc[2], sortedDesc[0]])
-        default:
-            return .flat
+        if counts.count <= 4 {
+            // Sort tokens by frequency descending, ties broken by
+            // token index for determinism.
+            let sortedDesc = counts.sorted {
+                $0.value > $1.value || ($0.value == $1.value && $0.key < $1.key)
+            }.map { $0.key }
+            switch sortedDesc.count {
+            case 1, 2, 4:
+                return .simple(symbols: sortedDesc)
+            case 3:
+                // Reorder so the most-frequent token is at position 2
+                // and gets the `tab/2` slice.
+                return .simple(symbols: [sortedDesc[1], sortedDesc[2], sortedDesc[0]])
+            default:
+                return .flat
+            }
         }
+        // Wider histogram — choose between flat and full by
+        // estimated bit cost.
+        return chooseFullOrFlat(counts: counts, alphabetSize: alphabetSize)
+    }
+
+    /// Decide between `.full` and `.flat` for a histogram with > 4
+    /// distinct tokens. Computes the approximate bit cost of each
+    /// (Shannon entropy for full, `log2(alphabet)` per token for
+    /// flat) and picks the smaller. When `.full` wins, builds the
+    /// normalised frequencies array.
+    private static func chooseFullOrFlat(
+        counts: [Int: Int], alphabetSize: Int
+    ) -> SimpleEntropyDistributionShape {
+        let total = counts.values.reduce(0, +)
+        if total == 0 { return .flat }
+
+        // Flat: each token costs ceil(log2(alphabet)) bits.
+        let flatBitsPerToken = Int(ceilLog2(UInt32(alphabetSize)))
+        let flatBits = total &* flatBitsPerToken
+
+        // Full: token cost ≈ Shannon entropy; overhead = alphabet × 13.
+        var fullEntropyBits = 0.0
+        for (_, c) in counts where c > 0 {
+            let p = Double(c) / Double(total)
+            fullEntropyBits -= Double(c) * Foundation.log2(p)
+        }
+        let fullOverheadBits = alphabetSize * 13
+        let fullBits = Int(fullEntropyBits.rounded(.up)) + fullOverheadBits
+
+        if fullBits < flatBits {
+            // Build the frequency array from the histogram.
+            var raw = [UInt32](repeating: 0, count: alphabetSize)
+            for (sym, c) in counts { raw[sym] = UInt32(c) }
+            let freqs: [UInt32]
+            do { freqs = try ANSDistributionFormat.normaliseToTabSize(raw) }
+            catch { return .flat }   // fall back if normalisation fails
+            return .full(frequencies: freqs)
+        }
+        return .flat
     }
 
     // MARK: - Per-channel best-predictor selection

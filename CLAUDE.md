@@ -59,7 +59,7 @@ Sources/JXLSwift/Codec/       JXLEncoder, JXLDecoder (currently stubs;
                               vertical slice with gradient prediction)
 Sources/JXLTool/              jxl-tool CLI (info works; encode/decode
                               throw .notImplemented until the codec lands)
-Tests/JXLSwiftTests/          125 round-trip tests across foundation,
+Tests/JXLSwiftTests/          129 round-trip tests across foundation,
                               headers, entropy, modular primitives, M0
 Documentation/                ARCHITECTURE.md, SESSION-NOTES.md, legacy/
 ```
@@ -68,7 +68,7 @@ Documentation/                ARCHITECTURE.md, SESSION-NOTES.md, legacy/
 
 ```bash
 swift build -c release
-swift test  -c release           # 125 tests, ~50 ms
+swift test  -c release           # 129 tests, ~50 ms
 .build/release/jxl-tool --version
 ```
 

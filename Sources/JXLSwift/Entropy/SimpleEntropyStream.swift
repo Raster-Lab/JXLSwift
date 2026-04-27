@@ -66,7 +66,7 @@ public struct SimpleEntropyContext: Sendable {
 }
 
 /// Distribution-shape selector for SimpleEntropyStream.encode. The
-/// caller picks one of the §C.6.3.2 shortcut shapes.
+/// caller picks one of the §C.6.3.2 shapes.
 public enum SimpleEntropyDistributionShape: Sendable {
     /// Flat / uniform distribution over the alphabet.
     case flat
@@ -76,6 +76,10 @@ public enum SimpleEntropyDistributionShape: Sendable {
     /// shape — the distribution stored in the buffer is the simple
     /// header, not arbitrary frequencies.
     case simple(symbols: [Int])
+    /// Full per-symbol-frequency mode (project-internal layout — see
+    /// `ANSDistributionFormat.encodeFull`). `frequencies.count ==
+    /// alphabetSize`; sum must equal `ANSConstants.tabSize`.
+    case full(frequencies: [UInt32])
 }
 
 public struct SimpleEntropyStream {
@@ -140,6 +144,10 @@ public struct SimpleEntropyStream {
             case .simple(let syms):
                 try ANSDistributionFormat.encodeSimple(
                     symbols: syms, alphabetSize: context.alphabetSize, to: &w
+                )
+            case .full(let freqs):
+                try ANSDistributionFormat.encodeFull(
+                    frequencies: freqs, alphabetSize: context.alphabetSize, to: &w
                 )
             }
         } catch let e as ANSDistributionFormatError {

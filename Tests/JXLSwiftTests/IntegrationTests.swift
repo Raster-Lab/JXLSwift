@@ -2251,9 +2251,12 @@ extension FoundationTests {
     /// histogram cardinality.
     func testM0_AutoSelectShape_DecisionLogic() {
         let cfg = HybridUintConfig.defaultConfig
+        let alphabetSize = cfg.maxToken + 1
 
         // 0 values → flat (no tokens to anchor a simple shape).
-        let s0 = MinimalLosslessCodec.autoSelectShape(values: [], hybridConfig: cfg)
+        let s0 = MinimalLosslessCodec.autoSelectShape(
+            values: [], hybridConfig: cfg, alphabetSize: alphabetSize
+        )
         switch s0 {
         case .flat: break
         default: XCTFail("expected .flat for empty values, got \(s0)")
@@ -2261,7 +2264,8 @@ extension FoundationTests {
 
         // 1 distinct token → simple([token]).
         let s1 = MinimalLosslessCodec.autoSelectShape(
-            values: [UInt32](repeating: 5, count: 100), hybridConfig: cfg
+            values: [UInt32](repeating: 5, count: 100), hybridConfig: cfg,
+            alphabetSize: alphabetSize
         )
         if case .simple(let syms) = s1 {
             XCTAssertEqual(syms, [Int(cfg.encode(5).token)])
@@ -2269,13 +2273,13 @@ extension FoundationTests {
 
         // 3 distinct tokens — the most-frequent should be reordered to
         // position 2 (where `tab/2` is allocated).
-        // Build values so token-of-1 appears 100x (most), token-of-2
-        // appears 50x, token-of-3 appears 10x.
         var v3: [UInt32] = []
         v3 += [UInt32](repeating: 1, count: 100)
         v3 += [UInt32](repeating: 2, count: 50)
         v3 += [UInt32](repeating: 3, count: 10)
-        let s3 = MinimalLosslessCodec.autoSelectShape(values: v3, hybridConfig: cfg)
+        let s3 = MinimalLosslessCodec.autoSelectShape(
+            values: v3, hybridConfig: cfg, alphabetSize: alphabetSize
+        )
         if case .simple(let syms) = s3 {
             XCTAssertEqual(syms.count, 3)
             // Most-frequent (token-of-1) must be in the last slot.
@@ -2283,12 +2287,33 @@ extension FoundationTests {
                 "3-symbol case must put the most-frequent token at position 2 (tab/2 slot)")
         } else { XCTFail("expected .simple(3 symbols), got \(s3)") }
 
-        // 5 distinct tokens → flat (over the simple-path limit of 4).
-        let v5: [UInt32] = [1, 2, 3, 4, 5, 6, 7, 8]   // 8 distinct
-        let s5 = MinimalLosslessCodec.autoSelectShape(values: v5, hybridConfig: cfg)
-        switch s5 {
+        // > 4 distinct tokens with low total → flat (full's
+        // alphabet × 13 overhead exceeds the per-token savings on a
+        // tiny stream).
+        let v5small: [UInt32] = [1, 2, 3, 4, 5, 6, 7, 8]   // 8 distinct, 8 tokens
+        let s5small = MinimalLosslessCodec.autoSelectShape(
+            values: v5small, hybridConfig: cfg, alphabetSize: alphabetSize
+        )
+        switch s5small {
         case .flat: break
-        default: XCTFail("expected .flat for >4 distinct, got \(s5)")
+        default: XCTFail("expected .flat for >4 distinct on tiny stream, got \(s5small)")
+        }
+
+        // > 4 distinct tokens, large skewed stream → full (overhead
+        // is amortised; per-token entropy savings dominate).
+        var skewed: [UInt32] = []
+        skewed += [UInt32](repeating: 0, count: 800)   // dominant
+        skewed += [UInt32](repeating: 1, count: 100)
+        skewed += [UInt32](repeating: 2, count: 50)
+        skewed += [UInt32](repeating: 3, count: 30)
+        skewed += [UInt32](repeating: 4, count: 15)
+        skewed += [UInt32](repeating: 5, count: 5)      // 5 distinct, 1000 tokens
+        let sFull = MinimalLosslessCodec.autoSelectShape(
+            values: skewed, hybridConfig: cfg, alphabetSize: alphabetSize
+        )
+        switch sFull {
+        case .full: break
+        default: XCTFail("expected .full on heavy-skew large stream, got \(sFull)")
         }
     }
 
@@ -2625,6 +2650,45 @@ extension FoundationTests {
         // implicitly via ImageFrame's precondition.)
     }
 
+    /// Natural-image-shaped 128×128 grayscale with smooth gradient +
+    /// small noise produces > 4 distinct residuals after prediction.
+    /// Without full-mode distribution, this case falls into the
+    /// flat-distribution path and costs ~7 bits per token. With
+    /// full-mode, the encoder pays the alphabet × 13-bit overhead but
+    /// each token costs near-Shannon-entropy bits — substantially
+    /// better than flat.
+    ///
+    /// Asserts the output is well below 7 bits per residual.
+    func testM0_NaturalImage_FullModeBeatsFlat() throws {
+        var frame = ImageFrame(
+            width: 128, height: 128, channels: 1,
+            pixelType: .uint8, colorSpace: .grayscale
+        )
+        // Linear-congruential PRNG seeded for determinism — gradient
+        // base + per-pixel noise in [-3, 3].
+        var seed: UInt32 = 0x1234_5678
+        for y in 0..<128 {
+            for x in 0..<128 {
+                seed = seed &* 1664525 &+ 1013904223
+                let noise = Int((seed >> 24) & 0x7) - 3   // [-3, 4)
+                let base = min(255, max(0, x + y))
+                let v = UInt16(min(255, max(0, base + noise)))
+                frame.setPixel(x: x, y: y, channel: 0, value: v)
+            }
+        }
+        let encoded = try MinimalLosslessCodec.encode(frame)
+        let rawByteCount = 128 * 128
+        // 7 bits per token = 56% of raw at the flat-only floor; the
+        // M0 header plus prediction overhead push it slightly above.
+        // With full-mode the same image should comfortably beat 50%.
+        XCTAssertLessThan(encoded.count, rawByteCount / 2,
+            "natural image should compress below 50% with full-mode " +
+            "(\(encoded.count) vs raw \(rawByteCount))")
+        let decoded = try MinimalLosslessCodec.decode(encoded)
+        XCTAssertEqual(decoded.data, frame.data,
+            "natural image must round-trip exactly")
+    }
+
     /// Float32 isn't supported by M0 — encoder should throw cleanly.
     func testM0_RejectsFloat32() {
         let frame = ImageFrame(
@@ -2878,6 +2942,10 @@ private func roundTripDistribution(
     case .simple(let syms):
         try ANSDistributionFormat.encodeSimple(
             symbols: syms, alphabetSize: alphabetSize, to: &w
+        )
+    case .full(let freqs):
+        try ANSDistributionFormat.encodeFull(
+            frequencies: freqs, alphabetSize: alphabetSize, to: &w
         )
     }
     var r = BitReader(w.finishToData())

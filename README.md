@@ -47,7 +47,7 @@ See [ROADMAP.md](ROADMAP.md) for the spec-section status grid.
 
 ```bash
 swift build -c release
-swift test  -c release           # 125 tests (foundation + headers + entropy primitives + serialisation), ~50 ms
+swift test  -c release           # 129 tests (foundation + headers + entropy primitives + serialisation), ~50 ms
 .build/release/jxl-tool --version
 .build/release/jxl-tool info path/to/file.jxl
 ```
@@ -74,14 +74,15 @@ diff -q rgba.pam rgba_out.pam
 
 Sample compression ratios on synthetic data:
 
-| Source                                 | Raw size | M0 size | Ratio |
+| Source                                          | Raw size  | M0 size  | Ratio |
 |---|---|---|---|
-| 8-bit grayscale smooth gradient        | 1024 B   | ~80 B   |   8 % |
-| 16-bit grayscale large-step gradient   | 2048 B   | 1300 B  |  63 % |
-| 8-bit correlated RGB (R≈G≈B)           | 3072 B   |  543 B  |  18 % |
-| 8-bit correlated RGBA (RCT + alpha)    | 1184 B   |  294 B  |  27 % |
+| 8-bit grayscale smooth gradient (32×32)         | 1024 B    | ~80 B    |   8 % |
+| 16-bit grayscale large-step gradient (32×32)    | 2048 B    | 1300 B   |  63 % |
+| 8-bit correlated RGB (R≈G≈B, 32×32)             | 3072 B    |  543 B   |  18 % |
+| 8-bit correlated RGBA (RCT + alpha, 16×16)      | 1184 B    |  294 B   |  27 % |
+| 8-bit natural-shaped grayscale (gradient+noise, 128×128) | 16 384 B | 6.9 KB | **43 %** |
 
-The pipeline is `optional RCT (R/G/B only when channels ≥ 3) → per-channel predictor selection → ZigZag-packed residuals → auto-selected distribution shape → SimpleEntropyStream`. **Output is NOT a JPEG XL file** — it has a 'M0' marker so a future spec-compliant decoder rejects it cleanly. The real codec (`encode` / `decode`) still throws `.notImplemented`.
+The pipeline is `optional RCT (R/G/B only when channels ≥ 3) → per-channel predictor selection → ZigZag-packed residuals → auto-selected distribution shape (simple / flat / full per histogram bit-cost estimate) → SimpleEntropyStream`. **Output is NOT a JPEG XL file** — it has a 'M0' marker so a future spec-compliant decoder rejects it cleanly. The real codec (`encode` / `decode`) still throws `.notImplemented`.
 
 ## What works today
 
@@ -160,7 +161,7 @@ Sources/JXLSwift/Codec/       JXLEncoder / JXLDecoder (currently stubs;
                               ImageFrame, EncodingOptions
 Sources/JXLTool/              jxl-tool CLI (info works; encode/decode
                               throw .notImplemented until the codec lands)
-Tests/JXLSwiftTests/          125 tests across foundation, headers, entropy
+Tests/JXLSwiftTests/          129 tests across foundation, headers, entropy
 ```
 
 JXLSwift is **not DICOM-aware** — DICOM file format / metadata / transfer-syntax handling lives in DICOMkit, not here. JXLSwift accepts and emits raw pixel buffers (`ImageFrame`) at the bit depths medical imaging needs (8/10/12/16-bit, grayscale or RGB).
