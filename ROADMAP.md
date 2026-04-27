@@ -55,7 +55,7 @@ The library must be usable in any general-purpose imaging or compression workflo
 The implementation must support:
 
 - Lossless and lossy compression
-- Bit depths: 8, 10, 12, and 16-bit
+- Bit depths: 8, 10, 12, 14 and 16-bit
 - Grayscale and RGB image formats
 - Deterministic decoding behaviour
 
@@ -98,7 +98,7 @@ JXLSwift is designed to be:
 
 ## Implementation status
 
-Spec sections from ISO/IEC 18181-1 and ISO/IEC 18181-2. Each row is verified by a test (where ✅) or a milestone target (where ⏳). The current test suite is **44 / 44 passing** — every ✅ row has a round-trip test that fails when the row stops working.
+Spec sections from ISO/IEC 18181-1 and ISO/IEC 18181-2. Each row is verified by a test (where ✅) or a milestone target (where ⏳). The current test suite is **59 / 59 passing** — every ✅ row has a round-trip test that fails when the row stops working.
 
 ### Phase F — Foundation ✅
 
@@ -194,7 +194,7 @@ These are added once a corresponding scalar Swift path is correct. The scalar pa
 
 | Item | Status |
 |---|---|
-| Foundation tests (44) | ✅ |
+| Foundation tests (59) | ✅ |
 | Conformance test vectors (jxl-conformance repo) | ⏳ harness exists; vectors not wired up |
 | Cross-codec round-trip (encode → libjxl `djxl` decode) | ⏳ requires Phase E4-6 + M at minimum |
 | Cross-codec round-trip (libjxl `cjxl` → JXLDecoder) | ⏳ requires Phase E4-6 + M at minimum |
