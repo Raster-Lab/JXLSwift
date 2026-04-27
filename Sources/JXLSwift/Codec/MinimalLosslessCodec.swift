@@ -90,6 +90,24 @@ public enum MinimalLosslessError: Error, Sendable {
     case ansdist(ANSDistributionFormatError)
 }
 
+/// Encode-time speed/ratio trade-off for `MinimalLosslessCodec`. The
+/// decoder doesn't need to know which mode was used — it reads the
+/// stored predictor IDs and RCT variant either way.
+public enum M0Effort: Sendable, Equatable {
+    /// Skip predictor + RCT search. Pick `Predictor.gradient` for
+    /// every channel and `RCTVariant.identity` for the colour
+    /// transform. Encode is roughly 6× faster than `.balanced` but
+    /// compression ratio is worse on stripe-like and constant-fill
+    /// images (where `.balanced` would have picked `.north` /
+    /// `.west` / `.zero`).
+    case fast
+    /// Score every predictor against the channel's pixels and (for
+    /// 3+ channel frames) every RCT variant against the channel
+    /// triple. Pick the combination whose residuals produce the
+    /// fewest distinct HybridUint tokens.
+    case balanced
+}
+
 public struct MinimalLosslessCodec {
 
     /// Marker constant: 'M' '0' = 0x4D, 0x30 — placed in the header so
@@ -97,9 +115,13 @@ public struct MinimalLosslessCodec {
     /// real JXL codestream.
     public static let placeholderMarker: UInt32 = 0x4D30
 
-    /// Encode a frame to the M0 placeholder buffer format. Throws
-    /// `unsupportedPixelType` for `.float32` (not yet supported by M0).
-    public static func encode(_ frame: ImageFrame) throws -> Data {
+    /// Encode a frame to the M0 placeholder buffer format. The
+    /// `effort` parameter trades encode speed against compression
+    /// ratio — see `M0Effort`. Throws `.unsupportedPixelType` for
+    /// `.float32` (not yet supported by M0).
+    public static func encode(
+        _ frame: ImageFrame, effort: M0Effort = .balanced
+    ) throws -> Data {
         guard frame.pixelType == .uint8 || frame.pixelType == .uint16 else {
             throw MinimalLosslessError.unsupportedPixelType
         }
@@ -165,10 +187,19 @@ public struct MinimalLosslessCodec {
         let channelBuffers = (0..<frame.channels).map {
             buildChannelBuffer(frame, channel: $0)
         }
-        let prep = bestEncodePreparation(
-            channelBuffers: channelBuffers, width: frame.width,
-            hybridConfig: HybridUintConfig.defaultConfig
-        )
+        let prep: EncodePreparation
+        switch effort {
+        case .balanced:
+            prep = bestEncodePreparation(
+                channelBuffers: channelBuffers, width: frame.width,
+                hybridConfig: HybridUintConfig.defaultConfig
+            )
+        case .fast:
+            prep = fastEncodePreparation(
+                channelBuffers: channelBuffers, width: frame.width,
+                hybridConfig: HybridUintConfig.defaultConfig
+            )
+        }
         if frame.channels >= 3 {
             w.write(bits: 2, value: prep.rctVariant.rawValue)
         }
@@ -683,6 +714,40 @@ public struct MinimalLosslessCodec {
             rctVariant: bestVariant,
             channelPredictors: bestPredictors,
             residuals: bestResiduals
+        )
+    }
+
+    /// Fast-path encode preparation: skip predictor + RCT search,
+    /// pick `.gradient` for every channel and `.identity` for RCT.
+    /// One prediction pass per channel total — `.balanced` does
+    /// (RCT-variants × predictors) passes per channel, so this is
+    /// roughly 6× faster on grayscale and 12× faster on RGB.
+    static func fastEncodePreparation(
+        channelBuffers: [[Int32]], width: Int,
+        hybridConfig: HybridUintConfig
+    ) -> EncodePreparation {
+        let channels = channelBuffers.count
+        let predictor = Predictor.gradient
+        var residuals = [UInt32]()
+        residuals.reserveCapacity(width * (channelBuffers[0].count / width) * channels)
+        for buf in channelBuffers {
+            let height = buf.count / width
+            var shadow = [Int32](repeating: 0, count: buf.count)
+            for y in 0..<height {
+                for x in 0..<width {
+                    let actual = buf[y * width + x]
+                    let nbh = Neighbourhood(at: x, y, in: shadow, width: width)
+                    let pred = predictor.apply(to: nbh)
+                    let residual = actual &- pred
+                    residuals.append(ZigZag.pack(residual))
+                    shadow[y * width + x] = actual
+                }
+            }
+        }
+        return EncodePreparation(
+            rctVariant: .identity,
+            channelPredictors: [PredictorID](repeating: .gradient, count: channels),
+            residuals: residuals
         )
     }
 

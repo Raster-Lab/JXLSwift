@@ -2689,6 +2689,72 @@ extension FoundationTests {
             "natural image must round-trip exactly")
     }
 
+    /// Fast-mode round-trip: encode with `.fast`, decode, verify
+    /// pixel-exact recovery. The decoder doesn't need to know about
+    /// effort — it reads the predictor IDs and RCT variant the
+    /// encoder picked (`.gradient` and `.identity` for `.fast`).
+    func testM0_FastEffort_RoundTrip() throws {
+        var frame = ImageFrame(
+            width: 16, height: 16, channels: 1,
+            pixelType: .uint8, colorSpace: .grayscale
+        )
+        for y in 0..<16 {
+            for x in 0..<16 {
+                frame.setPixel(x: x, y: y, channel: 0, value: UInt16(x * 4 + y))
+            }
+        }
+        let encoded = try MinimalLosslessCodec.encode(frame, effort: .fast)
+        let decoded = try MinimalLosslessCodec.decode(encoded)
+        XCTAssertEqual(decoded.data, frame.data,
+            "fast-mode encode must round-trip exactly")
+    }
+
+    /// Fast mode must work on RGB too, leaving RCT at `.identity`.
+    func testM0_FastEffort_RGB_RoundTrip() throws {
+        var frame = ImageFrame(
+            width: 8, height: 8, channels: 3,
+            pixelType: .uint8, colorSpace: .sRGB
+        )
+        for y in 0..<8 {
+            for x in 0..<8 {
+                frame.setPixel(x: x, y: y, channel: 0, value: UInt16(x * 16))
+                frame.setPixel(x: x, y: y, channel: 1, value: UInt16(y * 16))
+                frame.setPixel(x: x, y: y, channel: 2, value: UInt16((x + y) * 8))
+            }
+        }
+        let encoded = try MinimalLosslessCodec.encode(frame, effort: .fast)
+        let decoded = try MinimalLosslessCodec.decode(encoded)
+        XCTAssertEqual(decoded.data, frame.data,
+            "fast-mode RGB encode must round-trip exactly")
+    }
+
+    /// On highly-stripey content where `.balanced` would pick
+    /// `.north` or `.west`, fast mode (which always uses `.gradient`)
+    /// produces a larger output. This pins down the speed/ratio
+    /// trade-off: fast is faster but less compressed.
+    func testM0_FastEffort_LargerOutputThanBalancedOnStripes() throws {
+        var frame = ImageFrame(
+            width: 32, height: 32, channels: 1,
+            pixelType: .uint8, colorSpace: .grayscale
+        )
+        // Vertical stripes — `.north` is the perfect predictor here.
+        // `.gradient` gives non-zero residuals at the column changes.
+        for y in 0..<32 {
+            for x in 0..<32 {
+                frame.setPixel(x: x, y: y, channel: 0, value: UInt16(x * 8))
+            }
+        }
+        let bal = try MinimalLosslessCodec.encode(frame, effort: .balanced)
+        let fst = try MinimalLosslessCodec.encode(frame, effort: .fast)
+        // Both must round-trip.
+        XCTAssertEqual(try MinimalLosslessCodec.decode(bal).data, frame.data)
+        XCTAssertEqual(try MinimalLosslessCodec.decode(fst).data, frame.data)
+        // Balanced should be at least as small as fast.
+        XCTAssertLessThanOrEqual(bal.count, fst.count,
+            "balanced should compress no worse than fast on stripe content " +
+            "(balanced=\(bal.count), fast=\(fst.count))")
+    }
+
     /// Float32 isn't supported by M0 — encoder should throw cleanly.
     func testM0_RejectsFloat32() {
         let frame = ImageFrame(

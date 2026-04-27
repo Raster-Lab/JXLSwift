@@ -33,6 +33,9 @@ struct Benchmark: ParsableCommand {
     @Option(name: .shortAndLong, help: "Number of encode/decode iterations (each direction)")
     var iterations: Int = 10
 
+    @Flag(name: .long, help: "Use M0 fast-encode mode (skip predictor + RCT search)")
+    var fast: Bool = false
+
     func run() throws {
         let url = URL(fileURLWithPath: input)
         let pnmData: Data
@@ -51,10 +54,12 @@ struct Benchmark: ParsableCommand {
         let totalSamples = totalPixels * frame.channels
         let rawByteCount = totalSamples * frame.pixelType.bytesPerSample
 
+        let effort: M0Effort = fast ? .fast : .balanced
+
         // First pass: round-trip correctness check + populate
         // `encoded` for the decode benchmark.
         let encoded: Data
-        do { encoded = try MinimalLosslessCodec.encode(frame) }
+        do { encoded = try MinimalLosslessCodec.encode(frame, effort: effort) }
         catch { print("M0 encode error: \(error)", to: &standardError)
                 throw JXLExitCode.generalError }
         do {
@@ -74,7 +79,7 @@ struct Benchmark: ParsableCommand {
         // Encode benchmark.
         let encStart = clock_gettime_ns()
         for _ in 0..<n {
-            _ = try MinimalLosslessCodec.encode(frame)
+            _ = try MinimalLosslessCodec.encode(frame, effort: effort)
         }
         let encNs = clock_gettime_ns() - encStart
 
@@ -101,6 +106,7 @@ struct Benchmark: ParsableCommand {
             Image:        \(widthLabel) \(kindLabel)
             Source size:  \(formatBytes(rawByteCount)) (\(totalPixels) pixels)
             Encoded size: \(formatBytes(encoded.count)) (\(String(format: "%.1f", ratio))% of source)
+            Effort:       \(fast ? "fast" : "balanced")
 
             Encode (\(n)× iterations):
               total       \(String(format: "%.1f", Double(encNs) / 1_000_000)) ms

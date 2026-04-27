@@ -88,15 +88,16 @@ The pipeline is `optional RCT (R/G/B only when channels ≥ 3) → per-channel p
 
 `jxl-tool benchmark -i input.pgm` times the encode/decode loop and reports source-pixels-per-second throughput. Sample numbers on Apple Silicon (release build, 10 iterations):
 
-| Image                                      | Encode      | Decode      |
-|---|---|---|
-| 128×128 8-bit grayscale (gradient + noise) | 4.4 Mpx/s   | 54 Mpx/s    |
-| 256×256 8-bit grayscale                    | 8.2 Mpx/s   | 74 Mpx/s    |
-| 512×512 8-bit grayscale                    | 8.2 Mpx/s   | 74 Mpx/s    |
-| 1024×1024 8-bit grayscale                  | 7.9 Mpx/s   | 74 Mpx/s    |
-| 256×256 8-bit correlated RGB               | 2.2 Mpx/s   | 30 Mpx/s    |
+| Image                                      | Balanced encode | Fast encode  | Decode      |
+|---|---|---|---|
+| 128×128 8-bit grayscale (gradient + noise) | 4.4 Mpx/s       | —            | 54 Mpx/s    |
+| 256×256 8-bit grayscale                    | 7.0 Mpx/s       | **20 Mpx/s** | 75 Mpx/s    |
+| 1024×1024 8-bit grayscale                  | 7.8 Mpx/s       | **21 Mpx/s** | 74 Mpx/s    |
+| 256×256 8-bit correlated RGB               | 2.2 Mpx/s       | **9.6 Mpx/s**| 30 Mpx/s    |
 
 Decode is ~10× faster than encode because the encoder evaluates every predictor against the channel's pixels to pick the best one (and for RGB also evaluates each RCT variant). The decoder just applies whichever predictor + RCT the encoder picked.
+
+`encode-m0 --fast` (or programmatically `MinimalLosslessCodec.encode(_:effort: .fast)`) skips predictor + RCT search and uses `Predictor.gradient` + `RCTVariant.identity` unconditionally. **2.7–4.4× faster encode** with 1–2 percentage points worse compression on natural-shaped images. Useful for real-time use cases where throughput matters more than the last few percent of ratio.
 
 ## What works today
 

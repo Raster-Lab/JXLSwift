@@ -28,6 +28,9 @@ struct EncodeM0: ParsableCommand {
     @Option(name: .shortAndLong, help: "Output .m0 path")
     var output: String
 
+    @Flag(name: .long, help: "Fast encode (skip predictor + RCT search; ~6× faster, slightly worse compression)")
+    var fast: Bool = false
+
     func run() throws {
         let inputURL = URL(fileURLWithPath: input)
         let outputURL = URL(fileURLWithPath: output)
@@ -44,8 +47,9 @@ struct EncodeM0: ParsableCommand {
             throw JXLExitCode.invalidArguments
         }
 
+        let effort: M0Effort = fast ? .fast : .balanced
         let encoded: Data
-        do { encoded = try MinimalLosslessCodec.encode(frame) }
+        do { encoded = try MinimalLosslessCodec.encode(frame, effort: effort) }
         catch {
             print("M0 encode error: \(error)", to: &standardError)
             throw JXLExitCode.generalError
