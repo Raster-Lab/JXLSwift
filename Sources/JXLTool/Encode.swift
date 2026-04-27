@@ -43,23 +43,26 @@ struct Encode: ParsableCommand {
             throw JXLExitCode.invalidArguments
         }
 
-        let frame: ImageFrame
-        if url.pathExtension.lowercased() == "dcm" {
+        let ext = url.pathExtension.lowercased()
+        let frames: [ImageFrame]
+
+        switch ext {
+        case "dcm":
             do {
-                frame = try DICOMReader.read(url)
+                frames = [try DICOMReader.read(url)]
             } catch {
                 print("Error: DICOM read failed for \(input): \(error.localizedDescription)", to: &standardError)
                 throw JXLExitCode.generalError
             }
             if verbose {
-                print("Loaded DICOM \(frame.width)×\(frame.height) (\(frame.pixelType.bitsPerSample)-bit grayscale)")
+                print("Loaded DICOM \(frames[0].width)×\(frames[0].height) (\(frames[0].pixelType.bitsPerSample)-bit grayscale)")
             }
-        } else {
+        default:
             guard let loaded = loadImageFrame(from: url) else {
                 print("Error: could not decode \(input) (supported: PNG, JPEG, TIFF, BMP, DICOM)", to: &standardError)
                 throw JXLExitCode.invalidArguments
             }
-            frame = loaded
+            frames = [loaded]
         }
 
         let mode: CompressionMode
@@ -79,10 +82,14 @@ struct Encode: ParsableCommand {
             numThreads: threads
         )
         let encoder = JXLEncoder(options: opts)
-        let result = try encoder.encode(frame)
+        let result = (frames.count == 1)
+            ? try encoder.encode(frames[0])
+            : try encoder.encode(frames)
         try result.data.write(to: URL(fileURLWithPath: output))
 
-        print("Encoded \(frame.width)×\(frame.height) (\(frame.channels)ch \(frame.pixelType.bitsPerSample)-bit) to \(output)")
+        let frameLabel = frames.count == 1 ? "" : " (\(frames.count) frames)"
+        let f0 = frames[0]
+        print("Encoded \(f0.width)×\(f0.height)\(frameLabel) (\(f0.channels)ch \(f0.pixelType.bitsPerSample)-bit) to \(output)")
         print("  Original:    \(formatBytes(result.stats.originalSize))")
         print("  Compressed:  \(formatBytes(result.stats.compressedSize))")
         print("  Ratio:       \(String(format: "%.2f", result.stats.compressionRatio))×")

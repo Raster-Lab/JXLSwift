@@ -174,9 +174,15 @@ private func isWhitespaceOrComment(_ b: UInt8) -> Bool {
     isWhitespace(b) || b == 0x23
 }
 
-/// Write a decoded `ImageFrame` to a PNG file (8-bit only for now).
+/// Write a decoded `ImageFrame` to a PNG file. Supports 8-bit (1/2/3/4
+/// channels) and 16-bit grayscale; 16-bit is preserved through CGImage's
+/// 16-bits-per-component path so downstream tools see full precision.
 func writePNG(_ frame: ImageFrame, to url: URL) -> Bool {
+    if frame.pixelType == .uint16 && frame.channels == 1 {
+        return writeGrayscale16PNG(frame, to: url)
+    }
     guard frame.pixelType == .uint8 else { return false }
+
     let cs: CGColorSpace = (frame.channels <= 2)
         ? CGColorSpaceCreateDeviceGray()
         : CGColorSpaceCreateDeviceRGB()
@@ -213,6 +219,32 @@ func writePNG(_ frame: ImageFrame, to url: URL) -> Bool {
         width: frame.width, height: frame.height,
         bitsPerComponent: 8, bitsPerPixel: bitsPerPixel,
         bytesPerRow: bytesPerRow,
+        space: cs, bitmapInfo: CGBitmapInfo(rawValue: bitmapInfo),
+        provider: provider, decode: nil, shouldInterpolate: false,
+        intent: .defaultIntent
+    ) else { return false }
+    guard let dest = CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil) else { return false }
+    CGImageDestinationAddImage(dest, cgImage, nil)
+    return CGImageDestinationFinalize(dest)
+}
+
+/// 16-bit grayscale PNG. CoreGraphics expects big-endian samples in the
+/// data provider; ImageFrame stores little-endian, so we swap on the way
+/// out.
+private func writeGrayscale16PNG(_ frame: ImageFrame, to url: URL) -> Bool {
+    let cs = CGColorSpaceCreateDeviceGray()
+    let count = frame.width * frame.height
+    var bigEndian = [UInt8](repeating: 0, count: count * 2)
+    for i in 0..<count {
+        bigEndian[i * 2]     = frame.data[i * 2 + 1]   // hi
+        bigEndian[i * 2 + 1] = frame.data[i * 2]       // lo
+    }
+    guard let provider = CGDataProvider(data: Data(bigEndian) as CFData) else { return false }
+    let bitmapInfo = CGImageAlphaInfo.none.rawValue | CGBitmapInfo.byteOrder16Big.rawValue
+    guard let cgImage = CGImage(
+        width: frame.width, height: frame.height,
+        bitsPerComponent: 16, bitsPerPixel: 16,
+        bytesPerRow: frame.width * 2,
         space: cs, bitmapInfo: CGBitmapInfo(rawValue: bitmapInfo),
         provider: provider, decode: nil, shouldInterpolate: false,
         intent: .defaultIntent

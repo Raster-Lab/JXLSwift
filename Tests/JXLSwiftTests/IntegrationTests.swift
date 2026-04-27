@@ -303,6 +303,64 @@ final class IntegrationTests: XCTestCase {
             "16-bit DICOM lossless round-trip must be pixel-exact")
     }
 
+    // MARK: - Multi-frame
+
+    /// Encode a synthetic 3D volume as a multi-frame JXL and verify all
+    /// frames round-trip pixel-exact.
+    func testMultiFrameEncodeDecode_RoundTripsAllFrames() throws {
+        var frames: [ImageFrame] = []
+        for z in 0..<10 {
+            var f = ImageFrame(width: 32, height: 32, channels: 1,
+                               pixelType: .uint8, colorSpace: .grayscale)
+            for y in 0..<32 {
+                for x in 0..<32 {
+                    f.setPixel(x: x, y: y, channel: 0,
+                               value: UInt16((x * 5 + y * 3 + z * 11) % 256))
+                }
+            }
+            frames.append(f)
+        }
+        let encoded = try JXLEncoder(options: EncodingOptions(
+            mode: .lossless, effort: .squirrel
+        )).encode(frames)
+        XCTAssertGreaterThan(encoded.data.count, 0)
+        let decoded = try JXLDecoder().decodeAll(encoded.data)
+        XCTAssertEqual(decoded.count, frames.count, "frame count must round-trip")
+        for (i, df) in decoded.enumerated() {
+            XCTAssertEqual(df.data, frames[i].data,
+                "frame \(i) lossless round-trip not pixel-exact")
+        }
+    }
+
+    /// 16-bit multi-frame round-trip on a synthetic in-memory volume.
+    /// Confirms the encoder and decoder both handle uint16 multi-frame
+    /// bitstreams (the use case the multi-frame path was designed for).
+    func testMultiFrameRoundTrip_16Bit() throws {
+        let w = 24, h = 24, slices = 6
+        var frames: [ImageFrame] = []
+        for z in 0..<slices {
+            var f = ImageFrame(width: w, height: h, channels: 1,
+                               pixelType: .uint16, colorSpace: .grayscale)
+            for y in 0..<h {
+                for x in 0..<w {
+                    let v = UInt16((x + y * 5 + z * 31) % 4096)
+                    f.setPixel(x: x, y: y, channel: 0, value: v)
+                }
+            }
+            frames.append(f)
+        }
+        let encoded = try JXLEncoder(options: EncodingOptions(
+            mode: .lossless, effort: .squirrel
+        )).encode(frames)
+        let decoded = try JXLDecoder().decodeAll(encoded.data)
+        XCTAssertEqual(decoded.count, slices)
+        for (i, df) in decoded.enumerated() {
+            XCTAssertEqual(df.pixelType, .uint16, "decoded slice must keep 16-bit")
+            XCTAssertEqual(df.data, frames[i].data,
+                "slice \(i) lossless round-trip not pixel-exact")
+        }
+    }
+
     func testEncodedBitstreamHasJXLSignature() throws {
         try skipIfNoDataset()
         #if !canImport(ImageIO)

@@ -27,7 +27,7 @@ public final class JXLEncoder {
     /// Encode a single frame to JPEG XL.
     public func encode(_ frame: ImageFrame) throws -> EncodedImage {
         let start = Date()
-        let bytes = try encodeRaw(frame: frame)
+        let bytes = try encodeRaw(frames: [frame])
         let stats = CompressionStats(
             originalSize: frame.data.count,
             compressedSize: bytes.count,
@@ -36,9 +36,37 @@ public final class JXLEncoder {
         return EncodedImage(data: bytes, stats: stats)
     }
 
+    /// Encode multiple frames into a single multi-frame JPEG XL bitstream.
+    /// All frames must have identical dimensions, channel count, and pixel
+    /// type. Frames are written in the order given. The resulting `.jxl`
+    /// file contains N frames; `JXLDecoder.decodeAll(_:)` recovers them.
+    public func encode(_ frames: [ImageFrame]) throws -> EncodedImage {
+        guard let first = frames.first else {
+            throw EncoderError.unsupportedFrame("no frames")
+        }
+        for (i, f) in frames.enumerated() {
+            guard f.width == first.width, f.height == first.height,
+                  f.channels == first.channels, f.pixelType == first.pixelType else {
+                throw EncoderError.unsupportedFrame(
+                    "frame \(i) (\(f.width)×\(f.height) ch=\(f.channels) \(f.pixelType)) does not match frame 0 (\(first.width)×\(first.height) ch=\(first.channels) \(first.pixelType))"
+                )
+            }
+        }
+        let start = Date()
+        let bytes = try encodeRaw(frames: frames)
+        let totalRaw = frames.reduce(0) { $0 + $1.data.count }
+        let stats = CompressionStats(
+            originalSize: totalRaw,
+            compressedSize: bytes.count,
+            encodingTime: Date().timeIntervalSince(start)
+        )
+        return EncodedImage(data: bytes, stats: stats)
+    }
+
     // MARK: - Internal
 
-    private func encodeRaw(frame: ImageFrame) throws -> Data {
+    private func encodeRaw(frames: [ImageFrame]) throws -> Data {
+        guard let frame = frames.first else { throw EncoderError.unsupportedFrame("no frames") }
         guard let encoder = JxlEncoderCreate(nil) else {
             throw EncoderError.libjxlSetup("JxlEncoderCreate returned NULL")
         }
@@ -57,7 +85,9 @@ public final class JXLEncoder {
             throw EncoderError.libjxlSetup("JxlEncoderSetParallelRunner")
         }
 
-        // Basic image metadata.
+        // Basic image metadata. The geometry comes from frame 0; multi-frame
+        // bitstreams require the `have_animation` flag so libjxl emits a
+        // proper frame-bundle header.
         var basicInfo = JxlBasicInfo()
         JxlEncoderInitBasicInfo(&basicInfo)
         basicInfo.xsize = UInt32(frame.width)
@@ -70,6 +100,12 @@ public final class JXLEncoder {
         if frame.alphaChannels > 0 {
             basicInfo.alpha_bits = UInt32(frame.pixelType.bitsPerSample)
             basicInfo.alpha_exponent_bits = (frame.pixelType == .float32) ? 8 : 0
+        }
+        if frames.count > 1 {
+            basicInfo.have_animation = 1
+            basicInfo.animation.tps_numerator = 1
+            basicInfo.animation.tps_denominator = 1
+            basicInfo.animation.num_loops = 0
         }
 
         if JxlEncoderSetBasicInfo(encoder, &basicInfo) != JXL_ENC_SUCCESS {
@@ -153,13 +189,27 @@ public final class JXLEncoder {
             align: 0
         )
 
-        let addStatus = frame.data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> JxlEncoderStatus in
-            guard let base = raw.baseAddress else { return JXL_ENC_ERROR }
-            var fmt = format
-            return JxlEncoderAddImageFrame(frameSettings, &fmt, base, frame.data.count)
-        }
-        if addStatus != JXL_ENC_SUCCESS {
-            throw EncoderError.libjxlEncode("JxlEncoderAddImageFrame")
+        // Add every frame in order. For animated bitstreams libjxl needs a
+        // per-frame header to declare the timestep duration; we use 1 tick
+        // per frame so a 60-frame volume "plays" in 60 ticks.
+        for (i, f) in frames.enumerated() {
+            if frames.count > 1 {
+                var hdr = JxlFrameHeader()
+                JxlEncoderInitFrameHeader(&hdr)
+                hdr.duration = 1
+                hdr.is_last = (i == frames.count - 1) ? 1 : 0
+                if JxlEncoderSetFrameHeader(frameSettings, &hdr) != JXL_ENC_SUCCESS {
+                    throw EncoderError.libjxlEncode("JxlEncoderSetFrameHeader (frame \(i))")
+                }
+            }
+            let addStatus = f.data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> JxlEncoderStatus in
+                guard let base = raw.baseAddress else { return JXL_ENC_ERROR }
+                var fmt = format
+                return JxlEncoderAddImageFrame(frameSettings, &fmt, base, f.data.count)
+            }
+            if addStatus != JXL_ENC_SUCCESS {
+                throw EncoderError.libjxlEncode("JxlEncoderAddImageFrame (frame \(i))")
+            }
         }
         JxlEncoderCloseInput(encoder)
 

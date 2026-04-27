@@ -48,6 +48,9 @@ struct Batch: AsyncParsableCommand {
     @Flag(name: .long, help: "Quiet (no per-file progress)")
     var quiet: Bool = false
 
+    @Option(name: .long, help: "Write a JSON manifest with per-file results to this path")
+    var manifest: String?
+
     private static let supportedExtensions: Set<String> = ["png", "jpg", "jpeg", "tiff", "tif", "bmp", "dcm"]
 
     func run() async throws {
@@ -113,7 +116,90 @@ struct Batch: AsyncParsableCommand {
             print("Wall time:     \(String(format: "%.2f", elapsed))s  (≈ \(String(format: "%.1f", Double(summary.encoded) / max(elapsed, 1e-9))) files/s)")
         }
 
+        if let manifestPath = manifest {
+            try writeManifest(
+                to: manifestPath,
+                inputBase: inputURL,
+                outputBase: outputURL,
+                results: summary.perFile,
+                wallClock: elapsed,
+                mode: opts.mode,
+                effort: effortLevel
+            )
+            if !quiet { print("Manifest:      \(manifestPath)") }
+        }
+
         if summary.failed > 0 { throw JXLExitCode.generalError }
+    }
+
+    /// Write a JSON manifest with per-file results.
+    private func writeManifest(
+        to path: String,
+        inputBase: URL, outputBase: URL,
+        results: [(URL, EncodeResult)],
+        wallClock: TimeInterval,
+        mode: CompressionMode, effort: EncodingEffort
+    ) throws {
+        struct Entry: Encodable {
+            let input: String
+            let output: String
+            let bytesIn: Int
+            let bytesOut: Int
+            let ratio: Double
+            let width: Int
+            let height: Int
+            let channels: Int
+            let frames: Int
+            let bitDepth: Int
+            let encodeTimeS: Double
+            let status: String
+        }
+        struct Manifest: Encodable {
+            let mode: String
+            let effort: Int
+            let parallel: Int
+            let wallTimeS: Double
+            let totalBytesIn: Int
+            let totalBytesOut: Int
+            let avgRatio: Double
+            let files: [Entry]
+        }
+
+        let baseIn = inputBase.resolvingSymlinksInPath().path
+        let baseOut = outputBase.resolvingSymlinksInPath().path
+        let entries: [Entry] = results.map { (in_, r) in
+            let inP = in_.resolvingSymlinksInPath().path
+            let inRel = inP.hasPrefix(baseIn + "/") ? String(inP.dropFirst(baseIn.count + 1)) : in_.lastPathComponent
+            let stem = (inRel as NSString).deletingPathExtension
+            let outRel = "\(stem).jxl"
+            let outAbs = "\(baseOut)/\(outRel)"
+            let ratio = r.bytesOut > 0 ? Double(r.bytesIn) / Double(r.bytesOut) : 0
+            let status = r.ok ? "ok" : (r.skipped ? "skipped" : "failed")
+            return Entry(
+                input: inRel, output: outRel.replacingOccurrences(of: outAbs, with: outRel),
+                bytesIn: r.bytesIn, bytesOut: r.bytesOut, ratio: ratio,
+                width: r.width, height: r.height, channels: r.channels,
+                frames: r.frameCount, bitDepth: r.bitDepth,
+                encodeTimeS: r.encodingTime, status: status
+            )
+        }
+        let okEntries = entries.filter { $0.status == "ok" }
+        let avg = okEntries.isEmpty ? 0.0
+            : okEntries.reduce(0.0) { $0 + $1.ratio } / Double(okEntries.count)
+        let totalIn = entries.reduce(0) { $0 + $1.bytesIn }
+        let totalOut = entries.reduce(0) { $0 + $1.bytesOut }
+        let m = Manifest(
+            mode: modeDescription(mode),
+            effort: effort.rawValue,
+            parallel: parallel,
+            wallTimeS: wallClock,
+            totalBytesIn: totalIn, totalBytesOut: totalOut,
+            avgRatio: avg, files: entries
+        )
+        let enc = JSONEncoder()
+        enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try enc.encode(m)
+        try data.write(to: URL(fileURLWithPath: path))
     }
 
     // MARK: - File discovery
@@ -136,13 +222,25 @@ struct Batch: AsyncParsableCommand {
 
     // MARK: - Concurrent encode
 
-    private struct EncodeResult: Sendable { let bytesIn: Int; let bytesOut: Int; let ok: Bool; let skipped: Bool }
+    private struct EncodeResult: Sendable {
+        let bytesIn: Int
+        let bytesOut: Int
+        var width: Int = 0
+        var height: Int = 0
+        var channels: Int = 0
+        var frameCount: Int = 0
+        var bitDepth: Int = 0
+        var encodingTime: TimeInterval = 0
+        let ok: Bool
+        let skipped: Bool
+    }
     private struct Summary: Sendable {
         var encoded: Int = 0
         var skipped: Int = 0
         var failed:  Int = 0
         var bytesIn: Int = 0
         var bytesOut: Int = 0
+        var perFile: [(URL, EncodeResult)] = []
     }
 
     private func runConcurrently(
@@ -174,6 +272,7 @@ struct Batch: AsyncParsableCommand {
                 }
                 summary.bytesIn += result.bytesIn
                 summary.bytesOut += result.bytesOut
+                summary.perFile.append((inputURL, result))
 
                 if !quiet {
                     let resolvedIn = inputURL.resolvingSymlinksInPath().path
@@ -221,24 +320,37 @@ struct Batch: AsyncParsableCommand {
             return EncodeResult(bytesIn: bytesIn, bytesOut: bytesOut, ok: false, skipped: true)
         }
 
-        let frame: ImageFrame?
-        if input.pathExtension.lowercased() == "dcm" {
+        let frames: [ImageFrame]
+        switch input.pathExtension.lowercased() {
+        case "dcm":
             // Fast path: native Swift DICOM reader, preserves bit depth.
             // Falls through to the magick PGM fallback for transfer
             // syntaxes the native reader doesn't handle (compressed DICOM:
             // JPEG / JPEG-LS / JPEG 2000 / RLE).
-            frame = (try? DICOMReader.read(input)) ?? loadDICOMViaMagick(input)
-        } else {
-            frame = loadImageFrame(from: input)
-        }
-        guard let f = frame else {
-            return EncodeResult(bytesIn: bytesIn, bytesOut: 0, ok: false, skipped: false)
+            if let dcm = try? DICOMReader.read(input) { frames = [dcm] }
+            else if let magicked = loadDICOMViaMagick(input) { frames = [magicked] }
+            else { return EncodeResult(bytesIn: bytesIn, bytesOut: 0, ok: false, skipped: false) }
+        default:
+            guard let im = loadImageFrame(from: input) else {
+                return EncodeResult(bytesIn: bytesIn, bytesOut: 0, ok: false, skipped: false)
+            }
+            frames = [im]
         }
 
         do {
-            let encoded = try JXLEncoder(options: options).encode(f)
+            let encoded = (frames.count == 1)
+                ? try JXLEncoder(options: options).encode(frames[0])
+                : try JXLEncoder(options: options).encode(frames)
             try encoded.data.write(to: outputURL)
-            return EncodeResult(bytesIn: bytesIn, bytesOut: encoded.data.count, ok: true, skipped: false)
+            let f0 = frames[0]
+            let bitDepth = f0.pixelType.bitsPerSample
+            return EncodeResult(
+                bytesIn: bytesIn, bytesOut: encoded.data.count,
+                width: f0.width, height: f0.height,
+                channels: f0.channels, frameCount: frames.count,
+                bitDepth: bitDepth, encodingTime: encoded.stats.encodingTime,
+                ok: true, skipped: false
+            )
         } catch {
             return EncodeResult(bytesIn: bytesIn, bytesOut: 0, ok: false, skipped: false)
         }

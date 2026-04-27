@@ -22,13 +22,20 @@ public enum DecoderError: Error, LocalizedError {
 public final class JXLDecoder {
     public init() {}
 
-    /// Decode a JPEG XL byte stream into an `ImageFrame`.
-    ///
-    /// The decoder asks libjxl for the natural pixel layout (channels,
-    /// bit depth) and returns it. If the source image has alpha, the
-    /// decoded frame also carries it. ICC profile bytes are attached
-    /// when libjxl reports one.
+    /// Decode a JPEG XL byte stream into an `ImageFrame`. For multi-frame
+    /// bitstreams this returns the first frame; use `decodeAll(_:)` to get
+    /// every frame.
     public func decode(_ data: Data) throws -> ImageFrame {
+        let frames = try decodeAll(data)
+        guard let first = frames.first else {
+            throw DecoderError.libjxlDecode("decoder produced no frames")
+        }
+        return first
+    }
+
+    /// Decode every frame of a (possibly multi-frame) JPEG XL bitstream.
+    /// Single-frame files return a 1-element array.
+    public func decodeAll(_ data: Data) throws -> [ImageFrame] {
         guard let dec = JxlDecoderCreate(nil) else {
             throw DecoderError.libjxlSetup("JxlDecoderCreate returned NULL")
         }
@@ -62,12 +69,15 @@ public final class JXLDecoder {
         }
         JxlDecoderCloseInput(dec)
 
-        // State machine.
+        // State machine. We collect a list of decoded frames; each
+        // JXL_DEC_NEED_IMAGE_OUT_BUFFER + JXL_DEC_FULL_IMAGE pair yields
+        // one frame.
         var basicInfo: JxlBasicInfo?
         var icc: Data?
-        var pixels: [UInt8] = []
+        var pendingPixels: [UInt8] = []
         var pixelType: PixelType = .uint8
         var channels: Int = 0
+        var collected: [ImageFrame] = []
 
         loop: while true {
             let status = JxlDecoderProcessInput(dec)
@@ -88,8 +98,6 @@ public final class JXLDecoder {
                 }
 
             case JXL_DEC_COLOR_ENCODING:
-                // Try to fetch the ICC profile if libjxl can produce one.
-                var format = JxlPixelFormat(num_channels: 0, data_type: JXL_TYPE_UINT8, endianness: JXL_NATIVE_ENDIAN, align: 0)
                 var iccSize: Int = 0
                 if JxlDecoderGetICCProfileSize(dec, JXL_COLOR_PROFILE_TARGET_DATA, &iccSize) == JXL_DEC_SUCCESS,
                    iccSize > 0 {
@@ -99,10 +107,9 @@ public final class JXLDecoder {
                     }
                     if got == JXL_DEC_SUCCESS { icc = Data(buf) }
                 }
-                _ = format
 
             case JXL_DEC_NEED_IMAGE_OUT_BUFFER:
-                guard let info = basicInfo else { throw DecoderError.missingBasicInfo }
+                guard basicInfo != nil else { throw DecoderError.missingBasicInfo }
                 let format = JxlPixelFormat(
                     num_channels: UInt32(channels),
                     data_type: cdataType(for: pixelType),
@@ -114,12 +121,8 @@ public final class JXLDecoder {
                 if JxlDecoderImageOutBufferSize(dec, &fmt, &size) != JXL_DEC_SUCCESS {
                     throw DecoderError.libjxlDecode("JxlDecoderImageOutBufferSize")
                 }
-                let expected = Int(info.xsize) * Int(info.ysize) * channels * pixelType.bytesPerSample
-                if size != expected {
-                    // Use libjxl's reported size, not our computed one — they should match.
-                }
-                pixels = [UInt8](repeating: 0, count: size)
-                let setOut = pixels.withUnsafeMutableBufferPointer { buf -> JxlDecoderStatus in
+                pendingPixels = [UInt8](repeating: 0, count: size)
+                let setOut = pendingPixels.withUnsafeMutableBufferPointer { buf -> JxlDecoderStatus in
                     var f = format
                     return JxlDecoderSetImageOutBuffer(dec, &f, buf.baseAddress, size)
                 }
@@ -128,8 +131,22 @@ public final class JXLDecoder {
                 }
 
             case JXL_DEC_FULL_IMAGE:
-                // libjxl finished decoding; loop until SUCCESS.
-                continue
+                // Capture the just-decoded frame and continue (more frames
+                // may follow for multi-frame bitstreams).
+                guard let info = basicInfo else { throw DecoderError.missingBasicInfo }
+                let cs: ColorSpace = (info.num_color_channels == 1) ? .grayscale : .sRGB
+                var frame = ImageFrame(
+                    width: Int(info.xsize),
+                    height: Int(info.ysize),
+                    channels: channels,
+                    pixelType: pixelType,
+                    colorSpace: cs,
+                    alphaChannels: info.alpha_bits > 0 ? 1 : 0,
+                    iccProfile: icc
+                )
+                frame.data = pendingPixels
+                collected.append(frame)
+                pendingPixels = []
 
             case JXL_DEC_SUCCESS:
                 break loop
@@ -145,20 +162,8 @@ public final class JXLDecoder {
             }
         }
 
-        guard let info = basicInfo else { throw DecoderError.missingBasicInfo }
-
-        let cs: ColorSpace = (info.num_color_channels == 1) ? .grayscale : .sRGB
-        var frame = ImageFrame(
-            width: Int(info.xsize),
-            height: Int(info.ysize),
-            channels: channels,
-            pixelType: pixelType,
-            colorSpace: cs,
-            alphaChannels: info.alpha_bits > 0 ? 1 : 0,
-            iccProfile: icc
-        )
-        frame.data = pixels
-        return frame
+        guard !collected.isEmpty else { throw DecoderError.libjxlDecode("decoder produced no frames") }
+        return collected
     }
 }
 
