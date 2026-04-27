@@ -1476,6 +1476,136 @@ final class FoundationTests: XCTestCase {
 
 }
 
+// MARK: - ContextMap (§C.6.4)
+
+extension FoundationTests {
+
+    /// Trivial case: numContexts == 1 → emit nothing, decode back
+    /// the same single-element [0].
+    func testContextMap_TrivialSingleContext() throws {
+        let cm = ContextMap.trivial(numContexts: 1)
+        XCTAssertEqual(cm.numClusters, 1)
+        XCTAssertEqual(cm.map, [0])
+        var w = BitWriter()
+        try cm.write(to: &w)
+        XCTAssertEqual(w.finishToData().count, 0,
+            "trivial 1-context map should consume no bits")
+        var r = BitReader(Data())
+        let parsed = try ContextMap.read(numContexts: 1, from: &r)
+        XCTAssertEqual(parsed.numClusters, 1)
+        XCTAssertEqual(parsed.map, [0])
+    }
+
+    /// Trivial multi-context: numClusters == 1 → emit only the
+    /// num_clusters-1 byte; decoder fills with zeros.
+    func testContextMap_TrivialSingleCluster() throws {
+        let cm = try ContextMap(
+            numClusters: 1, map: [UInt8](repeating: 0, count: 32)
+        )
+        var w = BitWriter()
+        try cm.write(to: &w)
+        var r = BitReader(w.finishToData())
+        let parsed = try ContextMap.read(numContexts: 32, from: &r)
+        XCTAssertEqual(parsed.numClusters, 1)
+        XCTAssertEqual(parsed.map.count, 32)
+        XCTAssertTrue(parsed.map.allSatisfy { $0 == 0 })
+    }
+
+    /// Simple-path round-trip across each bits_per_entry shape that
+    /// the spec supports: 1, 2, and 3 bits per entry → 2, 4, and 8
+    /// clusters respectively.
+    func testContextMap_SimpleBitsPerEntry_AllShapes() throws {
+        let cases: [(numClusters: Int, map: [UInt8])] = [
+            (numClusters: 2, map: [0, 1, 0, 1, 1, 0]),
+            (numClusters: 4, map: [0, 1, 2, 3, 2, 1, 0, 3]),
+            (numClusters: 8, map: [0, 1, 2, 3, 4, 5, 6, 7, 0, 7]),
+        ]
+        for c in cases {
+            let cm = try ContextMap(numClusters: c.numClusters, map: c.map)
+            var w = BitWriter()
+            try cm.write(to: &w)
+            var r = BitReader(w.finishToData())
+            let parsed = try ContextMap.read(
+                numContexts: c.map.count, from: &r
+            )
+            XCTAssertEqual(parsed.numClusters, c.numClusters,
+                "numClusters mismatch for \(c)")
+            XCTAssertEqual(parsed.map, c.map, "map mismatch for \(c)")
+        }
+    }
+
+    /// Encoder rejects > 8 clusters (would need the full path which
+    /// isn't implemented yet).
+    func testContextMap_RejectsTooManyClusters() throws {
+        let map = (0..<16).map { UInt8($0) }
+        let cm = try ContextMap(numClusters: 16, map: map)
+        var w = BitWriter()
+        XCTAssertThrowsError(try cm.write(to: &w)) { err in
+            XCTAssertEqual(err as? ContextMapError, .fullPathNotImplemented)
+        }
+    }
+
+    /// Decoder rejects a malformed bits_per_entry that can't address
+    /// all clusters.
+    func testContextMap_RejectsBitsPerEntryTooSmall() throws {
+        // Hand-build a bitstream:
+        //   num_clusters_minus_1 = 3 (4 clusters)
+        //   is_simple = 1
+        //   bits_per_entry = 1   (1 bit per entry → only 0..1, < 4 needed)
+        var w = BitWriter()
+        w.write(bits: 8, value: 3)         // num_clusters - 1
+        w.writeBit(true)                   // is_simple
+        w.write(bits: 2, value: 1)         // bits_per_entry = 1
+        // 4 entries would follow, but the decoder must throw before
+        // reading them.
+        var r = BitReader(w.finishToData())
+        XCTAssertThrowsError(try ContextMap.read(numContexts: 4, from: &r)) { err in
+            guard let e = err as? ContextMapError,
+                  case .bitsPerEntryTooSmall = e else {
+                XCTFail("expected bitsPerEntryTooSmall, got \(err)"); return
+            }
+        }
+    }
+
+    /// Hand-derived bit pattern: 4-cluster map [0, 1, 2, 3] over 4
+    /// contexts. Layout (LSB-first):
+    ///   num_clusters - 1 = 3        u(8)
+    ///   is_simple = 1               u(1)
+    ///   bits_per_entry = 2          u(2)  → LSB-first: 0, 1
+    ///   map[0..3] = 0,1,2,3         u(2) each
+    /// Bits emitted (positions 0..10 of the post-num_clusters stream):
+    ///   1, 0,1, 0,0, 1,0, 0,1, 1,1
+    func testContextMap_HandDerived_4Clusters() throws {
+        let cm = try ContextMap(numClusters: 4, map: [0, 1, 2, 3])
+        var w = BitWriter()
+        try cm.write(to: &w)
+        let bytes = [UInt8](w.finishToData())
+        // Byte 0: u(8) for num_clusters-1 = 3 → 0x03.
+        // Byte 1 covers stream positions 0..7:
+        //   pos 0 = 1, pos 1 = 0, pos 2 = 1, pos 3 = 0,
+        //   pos 4 = 0, pos 5 = 1, pos 6 = 0, pos 7 = 0
+        //   → 1 + 4 + 32 = 37 = 0x25
+        // Byte 2 covers stream positions 8..10:
+        //   pos 8 = 1, pos 9 = 1, pos 10 = 1
+        //   → 1 + 2 + 4 = 7 = 0x07
+        XCTAssertEqual(bytes, [0x03, 0x25, 0x07],
+            "hand-derived 4-cluster map should be [0x03, 0x25, 0x07]; got \(bytes)")
+    }
+
+    /// End-to-end: SimpleEntropyStream + ContextMap together. The
+    /// stream uses one cluster, so the context map is trivial; this
+    /// verifies the trivial map composes cleanly.
+    func testContextMap_TrivialMapComposesWithStream() throws {
+        let cm = try ContextMap(numClusters: 1, map: [UInt8](repeating: 0, count: 4))
+        var w = BitWriter()
+        try cm.write(to: &w)
+        var r = BitReader(w.finishToData())
+        let parsed = try ContextMap.read(numContexts: 4, from: &r)
+        XCTAssertEqual(parsed.numClusters, 1)
+        XCTAssertEqual(parsed.map, cm.map)
+    }
+}
+
 /// Helper: serialise a distribution of the requested shape and
 /// immediately deserialise it back, returning the resulting
 /// `ANSDistribution`. The encoder/decoder both need the same
