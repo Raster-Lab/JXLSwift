@@ -98,7 +98,7 @@ JXLSwift is designed to be:
 
 ## Implementation status
 
-Spec sections from ISO/IEC 18181-1 and ISO/IEC 18181-2. Each row is verified by a test (where ✅) or a milestone target (where ⏳). The current test suite is **112 / 112 passing** — every ✅ row has a round-trip test that fails when the row stops working.
+Spec sections from ISO/IEC 18181-1 and ISO/IEC 18181-2. Each row is verified by a test (where ✅) or a milestone target (where ⏳). The current test suite is **121 / 121 passing** — every ✅ row has a round-trip test that fails when the row stops working.
 
 ### Phase F — Foundation ✅
 
@@ -144,13 +144,13 @@ Spec sections from ISO/IEC 18181-1 and ISO/IEC 18181-2. Each row is verified by 
 
 | Section | Spec ref | Status |
 |---|---|---|
-| **M0 vertical slice** (project-internal) | n/a — placeholder | ✅ — `MinimalLosslessCodec.encode/decode` round-trips 1×1 / 8×8 / full-16-bit-range / smooth-gradient / constant-fill / large-step-gradient / high-variation / vertical-stripes / horizontal-stripes / diagonal-gradient / 3-channel-mixed-pattern frames end-to-end. Buffer layout: signature + SizeHeader + ImageMetadata + 'M0' marker + per-channel u(3) predictor IDs + `SimpleEntropyStream`. **Pipeline: per-channel predictor selection → ZigZag-packed residuals → auto-selected distribution shape**: encoder picks the predictor (zero/west/north/avgWN/gradient/medianWNGradient) whose residual histogram has the fewest distinct HybridUint tokens (ties broken by smaller `Σ|residual|`), per channel. The chosen predictor IDs are u(3) per channel. Then auto-shape selection (simple when ≤ 4 tokens, flat otherwise) drives the entropy coder. ColorEncoding picks grayscale-D65 for 1-channel frames, sRGB for 3-channel. Compression on the test corpus: all-zero 32×32 8-bit (raw 1 024 B) → < 100 B; vertical/horizontal stripes 32×32 8-bit → < 200 B each; diagonal gradient 32×32 8-bit → < 200 B; constant-fill / large-step-gradient 16-bit (raw 2 048 B) → below raw. **Not** a JXL-spec-compliant file. |
+| **M0 vertical slice** (project-internal) | n/a — placeholder | ✅ — `MinimalLosslessCodec.encode/decode` round-trips 1×1 / 8×8 / full-16-bit-range / smooth-gradient / constant-fill / large-step-gradient / high-variation / vertical-stripes / horizontal-stripes / diagonal-gradient / 3-channel-mixed-pattern / 3-channel-correlated-RGB / 3-channel-uncorrelated frames end-to-end. Buffer layout: signature + SizeHeader + ImageMetadata + 'M0' marker + (3-channel only: u(2) RCT variant) + per-channel u(3) predictor IDs + `SimpleEntropyStream`. **Pipeline: optional RCT (3-channel) → per-channel predictor selection → ZigZag-packed residuals → auto-selected distribution shape**. Encoder scores `.identity` vs `.ycocgR` by total per-channel best-predictor distinct-token count, then picks the per-channel predictor whose residual histogram has the fewest distinct HybridUint tokens (ties broken by smaller `Σ|residual|`). Auto-shape selection (simple when ≤ 4 tokens, flat otherwise) drives the entropy coder. ColorEncoding picks grayscale-D65 for 1-channel frames, sRGB for 3-channel. Compression on the test corpus: all-zero 32×32 8-bit (raw 1 024 B) → < 100 B; vertical/horizontal stripes 32×32 8-bit → < 200 B each; constant-fill / large-step-gradient 16-bit (raw 2 048 B) → below raw; correlated RGB 32×32 (raw 3 072 B) → below raw via RCT. **Not** a JXL-spec-compliant file. |
 | Frame header | §C.8.1 | ✅ all_default path; partial non-default path | `FrameHeader` covers `all_default=true` (single bit, **provably spec-correct**). Non-default path serialises frame_type, encoding, flags, group_size_shift, is_last, have_crop with project-internal placeholder layout — round-trips through our own encoder/decoder but is **not byte-for-byte spec compliant**: real spec uses `U64()` for flags, has do_YCbCr/upsampling/ec_upsampling/blending-info/animation/name/restoration-filter fields not yet modelled. Hand-derived bit pattern verifies all_default=true → `0x01`; matrix sweep across every `(frameType, encoding)` pair round-trips. |
 | Channel grouping & sub-bitstream | §C.7.2 | ⏳ |
 | Modular tree (MA-tree) | §C.7.4 | ⏳ |
 | Predictors (W, N, NW, MED, gradient) + ZigZag signed pack | §C.7.5 | ✅ — pure-math primitives. `Predictor` enum (zero/west/north/avgWN/gradient/medianWNGradient) with edge-fallback `Neighbourhood` reads; `PredictorID` u(3)-tag enum for serialisation; `ZigZag` enum for signed↔unsigned residual packing. Round-trip tested on hand-computed values, edge cases, full Int32 boundaries, and a predict-encode-decode loop on a 4×4 image. Higher-order predictors (Self, SelectGradient) and per-pixel adaptive selection via the MA-tree (§C.7.4) are pending. |
 | Squeeze (multi-resolution) | §C.7.6 | ⏳ |
-| RCT (reversible colour transform) | §C.7.7 | ⏳ |
+| RCT (reversible colour transform) | §C.7.7 | ✅ YCoCg-R | `RCT.forwardPixel/inversePixel` and buffer-level forward/inverse for the YCoCg-R lossless variant. Round-trip tested exhaustively over 0..31³ (32 768 triples) plus full 16-bit-range and negative-value boundaries; decorrelation property verified across 65 bases (Co=1, Cg=2 for `R=base, G=base+1, B=base-1` regardless of base). Wired into MinimalLosslessCodec for 3-channel frames with a u(2) variant ID; encoder picks `.identity` vs `.ycocgR` by total per-channel best-predictor distinct-token count. Caveat: spec defines `rct_type` 0..6 — only YCoCg-R is implemented and the codestream-level numbering / encoding needs spec verification. |
 
 ### Phase V — VarDCT (lossy) sub-codec
 
@@ -197,7 +197,7 @@ These are added once a corresponding scalar Swift path is correct. The scalar pa
 
 | Item | Status |
 |---|---|
-| Foundation tests (112) | ✅ |
+| Foundation tests (121) | ✅ |
 | Conformance test vectors (jxl-conformance repo) | ⏳ harness exists; vectors not wired up |
 | Cross-codec round-trip (encode → libjxl `djxl` decode) | ⏳ requires Phase E4-6 + M at minimum |
 | Cross-codec round-trip (libjxl `cjxl` → JXLDecoder) | ⏳ requires Phase E4-6 + M at minimum |

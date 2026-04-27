@@ -50,7 +50,8 @@ Sources/JXLSwift/Entropy/     HybridUint, PrefixCodeTable, ANSDistribution,
                               ANSEncoder, ANSDecoder, ContextMap,
                               LZ77Config, SimpleEntropyStream
 Sources/JXLSwift/Modular/     Predictors (W/N/NW/NE/avgWN/gradient/MED),
-                              Neighbourhood, ZigZag pack/unpack
+                              Neighbourhood, ZigZag pack/unpack,
+                              RCT (YCoCg-R reversible colour transform)
 Sources/JXLSwift/Codec/       JXLEncoder, JXLDecoder (currently stubs;
                               JXLDecoder.inspect(_:) IS implemented),
                               ImageFrame, EncodingOptions,
@@ -58,7 +59,7 @@ Sources/JXLSwift/Codec/       JXLEncoder, JXLDecoder (currently stubs;
                               vertical slice with gradient prediction)
 Sources/JXLTool/              jxl-tool CLI (info works; encode/decode
                               throw .notImplemented until the codec lands)
-Tests/JXLSwiftTests/          112 round-trip tests across foundation,
+Tests/JXLSwiftTests/          121 round-trip tests across foundation,
                               headers, entropy, modular primitives, M0
 Documentation/                ARCHITECTURE.md, SESSION-NOTES.md, legacy/
 ```
@@ -67,7 +68,7 @@ Documentation/                ARCHITECTURE.md, SESSION-NOTES.md, legacy/
 
 ```bash
 swift build -c release
-swift test  -c release           # 112 tests, ~50 ms
+swift test  -c release           # 121 tests, ~50 ms
 .build/release/jxl-tool --version
 ```
 

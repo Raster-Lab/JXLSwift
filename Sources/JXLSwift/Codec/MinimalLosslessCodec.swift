@@ -20,6 +20,9 @@
 //     ImageMetadata                    // §C.3.3 (spec)
 //     'M0' marker         u(16)        // 0x4D30, makes the placeholder explicit
 //     align to byte
+//     if channels == 3:
+//         rct_variant     u(2)         // RCTVariant.identity or .ycocgR
+//     align to byte
 //     per-channel predictor IDs        // u(3) per channel; see PredictorID
 //     align to byte
 //     SimpleEntropyStream              // residual-value stream
@@ -31,17 +34,25 @@
 // regression-test fixture.
 //
 // Pixel encoding strategy (lossless):
-//   • Each channel is processed separately in row-major order. For
-//     every channel the encoder evaluates each available predictor
-//     against the channel's pixels, picks the one whose residuals
-//     produce the fewest distinct HybridUint tokens (ties broken by
-//     the smaller `Σ|residual|`), and writes that predictor's u(3)
-//     ID into the bitstream. Then for every pixel we compute
-//     `predicted = chosenPredictor(W, N, NW, NE)` using already-
-//     encoded neighbours and emit `ZigZag.pack(actual - predicted)`
-//     to the entropy stream. The decoder reverses: read the
-//     predictor IDs, decode each residual, predict from already-
-//     decoded neighbours, recover `actual = predicted + residual`.
+//   • For 3-channel frames we optionally apply RCT (`RCTVariant.ycocgR`)
+//     before prediction. The encoder tries both `.identity` and
+//     `.ycocgR`, scores them by total predictor-best distinct tokens
+//     across all three channels, and writes the winning u(2) variant
+//     ID into the bitstream. For correlated colour input (RGB photos
+//     or RGB-stored grayscale), YCoCg-R reduces two of the three
+//     channels to constant residuals.
+//   • Each channel is then processed separately in row-major order.
+//     For every channel the encoder evaluates each available
+//     predictor against the channel's pixels, picks the one whose
+//     residuals produce the fewest distinct HybridUint tokens (ties
+//     broken by the smaller `Σ|residual|`), and writes that
+//     predictor's u(3) ID into the bitstream. Then for every pixel we
+//     compute `predicted = chosenPredictor(W, N, NW, NE)` using
+//     already-encoded neighbours and emit
+//     `ZigZag.pack(actual - predicted)` to the entropy stream. The
+//     decoder reverses: read the RCT variant + predictor IDs, decode
+//     each residual, predict from already-decoded neighbours, recover
+//     `actual = predicted + residual`, then apply RCT inverse.
 //   • Residuals cluster near zero on natural-looking images, so the
 //     `HybridUint` token alphabet sees mostly small values (which
 //     pack into the literal-token range and consume no extra bits)
@@ -138,14 +149,39 @@ public struct MinimalLosslessCodec {
         w.alignToByte()
         w.write(bits: 16, value: placeholderMarker)
 
-        // 5. Per-channel predictor selection. For each channel we
+        // 5a. Optional RCT (3-channel frames only). We score
+        // .identity against .ycocgR by summing the per-channel
+        // best-predictor distinct-token counts after each transform,
+        // and pick the one with the smaller sum.
+        w.alignToByte()
+        var channelBuffers = (0..<frame.channels).map {
+            buildChannelBuffer(frame, channel: $0)
+        }
+        let rctVariant: RCTVariant
+        if frame.channels == 3 {
+            rctVariant = bestRCTVariant(
+                channelBuffers: channelBuffers, width: frame.width,
+                hybridConfig: HybridUintConfig.defaultConfig
+            )
+            if rctVariant != .identity {
+                var c0 = channelBuffers[0]
+                var c1 = channelBuffers[1]
+                var c2 = channelBuffers[2]
+                RCT.forward(rctVariant, channel0: &c0, channel1: &c1, channel2: &c2)
+                channelBuffers[0] = c0
+                channelBuffers[1] = c1
+                channelBuffers[2] = c2
+            }
+            w.write(bits: 2, value: rctVariant.rawValue)
+        } else {
+            rctVariant = .identity   // not emitted for 1-channel frames
+        }
+
+        // 5b. Per-channel predictor selection. For each channel we
         // build an Int32 buffer of pixel values, score every
         // available predictor against it, and emit the winner's u(3)
         // ID. The decoder reads the IDs in the same channel order.
         w.alignToByte()
-        let channelBuffers = (0..<frame.channels).map {
-            buildChannelBuffer(frame, channel: $0)
-        }
         let channelPredictors: [PredictorID] = channelBuffers.map {
             bestPredictorForChannel(
                 $0, width: frame.width,
@@ -266,7 +302,25 @@ public struct MinimalLosslessCodec {
         }
         let channels = (meta.colorEncoding.colorSpace == .grayscale) ? 1 : 3
 
-        // 5. Per-channel predictor IDs.
+        // 5a. Optional RCT variant — only present in the 3-channel
+        // case. In all other cases the decoder treats the variant as
+        // identity.
+        do { try r.alignToByte() }
+        catch let e as BitstreamError { throw MinimalLosslessError.bitstream(e) }
+        let rctVariant: RCTVariant
+        if channels == 3 {
+            let raw: UInt32
+            do { raw = try r.read(bits: 2) }
+            catch let e as BitstreamError { throw MinimalLosslessError.bitstream(e) }
+            guard let v = RCTVariant(rawValue: raw) else {
+                throw MinimalLosslessError.unsupportedPixelType
+            }
+            rctVariant = v
+        } else {
+            rctVariant = .identity
+        }
+
+        // 5b. Per-channel predictor IDs.
         do { try r.alignToByte() }
         catch let e as BitstreamError { throw MinimalLosslessError.bitstream(e) }
         var channelPredictors = [PredictorID](); channelPredictors.reserveCapacity(channels)
@@ -304,9 +358,31 @@ public struct MinimalLosslessCodec {
             alphaChannels: 0,
             iccProfile: nil
         )
-        writePixelStream(
-            values: values, predictors: channelPredictors, into: &frame
+        // 7. Recover per-channel Int32 buffers from the residual
+        //    stream + per-channel predictors.
+        var channelBuffers = recoverChannelBuffers(
+            values: values, predictors: channelPredictors,
+            channels: channels, width: frame.width, height: frame.height
         )
+        // 8. Inverse RCT if the encoder applied it.
+        if rctVariant != .identity, channels == 3 {
+            var c0 = channelBuffers[0]
+            var c1 = channelBuffers[1]
+            var c2 = channelBuffers[2]
+            RCT.inverse(rctVariant, channel0: &c0, channel1: &c1, channel2: &c2)
+            channelBuffers[0] = c0
+            channelBuffers[1] = c1
+            channelBuffers[2] = c2
+        }
+        // 9. Write channel buffers back into the frame.
+        for c in 0..<channels {
+            for y in 0..<frame.height {
+                for x in 0..<frame.width {
+                    let v = channelBuffers[c][y * frame.width + x]
+                    writeChannelPixel(&frame, x: x, y: y, channel: c, value: v)
+                }
+            }
+        }
         return frame
     }
 
@@ -442,25 +518,84 @@ public struct MinimalLosslessCodec {
         return out
     }
 
-    private static func writePixelStream(
-        values: [UInt32], predictors: [PredictorID], into frame: inout ImageFrame
-    ) {
-        let pixelsPerChannel = frame.width * frame.height
-        for c in 0..<frame.channels {
+    /// Recover per-channel Int32 buffers from the entropy-coded
+    /// residual stream and the per-channel predictor IDs. The
+    /// returned buffers are in the channel order they were encoded
+    /// (i.e. *before* any RCT inverse — the caller applies that).
+    private static func recoverChannelBuffers(
+        values: [UInt32], predictors: [PredictorID],
+        channels: Int, width: Int, height: Int
+    ) -> [[Int32]] {
+        let pixelsPerChannel = width * height
+        var bufs = [[Int32]](repeating: [], count: channels)
+        for c in 0..<channels {
             let predictor = predictors[c].predictor
             var buf = [Int32](repeating: 0, count: pixelsPerChannel)
-            for y in 0..<frame.height {
-                for x in 0..<frame.width {
-                    let i = c * pixelsPerChannel + y * frame.width + x
+            for y in 0..<height {
+                for x in 0..<width {
+                    let i = c * pixelsPerChannel + y * width + x
                     let residual = ZigZag.unpack(values[i])
-                    let nbh = Neighbourhood(at: x, y, in: buf, width: frame.width)
+                    let nbh = Neighbourhood(at: x, y, in: buf, width: width)
                     let pred = predictor.apply(to: nbh)
-                    let actual = pred &+ residual
-                    buf[y * frame.width + x] = actual
-                    writeChannelPixel(&frame, x: x, y: y, channel: c, value: actual)
+                    buf[y * width + x] = pred &+ residual
                 }
             }
+            bufs[c] = buf
         }
+        return bufs
+    }
+
+    /// Pick whichever RCT variant produces fewer total distinct
+    /// HybridUint tokens across all three channels (i.e. the best
+    /// match for the auto-shape selector that will run downstream).
+    /// Operates on copies — does not mutate `channelBuffers`.
+    static func bestRCTVariant(
+        channelBuffers: [[Int32]], width: Int, hybridConfig: HybridUintConfig
+    ) -> RCTVariant {
+        precondition(channelBuffers.count == 3, "RCT scoring requires 3 channels")
+        var bestVariant = RCTVariant.identity
+        var bestScore = Int.max
+        for variant in RCTVariant.allCases {
+            var bufs = channelBuffers
+            if variant != .identity {
+                var c0 = bufs[0]
+                var c1 = bufs[1]
+                var c2 = bufs[2]
+                RCT.forward(variant, channel0: &c0, channel1: &c1, channel2: &c2)
+                bufs[0] = c0
+                bufs[1] = c1
+                bufs[2] = c2
+            }
+            // Sum the per-channel best-predictor distinct-token
+            // counts to score the variant.
+            var totalDistinct = 0
+            for buf in bufs {
+                let id = bestPredictorForChannel(
+                    buf, width: width, hybridConfig: hybridConfig
+                )
+                let predictor = id.predictor
+                var seen = Set<UInt32>()
+                var shadow = [Int32](repeating: 0, count: buf.count)
+                let height = buf.count / width
+                for y in 0..<height {
+                    for x in 0..<width {
+                        let actual = buf[y * width + x]
+                        let nbh = Neighbourhood(at: x, y, in: shadow, width: width)
+                        let pred = predictor.apply(to: nbh)
+                        let residual = actual &- pred
+                        let token = hybridConfig.encode(ZigZag.pack(residual)).token
+                        seen.insert(token)
+                        shadow[y * width + x] = actual
+                    }
+                }
+                totalDistinct &+= seen.count
+            }
+            if totalDistinct < bestScore {
+                bestScore = totalDistinct
+                bestVariant = variant
+            }
+        }
+        return bestVariant
     }
 
     /// Read one channel's pixel as `Int32` (wide enough for any
