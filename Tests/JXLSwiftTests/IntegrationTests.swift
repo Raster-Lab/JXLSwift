@@ -3466,6 +3466,78 @@ extension FoundationTests {
         XCTAssertFalse(MinimalLosslessCodec.isM0(bogus))
     }
 
+    /// Single-row image (height=1) — exercises the case where
+    /// `Neighbourhood` has no `N` neighbour anywhere; everyone falls
+    /// back to the W path.
+    func testM0_SingleRow_RoundTrip() throws {
+        var frame = ImageFrame(
+            width: 32, height: 1, channels: 1,
+            pixelType: .uint8, colorSpace: .grayscale
+        )
+        for x in 0..<32 {
+            frame.setPixel(x: x, y: 0, channel: 0, value: UInt16(x * 8))
+        }
+        let encoded = try MinimalLosslessCodec.encode(frame)
+        let decoded = try MinimalLosslessCodec.decode(encoded)
+        XCTAssertEqual(decoded.data, frame.data)
+    }
+
+    /// Single-column image (width=1) — exercises the case where
+    /// `Neighbourhood` has no `W` neighbour; everyone falls back to N.
+    func testM0_SingleColumn_RoundTrip() throws {
+        var frame = ImageFrame(
+            width: 1, height: 32, channels: 1,
+            pixelType: .uint8, colorSpace: .grayscale
+        )
+        for y in 0..<32 {
+            frame.setPixel(x: 0, y: y, channel: 0, value: UInt16(y * 8))
+        }
+        let encoded = try MinimalLosslessCodec.encode(frame)
+        let decoded = try MinimalLosslessCodec.decode(encoded)
+        XCTAssertEqual(decoded.data, frame.data)
+    }
+
+    /// Pseudo-random noise image — exercises the flat-distribution
+    /// fallback path (>4 distinct tokens, no compressible structure).
+    /// Round-trip must still be exact.
+    func testM0_PureNoise_RoundTrip() throws {
+        var frame = ImageFrame(
+            width: 16, height: 16, channels: 1,
+            pixelType: .uint8, colorSpace: .grayscale
+        )
+        var seed: UInt32 = 0xCAFEBABE
+        for y in 0..<16 {
+            for x in 0..<16 {
+                seed = seed &* 1664525 &+ 1013904223
+                frame.setPixel(x: x, y: y, channel: 0, value: UInt16(seed & 0xFF))
+            }
+        }
+        let encoded = try MinimalLosslessCodec.encode(frame)
+        let decoded = try MinimalLosslessCodec.decode(encoded)
+        XCTAssertEqual(decoded.data, frame.data,
+            "noise round-trip must be exact even when nothing compresses")
+    }
+
+    /// 16-bit grayscale full-dynamic-range — exercises HybridUint
+    /// extra-bits path on values that don't fit the literal-token
+    /// range. Confirms the full pipeline handles 16-bit correctly.
+    func testM0_FullDynamicRange16Bit_RoundTrip() throws {
+        var frame = ImageFrame(
+            width: 16, height: 16, channels: 1,
+            pixelType: .uint16, colorSpace: .grayscale
+        )
+        // Span the full 0..65535 range with a deterministic pattern.
+        for y in 0..<16 {
+            for x in 0..<16 {
+                let v = UInt16((x &+ y) &* 256 &+ x)
+                frame.setPixel(x: x, y: y, channel: 0, value: v)
+            }
+        }
+        let encoded = try MinimalLosslessCodec.encode(frame)
+        let decoded = try MinimalLosslessCodec.decode(encoded)
+        XCTAssertEqual(decoded.data, frame.data)
+    }
+
     /// Float32 isn't supported by M0 — encoder should throw cleanly.
     func testM0_RejectsFloat32() {
         let frame = ImageFrame(
