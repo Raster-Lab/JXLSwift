@@ -98,7 +98,7 @@ JXLSwift is designed to be:
 
 ## Implementation status
 
-Spec sections from ISO/IEC 18181-1 and ISO/IEC 18181-2. Each row is verified by a test (where ✅) or a milestone target (where ⏳). The current test suite is **88 / 88 passing** — every ✅ row has a round-trip test that fails when the row stops working.
+Spec sections from ISO/IEC 18181-1 and ISO/IEC 18181-2. Each row is verified by a test (where ✅) or a milestone target (where ⏳). The current test suite is **94 / 94 passing** — every ✅ row has a round-trip test that fails when the row stops working.
 
 ### Phase F — Foundation ✅
 
@@ -145,6 +145,7 @@ Spec sections from ISO/IEC 18181-1 and ISO/IEC 18181-2. Each row is verified by 
 | Section | Spec ref | Status |
 |---|---|---|
 | **M0 vertical slice** (project-internal) | n/a — placeholder | ✅ — `MinimalLosslessCodec.encode/decode` round-trips a 1×1 grayscale, 8×8 grayscale, and full-16-bit-range 4×4 grayscale frame through the entropy layer end-to-end. Buffer layout uses signature + SizeHeader + ImageMetadata + 'M0' marker + `SimpleEntropyStream`. **Not** a JXL-spec-compliant file — the real frame header (§C.8.1) is the next milestone. |
+| Frame header | §C.8.1 | ✅ all_default path; partial non-default path | `FrameHeader` covers `all_default=true` (single bit, **provably spec-correct**). Non-default path serialises frame_type, encoding, flags, group_size_shift, is_last, have_crop with project-internal placeholder layout — round-trips through our own encoder/decoder but is **not byte-for-byte spec compliant**: real spec uses `U64()` for flags, has do_YCbCr/upsampling/ec_upsampling/blending-info/animation/name/restoration-filter fields not yet modelled. Hand-derived bit pattern verifies all_default=true → `0x01`; matrix sweep across every `(frameType, encoding)` pair round-trips. |
 | Channel grouping & sub-bitstream | §C.7.2 | ⏳ |
 | Modular tree (MA-tree) | §C.7.4 | ⏳ |
 | Predictors (W, N, NW, MED, …) | §C.7.5 | ⏳ |
@@ -196,7 +197,7 @@ These are added once a corresponding scalar Swift path is correct. The scalar pa
 
 | Item | Status |
 |---|---|
-| Foundation tests (88) | ✅ |
+| Foundation tests (94) | ✅ |
 | Conformance test vectors (jxl-conformance repo) | ⏳ harness exists; vectors not wired up |
 | Cross-codec round-trip (encode → libjxl `djxl` decode) | ⏳ requires Phase E4-6 + M at minimum |
 | Cross-codec round-trip (libjxl `cjxl` → JXLDecoder) | ⏳ requires Phase E4-6 + M at minimum |

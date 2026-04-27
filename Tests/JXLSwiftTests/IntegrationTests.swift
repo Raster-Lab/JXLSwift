@@ -1476,6 +1476,120 @@ final class FoundationTests: XCTestCase {
 
 }
 
+// MARK: - FrameHeader (§C.8.1)
+
+extension FoundationTests {
+
+    /// Hand-derived: `all_default = true` is a single bit (1).
+    /// LSB-first: bit 0 = 1 → byte = 0x01.
+    func testFrameHeader_HandDerived_AllDefault() throws {
+        var w = BitWriter()
+        try FrameHeader.default.write(to: &w)
+        let bytes = [UInt8](w.finishToData())
+        XCTAssertEqual(bytes, [0x01],
+            "all_default=true should be a single 1 bit → 0x01")
+    }
+
+    /// Round-trip the all_default=true case. Decoder reads the 1 bit
+    /// and reconstructs a FrameHeader equal to `.default`.
+    func testFrameHeader_RoundTrip_AllDefault() throws {
+        var w = BitWriter()
+        try FrameHeader.default.write(to: &w)
+        var r = BitReader(w.finishToData())
+        let parsed = try FrameHeader.read(from: &r)
+        XCTAssertTrue(parsed.allDefault)
+        XCTAssertEqual(parsed.frameType, .regular)
+        XCTAssertEqual(parsed.encoding, .varDCT)
+        XCTAssertEqual(parsed.flags, 0)
+        XCTAssertTrue(parsed.isLast)
+        XCTAssertNil(parsed.frameSize)
+    }
+
+    /// Round-trip the "single-frame modular lossless" preset — the
+    /// shape we'll use when MinimalLosslessCodec migrates to a real
+    /// FrameHeader.
+    func testFrameHeader_RoundTrip_SingleFrameModularLossless() throws {
+        let cfg = FrameHeader.singleFrameModularLossless()
+        var w = BitWriter()
+        try cfg.write(to: &w)
+        var r = BitReader(w.finishToData())
+        let parsed = try FrameHeader.read(from: &r)
+        XCTAssertFalse(parsed.allDefault)
+        XCTAssertEqual(parsed.frameType, .regular)
+        XCTAssertEqual(parsed.encoding, .modular)
+        XCTAssertEqual(parsed.flags, 0)
+        XCTAssertEqual(parsed.groupSizeShift, 1)
+        XCTAssertTrue(parsed.isLast)
+        XCTAssertNil(parsed.frameSize)
+    }
+
+    /// Round-trip a header with an explicit (cropped) frame size.
+    /// Confirms the have_crop=true branch routes through SizeHeader
+    /// correctly.
+    func testFrameHeader_RoundTrip_HaveCrop() throws {
+        let cfg = FrameHeader(
+            allDefault: false,
+            frameType: .regular,
+            encoding: .modular,
+            flags: 0,
+            groupSizeShift: 2,
+            isLast: false,
+            frameSize: SizeHeader(xsize: 640, ysize: 480)
+        )
+        var w = BitWriter()
+        try cfg.write(to: &w)
+        var r = BitReader(w.finishToData())
+        let parsed = try FrameHeader.read(from: &r)
+        XCTAssertEqual(parsed.frameType, .regular)
+        XCTAssertEqual(parsed.encoding, .modular)
+        XCTAssertEqual(parsed.groupSizeShift, 2)
+        XCTAssertFalse(parsed.isLast)
+        XCTAssertEqual(parsed.frameSize?.xsize, 640)
+        XCTAssertEqual(parsed.frameSize?.ysize, 480)
+    }
+
+    /// Sweep across each (frameType, encoding) combination to confirm
+    /// the 2-bit / 1-bit selectors decode cleanly.
+    func testFrameHeader_RoundTrip_FrameTypeAndEncodingMatrix() throws {
+        for ft in FrameType.allCases {
+            for enc: FrameEncoding in [.varDCT, .modular] {
+                let cfg = FrameHeader(
+                    allDefault: false,
+                    frameType: ft,
+                    encoding: enc,
+                    flags: 0,
+                    groupSizeShift: 1,
+                    isLast: true,
+                    frameSize: nil
+                )
+                var w = BitWriter()
+                try cfg.write(to: &w)
+                var r = BitReader(w.finishToData())
+                let parsed = try FrameHeader.read(from: &r)
+                XCTAssertEqual(parsed.frameType, ft,
+                    "frameType mismatch for (\(ft), \(enc))")
+                XCTAssertEqual(parsed.encoding, enc,
+                    "encoding mismatch for (\(ft), \(enc))")
+            }
+        }
+    }
+
+    /// Encoder rejects flags above the placeholder u(8) limit.
+    func testFrameHeader_RejectsLargeFlags() {
+        let cfg = FrameHeader(
+            allDefault: false, frameType: .regular, encoding: .modular,
+            flags: 0x100, groupSizeShift: 1, isLast: true, frameSize: nil
+        )
+        var w = BitWriter()
+        XCTAssertThrowsError(try cfg.write(to: &w)) { err in
+            guard let e = err as? FrameHeaderError,
+                  case .unsupportedField = e else {
+                XCTFail("expected unsupportedField, got \(err)"); return
+            }
+        }
+    }
+}
+
 // MARK: - Phase M0 vertical slice — MinimalLosslessCodec
 
 extension FoundationTests {
