@@ -688,6 +688,126 @@ final class FoundationTests: XCTestCase {
         XCTAssertEqual(decoded, stream)
     }
 
+    // MARK: - Phase E3: rANS (§C.6.3)
+
+    /// Distribution sums to exactly tabSize (4096) after normalisation.
+    func testANSDistribution_NormalisesToTabSize() throws {
+        let raw: [UInt32] = [100, 50, 25, 1]
+        let dist = try ANSDistribution(rawFrequencies: raw)
+        XCTAssertEqual(dist.frequencies.reduce(0, +), ANSConstants.tabSize)
+        XCTAssertEqual(dist.alphabetSize, raw.count)
+        // Non-zero raw counts must produce non-zero normalised frequencies.
+        for (i, r) in raw.enumerated() where r > 0 {
+            XCTAssertGreaterThan(dist.frequencies[i], 0,
+                "symbol \(i) had raw count \(r) but normalised to 0")
+        }
+    }
+
+    /// Slot LUT is consistent: every slot maps to a symbol whose
+    /// (cum, cum+freq) range contains the slot.
+    func testANSDistribution_SlotLUTIsConsistent() throws {
+        let dist = try ANSDistribution(rawFrequencies: [10, 30, 20, 5, 15])
+        for slot in 0..<Int(ANSConstants.tabSize) {
+            let symbol = Int(dist.symbol(forSlot: UInt32(slot)))
+            let cum = Int(dist.cumulative[symbol])
+            let freq = Int(dist.frequencies[symbol])
+            XCTAssertGreaterThanOrEqual(slot, cum, "slot \(slot) before cum[\(symbol)]")
+            XCTAssertLessThan(slot, cum + freq, "slot \(slot) past freq[\(symbol)]")
+        }
+    }
+
+    /// Round-trip on a small symbol stream with a uniform distribution.
+    func testRANS_RoundTrip_UniformAlphabet() throws {
+        let dist = try ANSDistribution(rawFrequencies: [UInt32](repeating: 1, count: 8))
+        var enc = ANSEncoder(distribution: dist)
+        let symbols = [0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3]
+        for s in symbols { try enc.write(s) }
+        let bytes = enc.finish()
+
+        var dec = try ANSDecoder(data: bytes, distribution: dist)
+        var decoded: [Int] = []
+        for _ in symbols { decoded.append(try dec.read()) }
+        XCTAssertEqual(decoded, symbols)
+    }
+
+    /// Round-trip on a non-uniform distribution — the case that
+    /// exercises rANS's entropy gains. Many copies of symbol 0,
+    /// fewer of symbols 1–3.
+    func testRANS_RoundTrip_SkewedDistribution() throws {
+        let dist = try ANSDistribution(rawFrequencies: [800, 100, 60, 40])
+        var enc = ANSEncoder(distribution: dist)
+        // 100 symbols heavily biased to 0.
+        var stream: [Int] = []
+        for i in 0..<100 {
+            stream.append(i % 13 == 0 ? 1 : (i % 17 == 0 ? 2 : (i % 23 == 0 ? 3 : 0)))
+        }
+        for s in stream { try enc.write(s) }
+        let bytes = enc.finish()
+
+        var dec = try ANSDecoder(data: bytes, distribution: dist)
+        var decoded: [Int] = []
+        for _ in stream { decoded.append(try dec.read()) }
+        XCTAssertEqual(decoded, stream, "rANS round-trip failed")
+        // Sanity: encoded bytes < raw bytes (which would be 100 symbols
+        // × 1 byte each = 100B; entropy-coded should be shorter even
+        // accounting for the 4-byte final state).
+        XCTAssertLessThan(bytes.count, 100, "rANS didn't compress at all")
+    }
+
+    /// Round-trip on a 256-symbol alphabet (the JXL alphabet limit).
+    func testRANS_RoundTrip_FullAlphabet256() throws {
+        // Mostly-uniform 256-symbol alphabet with one spike.
+        var raw = [UInt32](repeating: 10, count: 256)
+        raw[42] = 500       // hot symbol
+        let dist = try ANSDistribution(rawFrequencies: raw)
+        var enc = ANSEncoder(distribution: dist)
+        var rng = SystemRandomNumberGenerator()
+        var stream: [Int] = []
+        for _ in 0..<200 {
+            // 50 % chance of the hot symbol, otherwise random.
+            stream.append(rng.next() & 1 == 0 ? 42 : Int(rng.next(upperBound: UInt32(256))))
+        }
+        for s in stream { try enc.write(s) }
+        let bytes = enc.finish()
+
+        var dec = try ANSDecoder(data: bytes, distribution: dist)
+        var decoded: [Int] = []
+        for _ in stream { decoded.append(try dec.read()) }
+        XCTAssertEqual(decoded, stream)
+    }
+
+    /// Compression-ratio sanity: a highly skewed distribution should
+    /// compress to roughly H(P) bits/symbol on a long stream.
+    func testRANS_CompressionRatio_HighlySkewed() throws {
+        // 99 % symbol 0, 1 % symbol 1.
+        let dist = try ANSDistribution(rawFrequencies: [4055, 41])
+        var enc = ANSEncoder(distribution: dist)
+        var stream: [Int] = []
+        for i in 0..<1000 { stream.append(i % 100 == 0 ? 1 : 0) }
+        for s in stream { try enc.write(s) }
+        let bytes = enc.finish()
+
+        var dec = try ANSDecoder(data: bytes, distribution: dist)
+        var decoded: [Int] = []
+        for _ in stream { decoded.append(try dec.read()) }
+        XCTAssertEqual(decoded, stream)
+        // Shannon entropy ≈ -p log2(p) - (1-p) log2(1-p) ≈ 0.081 bits/symbol
+        // for p = 0.01. So 1000 symbols ≈ 81 bits ≈ 11 bytes plus 4-byte
+        // final state. Allow generous slack — we just want to confirm
+        // it's much less than 1000 bytes (1 byte per symbol naive).
+        XCTAssertLessThan(bytes.count, 50,
+            "1000 highly-skewed symbols should compress to <50 bytes; got \(bytes.count)")
+    }
+
+    /// Decoder must reject a truncated bitstream.
+    func testRANS_RejectsTruncatedStream() throws {
+        let dist = try ANSDistribution(rawFrequencies: [1, 1])
+        let truncated = Data([0xFF])  // < 4 bytes — can't even read final state
+        XCTAssertThrowsError(try ANSDecoder(data: truncated, distribution: dist)) { err in
+            XCTAssertEqual(err as? ANSError, ANSError.malformedFinalState)
+        }
+    }
+
     // MARK: - DICOM (still works — pure Swift, codec-agnostic)
 
     /// Sanity: the DICOM reader is unchanged by the libjxl removal.

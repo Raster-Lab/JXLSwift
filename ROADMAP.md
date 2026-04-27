@@ -43,7 +43,8 @@ For users who need a working JXL pipeline today, switch to the `libjxl-backend` 
 | HybridUintConfig serialisation (read/write the 3 params) | §C.5.1 | ⏳ deferred until distributions land — config is parsed per-distribution, not standalone |
 | Prefix codes (canonical Huffman) | §C.6.2 | ✅ encode + decode | hand-derived 4-symbol code matches canonical assignment exactly; round-trip across 16-symbol equal-length, mixed-length {1,3,3,3,3}, and 256-symbol streams; rejects oversubscribed and undersubscribed lengths (Kraft); single-symbol degenerate code consumes 0 bits |
 | Prefix-code-table serialisation (the bitstream encoding of the per-symbol lengths array) | §C.6.2.1 | ⏳ |
-| rANS distributions | §C.6.3 | ⏳ |
+| rANS encoder + decoder (32-bit state, 16-bit renorm, tabSize=4096) | §C.6.3 | ✅ encode + decode | round-trip on uniform 8-symbol alphabet, skewed 4-symbol with 100 symbols, full 256-symbol alphabet with hot-symbol bias, 1000-symbol highly-skewed (compresses to <50 bytes vs 1000 raw); ANSDistribution normalises raw counts to exactly tabSize; slot LUT consistency verified across all 4096 slots; truncated-stream rejection |
+| ANS distribution serialisation (the bitstream-level encoding of distributions per §C.6.3.2) | §C.6.3.2 | ⏳ |
 | Histogram clustering | §C.6.4 | ⏳ |
 | LZ77 hybrid | §C.6.5 | ⏳ |
 
