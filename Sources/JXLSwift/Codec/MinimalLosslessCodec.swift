@@ -668,8 +668,10 @@ public struct MinimalLosslessCodec {
                 bestID = id
                 bestDistinct = distinctCount
                 bestSumAbs = sumAbs
-                // Deep copy of the winner's residuals.
-                bestResiduals = residuals
+                // Swap storage pointers so we don't allocate a fresh
+                // copy: `bestResiduals` now points at this iteration's
+                // result; `residuals` becomes scratch for the next pass.
+                swap(&bestResiduals, &residuals)
             }
         }
         return ChannelPredictorChoice(
