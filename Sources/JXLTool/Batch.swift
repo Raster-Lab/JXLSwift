@@ -134,6 +134,11 @@ struct Batch: AsyncParsableCommand {
             ?? Self.defaultMemoryBudgetBytes()
         let budget = MemoryBudget(totalBytes: budgetBytes)
 
+        // Phase A2: graceful SIGINT handling. Tasks already running when
+        // Ctrl-C arrives finish their current file; new work is skipped.
+        Self.cancelled = false
+        Self.installSIGINTHandler(quiet)
+
         if !quiet {
             print("=== JXLSwift Batch ===")
             print("Input:        \(inputURL.path)")
@@ -288,6 +293,33 @@ struct Batch: AsyncParsableCommand {
 
     // MARK: - Concurrent encode
 
+    /// Process-wide flag set by SIGINT handler so in-flight tasks know
+    /// to stop scheduling new work. We use a `nonisolated(unsafe)` Bool
+    /// rather than a true atomic: the race is benign — at worst we
+    /// schedule one extra task before noticing the flag, and we never
+    /// observe undefined behaviour because Bool stores are atomic on
+    /// every platform we ship to.
+    nonisolated(unsafe) static var cancelled: Bool = false
+    nonisolated(unsafe) private static var signalSource: DispatchSourceSignal?
+
+    /// Install a SIGINT handler that flips `cancelled` and prints a hint.
+    /// We use a libdispatch source so the handler runs on a queue, not
+    /// the signal-delivery thread (signal-safety in Swift is brittle).
+    private static func installSIGINTHandler(_ quiet: Bool) {
+        guard signalSource == nil else { return }
+        let src = DispatchSource.makeSignalSource(signal: SIGINT, queue: .global())
+        src.setEventHandler {
+            Self.cancelled = true
+            if !quiet {
+                FileHandle.standardError.write(Data("\nReceived SIGINT — finishing in-flight encodes, then exiting.\n".utf8))
+            }
+        }
+        // Ignore the default SIGINT action while our source is active.
+        signal(SIGINT, SIG_IGN)
+        src.activate()
+        signalSource = src
+    }
+
     /// Async semaphore that gates encode-task dispatch on a byte budget.
     /// Each task must `acquire(bytes:)` before holding any pixel data and
     /// `release(bytes:)` once that data is no longer live. The acquire
@@ -413,7 +445,7 @@ struct Batch: AsyncParsableCommand {
                     print(String(format: "[%4d/%4d] %@ → %@", done, total, rel, tag))
                 }
 
-                if idx < total {
+                if idx < total, !Self.cancelled {
                     let next = inputs[idx]; idx += 1
                     let bytesEstimate = Self.estimateForFile(next, overhead: overhead)
                     group.addTask { [budget] in

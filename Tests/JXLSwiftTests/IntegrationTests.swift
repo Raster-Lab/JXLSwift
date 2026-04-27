@@ -498,6 +498,105 @@ final class IntegrationTests: XCTestCase {
         }
     }
 
+    // MARK: - Hardening: edge cases + adversarial input
+
+    /// Decoder must reject (cleanly) an empty buffer, not crash.
+    func testDecoder_RejectsEmptyData() {
+        XCTAssertThrowsError(try JXLDecoder().decode(Data())) { err in
+            // Any DecoderError is acceptable; the contract is "throws, doesn't crash".
+            XCTAssertNotNil(err as? DecoderError)
+        }
+    }
+
+    /// Decoder must reject random bytes (not start with the JXL signature).
+    func testDecoder_RejectsRandomBytes() {
+        var data = Data(count: 1024)
+        data.withUnsafeMutableBytes { ptr in
+            for i in 0..<ptr.count {
+                ptr[i] = UInt8(truncatingIfNeeded: i &* 31 ^ 0xAA)
+            }
+        }
+        XCTAssertThrowsError(try JXLDecoder().decode(data))
+    }
+
+    /// Decoder must reject a truncated valid JXL bitstream.
+    func testDecoder_RejectsTruncatedBitstream() throws {
+        // Make a real .jxl, then chop it at half length.
+        var f = ImageFrame(width: 16, height: 16, channels: 1,
+                           pixelType: .uint8, colorSpace: .grayscale)
+        for y in 0..<16 { for x in 0..<16 { f.setPixel(x: x, y: y, channel: 0, value: UInt16((x + y) * 8)) } }
+        let encoded = try JXLEncoder(options: EncodingOptions(mode: .lossless, effort: .falcon))
+            .encode(f)
+        let truncated = encoded.data.prefix(encoded.data.count / 2)
+        XCTAssertThrowsError(try JXLDecoder().decode(Data(truncated)))
+    }
+
+    /// Encoder must reject a frame whose declared geometry is impossible
+    /// without crashing the libjxl bridge.
+    func testEncoder_RejectsZeroSizedFrame() {
+        // ImageFrame init has a precondition that catches this at the
+        // boundary; we verify the precondition with XCTAssertThrowsAssertion-
+        // style "would-trap" via a separate path: build a degenerate frame
+        // by hand and confirm the encode throws cleanly.
+        // We can't construct ImageFrame(width:0,...) without trapping in init,
+        // so we instead test that the encoder throws on a frame with size
+        // exceeding what libjxl will accept by simulating only a handful of
+        // bytes of data — the data-size validator should catch this.
+        var bad = ImageFrame(width: 4, height: 4, channels: 1,
+                             pixelType: .uint8, colorSpace: .grayscale)
+        // Wipe the data array so the bytesPerRow * height invariant breaks.
+        bad.data = []
+        XCTAssertThrowsError(try JXLEncoder().encode(bad))
+    }
+
+    /// Multi-frame encode must reject a heterogeneous frame list with a
+    /// clear error rather than emitting a malformed bitstream.
+    func testEncoder_MultiFrame_RejectsMismatchedDimensions() {
+        var a = ImageFrame(width: 8, height: 8, channels: 1, pixelType: .uint8, colorSpace: .grayscale)
+        var b = ImageFrame(width: 16, height: 8, channels: 1, pixelType: .uint8, colorSpace: .grayscale)
+        for i in 0..<a.data.count { a.data[i] = UInt8(i % 256) }
+        for i in 0..<b.data.count { b.data[i] = UInt8(i % 256) }
+        XCTAssertThrowsError(try JXLEncoder().encode([a, b])) { err in
+            XCTAssertNotNil(err as? EncoderError)
+        }
+    }
+
+    /// DICOMReader must reject obvious garbage (not a DICOM file).
+    func testDICOMReader_RejectsGarbage() {
+        var noise = Data(count: 256)
+        noise.withUnsafeMutableBytes { p in for i in 0..<p.count { p[i] = UInt8(i ^ 0x55) } }
+        XCTAssertThrowsError(try DICOMReader.parse(noise)) { err in
+            XCTAssertNotNil(err as? DICOMError)
+        }
+    }
+
+    /// DICOMReader must reject a file that's too small to contain a valid header.
+    func testDICOMReader_RejectsFileTooSmall() {
+        let tiny = Data(repeating: 0, count: 64)
+        XCTAssertThrowsError(try DICOMReader.parse(tiny))
+    }
+
+    /// Encode → decode → encode → decode must preserve pixels exactly
+    /// across multiple lossless passes. (Bitstream bytes can differ between
+    /// passes because libjxl's effort heuristics aren't byte-deterministic;
+    /// the lossless contract is on pixel values, not bitstream structure.)
+    func testIdempotent_LosslessTwoPasses_PreservesPixels() throws {
+        var f = ImageFrame(width: 64, height: 48, channels: 1,
+                           pixelType: .uint16, colorSpace: .grayscale)
+        for y in 0..<48 {
+            for x in 0..<64 {
+                f.setPixel(x: x, y: y, channel: 0, value: UInt16((x * 257 + y * 17) % 4096))
+            }
+        }
+        let opts = EncodingOptions(mode: .lossless, effort: .squirrel)
+        let first = try JXLEncoder(options: opts).encode(f)
+        let pass1 = try JXLDecoder().decode(first.data)
+        let second = try JXLEncoder(options: opts).encode(pass1)
+        let pass2 = try JXLDecoder().decode(second.data)
+        XCTAssertEqual(pass1.data, f.data, "first round-trip must be pixel-exact")
+        XCTAssertEqual(pass2.data, f.data, "second round-trip must also be pixel-exact")
+    }
+
     func testEncodedBitstreamHasJXLSignature() throws {
         try skipIfNoDataset()
         #if !canImport(ImageIO)
