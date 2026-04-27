@@ -54,6 +54,28 @@ swift test  -c release           # 121 tests (foundation + headers + entropy pri
 
 Requires Swift 6.2+ on macOS 13+. **No external dependencies.** (`swift-argument-parser` for the CLI is the only Swift-package dep.)
 
+### M0 placeholder codec — exercise the pixel pipeline today
+
+`encode-m0` / `decode-m0` round-trip 8/16-bit grayscale and RGB images through the **project-internal M0 placeholder format** (`MinimalLosslessCodec`). Reads/writes binary PNM (PGM for grayscale, PPM for RGB) so any tool that handles PNM can feed pixels in:
+
+```bash
+# turn a PNG into a PGM, encode through M0, decode back, compare
+convert input.png input.pgm
+.build/release/jxl-tool encode-m0 -i input.pgm -o out.m0
+.build/release/jxl-tool decode-m0 -i out.m0   -o out.pgm
+diff -q input.pgm out.pgm    # round-trip is pixel-exact
+```
+
+Sample compression ratios (32×32 synthetic data):
+
+| Source | Raw size | M0 size | Ratio |
+|---|---|---|---|
+| 8-bit grayscale smooth gradient    | 1024 B | ~80 B | 8% |
+| 16-bit grayscale large-step gradient | 2048 B | 1300 B | 63% |
+| 8-bit correlated RGB (R≈G≈B)        | 3072 B | ~540 B | 18% |
+
+The pipeline is `optional RCT (3-channel) → per-channel predictor selection → ZigZag-packed residuals → auto-selected distribution shape → SimpleEntropyStream`. **Output is NOT a JPEG XL file** — it has a 'M0' marker so a future spec-compliant decoder rejects it cleanly. The real codec (`encode` / `decode`) still throws `.notImplemented`.
+
 ## What works today
 
 ```swift
