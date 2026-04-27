@@ -42,6 +42,9 @@ Followed by:
 | `f2207ca` | Phase E1: HybridUint encoding (§C.5) |
 | `71aadae` | Phase E2: Prefix codes (canonical Huffman) — §C.6.2 |
 | `34322db` | Phase E3: rANS encoder + decoder (§C.6.3) |
+| `085cd8d` | Phase E milestone: entropy-primitive layer complete (docs) |
+| `ded7da6` | Reconcile codebase to project-summary scope (DICOMReader → legacy, libjxl-backend reframed as historical) |
+| `e9fc0ee` | Phase E4a-simple: simple prefix-code-table bitstream format (§C.6.2.1) |
 
 ### Branches and tags preserved
 
@@ -116,9 +119,9 @@ The reason I stopped at the primitives boundary: E4 onwards benefits substantial
 
 ## What "next" looks like for the next contributor
 
-The primitives are landed. The remaining road, in order:
+The primitives are landed. **Phase E4a-simple is also now committed** (commit e9fc0ee — 1-to-4-symbol prefix-code shortcut format). The remaining road, in order:
 
-1. **Phase E4a — Prefix-code-table serialisation (§C.6.2.1)**: bit-level encoding of the lengths array. Two formats: "simple" (1–4 fixed-length symbols) and "complex" (lengths encoded by a sub-prefix-code over symbols 0…18, with 7 of those being the literal lengths and the others being run-length codes). ~150 lines.
+1. **Phase E4a-complex — Complex prefix-code-table serialisation (§C.6.2.1 complex branch)**: when there are 5+ symbols or non-trivial codeword lengths, the spec uses a meta-Huffman over symbols 0…18 to encode the lengths array. Symbols 0…15 are literal lengths; symbol 16 means "repeat previous non-zero length 3 + read(2) times", symbol 17 is "zero-run 3 + read(3)", symbol 18 is "long zero-run". Roughly 150–200 lines, but the run-length semantics need careful spec-text alignment. *Strongly recommend libjxl byte-for-byte cross-validation before declaring done.*
 
 2. **Phase E4b — rANS distribution serialisation (§C.6.3.2)**: bit-level encoding of per-symbol frequencies, with shortcut modes for "trivial" (uniform) and "constant" (single-symbol) distributions. ~100 lines.
 
