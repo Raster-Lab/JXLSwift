@@ -625,6 +625,7 @@ public struct MinimalLosslessCodec {
         _ buf: [Int32], width: Int, hybridConfig: HybridUintConfig
     ) -> ChannelPredictorChoice {
         let height = buf.count / width
+        let alphabetSize = hybridConfig.maxToken + 1
         var bestID: PredictorID = .gradient
         var bestDistinct = Int.max
         var bestSumAbs: Int64 = .max
@@ -633,15 +634,18 @@ public struct MinimalLosslessCodec {
         // Reusable scratch buffers across predictor passes.
         var residuals = [UInt32](repeating: 0, count: buf.count)
         var shadow = [Int32](repeating: 0, count: buf.count)
+        // [Bool] flag-array for "have we seen this token yet". Much
+        // faster than `Set<UInt32>.insert` for the small (=128)
+        // alphabet our HybridUint produces.
+        var seen = [Bool](repeating: false, count: alphabetSize)
 
         for id in PredictorID.allCases {
             let predictor = id.predictor
-            var seen = Set<UInt32>()
+            var distinctCount = 0
             var sumAbs: Int64 = 0
-            // Shadow buffer of already-"emitted" pixels (= the
-            // channel's actuals) so each prediction sees the same
-            // neighbourhood the real encoder/decoder will see.
+            // Reset both scratch buffers in-place.
             for i in 0..<shadow.count { shadow[i] = 0 }
+            for i in 0..<seen.count   { seen[i]   = false }
             for y in 0..<height {
                 for x in 0..<width {
                     let actual = buf[y * width + x]
@@ -650,16 +654,19 @@ public struct MinimalLosslessCodec {
                     let residual = actual &- pred
                     let zig = ZigZag.pack(residual)
                     residuals[y * width + x] = zig
-                    let token = hybridConfig.encode(zig).token
-                    seen.insert(token)
+                    let token = Int(hybridConfig.encode(zig).token)
+                    if !seen[token] {
+                        seen[token] = true
+                        distinctCount &+= 1
+                    }
                     sumAbs &+= Int64(residual < 0 ? -residual : residual)
                     shadow[y * width + x] = actual
                 }
             }
-            if seen.count < bestDistinct ||
-               (seen.count == bestDistinct && sumAbs < bestSumAbs) {
+            if distinctCount < bestDistinct ||
+               (distinctCount == bestDistinct && sumAbs < bestSumAbs) {
                 bestID = id
-                bestDistinct = seen.count
+                bestDistinct = distinctCount
                 bestSumAbs = sumAbs
                 // Deep copy of the winner's residuals.
                 bestResiduals = residuals
