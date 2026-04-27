@@ -98,7 +98,7 @@ JXLSwift is designed to be:
 
 ## Implementation status
 
-Spec sections from ISO/IEC 18181-1 and ISO/IEC 18181-2. Each row is verified by a test (where ✅) or a milestone target (where ⏳). The current test suite is **71 / 71 passing** — every ✅ row has a round-trip test that fails when the row stops working.
+Spec sections from ISO/IEC 18181-1 and ISO/IEC 18181-2. Each row is verified by a test (where ✅) or a milestone target (where ⏳). The current test suite is **88 / 88 passing** — every ✅ row has a round-trip test that fails when the row stops working.
 
 ### Phase F — Foundation ✅
 
@@ -137,13 +137,14 @@ Spec sections from ISO/IEC 18181-1 and ISO/IEC 18181-2. Each row is verified by 
 | rANS encoder + decoder | §C.6.3 | ✅ | 32-bit state, 16-bit renorm, tabSize = 4096; round-trip on uniform/skewed/full-256/highly-skewed alphabets; 1000 highly-skewed symbols compress to <50 bytes |
 | ANS distribution serialisation | §C.6.3.2 | ✅ simple + flat shortcuts | constant (1-symbol), simple (1–4 symbols with predefined splits `[tab]`, `[tab/2]×2`, `[tab/4, tab/4, tab/2]`, `[tab/4]×4`), and flat (uniform with first `tab % alphabet` symbols absorbing remainder); hand-derived bit pattern (constant sym=3 alphabet=4 → 0x19); end-to-end test that serialises a distribution, deserialises it, and uses the decoded distribution to round-trip an rANS symbol stream. **Full per-symbol-frequency mode is not yet implemented** — throws `.fullDistributionNotImplemented` on the corresponding bit pattern. |
 | Single-context entropy stream | integration | ✅ | `SimpleEntropyStream` wires HybridUint + HybridUintConfig serialisation + ANSDistribution serialisation + rANS into one round-trip path. Layout: header (alphabet, HybridUintConfig, ANSDistribution, num_values, extra-bits length) → byte-aligned extra-bits stream → rANS bytes consume the tail. Round-trip verified on mixed-magnitude streams (values up to 1 000 000), all-zero streams via the simple [tab] shortcut, empty streams, and truncation rejection. |
-| Histogram clustering | §C.6.4 | ⏳ |  |
-| LZ77 hybrid | §C.6.5 | ⏳ |  |
+| Histogram clustering | §C.6.4 | ✅ simple-bits-per-entry path | trivial cases (single context, single cluster); simple path covering num_clusters ∈ {1, 2, 4, 8} via `bits_per_entry` u(2); 7 round-trip tests including hand-derived 3-byte pattern for the 4-cluster map [0,1,2,3]. **Full entropy-coded path with inverse-MTF transform is not yet implemented** (caller gets `.fullPathNotImplemented`). |
+| LZ77 hybrid | §C.6.5 | ✅ header only | `LZ77Config` round-trips the disabled (1-bit) and enabled (`min_symbol`, `min_length`, distance `HybridUintConfig`) bitstream layouts; 4 tests across logAlpha + parameter sweep. **Caveat:** `min_symbol`/`min_length` use placeholder u(16) — the real spec uses U32() distributions. **Back-reference decoding logic** (token ≥ min_symbol → length+distance copy) is not yet implemented. |
 
 ### Phase M — Modular (lossless) sub-codec
 
 | Section | Spec ref | Status |
 |---|---|---|
+| **M0 vertical slice** (project-internal) | n/a — placeholder | ✅ — `MinimalLosslessCodec.encode/decode` round-trips a 1×1 grayscale, 8×8 grayscale, and full-16-bit-range 4×4 grayscale frame through the entropy layer end-to-end. Buffer layout uses signature + SizeHeader + ImageMetadata + 'M0' marker + `SimpleEntropyStream`. **Not** a JXL-spec-compliant file — the real frame header (§C.8.1) is the next milestone. |
 | Channel grouping & sub-bitstream | §C.7.2 | ⏳ |
 | Modular tree (MA-tree) | §C.7.4 | ⏳ |
 | Predictors (W, N, NW, MED, …) | §C.7.5 | ⏳ |
@@ -195,7 +196,7 @@ These are added once a corresponding scalar Swift path is correct. The scalar pa
 
 | Item | Status |
 |---|---|
-| Foundation tests (71) | ✅ |
+| Foundation tests (88) | ✅ |
 | Conformance test vectors (jxl-conformance repo) | ⏳ harness exists; vectors not wired up |
 | Cross-codec round-trip (encode → libjxl `djxl` decode) | ⏳ requires Phase E4-6 + M at minimum |
 | Cross-codec round-trip (libjxl `cjxl` → JXLDecoder) | ⏳ requires Phase E4-6 + M at minimum |

@@ -1476,6 +1476,152 @@ final class FoundationTests: XCTestCase {
 
 }
 
+// MARK: - Phase M0 vertical slice — MinimalLosslessCodec
+
+extension FoundationTests {
+
+    /// The headline M0 test: a 1×1 grayscale lossless frame round-trips
+    /// through `MinimalLosslessCodec.encode → decode` to the same pixel.
+    /// This is the "vertical slice" milestone — every layer of the
+    /// codec (bitstream, container, ImageMetadata, HybridUint, rANS,
+    /// distribution serialisation, SimpleEntropyStream) is exercised.
+    func testM0_OnePixelGrayscaleLossless_RoundTrip() throws {
+        var frame = ImageFrame(
+            width: 1, height: 1, channels: 1,
+            pixelType: .uint8, colorSpace: .grayscale
+        )
+        frame.setPixel(x: 0, y: 0, channel: 0, value: 137)
+        let encoded = try MinimalLosslessCodec.encode(frame)
+        let decoded = try MinimalLosslessCodec.decode(encoded)
+        XCTAssertEqual(decoded.width, 1)
+        XCTAssertEqual(decoded.height, 1)
+        XCTAssertEqual(decoded.channels, 1)
+        XCTAssertEqual(decoded.pixelType, .uint8)
+        XCTAssertEqual(decoded.getPixel(x: 0, y: 0, channel: 0), 137,
+            "M0 single-pixel value lost in round-trip")
+    }
+
+    /// Wider grayscale image — exercises the SimpleEntropyStream over
+    /// a longer pixel sequence and confirms row-major channel-
+    /// interleaved layout is preserved.
+    func testM0_8x8GrayscaleLossless_RoundTrip() throws {
+        var frame = ImageFrame(
+            width: 8, height: 8, channels: 1,
+            pixelType: .uint8, colorSpace: .grayscale
+        )
+        // Fill with a deterministic pattern so we can compare byte-for-byte.
+        for y in 0..<8 {
+            for x in 0..<8 {
+                let v = UInt16((y * 16 + x) & 0xFF)
+                frame.setPixel(x: x, y: y, channel: 0, value: v)
+            }
+        }
+        let encoded = try MinimalLosslessCodec.encode(frame)
+        let decoded = try MinimalLosslessCodec.decode(encoded)
+        XCTAssertEqual(decoded.data, frame.data, "8×8 grayscale pixels lost in round-trip")
+    }
+
+    /// Full 16-bit-range uint16 grayscale. Because pixel values are
+    /// run through the HybridUint layer first (token alphabet only 128),
+    /// any 0..65535 value flows through the same entropy path. Confirms
+    /// the high-byte/low-byte path round-trips for the medical-imaging
+    /// case.
+    func testM0_16BitGrayscaleLossless_RoundTrip() throws {
+        var frame = ImageFrame(
+            width: 4, height: 4, channels: 1,
+            pixelType: .uint16, colorSpace: .grayscale
+        )
+        for y in 0..<4 {
+            for x in 0..<4 {
+                // Values 0..60 000 — full 16-bit range.
+                let v = UInt16((y * 4 + x) * 4000)
+                frame.setPixel(x: x, y: y, channel: 0, value: v)
+            }
+        }
+        let encoded = try MinimalLosslessCodec.encode(frame)
+        let decoded = try MinimalLosslessCodec.decode(encoded)
+        XCTAssertEqual(decoded.data, frame.data,
+            "uint16 grayscale (full 16-bit range) pixels lost in round-trip")
+    }
+
+    /// The placeholder marker `0x4D30` ('M0') must be present at the
+    /// expected position so a future spec-compliant decoder knows to
+    /// reject the buffer rather than silently treat it as a real
+    /// codestream.
+    func testM0_PlaceholderMarker_Present() throws {
+        var frame = ImageFrame(
+            width: 1, height: 1, channels: 1,
+            pixelType: .uint8, colorSpace: .grayscale
+        )
+        frame.setPixel(x: 0, y: 0, channel: 0, value: 42)
+        let encoded = try MinimalLosslessCodec.encode(frame)
+        // Search for the marker bytes — they appear after the
+        // signature, SizeHeader, and ImageMetadata, so we don't know
+        // the exact offset, but we know they're somewhere early.
+        let bytes = [UInt8](encoded)
+        var found = false
+        for i in 0..<(bytes.count - 1) {
+            if bytes[i] == 0x30 && bytes[i + 1] == 0x4D {
+                // marker is u(16) LSB-first, so byte i = 0x30, byte i+1 = 0x4D
+                found = true; break
+            }
+            // Or, if not byte-aligned within the marker, it could span
+            // a different bit offset. Allow that variant too.
+            if bytes[i] == 0x4D && bytes[i + 1] == 0x30 {
+                // Less likely given LSB-first encoding, but cover the case.
+                found = true; break
+            }
+        }
+        XCTAssertTrue(found, "placeholder marker not found in encoded buffer")
+    }
+
+    /// Decoder rejects a buffer whose marker is missing/wrong.
+    func testM0_RejectsMissingMarker() throws {
+        var frame = ImageFrame(
+            width: 1, height: 1, channels: 1,
+            pixelType: .uint8, colorSpace: .grayscale
+        )
+        frame.setPixel(x: 0, y: 0, channel: 0, value: 0)
+        var encoded = try MinimalLosslessCodec.encode(frame)
+        // Find the marker bytes and corrupt them. We assume LSB-first
+        // little-endian order: byte = 0x30 first, then 0x4D.
+        for i in 0..<(encoded.count - 1) {
+            if encoded[i] == 0x30 && encoded[i + 1] == 0x4D {
+                encoded[i] = 0x00
+                encoded[i + 1] = 0x00
+                break
+            }
+        }
+        XCTAssertThrowsError(try MinimalLosslessCodec.decode(encoded)) { err in
+            guard let e = err as? MinimalLosslessError else {
+                XCTFail("expected MinimalLosslessError, got \(err)"); return
+            }
+            // Either missingMarker (the marker is now zero) or some
+            // earlier failure — both indicate the corruption was caught.
+            switch e {
+            case .missingMarker, .bitstream:
+                break
+            default:
+                XCTFail("expected missingMarker or bitstream error, got \(e)")
+            }
+        }
+    }
+
+    /// Float32 isn't supported by M0 — encoder should throw cleanly.
+    func testM0_RejectsFloat32() {
+        let frame = ImageFrame(
+            width: 1, height: 1, channels: 1,
+            pixelType: .float32, colorSpace: .grayscale
+        )
+        XCTAssertThrowsError(try MinimalLosslessCodec.encode(frame)) { err in
+            guard let e = err as? MinimalLosslessError,
+                  case .unsupportedPixelType = e else {
+                XCTFail("expected .unsupportedPixelType, got \(err)"); return
+            }
+        }
+    }
+}
+
 // MARK: - LZ77Config (§C.6.5)
 
 extension FoundationTests {

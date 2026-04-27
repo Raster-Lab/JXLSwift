@@ -62,7 +62,7 @@ Documentation/                ARCHITECTURE.md, SESSION-NOTES.md, legacy/
 
 ```bash
 swift build -c release
-swift test  -c release           # 71 tests, ~50 ms
+swift test  -c release           # 88 tests, ~50 ms
 .build/release/jxl-tool --version
 ```
 
@@ -79,9 +79,10 @@ swift test  -c release           # 71 tests, ~50 ms
 | E3 | rANS (§C.6.3) | ✅ |
 | E4a | Prefix-code-table serialisation (§C.6.2.1) — simple + complex | ✅ |
 | E4b | rANS distribution serialisation (§C.6.3.2) — simple + flat shortcuts | ✅ (full mode pending) |
-| E5 | Histogram clustering / context maps (§C.6.4) | ⏳ |
-| E6 | LZ77 hybrid (§C.6.5) | ⏳ |
-| M  | Modular sub-codec (lossless path) | ⏳ |
+| E5 | Histogram clustering / context maps (§C.6.4) — simple-bits-per-entry path | ✅ (full path pending) |
+| E6 | LZ77 hybrid header (§C.6.5) | ✅ header only (back-references pending) |
+| M0 | Project-internal vertical slice via `MinimalLosslessCodec` | ✅ |
+| M  | Modular sub-codec (lossless path, real frame header §C.8.1) | ⏳ |
 | V  | VarDCT (lossy path) | ⏳ |
 | R  | Restoration filters | ⏳ |
 | J  | JPEG-XL ↔ JPEG reversible transcoding (no generational loss) | ⏳ |
