@@ -9,7 +9,7 @@ struct Encode: ParsableCommand {
         abstract: "Encode an image to JPEG XL"
     )
 
-    @Option(name: .shortAndLong, help: "Input image path (PNG/JPEG/TIFF/BMP)")
+    @Option(name: .shortAndLong, help: "Input image path (PNG/JPEG/TIFF/BMP/DICOM .dcm)")
     var input: String
 
     @Option(name: .shortAndLong, help: "Output .jxl path")
@@ -42,9 +42,24 @@ struct Encode: ParsableCommand {
             print("Error: input file not found: \(input)", to: &standardError)
             throw JXLExitCode.invalidArguments
         }
-        guard let frame = loadImageFrame(from: url) else {
-            print("Error: could not decode \(input) (supported: PNG, JPEG, TIFF, BMP)", to: &standardError)
-            throw JXLExitCode.invalidArguments
+
+        let frame: ImageFrame
+        if url.pathExtension.lowercased() == "dcm" {
+            do {
+                frame = try DICOMReader.read(url)
+            } catch {
+                print("Error: DICOM read failed for \(input): \(error.localizedDescription)", to: &standardError)
+                throw JXLExitCode.generalError
+            }
+            if verbose {
+                print("Loaded DICOM \(frame.width)×\(frame.height) (\(frame.pixelType.bitsPerSample)-bit grayscale)")
+            }
+        } else {
+            guard let loaded = loadImageFrame(from: url) else {
+                print("Error: could not decode \(input) (supported: PNG, JPEG, TIFF, BMP, DICOM)", to: &standardError)
+                throw JXLExitCode.invalidArguments
+            }
+            frame = loaded
         }
 
         let mode: CompressionMode

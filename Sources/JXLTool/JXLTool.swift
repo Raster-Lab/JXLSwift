@@ -3,11 +3,11 @@
 import ArgumentParser
 
 @main
-struct JXLTool: ParsableCommand {
+struct JXLTool: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "jxl-tool",
         abstract: "JPEG XL encode/decode/inspect via libjxl-backed JXLSwift.",
-        subcommands: [Encode.self, Decode.self, Info.self]
+        subcommands: [Encode.self, Decode.self, Info.self, Batch.self]
     )
 }
 

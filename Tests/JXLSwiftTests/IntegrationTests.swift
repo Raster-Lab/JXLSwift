@@ -227,6 +227,82 @@ final class IntegrationTests: XCTestCase {
 
     // MARK: - Sanity: encoded bitstream has the JXL signature
 
+    // MARK: - DICOM (specialized: cjxl can't read this format directly)
+
+    private static let dicomSamples: [URL] = locateDICOMSamples()
+
+    private static func locateDICOMSamples() -> [URL] {
+        let dcmRoot = URL(fileURLWithPath: "LocalDatasets/medical-dicom-organized")
+        guard FileManager.default.fileExists(atPath: dcmRoot.path) else { return [] }
+        let modalities = ["dx", "ct", "mg", "mr"]
+        var found: [URL] = []
+        for m in modalities {
+            let dir = dcmRoot.appendingPathComponent(m)
+            if let en = FileManager.default.enumerator(
+                at: dir, includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles, .skipsPackageDescendants]) {
+                for case let u as URL in en where u.pathExtension == "dcm" {
+                    found.append(u)
+                    if found.count >= 6 { return found }
+                }
+            }
+        }
+        return found
+    }
+
+    /// DICOM specialised path: read uncompressed monochrome `.dcm` directly,
+    /// preserving the native bit depth (typically 12 bits stored in 16). This
+    /// is something cjxl cannot do — it only ingests PNG/JPEG/PFM/PPM/PGM.
+    func testDICOMReader_PreservesNativeBitDepth() throws {
+        try XCTSkipIf(IntegrationTests.dicomSamples.isEmpty,
+                      "LocalDatasets/medical-dicom-organized not present — skipping")
+        for url in IntegrationTests.dicomSamples {
+            let frame: ImageFrame
+            do { frame = try DICOMReader.read(url) }
+            catch DICOMError.unsupportedTransferSyntax {
+                // Compressed DICOM — out of scope for the native reader.
+                continue
+            } catch {
+                XCTFail("DICOM read failed for \(url.lastPathComponent): \(error)")
+                continue
+            }
+            XCTAssertGreaterThan(frame.width, 0)
+            XCTAssertGreaterThan(frame.height, 0)
+            XCTAssertEqual(frame.channels, 1, "DICOM is monochrome")
+            XCTAssertEqual(frame.colorSpace, .grayscale)
+            // The whole point of the specialised path: any "12-bit Stored in 16"
+            // input must come back as uint16, not be silently truncated to uint8.
+            // CT/DX/MR/MG in this dataset are all 12-bit.
+            XCTAssertEqual(frame.pixelType, .uint16,
+                "\(url.lastPathComponent): expected uint16 (12-bit DICOM in 16-bit container), got \(frame.pixelType)")
+        }
+    }
+
+    /// End-to-end: read a DICOM, encode lossless, decode back, compare bytes.
+    /// Confirms the encoder accepts uint16 input and the decoder returns
+    /// the same uint16 buffer.
+    func testDICOM_LosslessRoundTrip_16Bit() throws {
+        try XCTSkipIf(IntegrationTests.dicomSamples.isEmpty, "no DICOM samples")
+        guard let url = IntegrationTests.dicomSamples.first(where: {
+            (try? DICOMReader.read($0)) != nil
+        }) else {
+            try XCTSkipIf(true, "no uncompressed DICOM in sample set")
+            return
+        }
+        let original = try DICOMReader.read(url)
+        XCTAssertEqual(original.pixelType, .uint16)
+        let encoded = try JXLEncoder(options: EncodingOptions(
+            mode: .lossless, effort: .squirrel
+        )).encode(original)
+        let decoded = try JXLDecoder().decode(encoded.data)
+        XCTAssertEqual(decoded.width, original.width)
+        XCTAssertEqual(decoded.height, original.height)
+        XCTAssertEqual(decoded.pixelType, .uint16,
+            "decoded output must keep uint16 — bit depth must round-trip")
+        XCTAssertEqual(decoded.data, original.data,
+            "16-bit DICOM lossless round-trip must be pixel-exact")
+    }
+
     func testEncodedBitstreamHasJXLSignature() throws {
         try skipIfNoDataset()
         #if !canImport(ImageIO)

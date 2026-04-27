@@ -97,6 +97,83 @@ func loadImageFrame(from url: URL) -> ImageFrame? {
     }
 }
 
+/// Fallback DICOM loader for transfer syntaxes the native parser can't read
+/// (JPEG / JPEG-LS / JPEG 2000 / RLE-encapsulated pixel data). Pipes the
+/// file through `magick` to a 16-bit PGM stream and parses the PGM header
+/// in-process. Only used when `DICOMReader.read` throws; this path loses
+/// only the bit-depth advantage, not correctness.
+func loadDICOMViaMagick(_ url: URL) -> ImageFrame? {
+    let magick = "/opt/homebrew/bin/magick"
+    guard FileManager.default.isExecutableFile(atPath: magick) else { return nil }
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: magick)
+    p.arguments = [url.path, "-depth", "16", "pgm:-"]
+    let outPipe = Pipe()
+    p.standardOutput = outPipe
+    p.standardError = Pipe()
+    do { try p.run() } catch { return nil }
+    let data = outPipe.fileHandleForReading.readDataToEndOfFile()
+    p.waitUntilExit()
+    guard p.terminationStatus == 0, !data.isEmpty else { return nil }
+    return parsePGM(data)
+}
+
+/// Minimal PGM (P5) parser supporting 8- and 16-bit greymaps.
+private func parsePGM(_ data: Data) -> ImageFrame? {
+    // Header: "P5\nW H\nMAX\n" with optional comment lines starting with '#'.
+    var i = 0
+    func readToken() -> String? {
+        while i < data.count, isWhitespaceOrComment(data[i]) {
+            if data[i] == 0x23 { // '#': skip until newline
+                while i < data.count, data[i] != 0x0A { i += 1 }
+            }
+            i += 1
+        }
+        let start = i
+        while i < data.count, !isWhitespace(data[i]) { i += 1 }
+        guard i > start else { return nil }
+        return String(data: data.subdata(in: start..<i), encoding: .ascii)
+    }
+    guard let magic = readToken(), magic == "P5",
+          let wStr = readToken(), let w = Int(wStr),
+          let hStr = readToken(), let h = Int(hStr),
+          let mStr = readToken(), let maxVal = Int(mStr) else {
+        return nil
+    }
+    // Single whitespace byte separates header from binary.
+    guard i < data.count else { return nil }
+    i += 1
+
+    let isWide = maxVal > 255
+    let bytesPerSample = isWide ? 2 : 1
+    let expected = w * h * bytesPerSample
+    guard data.count - i >= expected else { return nil }
+    let pixelType: PixelType = isWide ? .uint16 : .uint8
+    var frame = ImageFrame(width: w, height: h, channels: 1,
+                           pixelType: pixelType, colorSpace: .grayscale)
+    if isWide {
+        // PGM 16-bit is big-endian; ImageFrame.uint16 stores little-endian.
+        var bytes = [UInt8](repeating: 0, count: expected)
+        for j in 0..<(w * h) {
+            let hi = data[i + j * 2]
+            let lo = data[i + j * 2 + 1]
+            bytes[j * 2] = lo
+            bytes[j * 2 + 1] = hi
+        }
+        frame.data = bytes
+    } else {
+        frame.data = [UInt8](data[i..<(i + expected)])
+    }
+    return frame
+}
+
+private func isWhitespace(_ b: UInt8) -> Bool {
+    b == 0x20 || b == 0x09 || b == 0x0A || b == 0x0D
+}
+private func isWhitespaceOrComment(_ b: UInt8) -> Bool {
+    isWhitespace(b) || b == 0x23
+}
+
 /// Write a decoded `ImageFrame` to a PNG file (8-bit only for now).
 func writePNG(_ frame: ImageFrame, to url: URL) -> Bool {
     guard frame.pixelType == .uint8 else { return false }
