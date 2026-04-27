@@ -905,6 +905,141 @@ final class FoundationTests: XCTestCase {
         }
     }
 
+    // MARK: - Phase E4a-complex: complex prefix-code-table (§C.6.2.1)
+
+    /// Round-trip a 6-symbol code via the complex format. Tests:
+    ///   - hskip = 0 path (all 18 cll values emitted)
+    ///   - meta-Huffman build from cll
+    ///   - decoder consumes literal-length symbols 0..15 correctly
+    func testComplexPrefixCode_RoundTrip_6Symbols() throws {
+        // Build a 6-symbol code with mixed lengths; sum 2^(15-L) must
+        // equal 2^15 for PrefixCodeTable. Use {1, 3, 3, 3, 4, 4}:
+        //   1·16384 + 3·4096 + 2·2048 = 16384+12288+4096 = 32768 ✓
+        let lengths: [UInt8] = [1, 3, 3, 3, 4, 4]
+        var w = BitWriter()
+        try ComplexPrefixCodeFormat.encode(to: &w, lengths: lengths)
+        let data = w.finishToData()
+        var r = BitReader(data)
+        let parsed = try ComplexPrefixCodeFormat.decode(
+            from: &r, alphabetSize: lengths.count
+        )
+        XCTAssertEqual(parsed, lengths)
+
+        // Sanity: parsed lengths feed cleanly into PrefixCodeTable.
+        let table = try PrefixCodeTable(lengths: parsed)
+        XCTAssertEqual(table.usedMaxLength, 4)
+    }
+
+    /// Round-trip a larger alphabet to exercise scaling.
+    func testComplexPrefixCode_RoundTrip_32Symbols() throws {
+        // 32 symbols, all length 5: sum = 32 * 2^10 = 2^15 ✓
+        let lengths = [UInt8](repeating: 5, count: 32)
+        var w = BitWriter()
+        try ComplexPrefixCodeFormat.encode(to: &w, lengths: lengths)
+        var r = BitReader(w.finishToData())
+        let parsed = try ComplexPrefixCodeFormat.decode(
+            from: &r, alphabetSize: 32
+        )
+        XCTAssertEqual(parsed, lengths)
+    }
+
+    /// Round-trip a lengths array with many embedded zeros (absent
+    /// symbols). Our encoder emits each zero as a literal symbol-0
+    /// rather than using the symbol-17 zero-run shortcut, but the
+    /// decoder must accept either; this confirms the no-runs path.
+    func testComplexPrefixCode_RoundTrip_ManyZeros() throws {
+        // 16-entry lengths array with 4 used symbols and 12 zeros.
+        // Used symbols: lengths[3]=2, lengths[7]=2, lengths[10]=2, lengths[15]=2
+        //   sum = 4 * 2^13 = 2^15 ✓
+        var lengths = [UInt8](repeating: 0, count: 16)
+        lengths[3] = 2; lengths[7] = 2; lengths[10] = 2; lengths[15] = 2
+        var w = BitWriter()
+        try ComplexPrefixCodeFormat.encode(to: &w, lengths: lengths)
+        var r = BitReader(w.finishToData())
+        let parsed = try ComplexPrefixCodeFormat.decode(
+            from: &r, alphabetSize: 16
+        )
+        XCTAssertEqual(parsed, lengths)
+    }
+
+    /// Hand-derived test of the symbol-17 (zero-run) decoder path.
+    /// Construct a bitstream BY HAND that uses symbol 17 to express a
+    /// zero-run, decode it, and confirm the expansion produces the
+    /// expected zero-padded lengths array. Bypasses our (non-optimising)
+    /// encoder since it doesn't emit runs.
+    ///
+    /// Layout — write LSB-first:
+    ///
+    ///   hskip = 0          u(2) = 0b00
+    ///   18 × cll values    u(3) each, in order, where:
+    ///     • The cll for symbol 0 (literal length 0) gets the SHORTEST
+    ///       meta-Huffman codeword, so we can emit several symbol-0s
+    ///       cheaply if we need to. We won't here.
+    ///     • The cll for symbol 17 (zero-run) gets length 1.
+    ///     • The cll for symbol 2 (literal length 2) gets length 1.
+    ///     • All other ccls = 0 (those symbols absent from the meta).
+    ///   Then:
+    ///   meta-Huffman over alphabet {2, 17}: both length 1
+    ///     → canonical assignment: symbol 2 → "0", symbol 17 → "1"
+    ///   Lengths-stream:
+    ///     symbol 17 → "1", followed by u(3) extra → e.g. "0 0 0" for
+    ///     count = 3 + 0 = 3 zeros
+    ///     symbol  2 → "0" (literal length 2)
+    ///   So the final lengths array is [0, 0, 0, 2] for alphabetSize=4.
+    ///
+    /// This isolates the symbol-17 decoder path — if it's right, the
+    /// expansion math (`3 + read(3)`) is correct.
+    func testComplexPrefixCode_HandDerived_ZeroRunSymbol17() throws {
+        var w = BitWriter()
+        // hskip = 0
+        w.write(bits: 2, value: 0)
+        // Read order: positions 0..17 map to symbols [1, 2, 3, 4, 0, 5, 17, 6, 16, 7, 8, ..., 15]
+        // We want: cll for symbol 2  = 1
+        //          cll for symbol 17 = 1
+        //          all other cll     = 0
+        // The reader iterates i in hskip..18 reading cll for kCodeLengthCodeOrder[i].
+        // So we emit 18 u(3) values, one per position in that order.
+        let order: [Int] = [1, 2, 3, 4, 0, 5, 17, 6, 16, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+        for i in 0..<18 {
+            let sym = order[i]
+            let cllValue: UInt32 = (sym == 2 || sym == 17) ? 1 : 0
+            w.write(bits: 3, value: cllValue)
+        }
+
+        // Meta-Huffman over alphabet 0..18 with lengths[2]=1, lengths[17]=1,
+        // everything else = 0. Canonical assignment:
+        //   2 (smaller index) → "0"
+        //   17                → "1"
+        // BitWriter is LSB-first within bytes, so when we say "write
+        // codeword 0 with length 1" we just write_bit(0); for "1" we
+        // write_bit(1).
+        //
+        // Stream:
+        //   "1" — symbol 17 (zero-run)
+        //   "000" — extra 3 bits (LSB-first), value = 0 → count = 3
+        //   "0" — symbol 2 (literal length 2)
+        //
+        // After expansion: lengths = [0, 0, 0, 2]
+        //
+        // PrefixCodeTable's encode reverses bits before emitting (so the
+        // top bit of the canonical codeword goes first in the byte). For
+        // a 1-bit codeword, reversal is a no-op.
+        //
+        // We don't go through the table here — we write the bits raw to
+        // construct exactly the stream the spec describes.
+        w.writeBit(true)        // sym 17
+        w.write(bits: 3, value: 0)  // count = 3 + 0 = 3 zeros
+        w.writeBit(false)       // sym 2 (canonical "0")
+
+        let data = w.finishToData()
+        var r = BitReader(data)
+        let lengths = try ComplexPrefixCodeFormat.decode(
+            from: &r, alphabetSize: 4
+        )
+        XCTAssertEqual(lengths, [0, 0, 0, 2],
+            "symbol-17 zero-run expansion failed; got \(lengths)")
+    }
+
     /// `ceilLog2` corner cases — exercised throughout the simple code
     /// header. Hand-verified.
     func testCeilLog2_Corners() {
