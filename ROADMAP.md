@@ -98,7 +98,7 @@ JXLSwift is designed to be:
 
 ## Implementation status
 
-Spec sections from ISO/IEC 18181-1 and ISO/IEC 18181-2. Each row is verified by a test (where ✅) or a milestone target (where ⏳). The current test suite is **129 / 129 passing** — every ✅ row has a round-trip test that fails when the row stops working.
+Spec sections from ISO/IEC 18181-1 and ISO/IEC 18181-2. Each row is verified by a test (where ✅) or a milestone target (where ⏳). The current test suite is **158 / 158 passing** — every ✅ row has a round-trip test that fails when the row stops working. Phase H header parsing is additionally **cross-validated against `cjxl`** dynamically at test time, covering 8/16-bit grayscale, 8/16-bit RGB, RGBA, gray+alpha, float32, and edge cases (1×1, non-multiple-of-8 dimensions).
 
 ### Phase F — Foundation ✅
 
@@ -149,7 +149,7 @@ Spec sections from ISO/IEC 18181-1 and ISO/IEC 18181-2. Each row is verified by 
 | Channel grouping & sub-bitstream | §C.7.2 | ⏳ |
 | Modular tree (MA-tree) | §C.7.4 | ⏳ |
 | Predictors (W, N, NW, MED, gradient) + ZigZag signed pack | §C.7.5 | ✅ — pure-math primitives. `Predictor` enum (zero/west/north/avgWN/gradient/medianWNGradient) with edge-fallback `Neighbourhood` reads; `PredictorID` u(3)-tag enum for serialisation; `ZigZag` enum for signed↔unsigned residual packing. Round-trip tested on hand-computed values, edge cases, full Int32 boundaries, and a predict-encode-decode loop on a 4×4 image. Higher-order predictors (Self, SelectGradient) and per-pixel adaptive selection via the MA-tree (§C.7.4) are pending. |
-| Squeeze (multi-resolution) | §C.7.6 | ⏳ |
+| Squeeze (multi-resolution) | §C.7.6 | ✅ standalone primitive | `Squeeze.forwardHorizontal/inverseHorizontal` for 1D Haar-like decomposition, plus `forward2D/inverse2D` for axis-0/axis-1 application across a 2D buffer. Lossless integer round-trip via `(res + 1) >> 1` ceil division (correct for two's-complement arithmetic shift on negative values). 7 round-trip tests including exhaustive 0..31² pairs, odd-length tail handling, negative residuals, and composed horizontal+vertical (4-quadrant wavelet). M0 integration is a follow-up. |
 | RCT (reversible colour transform) | §C.7.7 | ✅ YCoCg-R | `RCT.forwardPixel/inversePixel` and buffer-level forward/inverse for the YCoCg-R lossless variant. Round-trip tested exhaustively over 0..31³ (32 768 triples) plus full 16-bit-range and negative-value boundaries; decorrelation property verified across 65 bases (Co=1, Cg=2 for `R=base, G=base+1, B=base-1` regardless of base). Wired into MinimalLosslessCodec for 3-channel frames with a u(2) variant ID; encoder picks `.identity` vs `.ycocgR` by total per-channel best-predictor distinct-token count. Caveat: spec defines `rct_type` 0..6 — only YCoCg-R is implemented and the codestream-level numbering / encoding needs spec verification. |
 
 ### Phase V — VarDCT (lossy) sub-codec
@@ -197,7 +197,7 @@ These are added once a corresponding scalar Swift path is correct. The scalar pa
 
 | Item | Status |
 |---|---|
-| Foundation tests (129) | ✅ |
+| Foundation tests (158) | ✅ |
 | Conformance test vectors (jxl-conformance repo) | ⏳ harness exists; vectors not wired up |
 | Cross-codec round-trip (encode → libjxl `djxl` decode) | ⏳ requires Phase E4-6 + M at minimum |
 | Cross-codec round-trip (libjxl `cjxl` → JXLDecoder) | ⏳ requires Phase E4-6 + M at minimum |
