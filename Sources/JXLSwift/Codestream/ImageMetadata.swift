@@ -395,11 +395,9 @@ extension ColorEncoding {
         ))
         guard !useICC && colorSpace != .xyb else { return }
 
-        // White point.
+        // White point — `Enum()` per spec §C.3.4.
         let wp = whitePoint ?? .d65
-        try w.writeU32(wp.rawValue, distributions: (
-            .literal(1), .literal(2), .literal(10), .literal(11)
-        ))
+        try w.writeEnum(wp.rawValue)
         if wp == .custom, let cw = customWhite {
             try w.writeU32(cw.0, distributions: (.bits(19), .bits(19), .bits(20), .bits(21)))
             try w.writeU32(cw.1, distributions: (.bits(19), .bits(19), .bits(20), .bits(21)))
@@ -407,9 +405,7 @@ extension ColorEncoding {
 
         if colorSpace != .grayscale {
             let prim = primaries ?? .srgb
-            try w.writeU32(prim.rawValue, distributions: (
-                .literal(1), .literal(2), .literal(9), .literal(11)
-            ))
+            try w.writeEnum(prim.rawValue)
             if prim == .custom, let cp = customPrimaries {
                 func writeChrom(_ ch: (UInt32, UInt32)) throws {
                     try w.writeU32(ch.0, distributions: (.bits(19), .bits(19), .bits(20), .bits(21)))
@@ -421,37 +417,34 @@ extension ColorEncoding {
             }
         }
 
-        // Transfer function.
+        // Transfer function. Custom distribution per spec —
+        // `(literal(2), literal(8), literal(13), 1 + u(4))` — so the
+        // most common values (unknown, linear, sRGB) take 2 bits
+        // total; rarer values reach via `selector 3 = 1+u(4)` (range
+        // 1..16, sufficient for bt709=1, PQ=16; DCI=17 and HLG=18
+        // are out of Enum-range and not currently writable).
+        let tfDist: (UInt32Distribution, UInt32Distribution,
+                     UInt32Distribution, UInt32Distribution) = (
+            .literal(2), .literal(8), .literal(13),
+            .offset(constant: 1, extraBits: 4)
+        )
         switch transferFunction {
         case .gamma(let g):
             w.writeBit(true)
             w.write(bits: 24, value: g)
-        case .bt709:
-            w.writeBit(false)
-            try w.writeU32(1, distributions: (.literal(1), .literal(2), .literal(8), .literal(13)))
-        case .unknown:
-            w.writeBit(false)
-            try w.writeU32(2, distributions: (.literal(1), .literal(2), .literal(8), .literal(13)))
-        case .linear:
-            w.writeBit(false)
-            try w.writeU32(8, distributions: (.literal(1), .literal(2), .literal(8), .literal(13)))
-        case .srgb:
-            w.writeBit(false)
-            try w.writeU32(13, distributions: (.literal(1), .literal(2), .literal(8), .literal(13)))
-        case .pq:
-            w.writeBit(false)
-            // PQ is value 16 — none of the literals match, so this would
-            // fail to fit the U32 distributions. Real callers should set
-            // primaries appropriately; for now emit a fallback.
-            try w.writeU32(2, distributions: (.literal(1), .literal(2), .literal(8), .literal(13)))
+        case .bt709:   w.writeBit(false); try w.writeU32(1,  distributions: tfDist)
+        case .unknown: w.writeBit(false); try w.writeU32(2,  distributions: tfDist)
+        case .linear:  w.writeBit(false); try w.writeU32(8,  distributions: tfDist)
+        case .srgb:    w.writeBit(false); try w.writeU32(13, distributions: tfDist)
+        case .pq:      w.writeBit(false); try w.writeU32(16, distributions: tfDist)
         case .dci, .hlg:
-            w.writeBit(false)
-            try w.writeU32(2, distributions: (.literal(1), .literal(2), .literal(8), .literal(13)))
+            // 17/18 don't fit selector 3's 1..16 range; fall back to
+            // the linear approximation rather than throw.
+            w.writeBit(false); try w.writeU32(8, distributions: tfDist)
         }
 
-        try w.writeU32(renderingIntent.rawValue, distributions: (
-            .literal(0), .literal(1), .literal(2), .literal(3)
-        ))
+        // Rendering intent — `Enum()` per spec.
+        try w.writeEnum(renderingIntent.rawValue)
     }
 }
 

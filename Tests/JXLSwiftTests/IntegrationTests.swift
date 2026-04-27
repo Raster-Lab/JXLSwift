@@ -199,6 +199,39 @@ final class FoundationTests: XCTestCase {
         )
     }
 
+    /// Diagnostic: print the colour-encoding fields our parser
+    /// extracts from a cjxl-produced grayscale file. Used to track
+    /// down a discrepancy where jxlinfo reports D65 but bit-level
+    /// analysis suggested our parser reads selector=1 → custom.
+    func testDiagnostic_DumpCjxlGrayscaleColorEncoding() throws {
+        guard let cjxl = whichTool("cjxl") else {
+            try XCTSkipIf(true, "cjxl not on PATH")
+            return
+        }
+        let pnm = NSTemporaryDirectory() + "diag.pgm"
+        let jxl = NSTemporaryDirectory() + "diag.jxl"
+        defer {
+            try? FileManager.default.removeItem(atPath: pnm)
+            try? FileManager.default.removeItem(atPath: jxl)
+        }
+        try makeSyntheticPNM(
+            width: 16, height: 16, channels: 1, bitDepth: 8,
+            generator: { x, y, _ in UInt16((x &+ y) & 0xFF) }
+        ).write(to: URL(fileURLWithPath: pnm))
+        let proc = Process()
+        proc.launchPath = cjxl
+        proc.arguments = ["-q", "100", pnm, jxl]
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        try proc.run()
+        proc.waitUntilExit()
+        let data = try Data(contentsOf: URL(fileURLWithPath: jxl))
+        let inspect = try JXLDecoder().inspect(data)
+        if let m = inspect.metadata {
+            print("DIAG cjxl-grayscale: cs=\(m.colorEncoding.colorSpace) wp=\(String(describing: m.colorEncoding.whitePoint)) prim=\(String(describing: m.colorEncoding.primaries)) tf=\(m.colorEncoding.transferFunction) ri=\(m.colorEncoding.renderingIntent)")
+        }
+    }
+
     /// 16-bit grayscale (the medical-imaging shape): cjxl produces a
     /// 16-bit JXL, our parser recovers `bitsPerSample == 16`.
     func testCrossValidate_Cjxl_16bitGrayscale_HeadersMatch() throws {
@@ -254,6 +287,68 @@ final class FoundationTests: XCTestCase {
                 return UInt16(min(65535, (x &+ y) &* 1024))
             }
         )
+    }
+
+    /// 1×1 pixel — boundary case for SizeHeader's small-mode path.
+    func testCrossValidate_Cjxl_1x1_HeadersMatch() throws {
+        try runCjxlCrossValidation(
+            width: 1, height: 1, channels: 1, bitDepth: 8,
+            generator: { _, _, _ in 42 }
+        )
+    }
+
+    /// Non-multiple-of-8 dimensions — exercises SizeHeader's
+    /// large-mode path (small mode only handles multiples of 8 up
+    /// to 256).
+    func testCrossValidate_Cjxl_OddDimensions_HeadersMatch() throws {
+        try runCjxlCrossValidation(
+            width: 371, height: 219, channels: 1, bitDepth: 8,
+            generator: { _, y, _ in UInt16(y & 0xFF) }
+        )
+    }
+
+    /// **Writer-side cross-validation (RGB only)**: an M0 file with
+    /// default-sRGB headers (i.e. our 3-channel path that takes the
+    /// `ColorEncoding.allDefault = 1` shortcut) parses cleanly
+    /// through `jxlinfo`'s header section even though the M0 marker
+    /// isn't valid frame data.
+    ///
+    /// (The grayscale-writer equivalent doesn't yet pass through
+    /// `jxlinfo` reliably — `jxlinfo` errors before printing
+    /// dimensions when the ColorEncoding takes the full-structure
+    /// path, which suggests there's still an unknown bit-layout
+    /// disagreement on the grayscale path. Reader cross-validation
+    /// for the same shape works fine, so the issue is symmetric on
+    /// the writer side. Defer until spec-text is available.)
+    func testCrossValidate_M0WriterHeaders_RGBSpecParseable() throws {
+        guard let jxlinfoPath = whichTool("jxlinfo") else {
+            try XCTSkipIf(true, "jxlinfo not on PATH")
+            return
+        }
+        var frame = ImageFrame(
+            width: 32, height: 32, channels: 3,
+            pixelType: .uint8, colorSpace: .sRGB
+        )
+        for i in 0..<frame.data.count { frame.data[i] = UInt8(i & 0xFF) }
+        let m0 = try MinimalLosslessCodec.encode(frame)
+        let path = NSTemporaryDirectory() + "jxlswift-writer-xv-\(UUID().uuidString).m0"
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        try m0.write(to: URL(fileURLWithPath: path))
+
+        let proc = Process()
+        proc.launchPath = jxlinfoPath
+        proc.arguments = [path]
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = pipe
+        try proc.run()
+        proc.waitUntilExit()
+        let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(),
+                         encoding: .utf8) ?? ""
+
+        XCTAssertTrue(out.contains("32x32"))
+        XCTAssertTrue(out.contains("8-bit"))
+        XCTAssertTrue(out.contains("RGB"))
     }
 
     /// Helper: write a synthetic PNM, run cjxl, then verify our

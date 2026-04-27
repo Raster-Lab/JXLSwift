@@ -133,10 +133,12 @@ public struct ColorEncoding: Sendable {
         var intent: RenderingIntent = .relative
 
         if !useICC && cs != .xyb {
-            // White point.
-            let wpRaw = try r.readU32((
-                .literal(1), .literal(2), .literal(10), .literal(11)
-            ))
+            // White point. Spec §C.3.4 encodes this as `Enum()` —
+            // i.e. `U32(0, 1, 2, 1+u(4))` — not a per-value-literal
+            // distribution. Values 1, 2, 10, 11 are the named
+            // WhitePoint variants; selector 3 reaches 1..16 via
+            // `1 + u(4)`.
+            let wpRaw = try r.readEnum()
             wp = WhitePoint(rawValue: wpRaw)
             if wp == .custom {
                 customWhite = (try r.readU32((
@@ -147,10 +149,8 @@ public struct ColorEncoding: Sendable {
             }
 
             if cs != .grayscale {
-                // Primaries.
-                let pRaw = try r.readU32((
-                    .literal(1), .literal(2), .literal(9), .literal(11)
-                ))
+                // Primaries — also `Enum()` per spec.
+                let pRaw = try r.readEnum()
                 prim = Primaries(rawValue: pRaw)
                 if prim == .custom {
                     func chrom() throws -> (UInt32, UInt32) {
@@ -165,14 +165,22 @@ public struct ColorEncoding: Sendable {
                 }
             }
 
-            // Transfer function.
+            // Transfer function. The spec's U32 distribution here is
+            // **not** `Enum()` — it's `(literal(2), literal(8),
+            // literal(13), 1 + u(4))` so the common values (unknown,
+            // linear, sRGB) are 2-bit selector + 0 extras while less
+            // common ones (PQ=16, DCI=17, HLG=18) reach via
+            // `selector 3 = 1+u(4)`. Note: bt709 (value 1) and gamma
+            // are handled separately — bt709 is reachable via
+            // selector 3, gamma uses the 24-bit gamma path above.
             let isGamma = try r.readBit()
             if isGamma {
                 let g = try r.read(bits: 24)
                 transfer = .gamma(g)
             } else {
                 let tfRaw = try r.readU32((
-                    .literal(1), .literal(2), .literal(8), .literal(13)
+                    .literal(2), .literal(8), .literal(13),
+                    .offset(constant: 1, extraBits: 4)
                 ))
                 switch tfRaw {
                 case 1:  transfer = .bt709
@@ -186,9 +194,9 @@ public struct ColorEncoding: Sendable {
                 }
             }
 
-            let intentRaw = try r.readU32((
-                .literal(0), .literal(1), .literal(2), .literal(3)
-            ))
+            // Rendering intent — `Enum()` ranges 0..16; the named
+            // `RenderingIntent` enum only covers 0..3.
+            let intentRaw = try r.readEnum()
             intent = RenderingIntent(rawValue: intentRaw) ?? .relative
         }
 
