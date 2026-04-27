@@ -1476,6 +1476,183 @@ final class FoundationTests: XCTestCase {
 
 }
 
+// MARK: - Modular predictors + ZigZag (§C.7.5)
+
+extension FoundationTests {
+
+    /// Each predictor formula on a hand-computed neighbourhood.
+    func testPredictor_FormulasAgainstHandValues() {
+        let n = Neighbourhood(w: 100, n: 110, nw: 105, ne: 120)
+
+        XCTAssertEqual(Predictor.zero.apply(to: n), 0)
+        XCTAssertEqual(Predictor.west.apply(to: n), 100)
+        XCTAssertEqual(Predictor.north.apply(to: n), 110)
+        XCTAssertEqual(Predictor.avgWN.apply(to: n), 105,
+                       "(100 + 110) / 2 = 105")
+
+        // gradient = clamp(W + N - NW, min(W,N), max(W,N))
+        //         = clamp(100 + 110 - 105, 100, 110)
+        //         = clamp(105, 100, 110) = 105
+        XCTAssertEqual(Predictor.gradient.apply(to: n), 105)
+
+        // medianWNGradient = median(W, N, W+N-NW) = median(100, 110, 105) = 105
+        XCTAssertEqual(Predictor.medianWNGradient.apply(to: n), 105)
+    }
+
+    /// Predictor edge cases: gradient clamps when `W + N - NW` lies
+    /// outside [min(W,N), max(W,N)] (e.g., diagonal-discontinuity).
+    func testPredictor_GradientClamps() {
+        // W=100, N=200, NW=300 → W+N-NW = 0, but min(W,N)=100, max=200.
+        // gradient should clamp to 100 (the minimum).
+        let n = Neighbourhood(w: 100, n: 200, nw: 300, ne: 0)
+        XCTAssertEqual(Predictor.gradient.apply(to: n), 100,
+                       "gradient should clamp to min(W, N)")
+    }
+
+    /// `Neighbourhood.init(at:in:)` substitutes the spec fall-backs at
+    /// image edges:
+    ///   • Top-left pixel: every neighbour is 0.
+    ///   • Top row (y=0): N=W substitutes (still 0 at top-left).
+    ///   • Left column (x=0): W=N substitutes.
+    func testPredictor_NeighbourhoodEdgeFallbacks() {
+        // 3×3 buffer:
+        //   10 20 30
+        //   40 50 60
+        //   70 80 90
+        let buf: [Int32] = [10, 20, 30, 40, 50, 60, 70, 80, 90]
+        let w = 3
+
+        // (0, 0): no neighbours — all 0.
+        let n00 = Neighbourhood(at: 0, 0, in: buf, width: w)
+        XCTAssertEqual(n00.w, 0)
+        XCTAssertEqual(n00.n, 0)
+        XCTAssertEqual(n00.nw, 0)
+        XCTAssertEqual(n00.ne, 0)
+
+        // (1, 0): only W=10 exists. N falls back to W (10), NW to N (10),
+        // NE to N (10).
+        let n10 = Neighbourhood(at: 1, 0, in: buf, width: w)
+        XCTAssertEqual(n10.w, 10)
+        XCTAssertEqual(n10.n, 10)
+        XCTAssertEqual(n10.nw, 10)
+        XCTAssertEqual(n10.ne, 10)
+
+        // (0, 1): only N=10 exists. W falls back to N (10), NW to W (10),
+        // NE to (1, 0)=20.
+        let n01 = Neighbourhood(at: 0, 1, in: buf, width: w)
+        XCTAssertEqual(n01.w, 10)
+        XCTAssertEqual(n01.n, 10)
+        XCTAssertEqual(n01.nw, 10)
+        XCTAssertEqual(n01.ne, 20)
+
+        // (1, 1): all neighbours present.
+        let n11 = Neighbourhood(at: 1, 1, in: buf, width: w)
+        XCTAssertEqual(n11.w, 40)
+        XCTAssertEqual(n11.n, 20)
+        XCTAssertEqual(n11.nw, 10)
+        XCTAssertEqual(n11.ne, 30)
+
+        // (2, 1): NE doesn't exist (would be x=3). Falls back to N=30.
+        let n21 = Neighbourhood(at: 2, 1, in: buf, width: w)
+        XCTAssertEqual(n21.w, 50)
+        XCTAssertEqual(n21.n, 30)
+        XCTAssertEqual(n21.nw, 20)
+        XCTAssertEqual(n21.ne, 30)
+    }
+
+    /// Predict-encode-decode round-trip on a small image. For each
+    /// pixel: compute residual = actual - predicted; later, decoder
+    /// applies the same predictor to its already-decoded neighbours
+    /// and recovers actual = predicted + residual. This is the
+    /// fundamental Modular invariant.
+    func testPredictor_RoundTrip_OnSmallImage() {
+        // 4×4 grayscale image with a realistic gradient pattern.
+        let original: [Int32] = [
+             10,  20,  30,  40,
+             50,  60,  70,  80,
+             90, 100, 110, 120,
+            130, 140, 150, 160,
+        ]
+        let w = 4
+        let h = 4
+
+        // Encoder: build a parallel buffer of residuals using the
+        // gradient predictor against already-emitted neighbours.
+        var encBuffer = [Int32](repeating: 0, count: original.count)
+        var residuals = [Int32](repeating: 0, count: original.count)
+        for y in 0..<h {
+            for x in 0..<w {
+                let nbh = Neighbourhood(at: x, y, in: encBuffer, width: w)
+                let pred = Predictor.gradient.apply(to: nbh)
+                let actual = original[y * w + x]
+                residuals[y * w + x] = actual &- pred
+                // The encoder commits the actual pixel to its
+                // shadow buffer so the next pixel sees the same
+                // neighbourhood the decoder will see.
+                encBuffer[y * w + x] = actual
+            }
+        }
+
+        // Decoder: walk the residuals, predict from already-decoded
+        // pixels, and recover the original.
+        var decBuffer = [Int32](repeating: 0, count: original.count)
+        for y in 0..<h {
+            for x in 0..<w {
+                let nbh = Neighbourhood(at: x, y, in: decBuffer, width: w)
+                let pred = Predictor.gradient.apply(to: nbh)
+                decBuffer[y * w + x] = pred &+ residuals[y * w + x]
+            }
+        }
+
+        XCTAssertEqual(decBuffer, original,
+            "predictor round-trip failed: residuals didn't recover original pixels")
+    }
+
+    /// ZigZag pack/unpack across hand-computed values that anchor the
+    /// formula. Pattern: 0→0, -1→1, 1→2, -2→3, 2→4, -3→5, 3→6, …
+    func testZigZag_HandValues() {
+        let cases: [(Int32, UInt32)] = [
+            (0,   0),
+            (-1,  1),
+            (1,   2),
+            (-2,  3),
+            (2,   4),
+            (-3,  5),
+            (100, 200),
+            (-100, 199),
+        ]
+        for (signed, packed) in cases {
+            XCTAssertEqual(ZigZag.pack(signed), packed,
+                "pack(\(signed)) should be \(packed)")
+            XCTAssertEqual(ZigZag.unpack(packed), signed,
+                "unpack(\(packed)) should be \(signed)")
+        }
+    }
+
+    /// ZigZag packs small-magnitude values into small-magnitude
+    /// unsigned values — the property the entropy coder relies on.
+    /// Sweep across ±2^15 and confirm the unsigned result fits in
+    /// 16 + 1 bits (one extra for the sign).
+    func testZigZag_SmallValuesProduceSmallUnsigned() {
+        for v in stride(from: Int32(-1024), through: 1024, by: 1) {
+            let packed = ZigZag.pack(v)
+            // |v| ≈ 1024 → packed ≈ 2048. Allow up to 2049 (= 2 * 1024 + 1).
+            XCTAssertLessThanOrEqual(packed, 2049,
+                "ZigZag should produce small unsigned for |v| ≤ 1024 (v=\(v))")
+            XCTAssertEqual(ZigZag.unpack(packed), v)
+        }
+    }
+
+    /// ZigZag handles full-range Int32 boundaries.
+    func testZigZag_RoundTripBoundaries() {
+        for v in [Int32.min, Int32.min &+ 1, -1, 0, 1, Int32.max &- 1, Int32.max] {
+            let packed = ZigZag.pack(v)
+            let unpacked = ZigZag.unpack(packed)
+            XCTAssertEqual(unpacked, v, "ZigZag round-trip failed for \(v)")
+        }
+    }
+}
+
 // MARK: - FrameHeader (§C.8.1)
 
 extension FoundationTests {
