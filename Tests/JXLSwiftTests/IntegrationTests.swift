@@ -220,6 +220,42 @@ final class FoundationTests: XCTestCase {
         )
     }
 
+    /// 16-bit RGB: cjxl-produced 16-bit per-channel RGB exercises
+    /// the full RGB + 16-bit path of our header parser.
+    func testCrossValidate_Cjxl_16bitRGB_HeadersMatch() throws {
+        try runCjxlCrossValidation(
+            width: 16, height: 16, channels: 3, bitDepth: 16,
+            generator: { x, y, c in
+                UInt16(min(65535, ((x &+ y) &* 1024) &+ Int(c) &* 100))
+            }
+        )
+    }
+
+    /// 8-bit RGBA: cjxl-produced 4-channel sRGB+alpha, parsed via
+    /// PAM input. Verifies the parser recognises the alpha extra
+    /// channel.
+    func testCrossValidate_Cjxl_8bitRGBA_HeadersMatch() throws {
+        try runCjxlCrossValidation(
+            width: 16, height: 16, channels: 4, bitDepth: 8,
+            generator: { x, y, c in
+                if c == 3 { return 255 }   // opaque alpha
+                let base = UInt16((x &+ y) & 0xFF)
+                return base &+ UInt16(c) &* 16
+            }
+        )
+    }
+
+    /// 16-bit grayscale + alpha (medical-imaging shape with mask).
+    func testCrossValidate_Cjxl_16bitGrayscaleAlpha_HeadersMatch() throws {
+        try runCjxlCrossValidation(
+            width: 16, height: 16, channels: 2, bitDepth: 16,
+            generator: { x, y, c in
+                if c == 1 { return 65535 }   // opaque alpha
+                return UInt16(min(65535, (x &+ y) &* 1024))
+            }
+        )
+    }
+
     /// Helper: write a synthetic PNM, run cjxl, then verify our
     /// `JXLDecoder.inspect()` extracts the expected fields. Skips if
     /// cjxl isn't installed.
@@ -231,8 +267,18 @@ final class FoundationTests: XCTestCase {
             try XCTSkipIf(true, "cjxl not on PATH")
             return
         }
-        // Build the synthetic PNM.
-        let pnm = NSTemporaryDirectory() + "jxlswift-xv-\(UUID().uuidString).\(channels == 1 ? "pgm" : "ppm")"
+        // Build the synthetic PNM. PGM for 1ch, PPM for 3ch, PAM for
+        // 2ch (gray+alpha) or 4ch (RGBA).
+        let ext: String
+        switch channels {
+        case 1:        ext = "pgm"
+        case 3:        ext = "ppm"
+        case 2, 4:     ext = "pam"
+        default:
+            XCTFail("unsupported channel count \(channels) for PNM generation")
+            return
+        }
+        let pnm = NSTemporaryDirectory() + "jxlswift-xv-\(UUID().uuidString).\(ext)"
         let jxl = NSTemporaryDirectory() + "jxlswift-xv-\(UUID().uuidString).jxl"
         defer {
             try? FileManager.default.removeItem(atPath: pnm)
@@ -275,12 +321,21 @@ final class FoundationTests: XCTestCase {
         XCTAssertFalse(m.bitDepth.floatingPoint,
             "synthetic PNM is integer; floatingPoint should be false")
         // Channel inference: grayscale colour space implies 1
-        // colour channel; non-grayscale implies 3.
-        switch (channels, m.colorEncoding.colorSpace) {
-        case (1, .grayscale): break
-        case (3, _) where m.colorEncoding.colorSpace != .grayscale: break
-        default:
-            XCTFail("colorSpace inference mismatch: channels=\(channels), got colorSpace=\(m.colorEncoding.colorSpace)")
+        // colour channel (2 if alpha-bearing); non-grayscale implies
+        // 3 (4 if alpha-bearing). The alpha channel shows up as an
+        // ExtraChannelInfo entry, so total channels = colour channels
+        // + extras.count.
+        let colorChannels: Int =
+            (m.colorEncoding.colorSpace == .grayscale) ? 1 : 3
+        let totalExpected = colorChannels + m.extraChannels.count
+        XCTAssertEqual(totalExpected, channels,
+            "channel inference mismatch: colorSpace=\(m.colorEncoding.colorSpace) implies \(colorChannels) colour channels + \(m.extraChannels.count) extras = \(totalExpected); expected \(channels)")
+        // For alpha-bearing inputs (channels == 2 or 4), the parser
+        // must report at least one alpha extra channel.
+        if channels == 2 || channels == 4 {
+            let hasAlpha = m.extraChannels.contains(where: { $0.type == .alpha })
+            XCTAssertTrue(hasAlpha,
+                "alpha-bearing input (\(channels)ch) must produce an alpha ExtraChannelInfo")
         }
     }
 
@@ -301,16 +356,40 @@ final class FoundationTests: XCTestCase {
         return path.isEmpty ? nil : path
     }
 
-    /// Build a binary PNM (PGM for 1ch, PPM for 3ch) with the given
-    /// per-pixel generator. The generator returns a sample value in
-    /// the range supported by the bit depth (8 or 16-bit).
+    /// Build a binary PNM (PGM/PPM/PAM) with the given per-pixel
+    /// generator. The generator returns a sample value in the range
+    /// supported by the bit depth (8 or 16-bit).
     private func makeSyntheticPNM(
         width: Int, height: Int, channels: Int, bitDepth: Int,
         generator: (Int, Int, Int) -> UInt16
     ) -> Data {
-        let magic = (channels == 1) ? "P5" : "P6"
         let maxval = (bitDepth == 8) ? 255 : 65535
-        var out = Data("\(magic)\n\(width) \(height)\n\(maxval)\n".utf8)
+        var out = Data()
+        switch channels {
+        case 1:
+            out.append(Data("P5\n\(width) \(height)\n\(maxval)\n".utf8))
+        case 3:
+            out.append(Data("P6\n\(width) \(height)\n\(maxval)\n".utf8))
+        default:
+            // PAM for 2ch (gray+alpha) or 4ch (RGBA).
+            let tupltype: String
+            switch channels {
+            case 2: tupltype = "GRAYSCALE_ALPHA"
+            case 4: tupltype = "RGB_ALPHA"
+            default: tupltype = "UNKNOWN"
+            }
+            let header = """
+                P7
+                WIDTH \(width)
+                HEIGHT \(height)
+                DEPTH \(channels)
+                MAXVAL \(maxval)
+                TUPLTYPE \(tupltype)
+                ENDHDR
+
+                """
+            out.append(Data(header.utf8))
+        }
         for y in 0..<height {
             for x in 0..<width {
                 for c in 0..<channels {
