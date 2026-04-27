@@ -37,9 +37,10 @@ For users who need a working JXL pipeline today, switch to the `libjxl-backend` 
 
 ### Phase E — Entropy coding
 
-| Section | Spec ref | Status |
-|---|---|---|
-| Hybrid uint encoding | §C.5 | ⏳ |
+| Section | Spec ref | Status | Verified by |
+|---|---|---|---|
+| Hybrid uint encoding | §C.5 | ✅ encode + decode | round-trip on every value 0…255 with default config + power-of-two boundary values 1…2³¹ + sweep over (split, msb, lsb) configs + hand-derived spec-formula vectors |
+| HybridUintConfig serialisation (read/write the 3 params) | §C.5.1 | ⏳ deferred until distributions land — config is parsed per-distribution, not standalone |
 | Prefix codes | §C.6.2 | ⏳ |
 | rANS distributions | §C.6.3 | ⏳ |
 | Histogram clustering | §C.6.4 | ⏳ |

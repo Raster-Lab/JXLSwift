@@ -467,6 +467,115 @@ final class FoundationTests: XCTestCase {
         }
     }
 
+    // MARK: - Phase E1: HybridUint encoding (§C.5)
+
+    /// Round-trip every value 0...255 through the default config.
+    /// This is the test that gates Phase E1 correctness — if the
+    /// formulas are off by a single bit, the values won't recover.
+    func testHybridUint_RoundTrip_DefaultConfig() throws {
+        let cfg = HybridUintConfig.defaultConfig
+        for value: UInt32 in 0...255 {
+            let t = cfg.encode(value)
+            var w = BitWriter()
+            w.write(bits: t.extraNBits, value: t.extraBits)
+            let bytes = w.finishToData()
+            var r = BitReader(bytes)
+            let recovered = try cfg.decode(token: t.token, from: &r)
+            XCTAssertEqual(recovered, value, "value \(value): token=\(t.token) extra=\(t.extraBits) (\(t.extraNBits) bits)")
+        }
+    }
+
+    /// Round-trip the boundary values: 0, 2^split-1 (last "literal"),
+    /// 2^split (first "splittable"), powers of two up to 2^31.
+    func testHybridUint_RoundTrip_BoundaryValues() throws {
+        let cfg = HybridUintConfig.defaultConfig
+        var values: [UInt32] = [0, 1, 15, 16, 17, 31, 32, 63, 64, 100, 1023, 1024, 65_535, 65_536]
+        for n in 0..<32 {
+            values.append(UInt32(1) &<< UInt32(n))
+        }
+        values.append(UInt32(0xFFFF_FFFE))   // near max
+        for value in values {
+            let t = cfg.encode(value)
+            var w = BitWriter()
+            w.write(bits: t.extraNBits, value: t.extraBits)
+            var r = BitReader(w.finishToData())
+            let recovered = try cfg.decode(token: t.token, from: &r)
+            XCTAssertEqual(recovered, value, "boundary value \(value)")
+        }
+    }
+
+    /// Sweep across configs to verify the formula generalises beyond the
+    /// default. Tries every combination of (split_exponent, msb, lsb)
+    /// the spec allows for split_exponent ≤ 4.
+    func testHybridUint_RoundTrip_ConfigSweep() throws {
+        for split in 0...4 {
+            for msb in 0...split {
+                for lsb in 0...(split - msb) {
+                    let cfg = HybridUintConfig(splitExponent: split,
+                                                msbInToken: msb,
+                                                lsbInToken: lsb)
+                    // Test a representative value range for each config.
+                    let testValues: [UInt32] = [0, 1, 7, 16, 100, 1000, 100_000, 16_777_215]
+                    for value in testValues {
+                        let t = cfg.encode(value)
+                        var w = BitWriter()
+                        w.write(bits: t.extraNBits, value: t.extraBits)
+                        var r = BitReader(w.finishToData())
+                        let recovered = try cfg.decode(token: t.token, from: &r)
+                        XCTAssertEqual(recovered, value,
+                            "config (split=\(split), msb=\(msb), lsb=\(lsb)) value \(value): " +
+                            "token=\(t.token) extra=\(t.extraBits) nbits=\(t.extraNBits)")
+                    }
+                }
+            }
+        }
+    }
+
+    /// Hand-derived test vectors: for the "raw 4" config (split=4, msb=0,
+    /// lsb=0), verify the encoder produces the exact tokens the spec
+    /// formula predicts. This catches off-by-one errors that round-trip
+    /// alone wouldn't surface (a self-consistent buggy formula would
+    /// pass round-trip but disagree with libjxl).
+    func testHybridUint_HandDerivedVectors_Raw4() {
+        let cfg = HybridUintConfig.raw4    // split=4, msb=0, lsb=0
+        // value < 16 → token == value, no extra bits.
+        XCTAssertEqual(cfg.encode(0).token, 0)
+        XCTAssertEqual(cfg.encode(0).extraNBits, 0)
+        XCTAssertEqual(cfg.encode(15).token, 15)
+        XCTAssertEqual(cfg.encode(15).extraNBits, 0)
+
+        // value == 16: n = 4, m = 0. nMinusSplit = 0.
+        //   token = 16 + (0 << 0) + (0 << 0) + 0 = 16
+        //   extraNBits = 4 - 0 - 0 = 4
+        //   extraBits = 0
+        let v16 = cfg.encode(16)
+        XCTAssertEqual(v16.token, 16)
+        XCTAssertEqual(v16.extraNBits, 4)
+        XCTAssertEqual(v16.extraBits, 0)
+
+        // value == 31: n = 4, m = 15. extraBits = 15, extraNBits = 4, token = 16.
+        let v31 = cfg.encode(31)
+        XCTAssertEqual(v31.token, 16)
+        XCTAssertEqual(v31.extraNBits, 4)
+        XCTAssertEqual(v31.extraBits, 15)
+
+        // value == 32: n = 5, m = 0. nMinusSplit = 1.
+        //   token = 16 + (1 << 0) + 0 + 0 = 17
+        //   extraNBits = 5 - 0 - 0 = 5
+        let v32 = cfg.encode(32)
+        XCTAssertEqual(v32.token, 17)
+        XCTAssertEqual(v32.extraNBits, 5)
+        XCTAssertEqual(v32.extraBits, 0)
+
+        // value == 1024: n = 10, m = 0. nMinusSplit = 6.
+        //   token = 16 + 6 = 22
+        //   extraNBits = 10
+        let v1024 = cfg.encode(1024)
+        XCTAssertEqual(v1024.token, 22)
+        XCTAssertEqual(v1024.extraNBits, 10)
+        XCTAssertEqual(v1024.extraBits, 0)
+    }
+
     // MARK: - DICOM (still works — pure Swift, codec-agnostic)
 
     /// Sanity: the DICOM reader is unchanged by the libjxl removal.
