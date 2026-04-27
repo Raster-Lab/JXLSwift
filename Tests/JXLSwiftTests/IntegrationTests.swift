@@ -808,19 +808,4 @@ final class FoundationTests: XCTestCase {
         }
     }
 
-    // MARK: - DICOM (still works — pure Swift, codec-agnostic)
-
-    /// Sanity: the DICOM reader is unchanged by the libjxl removal.
-    func testDICOMReader_StillReadsRealDICOM() throws {
-        let candidates = [
-            "/Users/raster/Documents/raster/J2KSwift/LocalDatasets/medical-dicom-organized/dx/study_001/instance_000001.dcm"
-        ]
-        guard let path = candidates.first(where: { FileManager.default.fileExists(atPath: $0) }) else {
-            try XCTSkipIf(true, "no LocalDataset DICOM on this machine")
-            return
-        }
-        let frame = try DICOMReader.read(URL(fileURLWithPath: path))
-        XCTAssertEqual(frame.channels, 1)
-        XCTAssertEqual(frame.pixelType, .uint16)
-    }
 }

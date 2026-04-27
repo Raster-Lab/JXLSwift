@@ -1,6 +1,12 @@
 # JXLSwift
 
-A pure-Swift implementation of JPEG XL (ISO/IEC 18181), targeting Swift 6.2 strict concurrency. **No C dependencies, no native libraries.**
+A ground-up, independent implementation of the JPEG XL Image Coding System (ISO/IEC 18181) written in **100% pure Swift 6.2 with strict concurrency**. **No C dependencies, no native libraries, no transitive runtime requirements.**
+
+Primary target: **macOS on Apple Silicon (arm64)**. Modular support for macOS Intel and Linux Intel.
+
+JXLSwift is intended for integration into the **DICOMkit** ecosystem but is fully independent and **not DICOM-aware** — the library is a general-purpose codec usable in any imaging or compression workflow.
+
+See [ROADMAP.md](ROADMAP.md) for the full project summary and design constraints.
 
 ## Status: pre-codec spec layer complete
 
@@ -30,7 +36,7 @@ Each primitive has round-trip tests; the compression-ratio sanity test confirms 
 
 `JXLDecoder.inspect(_:)` parses any spec-compliant `.jxl` and reports container form, box list, dimensions, bit depth, channel count, alpha, animation, and HDR metadata — useful as a JXL info tool today.
 
-`JXLEncoder.encode(_:)` / `JXLDecoder.decode(_:)` throw `.notImplemented` because the codec layer isn't done yet. For a working JXL pipeline switch to the `libjxl-backend` branch.
+`JXLEncoder.encode(_:)` / `JXLDecoder.decode(_:)` throw `.notImplemented` because the codec layer isn't done yet.
 
 See [ROADMAP.md](ROADMAP.md) for the spec-section status grid.
 
@@ -120,31 +126,34 @@ Sources/JXLSwift/Entropy/     HybridUint, PrefixCodeTable, rANS encoder/
 Sources/JXLSwift/Codec/       JXLEncoder / JXLDecoder (currently stubs;
                               JXLDecoder.inspect(_:) IS implemented),
                               ImageFrame, EncodingOptions
-Sources/JXLSwift/Medical/     DICOMReader (pure Swift — unchanged from
-                              earlier rounds, codec-agnostic)
-Sources/JXLTool/              jxl-tool CLI (info works; encode/decode stubbed)
+Sources/JXLTool/              jxl-tool CLI (info works; encode/decode
+                              throw .notImplemented until the codec lands)
 Tests/JXLSwiftTests/          44 tests across foundation, headers, entropy
 ```
+
+JXLSwift is **not DICOM-aware** — DICOM file format / metadata / transfer-syntax handling lives in DICOMkit, not here. JXLSwift accepts and emits raw pixel buffers (`ImageFrame`) at the bit depths medical imaging needs (8/10/12/16-bit, grayscale or RGB).
 
 ## Branches
 
 | Branch | What's there |
 |---|---|
-| `main` | This pure-Swift implementation (foundation only) |
-| `libjxl-backend` | Working libjxl-backed implementation (preserved while pure-Swift catches up) |
-| `pre-rewrite-snapshot` | Original failed pure-Swift attempt (preserved for reference / lessons learned) |
-| Tag `v0.4-libjxl` | Last commit of the libjxl-backed `main` |
+| `main` | Pure-Swift implementation (active development) |
+| `libjxl-backend` | Historical reference only — the libjxl-wrapped implementation that preceded the pure-Swift restart. **Not** a supported runtime path; libjxl is never a dependency, fallback, or required runtime for JXLSwift. |
+| `pre-rewrite-snapshot` | Original failed pure-Swift attempt (preserved for lessons learned) |
+| Tag `v0.4-libjxl` | Snapshot of the libjxl-wrapped `main` |
 
 ## Contributing
 
-The development principles are spelled out in [ROADMAP.md](ROADMAP.md). Pick a phase, write tests against real `cjxl`-produced output as the oracle, submit a PR. Spec-driven only — no shortcuts that would produce non-spec-compliant bitstreams.
+The development principles are spelled out in [ROADMAP.md](ROADMAP.md) and [CLAUDE.md](CLAUDE.md). Pick a phase, write a round-trip test (or, where the spec defines exact bytes, a hand-derived test vector), submit a PR. Spec-driven only — no shortcuts that would produce non-spec-compliant bitstreams.
 
 ## Documentation
 
-- [ROADMAP.md](ROADMAP.md) — phase-by-phase status against ISO/IEC 18181 sections
-- [CHANGELOG.md](CHANGELOG.md) — release notes (libjxl-backed history archived)
-- [Documentation/ARCHITECTURE.md](Documentation/ARCHITECTURE.md) — design overview (currently libjxl-backend; will be updated for pure-Swift as code lands)
-- [Documentation/legacy/](Documentation/legacy/) — pre-rewrite history
+- [ROADMAP.md](ROADMAP.md) — project summary + phase-by-phase status against ISO/IEC 18181 sections
+- [CLAUDE.md](CLAUDE.md) — guidance for AI-assisted contributors
+- [CHANGELOG.md](CHANGELOG.md) — release notes
+- [Documentation/SESSION-NOTES.md](Documentation/SESSION-NOTES.md) — handoff notes for the next contributor
+- [Documentation/ARCHITECTURE.md](Documentation/ARCHITECTURE.md) — design overview (libjxl-backed era; will be updated for pure-Swift as the codec lands)
+- [Documentation/legacy/](Documentation/legacy/) — pre-rewrite history (read-only)
 
 ## Licence
 
