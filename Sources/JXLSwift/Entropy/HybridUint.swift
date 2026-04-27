@@ -130,6 +130,28 @@ extension HybridUintConfig {
         return HybridUintToken(token: token, extraBits: extraBits, extraNBits: max(0, extraN))
     }
 
+    /// Token-only fast path. Returns just the token (drops extra
+    /// bits). Used in encode-time predictor scoring loops where
+    /// only the token alphabet membership matters; saves ~40% of
+    /// the per-pixel work versus calling `encode(_:).token`.
+    @inline(__always)
+    public func tokenOnly(_ value: UInt32) -> UInt32 {
+        let split = UInt32(1) &<< UInt32(splitExponent)
+        if value < split { return value }
+        let n = Int(31 - value.leadingZeroBitCount)
+        let m = value &- (UInt32(1) &<< UInt32(n))
+        let nMinusMsb = n &- msbInToken
+        let msbBits = (m &>> UInt32(nMinusMsb)) & ((UInt32(1) &<< UInt32(msbInToken)) &- (msbInToken == 0 ? 0 : 1))
+        let lsbMask: UInt32 = lsbInToken == 0 ? 0 : (UInt32(1) &<< UInt32(lsbInToken)) &- 1
+        let lsbBits = m & lsbMask
+        let nMinusSplit = UInt32(n &- splitExponent)
+        let msbLsb = UInt32(msbInToken + lsbInToken)
+        return split
+             + (nMinusSplit &<< msbLsb)
+             + (msbBits &<< UInt32(lsbInToken))
+             + lsbBits
+    }
+
     /// Decode a value: given the token (already pulled from the entropy
     /// coder) and the bit reader (positioned at the extra-bits payload),
     /// recover the original value. Reads `extra_nbits` bits from `r` for

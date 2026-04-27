@@ -654,7 +654,7 @@ public struct MinimalLosslessCodec {
                     let residual = actual &- pred
                     let zig = ZigZag.pack(residual)
                     residuals[y * width + x] = zig
-                    let token = Int(hybridConfig.encode(zig).token)
+                    let token = Int(hybridConfig.tokenOnly(zig))
                     if !seen[token] {
                         seen[token] = true
                         distinctCount &+= 1
