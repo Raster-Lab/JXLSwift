@@ -799,6 +799,127 @@ final class FoundationTests: XCTestCase {
             "1000 highly-skewed symbols should compress to <50 bytes; got \(bytes.count)")
     }
 
+    // MARK: - Phase E4a: Simple prefix-code-table serialisation (§C.6.2.1)
+
+    /// Hand-derived bit pattern: a 2-symbol simple prefix code with
+    /// alphabet size 4 (so 2 bits per symbol index). Symbols {0, 3}.
+    /// Layout (LSB-first within bytes; bit positions left→right inside
+    /// the integer, written first):
+    ///   hskip = 01     (2 bits, value 1)
+    ///   nsym  = 01     (2 bits, value 1 → 2 symbols)
+    ///   sym0  = 00     (2 bits, value 0)
+    ///   sym1  = 11     (2 bits, value 3)
+    /// Concatenation in LSB-first byte packing:
+    ///   byte 0 = 0b 11_00_01_01 = 0xC5   (sym1 high nibble, sym0 low,
+    ///                                     nsym below it, hskip lowest)
+    /// Wait — need to be careful. LSB-first means the FIRST bit written
+    /// is the LSB of byte 0. hskip's value 1 occupies bits 0,1 of byte
+    /// 0 with bit0 = 1, bit1 = 0. Then nsym occupies bits 2,3 with
+    /// bit2 = 1, bit3 = 0. sym0 = 0 occupies bits 4,5 (both 0). sym1 =
+    /// 3 occupies bits 6,7 (both 1).
+    ///
+    /// → byte 0 = 0b11_00_01_01 = 0xC5
+    func testSimplePrefixCode_HandDerivedBitPattern_2Symbols() throws {
+        var w = BitWriter()
+        try SimplePrefixCodeFormat.encode(
+            to: &w, symbols: [0, 3], alphabetSize: 4
+        )
+        let bytes = [UInt8](w.finishToData())
+        XCTAssertEqual(bytes, [0xC5],
+            "simple prefix code (sym=[0,3], alphabet=4) should be 0xC5")
+    }
+
+    /// Round-trip every simple-format shape: 1, 2, 3, and 4 symbols
+    /// (both useLongCodewords variants for the 4-symbol case).
+    func testSimplePrefixCode_RoundTrip_AllShapes() throws {
+        let cases: [(symbols: [Int], useLong: Bool)] = [
+            (symbols: [5], useLong: false),
+            (symbols: [2, 7], useLong: false),
+            (symbols: [1, 4, 9], useLong: false),
+            (symbols: [0, 3, 6, 9], useLong: false),
+            (symbols: [0, 3, 6, 9], useLong: true),
+        ]
+        let alphabet = 16
+        for c in cases {
+            var w = BitWriter()
+            try SimplePrefixCodeFormat.encode(
+                to: &w, symbols: c.symbols, alphabetSize: alphabet,
+                useLongCodewords: c.useLong
+            )
+            let data = w.finishToData()
+            var r = BitReader(data)
+            let lengths = try SimplePrefixCodeFormat.decode(
+                from: &r, alphabetSize: alphabet
+            )
+            XCTAssertEqual(lengths.count, alphabet)
+
+            // Validate the lengths shape per spec.
+            switch c.symbols.count {
+            case 1:
+                // All zero (single-symbol degenerate).
+                XCTAssertTrue(lengths.allSatisfy { $0 == 0 })
+            case 2:
+                XCTAssertEqual(lengths[c.symbols[0]], 1)
+                XCTAssertEqual(lengths[c.symbols[1]], 1)
+            case 3:
+                XCTAssertEqual(lengths[c.symbols[0]], 1)
+                XCTAssertEqual(lengths[c.symbols[1]], 2)
+                XCTAssertEqual(lengths[c.symbols[2]], 2)
+            case 4:
+                if c.useLong {
+                    XCTAssertEqual(lengths[c.symbols[0]], 1)
+                    XCTAssertEqual(lengths[c.symbols[1]], 2)
+                    XCTAssertEqual(lengths[c.symbols[2]], 3)
+                    XCTAssertEqual(lengths[c.symbols[3]], 3)
+                } else {
+                    for s in c.symbols { XCTAssertEqual(lengths[s], 2) }
+                }
+            default:
+                XCTFail("unexpected symbol count \(c.symbols.count)")
+            }
+
+            // Verify the resulting lengths array builds a working
+            // PrefixCodeTable (or, for the 1-symbol case, decodes
+            // trivially) — i.e. integrates with E2.
+            if c.symbols.count > 1 {
+                let table = try PrefixCodeTable(lengths: lengths)
+                XCTAssertGreaterThan(table.usedMaxLength, 0)
+            }
+        }
+    }
+
+    /// Reader must reject a non-simple header (hskip != 1).
+    func testSimplePrefixCode_RejectsNonSimpleHeader() {
+        var w = BitWriter()
+        w.write(bits: 2, value: 0)   // hskip = 0 → complex (we don't decode that here)
+        let data = w.finishToData()
+        var r = BitReader(data)
+        XCTAssertThrowsError(try SimplePrefixCodeFormat.decode(
+            from: &r, alphabetSize: 8
+        )) { err in
+            guard let e = err as? SimplePrefixCodeError,
+                  case .wrongHeader(_, let got) = e else {
+                XCTFail("expected wrongHeader, got \(err)"); return
+            }
+            XCTAssertEqual(got, 0)
+        }
+    }
+
+    /// `ceilLog2` corner cases — exercised throughout the simple code
+    /// header. Hand-verified.
+    func testCeilLog2_Corners() {
+        XCTAssertEqual(ceilLog2(0), 0)
+        XCTAssertEqual(ceilLog2(1), 0)
+        XCTAssertEqual(ceilLog2(2), 1)
+        XCTAssertEqual(ceilLog2(3), 2)
+        XCTAssertEqual(ceilLog2(4), 2)
+        XCTAssertEqual(ceilLog2(5), 3)
+        XCTAssertEqual(ceilLog2(8), 3)
+        XCTAssertEqual(ceilLog2(9), 4)
+        XCTAssertEqual(ceilLog2(16), 4)
+        XCTAssertEqual(ceilLog2(256), 8)
+    }
+
     /// Decoder must reject a truncated bitstream.
     func testRANS_RejectsTruncatedStream() throws {
         let dist = try ANSDistribution(rawFrequencies: [1, 1])
