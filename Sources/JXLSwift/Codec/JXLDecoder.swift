@@ -52,10 +52,17 @@ public struct JXLInspection: Sendable {
 public final class JXLDecoder {
     public init() {}
 
-    /// Decode a JPEG XL byte stream into an `ImageFrame`.
-    /// **Not yet implemented in pure Swift.** Use the libjxl-backend
-    /// branch if you need a working decoder today.
+    /// Decode a JPEG XL byte stream into an `ImageFrame`. If the
+    /// input carries the project-internal `0x4D30` 'M0' marker
+    /// (produced by `EncodingOptions.useM0Placeholder = true`),
+    /// routes through `MinimalLosslessCodec.decode(_:)`. Otherwise
+    /// throws `.notImplemented` — the real Phase M codec layer
+    /// isn't done yet.
     public func decode(_ data: Data) throws -> ImageFrame {
+        if MinimalLosslessCodec.isM0(data) {
+            do { return try MinimalLosslessCodec.decode(data) }
+            catch { throw DecoderError.notImplemented("M0 decode failed: \(error)") }
+        }
         throw DecoderError.notImplemented("frame decoding (Modular + VarDCT)")
     }
 

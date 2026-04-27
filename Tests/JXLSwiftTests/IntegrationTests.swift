@@ -702,6 +702,31 @@ final class FoundationTests: XCTestCase {
 
     // MARK: - Encoder / decoder stubs throw clearly
 
+    /// `EncodingOptions(useM0Placeholder: true)` routes encode
+    /// through `MinimalLosslessCodec` so callers have a working
+    /// lossless path against the public API while the real codec
+    /// is built out. CompressionStats are populated with byte
+    /// counts and encoding time.
+    func testEncoder_M0Placeholder_RoundTripsViaPublicAPI() throws {
+        var frame = ImageFrame(
+            width: 16, height: 16, channels: 1,
+            pixelType: .uint8, colorSpace: .grayscale
+        )
+        for i in 0..<frame.data.count { frame.data[i] = UInt8(i & 0xFF) }
+        let opts = EncodingOptions(
+            mode: .lossless, useM0Placeholder: true, m0Effort: .balanced
+        )
+        let result = try JXLEncoder(options: opts).encode(frame)
+        XCTAssertGreaterThan(result.data.count, 0)
+        XCTAssertEqual(result.stats.originalSize, frame.data.count)
+        XCTAssertEqual(result.stats.compressedSize, result.data.count)
+        // Decoder auto-detects the M0 marker.
+        let decoded = try JXLDecoder().decode(result.data)
+        XCTAssertEqual(decoded.data, frame.data)
+    }
+
+    /// `useM0Placeholder` defaults to `false`, so existing callers
+    /// still get `.notImplemented`. Pin this so it doesn't drift.
     func testEncoder_ThrowsNotImplemented() {
         let frame = ImageFrame(width: 8, height: 8, channels: 1,
                                pixelType: .uint8, colorSpace: .grayscale)

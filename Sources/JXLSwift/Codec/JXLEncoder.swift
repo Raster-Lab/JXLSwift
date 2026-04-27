@@ -41,8 +41,27 @@ public final class JXLEncoder {
         self.options = options
     }
 
-    /// Encode a single frame. **Not yet implemented.**
+    /// Encode a single frame. When
+    /// `EncodingOptions.useM0Placeholder == true`, routes through
+    /// `MinimalLosslessCodec` and returns an M0-format buffer.
+    /// **Otherwise throws `.notImplemented`** — the real codec
+    /// layer is still in development.
     public func encode(_ frame: ImageFrame) throws -> EncodedImage {
+        if options.useM0Placeholder {
+            let start = Date()
+            let data: Data
+            do { data = try MinimalLosslessCodec.encode(frame, effort: options.m0Effort) }
+            catch { throw EncoderError.unsupportedFrame("M0 encode failed: \(error)") }
+            let originalSize = frame.data.count
+            return EncodedImage(
+                data: data,
+                stats: CompressionStats(
+                    originalSize: originalSize,
+                    compressedSize: data.count,
+                    encodingTime: Date().timeIntervalSince(start)
+                )
+            )
+        }
         throw EncoderError.notImplemented("frame encoding (Modular + VarDCT)")
     }
 

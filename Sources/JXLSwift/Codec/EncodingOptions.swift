@@ -40,17 +40,32 @@ public struct EncodingOptions: Sendable {
     /// Number of decoder threads to spawn during encoding. `0` means
     /// "let libjxl pick".
     public var numThreads: Int
+    /// Use the project-internal M0 placeholder format instead of
+    /// throwing `.notImplemented`. The output **is not** a JPEG XL
+    /// file — it carries the project-internal `0x4D30` marker so a
+    /// future spec-compliant decoder can recognise and reject it.
+    /// Useful as a working lossless codec while the real Phase M
+    /// pipeline is built out. See `MinimalLosslessCodec`.
+    public var useM0Placeholder: Bool
+    /// When `useM0Placeholder` is true, controls the M0 effort knob
+    /// (`.balanced` tries every predictor + RCT variant; `.fast`
+    /// skips the search for ~3× faster encode). Ignored otherwise.
+    public var m0Effort: M0Effort
 
     public init(
         mode: CompressionMode = .lossy(quality: 90),
         effort: EncodingEffort = .squirrel,
         progressive: Bool = false,
-        numThreads: Int = 0
+        numThreads: Int = 0,
+        useM0Placeholder: Bool = false,
+        m0Effort: M0Effort = .balanced
     ) {
         self.mode = mode
         self.effort = effort
         self.progressive = progressive
         self.numThreads = numThreads
+        self.useM0Placeholder = useM0Placeholder
+        self.m0Effort = m0Effort
     }
 
     /// The libjxl distance value that this configuration maps to. Used
