@@ -47,6 +47,7 @@ Followed by:
 | `e9fc0ee` | Phase E4a-simple: simple prefix-code-table bitstream format (§C.6.2.1) |
 | `51be29f` | Update SESSION-NOTES with E4a-simple completion |
 | `c07bbfd` | Phase E4a-complex: complex prefix-code-table format with run-length symbols 16/17 |
+| (next)    | Phase E4b: rANS distribution serialisation (§C.6.3.2) — simple + flat shortcuts |
 
 ### Branches and tags preserved
 
@@ -127,7 +128,7 @@ The primitives are landed. **Phase E4a-simple is also now committed** (commit e9
 
 The next phases are now:
 
-2. **Phase E4b — rANS distribution serialisation (§C.6.3.2)**: bit-level encoding of per-symbol frequencies, with shortcut modes for "trivial" (uniform) and "constant" (single-symbol) distributions. ~100 lines.
+2. ✅ **Phase E4b (shortcuts)** is now done. `ANSDistributionFormat` covers the constant (1-symbol), simple (1–4 symbols with predefined frequency splits `[tab]` / `[tab/2]×2` / `[tab/4, tab/4, tab/2]` / `[tab/4]×4`), and flat (uniform) paths of §C.6.3.2. Hand-derived bit pattern verifies the constant path (`sym=3, alphabet=4 → 0x19`). End-to-end test serialises a distribution → deserialises it → uses the decoded distribution to round-trip an rANS symbol stream. **Full per-symbol-frequency mode** (with the `log_counts` prefix code, alphabet-size-log encoding, and shift parameter from §C.6.3.2) **is not yet implemented** — the decoder throws `.fullDistributionNotImplemented` on that bit pattern. That mode is the next subtask under E4b and would benefit from libjxl byte cross-check before declaring done.
 
 3. **Phase E5 — Histogram clustering / context maps (§C.6.4)**: when multiple distributions are used (one per context), the codestream stores a context map that groups contexts into clusters. ~150 lines.
 

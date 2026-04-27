@@ -1064,4 +1064,188 @@ final class FoundationTests: XCTestCase {
         }
     }
 
+    // MARK: - Phase E4b: rANS distribution serialisation (§C.6.3.2)
+
+    /// Hand-derived bit pattern for a constant (single-symbol)
+    /// distribution. Layout (LSB-first):
+    ///   is_simple     u(1) = 1
+    ///   nsym - 1      u(2) = 0
+    ///   symbol        u(log_alpha) = 3 over alphabet=4 → u(2) = 0b11
+    ///
+    /// Bits emitted: 1, 0, 0, 1, 1 → byte = 0b0001_1001 = 0x19.
+    func testANSDistribution_HandDerived_Constant() throws {
+        var w = BitWriter()
+        try ANSDistributionFormat.encodeConstant(
+            symbol: 3, alphabetSize: 4, to: &w
+        )
+        let bytes = [UInt8](w.finishToData())
+        XCTAssertEqual(bytes, [0x19],
+            "constant distribution (sym=3, alphabet=4) should be 0x19; got \(bytes)")
+    }
+
+    /// Round-trip a constant distribution: encode the format, decode it,
+    /// confirm the resulting distribution has all probability on the
+    /// chosen symbol.
+    func testANSDistribution_RoundTrip_Constant() throws {
+        for (alphabet, sym) in [(4, 0), (4, 3), (8, 5), (16, 11), (256, 200)] {
+            var w = BitWriter()
+            try ANSDistributionFormat.encodeConstant(
+                symbol: sym, alphabetSize: alphabet, to: &w
+            )
+            var r = BitReader(w.finishToData())
+            let dist = try ANSDistributionFormat.decode(
+                alphabetSize: alphabet, from: &r
+            )
+            XCTAssertEqual(dist.alphabetSize, alphabet)
+            XCTAssertEqual(dist.frequencies[sym], ANSConstants.tabSize,
+                "single-symbol distribution should give tabSize freq to sym=\(sym)")
+            for i in 0..<alphabet where i != sym {
+                XCTAssertEqual(dist.frequencies[i], 0)
+            }
+        }
+    }
+
+    /// Round-trip the full nsym range (1..4) of simple distributions.
+    /// Confirms the predefined frequency splits decode cleanly.
+    func testANSDistribution_RoundTrip_Simple_AllShapes() throws {
+        let alphabet = 16
+        let cases: [[Int]] = [
+            [5],                    // nsym = 1 → [tab]
+            [2, 7],                 // nsym = 2 → [tab/2, tab/2]
+            [1, 4, 9],              // nsym = 3 → [tab/4, tab/4, tab/2]
+            [0, 3, 6, 11],          // nsym = 4 → [tab/4]*4
+        ]
+        let tab = ANSConstants.tabSize
+        let expectedFreqs: [(Int) -> [UInt32]] = [
+            { _ in [tab] },
+            { _ in [tab / 2, tab / 2] },
+            { _ in [tab / 4, tab / 4, tab / 2] },
+            { _ in [tab / 4, tab / 4, tab / 4, tab / 4] },
+        ]
+        for (idx, symbols) in cases.enumerated() {
+            var w = BitWriter()
+            try ANSDistributionFormat.encodeSimple(
+                symbols: symbols, alphabetSize: alphabet, to: &w
+            )
+            var r = BitReader(w.finishToData())
+            let dist = try ANSDistributionFormat.decode(
+                alphabetSize: alphabet, from: &r
+            )
+            let expected = expectedFreqs[idx](symbols.count)
+            for (i, s) in symbols.enumerated() {
+                XCTAssertEqual(dist.frequencies[s], expected[i],
+                    "nsym=\(symbols.count): freq for sym=\(s) (position \(i))")
+            }
+            // Unused symbols should be 0.
+            let used = Set(symbols)
+            for i in 0..<alphabet where !used.contains(i) {
+                XCTAssertEqual(dist.frequencies[i], 0)
+            }
+            // Sum invariant.
+            let sum = dist.frequencies.reduce(UInt32(0), &+)
+            XCTAssertEqual(sum, tab)
+        }
+    }
+
+    /// Round-trip a flat distribution over various alphabet sizes.
+    /// Confirms the frequency split: each symbol gets `tab / alphabet`,
+    /// with the first `tab % alphabet` symbols receiving +1.
+    func testANSDistribution_RoundTrip_Flat() throws {
+        let tab = Int(ANSConstants.tabSize)
+        for alphabet in [2, 3, 5, 7, 16, 100, 256, 1000] {
+            var w = BitWriter()
+            try ANSDistributionFormat.encodeFlat(alphabetSize: alphabet, to: &w)
+            var r = BitReader(w.finishToData())
+            let dist = try ANSDistributionFormat.decode(
+                alphabetSize: alphabet, from: &r
+            )
+            let base = UInt32(tab / alphabet)
+            let remainder = tab - (tab / alphabet) * alphabet
+            for i in 0..<alphabet {
+                let expected = base + (i < remainder ? 1 : 0)
+                XCTAssertEqual(dist.frequencies[i], expected,
+                    "flat alphabet=\(alphabet): freq for sym=\(i)")
+            }
+            let sum = dist.frequencies.reduce(UInt32(0), &+)
+            XCTAssertEqual(sum, ANSConstants.tabSize)
+        }
+    }
+
+    /// End-to-end: serialise a distribution into the bitstream, decode
+    /// it back out, then use the decoded distribution to encode + decode
+    /// a real symbol stream. This proves the serialised distribution
+    /// agrees with the original closely enough for rANS to round-trip.
+    func testANSDistribution_EndToEnd_EncodeDecodeStream() throws {
+        // Use a 4-symbol simple distribution.
+        let alphabet = 8
+        let symbols = [0, 2, 4, 6]   // nsym = 4 → uniform tab/4 each
+
+        // 1. Serialise the distribution.
+        var dw = BitWriter()
+        try ANSDistributionFormat.encodeSimple(
+            symbols: symbols, alphabetSize: alphabet, to: &dw
+        )
+        let distData = dw.finishToData()
+
+        // 2. Deserialise it.
+        var dr = BitReader(distData)
+        let dist = try ANSDistributionFormat.decode(
+            alphabetSize: alphabet, from: &dr
+        )
+
+        // 3. Use the deserialised distribution to encode a stream.
+        let stream: [Int] = [0, 2, 4, 6, 6, 4, 2, 0, 2, 4, 0, 6, 6, 6, 0, 2]
+        var enc = ANSEncoder(distribution: dist)
+        for s in stream { try enc.write(s) }
+        let coded = enc.finish()
+
+        // 4. Decode and confirm round-trip.
+        var dec = try ANSDecoder(data: coded, distribution: dist)
+        var decoded: [Int] = []
+        for _ in 0..<stream.count { decoded.append(try dec.read()) }
+        XCTAssertEqual(decoded, stream)
+    }
+
+    /// Decoder must reject the not-yet-implemented "full" path.
+    func testANSDistribution_FullPath_NotImplemented() throws {
+        var w = BitWriter()
+        w.writeBit(false)   // is_simple = 0
+        w.writeBit(false)   // is_flat   = 0 → full mode
+        var r = BitReader(w.finishToData())
+        XCTAssertThrowsError(try ANSDistributionFormat.decode(
+            alphabetSize: 8, from: &r
+        )) { err in
+            XCTAssertEqual(err as? ANSDistributionFormatError,
+                           .fullDistributionNotImplemented)
+        }
+    }
+
+    /// Encoder must reject duplicate-symbol input in the simple path.
+    func testANSDistribution_RejectsDuplicateSymbols() {
+        var w = BitWriter()
+        XCTAssertThrowsError(try ANSDistributionFormat.encodeSimple(
+            symbols: [3, 5, 3], alphabetSize: 8, to: &w
+        )) { err in
+            guard let e = err as? ANSDistributionFormatError,
+                  case .duplicateSymbol(let s) = e else {
+                XCTFail("expected duplicateSymbol, got \(err)"); return
+            }
+            XCTAssertEqual(s, 3)
+        }
+    }
+
+    /// Encoder must reject out-of-range symbol indices.
+    func testANSDistribution_RejectsOutOfRangeSymbol() {
+        var w = BitWriter()
+        XCTAssertThrowsError(try ANSDistributionFormat.encodeConstant(
+            symbol: 10, alphabetSize: 8, to: &w
+        )) { err in
+            guard let e = err as? ANSDistributionFormatError,
+                  case .symbolOutOfRange(let s) = e else {
+                XCTFail("expected symbolOutOfRange, got \(err)"); return
+            }
+            XCTAssertEqual(s, 10)
+        }
+    }
+
 }

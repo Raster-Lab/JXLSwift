@@ -62,7 +62,7 @@ Documentation/                ARCHITECTURE.md, SESSION-NOTES.md, legacy/
 
 ```bash
 swift build -c release
-swift test  -c release           # 44 tests, ~50 ms
+swift test  -c release           # 59 tests, ~50 ms
 .build/release/jxl-tool --version
 ```
 
@@ -77,7 +77,8 @@ swift test  -c release           # 44 tests, ~50 ms
 | E1 | HybridUint encoding (§C.5) | ✅ |
 | E2 | Prefix codes / canonical Huffman (§C.6.2) | ✅ |
 | E3 | rANS (§C.6.3) | ✅ |
-| E4 | Distribution-table bitstream serialisation (§C.6.2.1, §C.6.3.2) | ⏳ |
+| E4a | Prefix-code-table serialisation (§C.6.2.1) — simple + complex | ✅ |
+| E4b | rANS distribution serialisation (§C.6.3.2) — simple + flat shortcuts | ✅ (full mode pending) |
 | E5 | Histogram clustering / context maps (§C.6.4) | ⏳ |
 | E6 | LZ77 hybrid (§C.6.5) | ⏳ |
 | M  | Modular sub-codec (lossless path) | ⏳ |
