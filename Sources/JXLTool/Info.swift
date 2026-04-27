@@ -1,4 +1,7 @@
-// `jxl-tool info` — print the basic info of a JPEG XL file.
+// `jxl-tool info` — parse a JXL file's container + SizeHeader and report
+// what the foundation can already extract. Does not require the full
+// codec, so this works against the pure-Swift implementation as it
+// stands.
 
 import ArgumentParser
 import Foundation
@@ -6,26 +9,27 @@ import JXLSwift
 
 struct Info: ParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "Print basic info from a JPEG XL file"
+        abstract: "Print container + SizeHeader info from a JPEG XL file"
     )
 
     @Argument(help: "JPEG XL file path")
     var input: String
 
     func run() throws {
-        let inputURL = URL(fileURLWithPath: input)
-        guard FileManager.default.fileExists(atPath: inputURL.path) else {
+        let url = URL(fileURLWithPath: input)
+        guard FileManager.default.fileExists(atPath: url.path) else {
             print("Error: file not found: \(input)", to: &standardError)
             throw JXLExitCode.invalidArguments
         }
-        let bytes = try Data(contentsOf: inputURL)
-        let frame = try JXLDecoder().decode(bytes)
-        print("File:         \(input)")
-        print("Bitstream:    \(formatBytes(bytes.count))")
-        print("Dimensions:   \(frame.width)×\(frame.height)")
-        print("Channels:     \(frame.channels) (\(frame.alphaChannels) alpha)")
-        print("Pixel type:   \(frame.pixelType)  (\(frame.pixelType.bitsPerSample)-bit)")
-        print("Colour space: \(frame.colorSpace)")
-        print("ICC profile:  \(frame.iccProfile?.count ?? 0) bytes")
+        let data = try Data(contentsOf: url)
+        let inspection = try JXLDecoder().inspect(data)
+
+        print("File:       \(input)")
+        print("Bytes:      \(formatBytes(data.count))")
+        print("Form:       \(inspection.form == .naked ? "naked codestream" : "ISOBMFF container")")
+        print("Dimensions: \(inspection.xsize)×\(inspection.ysize)")
+        if !inspection.boxTypes.isEmpty {
+            print("Boxes:      \(inspection.boxTypes.joined(separator: ", "))")
+        }
     }
 }

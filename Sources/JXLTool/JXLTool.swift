@@ -1,34 +1,24 @@
-// jxl-tool: command-line front-end for JXLSwift.
+// jxl-tool — front-end CLI for the pure-Swift JXLSwift implementation.
+//
+// STATUS: foundation only. `info` works (parses container + SizeHeader).
+// `encode`/`decode` throw "not yet implemented" — see ROADMAP.md.
 
 import ArgumentParser
-import Cjxl
-import Foundation
 
 @main
-struct JXLTool: AsyncParsableCommand {
+struct JXLTool: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "jxl-tool",
-        abstract: "JPEG XL encode/decode/inspect via libjxl-backed JXLSwift.",
-        version: jxlToolVersionString(),
-        subcommands: [Encode.self, Decode.self, Info.self, Batch.self]
+        abstract: "JPEG XL inspect/encode/decode (pure Swift, ISO/IEC 18181).",
+        version: "jxl-tool \(JXLToolVersion) (pure-Swift, foundation only — see ROADMAP.md)",
+        subcommands: [Info.self, Encode.self, Decode.self]
     )
 }
+
+let JXLToolVersion = "0.5.0-pure-swift"
 
 enum JXLExitCode: Int32, Error {
     case generalError = 1
     case invalidArguments = 2
+    case notImplemented = 64
 }
-
-/// Version string printed by `jxl-tool --version`.
-/// Reports both the Swift package version and the libjxl version so users
-/// can debug compatibility issues with the underlying C library.
-func jxlToolVersionString() -> String {
-    let libjxlVer = JxlEncoderVersion()
-    let major = (libjxlVer / 1_000_000) % 1000
-    let minor = (libjxlVer / 1_000) % 1000
-    let patch = libjxlVer % 1000
-    return "jxl-tool \(JXLToolVersion)  (libjxl \(major).\(minor).\(patch))"
-}
-
-/// Bumped per release. Track in sync with CHANGELOG.md / git tags.
-let JXLToolVersion = "0.4.0"

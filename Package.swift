@@ -1,12 +1,11 @@
 // swift-tools-version: 6.2
 import PackageDescription
 
-// JXLSwift wraps libjxl (Homebrew jpeg-xl) via a C systemLibrary target.
-// On macOS / Apple Silicon the headers and dylibs are at
-//   /opt/homebrew/include/jxl/* and /opt/homebrew/lib/libjxl{,_threads}.dylib
-// On Intel Macs, /usr/local/...
-let homebrewIncludes = ["/opt/homebrew/include", "/usr/local/include"]
-let homebrewLibs     = ["/opt/homebrew/lib",     "/usr/local/lib"]
+// JXLSwift — a pure-Swift implementation of JPEG XL (ISO/IEC 18181).
+// No native code, no C dependency. The codec is implemented in Swift
+// targeting the strict-concurrency model of Swift 6.2.
+//
+// Status: foundation only. See ROADMAP.md for what's done vs. WIP.
 
 let package = Package(
     name: "JXLSwift",
@@ -25,30 +24,12 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.5.0"),
     ],
     targets: [
-        // C systemLibrary wrapping the Homebrew libjxl install. Uses
-        // pkg-config to locate headers and libraries portably.
-        .systemLibrary(
-            name: "Cjxl",
-            path: "Sources/Cjxl",
-            pkgConfig: "libjxl"
-        ),
-        // Pure-Swift public API on top of Cjxl. The unsafeFlags here are
-        // a fallback when pkg-config isn't installed — Homebrew's default
-        // prefixes are passed explicitly so the headers and dylibs can
-        // still be found.
         .target(
             name: "JXLSwift",
-            dependencies: ["Cjxl"],
             swiftSettings: [
-                .unsafeFlags(homebrewIncludes.flatMap { ["-I", $0] }),
-            ],
-            linkerSettings: [
-                .unsafeFlags(homebrewLibs.flatMap { ["-L", $0] }),
-                .linkedLibrary("jxl"),
-                .linkedLibrary("jxl_threads"),
+                .enableExperimentalFeature("StrictConcurrency"),
             ]
         ),
-        // Command line tool.
         .executableTarget(
             name: "JXLTool",
             dependencies: [
@@ -56,7 +37,6 @@ let package = Package(
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
         ),
-        // Integration tests against LocalDatasets/medical-dicom-organized.
         .testTarget(
             name: "JXLSwiftTests",
             dependencies: ["JXLSwift"]
