@@ -262,6 +262,187 @@ final class FoundationTests: XCTestCase {
         XCTAssertEqual(m.totalChannels, 3)        // default RGB
     }
 
+    /// Round-trip an ImageMetadata for the medical-imaging case
+    /// (16-bit grayscale, no alpha, sRGB transfer). This is THE test
+    /// that gates Phase H correctness — it proves the parser and
+    /// writer agree on the exact bit positions of every field.
+    func testImageMetadata_RoundTrip_GrayscaleMedical() throws {
+        let m = ImageMetadata(
+            allDefault: false,
+            orientation: 1,
+            intrinsicSize: nil,
+            preview: nil,
+            animation: nil,
+            bitDepth: BitDepth(floatingPoint: false, bitsPerSample: 16),
+            modular16BitBufferSufficient: true,
+            extraChannels: [],
+            xybEncoded: false,
+            colorEncoding: .grayscaleD65,
+            intensityTarget: 255.0,
+            minNits: 0.0,
+            relativeToMaxDisplay: false,
+            linearBelow: 0.0
+        )
+        var w = BitWriter()
+        try m.write(to: &w)
+        let data = w.finishToData()
+        var r = BitReader(data)
+        let m2 = try ImageMetadata.read(from: &r)
+
+        XCTAssertEqual(m2.allDefault, false)
+        XCTAssertEqual(m2.orientation, 1)
+        XCTAssertEqual(m2.bitDepth.bitsPerSample, 16)
+        XCTAssertEqual(m2.bitDepth.floatingPoint, false)
+        XCTAssertTrue(m2.extraChannels.isEmpty)
+        XCTAssertEqual(m2.xybEncoded, false)
+        XCTAssertEqual(m2.colorEncoding.colorSpace, .grayscale)
+        XCTAssertEqual(m2.colorEncoding.useICC, false)
+    }
+
+    /// Round-trip a 16-bit RGB image with straight alpha — a common
+    /// medical-imaging output (e.g. from a research pipeline).
+    func testImageMetadata_RoundTrip_RGBA16() throws {
+        let alpha = ExtraChannelInfo(
+            type: .alpha,
+            bitDepth: BitDepth(floatingPoint: false, bitsPerSample: 16),
+            dimShift: 0,
+            name: "",
+            alphaAssociated: false
+        )
+        let m = ImageMetadata(
+            allDefault: false,
+            orientation: 1,
+            intrinsicSize: nil,
+            preview: nil,
+            animation: nil,
+            bitDepth: BitDepth(floatingPoint: false, bitsPerSample: 16),
+            modular16BitBufferSufficient: true,
+            extraChannels: [alpha],
+            xybEncoded: false,
+            colorEncoding: .srgb,
+            intensityTarget: 255.0,
+            minNits: 0.0,
+            relativeToMaxDisplay: false,
+            linearBelow: 0.0
+        )
+        var w = BitWriter()
+        try m.write(to: &w)
+        let data = w.finishToData()
+        var r = BitReader(data)
+        let m2 = try ImageMetadata.read(from: &r)
+
+        XCTAssertEqual(m2.bitDepth.bitsPerSample, 16)
+        XCTAssertEqual(m2.colorEncoding.colorSpace, .rgb)
+        XCTAssertEqual(m2.extraChannels.count, 1)
+        if let a = m2.extraChannels.first {
+            XCTAssertEqual(a.type, .alpha)
+            XCTAssertEqual(a.bitDepth.bitsPerSample, 16)
+            XCTAssertFalse(a.alphaAssociated)
+        }
+    }
+
+    /// Round-trip an 8-bit RGBA image with EXIF orientation 6 (90° CW).
+    /// Forces the `extra_fields = 1` branch.
+    func testImageMetadata_RoundTrip_OrientationExtraFields() throws {
+        let m = ImageMetadata(
+            allDefault: false,
+            orientation: 6,           // EXIF orientation 6 forces extra_fields
+            intrinsicSize: nil,
+            preview: nil,
+            animation: nil,
+            bitDepth: BitDepth(floatingPoint: false, bitsPerSample: 8),
+            modular16BitBufferSufficient: true,
+            extraChannels: [],
+            xybEncoded: true,
+            colorEncoding: .srgb,
+            intensityTarget: 255.0,
+            minNits: 0.0,
+            relativeToMaxDisplay: false,
+            linearBelow: 0.0
+        )
+        var w = BitWriter()
+        try m.write(to: &w)
+        let data = w.finishToData()
+        var r = BitReader(data)
+        let m2 = try ImageMetadata.read(from: &r)
+        XCTAssertEqual(m2.orientation, 6)
+        XCTAssertEqual(m2.bitDepth.bitsPerSample, 8)
+    }
+
+    /// Round-trip a 32-bit float HDR image (intensity target 10 000 cd/m²).
+    /// Exercises the floating-point bit-depth path AND the tone-mapping
+    /// non-default block.
+    func testImageMetadata_RoundTrip_FloatHDR() throws {
+        let m = ImageMetadata(
+            allDefault: false,
+            orientation: 1,
+            intrinsicSize: nil,
+            preview: nil,
+            animation: nil,
+            bitDepth: BitDepth(floatingPoint: true, bitsPerSample: 32, exponentBitsPerSample: 8),
+            modular16BitBufferSufficient: false,
+            extraChannels: [],
+            xybEncoded: false,
+            colorEncoding: .srgb,
+            intensityTarget: 10000.0,    // 10 000 cd/m² — HDR10 reference
+            minNits: 0.005,
+            relativeToMaxDisplay: false,
+            linearBelow: 0.0
+        )
+        var w = BitWriter()
+        try m.write(to: &w)
+        let data = w.finishToData()
+        var r = BitReader(data)
+        let m2 = try ImageMetadata.read(from: &r)
+        XCTAssertTrue(m2.bitDepth.floatingPoint)
+        XCTAssertEqual(m2.bitDepth.bitsPerSample, 32)
+        XCTAssertEqual(m2.bitDepth.exponentBitsPerSample, 8)
+        // Half-float quantisation; intensity should be ~10 000 ± 0.5 %.
+        XCTAssertEqual(m2.intensityTarget, 10000.0, accuracy: 50.0)
+    }
+
+    /// Round-trip an animation header.
+    func testImageMetadata_RoundTrip_Animation() throws {
+        let anim = AnimationHeader(
+            tpsNumerator: 1000, tpsDenominator: 1001,
+            numLoops: 0, haveTimecodes: false
+        )
+        let m = ImageMetadata(
+            allDefault: false,
+            orientation: 1,
+            intrinsicSize: nil,
+            preview: nil,
+            animation: anim,
+            bitDepth: BitDepth(floatingPoint: false, bitsPerSample: 8),
+            modular16BitBufferSufficient: true,
+            extraChannels: [],
+            xybEncoded: true,
+            colorEncoding: .srgb,
+            intensityTarget: 255.0,
+            minNits: 0.0,
+            relativeToMaxDisplay: false,
+            linearBelow: 0.0
+        )
+        var w = BitWriter()
+        try m.write(to: &w)
+        let data = w.finishToData()
+        var r = BitReader(data)
+        let m2 = try ImageMetadata.read(from: &r)
+        XCTAssertNotNil(m2.animation)
+        XCTAssertEqual(m2.animation?.tpsNumerator, 1000)
+        XCTAssertEqual(m2.animation?.tpsDenominator, 1001)
+    }
+
+    /// Half-float ↔ float round-trip helpers behave correctly.
+    func testHalfFloat_Symmetry() {
+        for v in [Float(0.0), 1.0, 100.0, 255.0, 1000.0, 65504.0] {
+            let h = floatToHalf(v)
+            let back = halfToFloat(h)
+            XCTAssertEqual(back, v, accuracy: max(v * 0.001, 0.001),
+                           "half-float round-trip lost precision at \(v)")
+        }
+    }
+
     /// `inspect()` returns a non-nil metadata value on a real cjxl-
     /// produced file (parser doesn't trap on real input). We don't
     /// assert specific field values here because parser verification

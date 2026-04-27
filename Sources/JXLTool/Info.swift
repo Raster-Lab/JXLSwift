@@ -32,17 +32,29 @@ struct Info: ParsableCommand {
         }
         if let m = inspection.metadata {
             print()
-            print("--- ImageMetadata (best-effort, parser verification ongoing) ---")
+            print("--- ImageMetadata ---")
             print("All-default:  \(m.allDefault ? "yes" : "no")")
             print("Bit depth:    \(formatBitDepth(m.bitDepth))")
             print("Orientation:  \(m.orientation)")
-            // The fields below are correctly read for files where the
-            // straight-line parse path applies; some optional branches
-            // (extra_fields, ICC, custom primaries) still need round-trip
-            // verification before we display them as authoritative.
+            print("XYB-encoded:  \(m.xybEncoded ? "yes" : "no")")
+            if !m.extraChannels.isEmpty {
+                print("Extra ch:     \(m.extraChannels.count)")
+                for (i, ec) in m.extraChannels.enumerated() {
+                    let extra = ec.type == .alpha
+                        ? " (\(ec.alphaAssociated ? "premultiplied" : "straight"))"
+                        : ""
+                    print("  [\(i)]:        \(ec.type)\(extra) — \(formatBitDepth(ec.bitDepth))\(ec.name.isEmpty ? "" : " '\(ec.name)'")")
+                }
+            }
+            if let anim = m.animation {
+                print("Animation:    \(anim.tpsNumerator)/\(anim.tpsDenominator) tps, loops=\(anim.numLoops)")
+            }
+            if m.intensityTarget != 255.0 {
+                print("HDR:          intensity target = \(m.intensityTarget) cd/m²")
+            }
         } else {
             print()
-            print("(ImageMetadata could not be parsed — codestream may use header features not yet implemented)")
+            print("(ImageMetadata could not be parsed)")
         }
     }
 }

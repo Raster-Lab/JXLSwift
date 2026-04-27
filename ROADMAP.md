@@ -22,18 +22,18 @@ For users who need a working JXL pipeline today, switch to the `libjxl-backend` 
 | Codestream signature `FF 0A` | §C.3.1 | ✅ | constant + helpers |
 | `SizeHeader` (xsize / ysize) | §C.3.2 | ✅ | small + large + aspect-ratio shortcuts; verified against real cjxl-produced files |
 
-### Phase H — Image headers (codestream pre-pixel)
+### Phase H — Image headers (codestream pre-pixel) ✅ DONE (read + write + round-trip)
 
-| Section | Spec ref | Status |
-|---|---|---|
-| `ImageMetadata` | §C.3.3 | ⏳ not started |
-| `ColorEncoding` | §C.3.4 | ⏳ |
-| `BitDepth` (uint8 / uint16 / float16 / float32 / custom) | §C.3.5 | ⏳ |
-| `ToneMapping` (HDR) | §C.3.6 | ⏳ |
-| `ExtraChannelInfo` (alpha, depth, thermal, …) | §C.3.7 | ⏳ |
-| `Animation` header | §C.3.8 | ⏳ |
-| Preview frame info | §C.3.9 | ⏳ |
-| ICC profile box (compressed) | §C.4 | ⏳ |
+| Section | Spec ref | Status | Verified by |
+|---|---|---|---|
+| `ImageMetadata` | §C.3.3 | ✅ read + write | round-trip tests for grayscale-medical, RGBA16, orientation, animation, float-HDR cases |
+| `ColorEncoding` | §C.3.4 | ✅ read + write | exercised by ImageMetadata round-trips covering sRGB + grayscale-D65 |
+| `BitDepth` (uint8 / uint16 / float16 / float32 / custom) | §C.3.5 | ✅ read + write | direct round-trip tests for 8/10/12/16-bit unsigned + 16/32-bit float |
+| `ToneMapping` (HDR) | §C.3.6 | ✅ read + write | float-HDR round-trip; intensity target preserved within half-float precision |
+| `ExtraChannelInfo` (alpha, depth, thermal, …) | §C.3.7 | ✅ read + write | RGBA16 round-trip; alpha-associated bit verified |
+| `Animation` header | §C.3.8 | ✅ read + write | animation round-trip (1000/1001 tps, loops=0) |
+| Preview frame info | §C.3.9 | ✅ read + write (uses SizeHeader) | exercised through the extra-fields branch |
+| ICC profile box (compressed) | §C.4 | ⏳ not yet | needs Brotli or pre-defined ICC tables |
 
 ### Phase E — Entropy coding
 

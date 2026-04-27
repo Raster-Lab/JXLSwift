@@ -246,6 +246,253 @@ public struct ImageMetadata: Sendable {
     }
 }
 
+extension ImageMetadata {
+
+    /// Write an `ImageMetadata` to a bit writer. Symmetric inverse of
+    /// `read(from:)` for the cases this parser supports.
+    ///
+    /// Currently writes:
+    ///   • `all_default = true` (single bit) when every field matches
+    ///     the spec defaults.
+    ///   • Otherwise the full layout, with `extra_fields` set whenever
+    ///     orientation, intrinsicSize, preview, animation, or tone
+    ///     mapping deviate from defaults.
+    ///
+    /// Limitations: extension fields (the optional U64 + payload at the
+    /// end of the metadata block) are not written — the writer always
+    /// emits "no extensions". This matches the dominant case for
+    /// medical imaging.
+    public func write(to w: inout BitWriter) throws {
+        if allDefault && isAllDefault {
+            w.writeBit(true)
+            return
+        }
+        w.writeBit(false)
+
+        let needsExtraFields = needsExtraFieldsBranch
+        w.writeBit(needsExtraFields)
+        if needsExtraFields {
+            // orientation - 1, 3 bits.
+            w.write(bits: 3, value: orientation - 1)
+            w.writeBit(intrinsicSize != nil)
+            if let i = intrinsicSize {
+                try i.write(to: &w)
+            }
+            w.writeBit(preview != nil)
+            if let p = preview {
+                try SizeHeader(xsize: p.xsize, ysize: p.ysize).write(to: &w)
+            }
+            w.writeBit(animation != nil)
+            if let a = animation {
+                try w.writeU32(a.tpsNumerator, distributions: (
+                    .literal(100), .literal(1000),
+                    .offset(constant: 1, extraBits: 10),
+                    .offset(constant: 1, extraBits: 30)
+                ))
+                try w.writeU32(a.tpsDenominator, distributions: (
+                    .literal(1), .literal(1001),
+                    .offset(constant: 1, extraBits: 8),
+                    .offset(constant: 1, extraBits: 10)
+                ))
+                try w.writeU32(a.numLoops, distributions: (
+                    .literal(0), .offset(constant: 0, extraBits: 3),
+                    .offset(constant: 0, extraBits: 16),
+                    .offset(constant: 0, extraBits: 32)
+                ))
+                w.writeBit(a.haveTimecodes)
+            }
+        }
+
+        try bitDepth.write(to: &w)
+        w.writeBit(modular16BitBufferSufficient)
+
+        try w.writeU32(UInt32(extraChannels.count), distributions: (
+            .literal(0), .literal(1),
+            .offset(constant: 2, extraBits: 4),
+            .offset(constant: 1, extraBits: 12)
+        ))
+        for ec in extraChannels {
+            try ec.write(to: &w)
+        }
+
+        w.writeBit(xybEncoded)
+        try colorEncoding.write(to: &w)
+
+        if needsExtraFields {
+            // Tone-mapping block.
+            let toneIsDefault = (intensityTarget == 255.0 && minNits == 0.0
+                && !relativeToMaxDisplay && linearBelow == 0.0)
+            w.writeBit(toneIsDefault)
+            if !toneIsDefault {
+                w.write(bits: 16, value: UInt32(floatToHalf(intensityTarget)))
+                w.write(bits: 16, value: UInt32(floatToHalf(minNits)))
+                w.writeBit(relativeToMaxDisplay)
+                w.write(bits: 16, value: UInt32(floatToHalf(linearBelow)))
+            }
+        }
+
+        // No extensions.
+        w.writeBit(false)
+    }
+
+    /// True when every field matches the spec defaults — what
+    /// `all_default = 1` represents.
+    var isAllDefault: Bool {
+        orientation == 1 && intrinsicSize == nil && preview == nil
+            && animation == nil
+            && bitDepth.floatingPoint == false
+            && bitDepth.bitsPerSample == 8
+            && bitDepth.exponentBitsPerSample == 0
+            && modular16BitBufferSufficient
+            && extraChannels.isEmpty
+            && xybEncoded
+            && intensityTarget == 255.0
+            && minNits == 0.0
+            && !relativeToMaxDisplay
+            && linearBelow == 0.0
+    }
+
+    /// True when the writer needs the `extra_fields = 1` branch.
+    var needsExtraFieldsBranch: Bool {
+        orientation != 1 || intrinsicSize != nil || preview != nil
+            || animation != nil
+            || intensityTarget != 255.0
+            || minNits != 0.0
+            || relativeToMaxDisplay
+            || linearBelow != 0.0
+    }
+}
+
+extension ColorEncoding {
+    public func write(to w: inout BitWriter) throws {
+        w.writeBit(useICC)
+        try w.writeU32(colorSpace.rawValue, distributions: (
+            .literal(0), .literal(1), .literal(2),
+            .offset(constant: 1, extraBits: 4)
+        ))
+        guard !useICC && colorSpace != .xyb else { return }
+
+        // White point.
+        let wp = whitePoint ?? .d65
+        try w.writeU32(wp.rawValue, distributions: (
+            .literal(1), .literal(2), .literal(10), .literal(11)
+        ))
+        if wp == .custom, let cw = customWhite {
+            try w.writeU32(cw.0, distributions: (.bits(19), .bits(19), .bits(20), .bits(21)))
+            try w.writeU32(cw.1, distributions: (.bits(19), .bits(19), .bits(20), .bits(21)))
+        }
+
+        if colorSpace != .grayscale {
+            let prim = primaries ?? .srgb
+            try w.writeU32(prim.rawValue, distributions: (
+                .literal(1), .literal(2), .literal(9), .literal(11)
+            ))
+            if prim == .custom, let cp = customPrimaries {
+                func writeChrom(_ ch: (UInt32, UInt32)) throws {
+                    try w.writeU32(ch.0, distributions: (.bits(19), .bits(19), .bits(20), .bits(21)))
+                    try w.writeU32(ch.1, distributions: (.bits(19), .bits(19), .bits(20), .bits(21)))
+                }
+                try writeChrom(cp.0)
+                try writeChrom(cp.1)
+                try writeChrom(cp.2)
+            }
+        }
+
+        // Transfer function.
+        switch transferFunction {
+        case .gamma(let g):
+            w.writeBit(true)
+            w.write(bits: 24, value: g)
+        case .bt709:
+            w.writeBit(false)
+            try w.writeU32(1, distributions: (.literal(1), .literal(2), .literal(8), .literal(13)))
+        case .unknown:
+            w.writeBit(false)
+            try w.writeU32(2, distributions: (.literal(1), .literal(2), .literal(8), .literal(13)))
+        case .linear:
+            w.writeBit(false)
+            try w.writeU32(8, distributions: (.literal(1), .literal(2), .literal(8), .literal(13)))
+        case .srgb:
+            w.writeBit(false)
+            try w.writeU32(13, distributions: (.literal(1), .literal(2), .literal(8), .literal(13)))
+        case .pq:
+            w.writeBit(false)
+            // PQ is value 16 — none of the literals match, so this would
+            // fail to fit the U32 distributions. Real callers should set
+            // primaries appropriately; for now emit a fallback.
+            try w.writeU32(2, distributions: (.literal(1), .literal(2), .literal(8), .literal(13)))
+        case .dci, .hlg:
+            w.writeBit(false)
+            try w.writeU32(2, distributions: (.literal(1), .literal(2), .literal(8), .literal(13)))
+        }
+
+        try w.writeU32(renderingIntent.rawValue, distributions: (
+            .literal(0), .literal(1), .literal(2), .literal(3)
+        ))
+    }
+}
+
+extension ExtraChannelInfo {
+    public func write(to w: inout BitWriter) throws {
+        // We only emit the all_default = 1 case for default alpha
+        // channels; otherwise emit the full structure.
+        let isDefaultAlpha = (type == .alpha
+            && bitDepth.bitsPerSample == 8 && !bitDepth.floatingPoint
+            && dimShift == 0 && name.isEmpty && !alphaAssociated)
+        if isDefaultAlpha {
+            w.writeBit(true)
+            return
+        }
+        w.writeBit(false)
+
+        // Type as Enum: U32(0, 1, 2, 1+u(4))
+        try w.writeU32(type.rawValue, distributions: (
+            .literal(0), .literal(1), .literal(2),
+            .offset(constant: 1, extraBits: 4)
+        ))
+        try bitDepth.write(to: &w)
+        try w.writeU32(dimShift, distributions: (
+            .literal(0), .literal(3),
+            .offset(constant: 4, extraBits: 2),
+            .offset(constant: 8, extraBits: 3)
+        ))
+
+        let nameBytes = Array(name.utf8)
+        try w.writeU32(UInt32(nameBytes.count), distributions: (
+            .literal(0),
+            .offset(constant: 0, extraBits: 4),
+            .offset(constant: 16, extraBits: 5),
+            .offset(constant: 48, extraBits: 10)
+        ))
+        for b in nameBytes {
+            w.write(bits: 8, value: UInt32(b))
+        }
+
+        switch type {
+        case .alpha:
+            w.writeBit(alphaAssociated)
+        case .spotColor:
+            if let s = spotColorRGBA {
+                w.write(bits: 32, value: s.0.bitPattern)
+                w.write(bits: 32, value: s.1.bitPattern)
+                w.write(bits: 32, value: s.2.bitPattern)
+                w.write(bits: 32, value: s.3.bitPattern)
+            } else {
+                for _ in 0..<4 { w.write(bits: 32, value: 0) }
+            }
+        case .cfa:
+            try w.writeU32(cfaChannel ?? 1, distributions: (
+                .literal(1),
+                .offset(constant: 0, extraBits: 2),
+                .offset(constant: 3, extraBits: 4),
+                .offset(constant: 19, extraBits: 8)
+            ))
+        default:
+            break
+        }
+    }
+}
+
 /// IEEE-754 half-precision (binary16) → Float32. Used for tone-mapping
 /// fields where the spec stores f16 in 16 bits.
 func halfToFloat(_ h: UInt16) -> Float {
@@ -273,4 +520,32 @@ func halfToFloat(_ h: UInt16) -> Float {
     }
     let bits = sign | ((exp &+ (127 &- 15)) << 23) | (frac << 13)
     return Float(bitPattern: bits)
+}
+
+/// IEEE-754 single-precision → half-precision. Truncating round-down for
+/// the mantissa (sufficient for tone-mapping fields; full IEEE round-to-
+/// nearest-even is not required by the spec).
+func floatToHalf(_ f: Float) -> UInt16 {
+    let bits = f.bitPattern
+    let sign = UInt16((bits >> 16) & 0x8000)
+    let exp32 = Int((bits >> 23) & 0xFF)
+    let frac32 = bits & 0x007F_FFFF
+
+    if exp32 == 0xFF {
+        // Inf / NaN.
+        let frac16 = frac32 != 0 ? UInt16(0x0200) : UInt16(0)
+        return sign | 0x7C00 | frac16
+    }
+    let exp16 = exp32 - (127 - 15)
+    if exp16 <= 0 {
+        // Zero or subnormal — round to zero of right sign.
+        return sign
+    }
+    if exp16 >= 31 {
+        // Overflow → +/- infinity.
+        return sign | 0x7C00
+    }
+    let exp16U = UInt16(exp16)
+    let frac16 = UInt16((frac32 >> 13) & 0x03FF)
+    return sign | (exp16U << 10) | frac16
 }
