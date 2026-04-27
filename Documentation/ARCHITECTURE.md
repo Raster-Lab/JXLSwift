@@ -4,7 +4,7 @@ This document explains why the codebase is shaped the way it is and what guarant
 
 ## One-line summary
 
-A thin, ergonomic Swift surface over libjxl, plus medical-imaging integrations (DICOM, multi-frame, memory-bounded batch) that libjxl's own CLI doesn't ship.
+A thin, ergonomic Swift surface over libjxl, plus medical-imaging integrations (DICOM, multi-frame, memory-bounded batch).
 
 ## Module map
 
@@ -163,10 +163,9 @@ Compressed transfer syntaxes (JPEG / JPEG-LS / JPEG 2000 / RLE) throw `DICOMErro
 
 A few things were considered and explicitly deferred:
 
-- **Encoder pooling**: ~50 ms saved per file × 20 files = 1 s = 6 % win on a 17 s batch. Not worth the API complexity right now.
+- **Encoder pooling**: re-using `JxlEncoder` instances across calls via `JxlEncoderReset` would save the per-call setup cost (~50 ms on this machine). On a typical batch run that's a small fraction of total wall time, not worth the API complexity right now.
 - **Pipeline overlap (load while encode)**: Swift `TaskGroup` with `--parallel ≥ 2` already interleaves load/encode/write across in-flight tasks via the runtime scheduler. Explicit producer-consumer queues would only help when load is much faster than encode (rare on real DICOM).
 - **NIfTI ingestion**: prototype was built and rolled back per request. Multi-frame remains in the codec — useful for any animation-style workflow.
-- **JPEG-LS comparison in the bench**: no portable Homebrew-installable CLI exists for it on macOS. Would require `charls` or DCMTK. Skipped; the JP2 vs JXL comparison alone tells the story for medical imaging.
 - **Linux + iOS support**: pkg-config-driven libjxl works on Linux; on iOS we'd need to vendor libjxl statically. Not pursued in v0.4.
 
 ## Threading model

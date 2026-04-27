@@ -1,10 +1,9 @@
 // `jxl-tool batch` — parallel batch encoder.
 //
-// Recursively encodes every PNG/JPEG/TIFF/BMP/DICOM under an input
-// directory into JPEG XL, in a single long-lived process. The advantage
-// over a shell loop calling cjxl per file is twofold:
-//   • no per-file process startup cost
-//   • DICOM input is read at native bit depth (cjxl can't read .dcm)
+// Recursively encodes every PNG / JPEG / TIFF / BMP / DICOM under an input
+// directory into JPEG XL, in a single long-lived process. Per-file process
+// startup is amortised across the run, intermediate file I/O is avoided,
+// and DICOM input is read at native bit depth.
 
 import ArgumentParser
 import Foundation

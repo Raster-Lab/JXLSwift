@@ -1,17 +1,18 @@
 // Minimal DICOM (Digital Imaging and Communications in Medicine) reader.
 //
 // Scope: enough of DICOM to ingest the uncompressed monochrome scans that
-// dominate radiology archives — what `magick` would otherwise have to read
-// and downsample to 8-bit before cjxl can consume it.
+// dominate radiology archives, preserving native bit depth (typically
+// 12 bits stored in 16-bit containers).
 //
 // Supported transfer syntaxes:
 //   • 1.2.840.10008.1.2     — Implicit VR Little Endian
 //   • 1.2.840.10008.1.2.1   — Explicit VR Little Endian
 //   • 1.2.840.10008.1.2.2   — Explicit VR Big Endian (pixel-byte-swap on read)
 //
-// NOT supported (will throw): JPEG / JPEG-LS / JPEG 2000 / RLE encapsulated
-// transfer syntaxes. Those require a separate decompression step which is
-// out of scope; in practice they are rare in modern PACS archives.
+// NOT supported (will throw): encapsulated transfer syntaxes that wrap
+// pixel data in another codec stream. Those require a separate
+// decompression step which is out of scope; in practice they are rare
+// in modern PACS archives.
 
 import Foundation
 
