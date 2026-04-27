@@ -56,6 +56,38 @@ struct Info: ParsableCommand {
             print()
             print("(ImageMetadata could not be parsed)")
         }
+
+        // M0 placeholder fields, if the buffer carries the 'M0'
+        // marker right after ImageMetadata. This is project-internal
+        // diagnostic output — the marker is documented in
+        // MinimalLosslessCodec.swift.
+        if let m0 = try? MinimalLosslessCodec.inspectM0(data) {
+            print()
+            print("--- M0 placeholder ---")
+            print("Channels:     \(m0.channels) (\(channelDescription(m0.channels)))")
+            if m0.channels >= 3 {
+                print("RCT variant:  \(rctLabel(m0.rctVariant))")
+            }
+            print("Predictors:   \(m0.channelPredictors.map(predictorLabel).joined(separator: ", "))")
+        }
+    }
+}
+
+private func rctLabel(_ v: RCTVariant) -> String {
+    switch v {
+    case .identity: return "identity (no RCT)"
+    case .ycocgR:   return "YCoCg-R"
+    }
+}
+
+private func predictorLabel(_ p: PredictorID) -> String {
+    switch p {
+    case .zero:             return "zero"
+    case .west:             return "west"
+    case .north:            return "north"
+    case .avgWN:            return "avgWN"
+    case .gradient:         return "gradient"
+    case .medianWNGradient: return "medianWNGradient"
     }
 }
 

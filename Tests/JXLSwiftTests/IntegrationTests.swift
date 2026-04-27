@@ -2755,6 +2755,68 @@ extension FoundationTests {
             "(balanced=\(bal.count), fast=\(fst.count))")
     }
 
+    /// `inspectM0(_:)` extracts geometry, channel count, RCT variant
+    /// and per-channel predictor IDs without decoding pixels. Useful
+    /// for `jxl-tool info`-style diagnostic without paying decode cost.
+    func testM0_Inspection_RoundTrip() throws {
+        // Vertical-stripes 8×8 → encoder picks `.north`.
+        var frame = ImageFrame(
+            width: 16, height: 16, channels: 1,
+            pixelType: .uint8, colorSpace: .grayscale
+        )
+        for y in 0..<16 {
+            for x in 0..<16 {
+                frame.setPixel(x: x, y: y, channel: 0, value: UInt16(x * 16))
+            }
+        }
+        let encoded = try MinimalLosslessCodec.encode(frame)
+        let info = try MinimalLosslessCodec.inspectM0(encoded)
+        XCTAssertEqual(info.xsize, 16)
+        XCTAssertEqual(info.ysize, 16)
+        XCTAssertEqual(info.bitsPerSample, 8)
+        XCTAssertEqual(info.channels, 1)
+        XCTAssertEqual(info.rctVariant, .identity)
+        XCTAssertEqual(info.channelPredictors, [.north])
+    }
+
+    /// 3-channel correlated RGB → encoder picks `.ycocgR` and the
+    /// chroma predictors collapse to `.zero` once RCT decorrelates
+    /// the channels.
+    func testM0_Inspection_RGBPicksYCoCgR() throws {
+        var frame = ImageFrame(
+            width: 32, height: 32, channels: 3,
+            pixelType: .uint8, colorSpace: .sRGB
+        )
+        for y in 0..<32 {
+            for x in 0..<32 {
+                let base = min(254, max(1, x + y))
+                frame.setPixel(x: x, y: y, channel: 0, value: UInt16(base))
+                frame.setPixel(x: x, y: y, channel: 1, value: UInt16(base + 1))
+                frame.setPixel(x: x, y: y, channel: 2, value: UInt16(base - 1))
+            }
+        }
+        let encoded = try MinimalLosslessCodec.encode(frame)
+        let info = try MinimalLosslessCodec.inspectM0(encoded)
+        XCTAssertEqual(info.channels, 3)
+        XCTAssertEqual(info.rctVariant, .ycocgR,
+            "correlated RGB should pick YCoCg-R")
+        XCTAssertEqual(info.channelPredictors.count, 3)
+    }
+
+    /// `isM0(_:)` returns true for an M0 buffer and false for a
+    /// random PNM (no marker).
+    func testM0_isM0_Recognises() throws {
+        let frame = ImageFrame(
+            width: 4, height: 4, channels: 1,
+            pixelType: .uint8, colorSpace: .grayscale
+        )
+        let encoded = try MinimalLosslessCodec.encode(frame)
+        XCTAssertTrue(MinimalLosslessCodec.isM0(encoded))
+        // Random data → false.
+        let bogus = Data([0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x00, 0x00, 0x00])
+        XCTAssertFalse(MinimalLosslessCodec.isM0(bogus))
+    }
+
     /// Float32 isn't supported by M0 — encoder should throw cleanly.
     func testM0_RejectsFloat32() {
         let frame = ImageFrame(

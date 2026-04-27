@@ -411,6 +411,95 @@ public struct MinimalLosslessCodec {
         return frame
     }
 
+    // MARK: - Inspection (M0-specific diagnostic fields)
+
+    /// Lightweight summary of an M0 buffer: image geometry + the
+    /// encoder's compression choices. Cheaper than `decode(_:)`
+    /// because it stops before the entropy stream — useful for
+    /// `jxl-tool info`-style diagnostics.
+    public struct M0Inspection: Sendable {
+        public let xsize: UInt32
+        public let ysize: UInt32
+        public let bitsPerSample: UInt32
+        public let channels: Int
+        public let rctVariant: RCTVariant
+        public let channelPredictors: [PredictorID]
+    }
+
+    /// Inspect an M0 buffer without decoding pixels. Reads the
+    /// signature + SizeHeader + ImageMetadata + 'M0' marker + channel
+    /// count + (if applicable) RCT variant + per-channel predictor
+    /// IDs, and returns them. Throws if the buffer doesn't have the
+    /// 'M0' marker (i.e. isn't an M0 buffer).
+    public static func inspectM0(_ data: Data) throws -> M0Inspection {
+        var r = BitReader(data)
+        let sig0: UInt32
+        let sig1: UInt32
+        do {
+            sig0 = try r.read(bits: 8)
+            sig1 = try r.read(bits: 8)
+        } catch let e as BitstreamError { throw MinimalLosslessError.bitstream(e) }
+        guard sig0 == 0xFF && sig1 == 0x0A else {
+            throw MinimalLosslessError.missingSignature
+        }
+        let size: SizeHeader
+        do { size = try SizeHeader.read(from: &r) }
+        catch let e as BitstreamError { throw MinimalLosslessError.bitstream(e) }
+        let meta: ImageMetadata
+        do { meta = try ImageMetadata.read(from: &r) }
+        catch let e as BitstreamError { throw MinimalLosslessError.bitstream(e) }
+        do { try r.alignToByte() }
+        catch let e as BitstreamError { throw MinimalLosslessError.bitstream(e) }
+        let marker: UInt32
+        do { marker = try r.read(bits: 16) }
+        catch let e as BitstreamError { throw MinimalLosslessError.bitstream(e) }
+        guard marker == placeholderMarker else {
+            throw MinimalLosslessError.missingMarker
+        }
+        do { try r.alignToByte() }
+        catch let e as BitstreamError { throw MinimalLosslessError.bitstream(e) }
+        let channels: Int
+        do { channels = Int(try r.read(bits: 3)) }
+        catch let e as BitstreamError { throw MinimalLosslessError.bitstream(e) }
+        guard (1...4).contains(channels) else {
+            throw MinimalLosslessError.unsupportedChannelCount(channels)
+        }
+        let rctVariant: RCTVariant
+        if channels >= 3 {
+            let raw: UInt32
+            do { raw = try r.read(bits: 2) }
+            catch let e as BitstreamError { throw MinimalLosslessError.bitstream(e) }
+            rctVariant = RCTVariant(rawValue: raw) ?? .identity
+        } else {
+            rctVariant = .identity
+        }
+        do { try r.alignToByte() }
+        catch let e as BitstreamError { throw MinimalLosslessError.bitstream(e) }
+        var predictors = [PredictorID](); predictors.reserveCapacity(channels)
+        for _ in 0..<channels {
+            let raw: UInt32
+            do { raw = try r.read(bits: 3) }
+            catch let e as BitstreamError { throw MinimalLosslessError.bitstream(e) }
+            predictors.append(PredictorID(rawValue: raw) ?? .gradient)
+        }
+        return M0Inspection(
+            xsize: size.xsize,
+            ysize: size.ysize,
+            bitsPerSample: meta.bitDepth.bitsPerSample,
+            channels: channels,
+            rctVariant: rctVariant,
+            channelPredictors: predictors
+        )
+    }
+
+    /// True iff the buffer carries the M0 placeholder marker. Useful
+    /// to gate display of M0-specific fields in tools that handle
+    /// both M0 and (eventually) real JXL codestreams.
+    public static func isM0(_ data: Data) -> Bool {
+        do { _ = try inspectM0(data); return true }
+        catch { return false }
+    }
+
     // MARK: - Distribution-shape selection
 
     /// Inspect the actual token histogram produced by running `values`
