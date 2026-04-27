@@ -149,8 +149,19 @@ public struct ColorEncoding: Sendable {
             }
 
             if cs != .grayscale {
-                // Primaries — also `Enum()` per spec.
-                let pRaw = try r.readEnum()
+                // Primaries — uses spec-specific distribution
+                // `(literal(1), literal(2), literal(9), literal(11))`,
+                // i.e. the named Primaries values are mapped 1:1 to
+                // selectors. This was *not* `Enum()` — the
+                // diagnostic against a cjxl-produced Rec.2100 PQ
+                // file caught the bug: cjxl writes selector 2 =
+                // literal(9) (BT2100); our Enum-based parser was
+                // reading selector 2 = literal(2) = .custom and
+                // then consuming customPrim's extra bits, throwing
+                // every later field out of alignment.
+                let pRaw = try r.readU32((
+                    .literal(1), .literal(2), .literal(9), .literal(11)
+                ))
                 prim = Primaries(rawValue: pRaw)
                 if prim == .custom {
                     func chrom() throws -> (UInt32, UInt32) {

@@ -199,6 +199,75 @@ final class FoundationTests: XCTestCase {
         )
     }
 
+    /// Diagnostic: print the ColorEncoding + intensity-target our
+    /// parser extracts from a cjxl-produced Rec.2100-PQ HDR file.
+    /// This exercises BT2100 primaries, PQ transfer function, and
+    /// ToneMapping intensity_target parsing.
+    func testDiagnostic_DumpCjxlPQHDR() throws {
+        guard let cjxl = whichTool("cjxl") else {
+            try XCTSkipIf(true, "cjxl not on PATH")
+            return
+        }
+        let pnmPath = NSTemporaryDirectory() + "diag-pq.ppm"
+        let jxlPath = NSTemporaryDirectory() + "diag-pq.jxl"
+        defer {
+            try? FileManager.default.removeItem(atPath: pnmPath)
+            try? FileManager.default.removeItem(atPath: jxlPath)
+        }
+        try makeSyntheticPNM(
+            width: 16, height: 16, channels: 3, bitDepth: 8,
+            generator: { x, y, c in UInt16((x &+ y &+ Int(c)) & 0xFF) }
+        ).write(to: URL(fileURLWithPath: pnmPath))
+        let proc = Process()
+        proc.launchPath = cjxl
+        proc.arguments = ["-q", "100", "-x", "color_space=RGB_D65_202_Rel_PeQ",
+                          pnmPath, jxlPath]
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        try proc.run()
+        proc.waitUntilExit()
+        let data = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
+        let inspect = try JXLDecoder().inspect(data)
+        if let m = inspect.metadata {
+            print("DIAG cjxl-pq: cs=\(m.colorEncoding.colorSpace) wp=\(String(describing: m.colorEncoding.whitePoint)) prim=\(String(describing: m.colorEncoding.primaries)) tf=\(m.colorEncoding.transferFunction) ri=\(m.colorEncoding.renderingIntent) intensity=\(m.intensityTarget) minNits=\(m.minNits)")
+        }
+    }
+
+    /// Diagnostic: print the ExtraChannelInfo our parser extracts
+    /// from a cjxl-produced RGBA file. Used to find any remaining
+    /// bit-layout bugs in the alpha-channel parser path.
+    func testDiagnostic_DumpCjxlRGBAExtraChannel() throws {
+        guard let cjxl = whichTool("cjxl") else {
+            try XCTSkipIf(true, "cjxl not on PATH")
+            return
+        }
+        let pamPath = NSTemporaryDirectory() + "diag-rgba.pam"
+        let jxlPath = NSTemporaryDirectory() + "diag-rgba.jxl"
+        defer {
+            try? FileManager.default.removeItem(atPath: pamPath)
+            try? FileManager.default.removeItem(atPath: jxlPath)
+        }
+        try makeSyntheticPNM(
+            width: 16, height: 16, channels: 4, bitDepth: 8,
+            generator: { x, y, c in
+                if c == 3 { return 255 }
+                return UInt16((x &+ y) & 0xFF)
+            }
+        ).write(to: URL(fileURLWithPath: pamPath))
+        let proc = Process()
+        proc.launchPath = cjxl
+        proc.arguments = ["-q", "100", pamPath, jxlPath]
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        try proc.run()
+        proc.waitUntilExit()
+        let data = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
+        let inspect = try JXLDecoder().inspect(data)
+        if let m = inspect.metadata, let ec = m.extraChannels.first {
+            print("DIAG cjxl-rgba: type=\(ec.type) bps=\(ec.bitDepth.bitsPerSample) float=\(ec.bitDepth.floatingPoint) dimShift=\(ec.dimShift) name='\(ec.name)' alphaAssoc=\(ec.alphaAssociated)")
+        }
+    }
+
     /// Diagnostic: print the colour-encoding fields our parser
     /// extracts from a cjxl-produced grayscale file. Used to track
     /// down a discrepancy where jxlinfo reports D65 but bit-level
