@@ -118,7 +118,7 @@ Spec sections from ISO/IEC 18181-1 and ISO/IEC 18181-2. Each row is verified by 
 |---|---|---|
 | `ImageMetadata` | §C.3.3 | round-trip tests for grayscale-medical, RGBA16, orientation, animation, float-HDR cases |
 | `ColorEncoding` | §C.3.4 | exercised by ImageMetadata round-trips covering sRGB + grayscale-D65 |
-| `BitDepth` (uint8 / uint16 / float16 / float32 / custom) | §C.3.5 | direct round-trip for 8/10/12/16-bit unsigned + 16/32-bit float |
+| `BitDepth` (uint8 / uint16 / float16 / float32 / custom) | §C.3.5 | direct round-trip for 8/10/12/14/16-bit unsigned + 16/32-bit float |
 | `ToneMapping` (HDR) | §C.3.6 | float-HDR round-trip; intensity target preserved within half-float precision |
 | `ExtraChannelInfo` (alpha, depth, thermal, …) | §C.3.7 | RGBA16 round-trip; alpha-associated bit verified |
 | `Animation` header | §C.3.8 | animation round-trip (1000/1001 tps, loops=0) |

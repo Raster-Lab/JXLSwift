@@ -208,12 +208,15 @@ final class FoundationTests: XCTestCase {
     // MARK: - Header structures (Phase H)
 
     /// BitDepth round-trip across the standard cases medical imaging
-    /// cares about: 8-bit, 12-bit, 16-bit unsigned, plus float32.
+    /// cares about: 8/10/12/14/16-bit unsigned, plus float16/float32.
+    /// 14-bit lives on the `bits=12 + extra` U32 selector branch and is
+    /// the per-pixel depth used by some mammography and CT scans.
     func testBitDepth_RoundTrip() throws {
         let cases: [BitDepth] = [
             BitDepth(floatingPoint: false, bitsPerSample: 8),
             BitDepth(floatingPoint: false, bitsPerSample: 10),
             BitDepth(floatingPoint: false, bitsPerSample: 12),
+            BitDepth(floatingPoint: false, bitsPerSample: 14),
             BitDepth(floatingPoint: false, bitsPerSample: 16),
             BitDepth(floatingPoint: true,  bitsPerSample: 16, exponentBitsPerSample: 5),
             BitDepth(floatingPoint: true,  bitsPerSample: 32, exponentBitsPerSample: 8),
