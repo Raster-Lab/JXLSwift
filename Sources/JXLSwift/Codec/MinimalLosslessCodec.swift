@@ -19,8 +19,10 @@
 //     SizeHeader                       // §C.3.2 (spec)
 //     ImageMetadata                    // §C.3.3 (spec)
 //     'M0' marker         u(16)        // 0x4D30, makes the placeholder explicit
-//     SimpleEntropyStream              // pixel-value stream
 //     align to byte
+//     per-channel predictor IDs        // u(3) per channel; see PredictorID
+//     align to byte
+//     SimpleEntropyStream              // residual-value stream
 //
 // The 'M0' marker exists so the future spec-compliant decoder can
 // distinguish a placeholder buffer from a real codestream and refuse
@@ -30,10 +32,15 @@
 //
 // Pixel encoding strategy (lossless):
 //   • Each channel is processed separately in row-major order. For
-//     every pixel we compute `predicted = Predictor.gradient(W, N, NW)`
-//     using already-encoded neighbours, then emit
-//     `ZigZag.pack(actual - predicted)` to the entropy stream. The
-//     decoder reverses: decode the residual, predict from already-
+//     every channel the encoder evaluates each available predictor
+//     against the channel's pixels, picks the one whose residuals
+//     produce the fewest distinct HybridUint tokens (ties broken by
+//     the smaller `Σ|residual|`), and writes that predictor's u(3)
+//     ID into the bitstream. Then for every pixel we compute
+//     `predicted = chosenPredictor(W, N, NW, NE)` using already-
+//     encoded neighbours and emit `ZigZag.pack(actual - predicted)`
+//     to the entropy stream. The decoder reverses: read the
+//     predictor IDs, decode each residual, predict from already-
 //     decoded neighbours, recover `actual = predicted + residual`.
 //   • Residuals cluster near zero on natural-looking images, so the
 //     `HybridUint` token alphabet sees mostly small values (which
@@ -48,10 +55,13 @@
 // smaller on smooth-gradient images — the test
 // `testM0_GradientPredictionReducesOutputSize_*` exercises this.
 //
-// **Predictor choice is fixed to `gradient`** in this M0 path. The
-// per-pixel adaptive selection driven by the MA-tree (§C.7.4) is
-// future work — when that lands, this file should either be deleted
-// or kept as a regression-test fixture for the predictor primitive.
+// **Predictor selection is per-channel, fixed within a channel.** A
+// real Modular sub-codec drives per-pixel adaptive selection via the
+// MA-tree (§C.7.4); per-channel selection is a much weaker
+// approximation but lets us pick `north` for vertical-stripe images,
+// `west` for horizontal-stripe ones, and so on. When the MA-tree
+// lands, this file should either be deleted or kept as a regression-
+// test fixture for the predictor primitive.
 
 import Foundation
 
@@ -92,11 +102,17 @@ public struct MinimalLosslessCodec {
         do { try size.write(to: &w) }
         catch let e as BitstreamError { throw MinimalLosslessError.bitstream(e) }
 
-        // 3. ImageMetadata.
+        // 3. ImageMetadata. Pick the colour encoding to match the
+        // frame's channel count — grayscale for 1-channel frames,
+        // sRGB for 3-channel ones. The decoder uses the recovered
+        // colour-space tag to reconstruct the channel count, so this
+        // must match what the encoder saw.
         let bd = BitDepth(
             floatingPoint: false,
             bitsPerSample: UInt32(frame.pixelType.bitsPerSample)
         )
+        let colorEnc: ColorEncoding =
+            (frame.channels == 1) ? .grayscaleD65 : .srgb
         let meta = ImageMetadata(
             allDefault: false,
             orientation: 1,
@@ -107,7 +123,7 @@ public struct MinimalLosslessCodec {
             modular16BitBufferSufficient: frame.pixelType == .uint8 || frame.pixelType == .uint16,
             extraChannels: [],
             xybEncoded: false,
-            colorEncoding: ColorEncoding.grayscaleD65,
+            colorEncoding: colorEnc,
             intensityTarget: 255.0,
             minNits: 0.0,
             relativeToMaxDisplay: false,
@@ -122,12 +138,33 @@ public struct MinimalLosslessCodec {
         w.alignToByte()
         w.write(bits: 16, value: placeholderMarker)
 
-        // 5. Pixel stream. Convert ImageFrame samples to row-major
-        // residuals and pack them via HybridUint into tokens + extras.
-        // Alphabet is sized to `HybridUintConfig.defaultConfig.maxToken
-        // + 1`, not to the value range — the HybridUint layer
-        // compresses values to small tokens + extra bits.
-        let values = pixelStream(from: frame)
+        // 5. Per-channel predictor selection. For each channel we
+        // build an Int32 buffer of pixel values, score every
+        // available predictor against it, and emit the winner's u(3)
+        // ID. The decoder reads the IDs in the same channel order.
+        w.alignToByte()
+        let channelBuffers = (0..<frame.channels).map {
+            buildChannelBuffer(frame, channel: $0)
+        }
+        let channelPredictors: [PredictorID] = channelBuffers.map {
+            bestPredictorForChannel(
+                $0, width: frame.width,
+                hybridConfig: HybridUintConfig.defaultConfig
+            )
+        }
+        for id in channelPredictors {
+            w.write(bits: 3, value: id.rawValue)
+        }
+        w.alignToByte()
+
+        // 6. Residual stream. Use the chosen per-channel predictor to
+        // produce ZigZag-packed residuals, in channel-major then
+        // row-major order, and feed them through SimpleEntropyStream.
+        let values = pixelStream(
+            channelBuffers: channelBuffers,
+            width: frame.width, height: frame.height,
+            predictors: channelPredictors
+        )
         let alphabetSize = HybridUintConfig.defaultConfig.maxToken + 1
 
         // Pick the best-fit distribution shape from the existing
@@ -218,7 +255,34 @@ public struct MinimalLosslessCodec {
         guard marker == placeholderMarker else {
             throw MinimalLosslessError.missingMarker
         }
-        // 5. Pixel stream — slice out the remaining bytes.
+
+        // Determine the channel count (must match what the encoder
+        // wrote — see step 5 below) before reading predictor IDs.
+        let pixelType: PixelType =
+            meta.bitDepth.bitsPerSample == 8 ? .uint8 :
+            (meta.bitDepth.floatingPoint ? .float32 : .uint16)
+        guard pixelType != .float32 else {
+            throw MinimalLosslessError.unsupportedPixelType
+        }
+        let channels = (meta.colorEncoding.colorSpace == .grayscale) ? 1 : 3
+
+        // 5. Per-channel predictor IDs.
+        do { try r.alignToByte() }
+        catch let e as BitstreamError { throw MinimalLosslessError.bitstream(e) }
+        var channelPredictors = [PredictorID](); channelPredictors.reserveCapacity(channels)
+        for _ in 0..<channels {
+            let raw: UInt32
+            do { raw = try r.read(bits: 3) }
+            catch let e as BitstreamError { throw MinimalLosslessError.bitstream(e) }
+            guard let id = PredictorID(rawValue: raw) else {
+                throw MinimalLosslessError.unsupportedPixelType
+            }
+            channelPredictors.append(id)
+        }
+        do { try r.alignToByte() }
+        catch let e as BitstreamError { throw MinimalLosslessError.bitstream(e) }
+
+        // 6. Residual stream.
         let bytePosition = r.position / 8
         let streamSlice = data.subdata(
             in: (data.startIndex + bytePosition)..<data.endIndex
@@ -231,15 +295,6 @@ public struct MinimalLosslessCodec {
         }
 
         // Reconstruct ImageFrame.
-        let pixelType: PixelType =
-            meta.bitDepth.bitsPerSample == 8 ? .uint8 :
-            (meta.bitDepth.floatingPoint ? .float32 : .uint16)
-        guard pixelType != .float32 else {
-            throw MinimalLosslessError.unsupportedPixelType
-        }
-        // Channels: in M0 we only encode the colour channels; alpha and
-        // extra channels aren't carried.
-        let channels = (meta.colorEncoding.colorSpace == .grayscale) ? 1 : 3
         var frame = ImageFrame(
             width: Int(size.xsize),
             height: Int(size.ysize),
@@ -249,7 +304,9 @@ public struct MinimalLosslessCodec {
             alphaChannels: 0,
             iccProfile: nil
         )
-        writePixelStream(values: values, into: &frame)
+        writePixelStream(
+            values: values, predictors: channelPredictors, into: &frame
+        )
         return frame
     }
 
@@ -297,27 +354,88 @@ public struct MinimalLosslessCodec {
         }
     }
 
-    // MARK: - Pixel ↔ value-stream conversion (with gradient prediction)
-    //
-    // Channels are processed independently. For each channel we walk
-    // pixels in row-major order, look up the gradient-predicted value
-    // from already-encoded neighbours, subtract to get a signed
-    // residual, and zig-zag-pack it into the unsigned token stream.
+    // MARK: - Per-channel best-predictor selection
 
-    private static func pixelStream(from frame: ImageFrame) -> [UInt32] {
-        let total = frame.width * frame.height * frame.channels
+    /// Build a flat row-major Int32 buffer of one channel's pixels.
+    static func buildChannelBuffer(_ frame: ImageFrame, channel c: Int) -> [Int32] {
+        var buf = [Int32](repeating: 0, count: frame.width * frame.height)
+        for y in 0..<frame.height {
+            for x in 0..<frame.width {
+                buf[y * frame.width + x] = readChannelPixel(frame, x: x, y: y, channel: c)
+            }
+        }
+        return buf
+    }
+
+    /// Try every `PredictorID` against the channel's pixels and pick
+    /// the one whose residuals produce the fewest distinct
+    /// HybridUint tokens (which is what `autoSelectShape` needs to
+    /// hit the simple-distribution shortcut). Ties broken by
+    /// smaller `Σ|residual|`.
+    static func bestPredictorForChannel(
+        _ buf: [Int32], width: Int, hybridConfig: HybridUintConfig
+    ) -> PredictorID {
+        let height = buf.count / width
+        var bestID: PredictorID = .gradient
+        var bestDistinct = Int.max
+        var bestSumAbs: Int64 = .max
+
+        for id in PredictorID.allCases {
+            let predictor = id.predictor
+            var seen = Set<UInt32>()
+            var sumAbs: Int64 = 0
+            // Shadow buffer of already-"emitted" pixels (= the
+            // channel's actuals) so each prediction sees the same
+            // neighbourhood the real encoder/decoder will see.
+            var shadow = [Int32](repeating: 0, count: buf.count)
+            for y in 0..<height {
+                for x in 0..<width {
+                    let actual = buf[y * width + x]
+                    let nbh = Neighbourhood(at: x, y, in: shadow, width: width)
+                    let pred = predictor.apply(to: nbh)
+                    let residual = actual &- pred
+                    let token = hybridConfig.encode(ZigZag.pack(residual)).token
+                    seen.insert(token)
+                    sumAbs &+= Int64(residual < 0 ? -residual : residual)
+                    shadow[y * width + x] = actual
+                }
+            }
+            if seen.count < bestDistinct ||
+               (seen.count == bestDistinct && sumAbs < bestSumAbs) {
+                bestID = id
+                bestDistinct = seen.count
+                bestSumAbs = sumAbs
+            }
+        }
+        return bestID
+    }
+
+    // MARK: - Pixel ↔ residual-stream conversion (per-channel predictor)
+    //
+    // Channels are processed independently in `predictors[c]` order.
+    // For each channel we walk pixels in row-major order, predict
+    // from already-encoded neighbours, and emit
+    // `ZigZag.pack(actual - predicted)`. The decoder reverses the
+    // transformation pixel-by-pixel.
+
+    private static func pixelStream(
+        channelBuffers: [[Int32]],
+        width: Int, height: Int,
+        predictors: [PredictorID]
+    ) -> [UInt32] {
+        let total = width * height * channelBuffers.count
         var out = [UInt32](); out.reserveCapacity(total)
-        for c in 0..<frame.channels {
-            // Build the channel's pixel buffer as Int32.
-            var buf = [Int32](repeating: 0, count: frame.width * frame.height)
-            for y in 0..<frame.height {
-                for x in 0..<frame.width {
-                    let actual = readChannelPixel(frame, x: x, y: y, channel: c)
-                    let nbh = Neighbourhood(at: x, y, in: buf, width: frame.width)
-                    let pred = Predictor.gradient.apply(to: nbh)
+        for (c, channelBuf) in channelBuffers.enumerated() {
+            let predictor = predictors[c].predictor
+            var shadow = [Int32](repeating: 0, count: width * height)
+            for y in 0..<height {
+                for x in 0..<width {
+                    let actual = channelBuf[y * width + x]
+                    let nbh = Neighbourhood(at: x, y, in: shadow, width: width)
+                    let pred = predictor.apply(to: nbh)
                     let residual = actual &- pred
                     out.append(ZigZag.pack(residual))
-                    buf[y * frame.width + x] = actual
+                    shadow[y * width + x] = actual
                 }
             }
         }
@@ -325,17 +443,18 @@ public struct MinimalLosslessCodec {
     }
 
     private static func writePixelStream(
-        values: [UInt32], into frame: inout ImageFrame
+        values: [UInt32], predictors: [PredictorID], into frame: inout ImageFrame
     ) {
         let pixelsPerChannel = frame.width * frame.height
         for c in 0..<frame.channels {
+            let predictor = predictors[c].predictor
             var buf = [Int32](repeating: 0, count: pixelsPerChannel)
             for y in 0..<frame.height {
                 for x in 0..<frame.width {
                     let i = c * pixelsPerChannel + y * frame.width + x
                     let residual = ZigZag.unpack(values[i])
                     let nbh = Neighbourhood(at: x, y, in: buf, width: frame.width)
-                    let pred = Predictor.gradient.apply(to: nbh)
+                    let pred = predictor.apply(to: nbh)
                     let actual = pred &+ residual
                     buf[y * frame.width + x] = actual
                     writeChannelPixel(&frame, x: x, y: y, channel: c, value: actual)

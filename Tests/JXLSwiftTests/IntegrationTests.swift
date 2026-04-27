@@ -2086,6 +2086,147 @@ extension FoundationTests {
         }
     }
 
+    /// Vertical-stripes image: every column is a constant. The `north`
+    /// predictor (uses the pixel directly above) gives 0 residuals
+    /// for the entire interior — `bestPredictorForChannel` should
+    /// pick `.north`, and the encoded buffer should be tiny.
+    func testM0_VerticalStripes_PicksNorthPredictor() throws {
+        var frame = ImageFrame(
+            width: 32, height: 32, channels: 1,
+            pixelType: .uint8, colorSpace: .grayscale
+        )
+        // Each column is a constant; values vary horizontally only.
+        for y in 0..<32 {
+            for x in 0..<32 {
+                frame.setPixel(x: x, y: y, channel: 0, value: UInt16(x * 8))
+            }
+        }
+        let buf = MinimalLosslessCodec.buildChannelBuffer(frame, channel: 0)
+        let chosen = MinimalLosslessCodec.bestPredictorForChannel(
+            buf, width: 32, hybridConfig: .defaultConfig
+        )
+        XCTAssertEqual(chosen, .north,
+            "vertical-stripes image should pick the north predictor; got \(chosen)")
+        // And the round-trip must work plus compress meaningfully.
+        let encoded = try MinimalLosslessCodec.encode(frame)
+        XCTAssertLessThan(encoded.count, 200,
+            "vertical-stripes 32×32 8-bit should compress under 200 B; got \(encoded.count)")
+        let decoded = try MinimalLosslessCodec.decode(encoded)
+        XCTAssertEqual(decoded.data, frame.data)
+    }
+
+    /// Horizontal-stripes image: every row is a constant. The `west`
+    /// predictor gives 0 residuals for the interior — the encoder
+    /// should pick `.west`.
+    func testM0_HorizontalStripes_PicksWestPredictor() throws {
+        var frame = ImageFrame(
+            width: 32, height: 32, channels: 1,
+            pixelType: .uint8, colorSpace: .grayscale
+        )
+        for y in 0..<32 {
+            for x in 0..<32 {
+                frame.setPixel(x: x, y: y, channel: 0, value: UInt16(y * 8))
+            }
+        }
+        let buf = MinimalLosslessCodec.buildChannelBuffer(frame, channel: 0)
+        let chosen = MinimalLosslessCodec.bestPredictorForChannel(
+            buf, width: 32, hybridConfig: .defaultConfig
+        )
+        XCTAssertEqual(chosen, .west,
+            "horizontal-stripes image should pick the west predictor; got \(chosen)")
+        let encoded = try MinimalLosslessCodec.encode(frame)
+        XCTAssertLessThan(encoded.count, 200,
+            "horizontal-stripes 32×32 8-bit should compress under 200 B; got \(encoded.count)")
+        let decoded = try MinimalLosslessCodec.decode(encoded)
+        XCTAssertEqual(decoded.data, frame.data)
+    }
+
+    /// All-zero image: every predictor gives perfect residual=0
+    /// predictions. The selector breaks the tie by picking the
+    /// lowest-rawValue predictor (`.zero`). Either way the encoded
+    /// buffer is tiny.
+    func testM0_AllZero_PredictorSelectorTieBreak() throws {
+        let frame = ImageFrame(
+            width: 16, height: 16, channels: 1,
+            pixelType: .uint8, colorSpace: .grayscale
+        )
+        let buf = MinimalLosslessCodec.buildChannelBuffer(frame, channel: 0)
+        let chosen = MinimalLosslessCodec.bestPredictorForChannel(
+            buf, width: 16, hybridConfig: .defaultConfig
+        )
+        XCTAssertEqual(chosen, .zero,
+            "all-zero image: every predictor scores identically; lowest-rawValue (.zero) wins")
+        let encoded = try MinimalLosslessCodec.encode(frame)
+        XCTAssertLessThan(encoded.count, 100)
+        let decoded = try MinimalLosslessCodec.decode(encoded)
+        XCTAssertEqual(decoded.data, frame.data)
+    }
+
+    /// Smooth diagonal gradient (delta = 1 per step): on the *interior*
+    /// every linear predictor (`west`, `north`, `gradient`,
+    /// `medianWNGradient`) gives the same residual = 1, so they tie
+    /// on distinct-token count *and* on |residual| sum. The selector
+    /// breaks ties by `PredictorID.rawValue`, so `.west` wins
+    /// (rawValue 1 < 2 < 4 < 5). Either way the image compresses
+    /// dramatically — the test asserts the size win, not the
+    /// specific tie-broken winner.
+    func testM0_DiagonalGradient_AnyLinearPredictorCompressesWell() throws {
+        var frame = ImageFrame(
+            width: 32, height: 32, channels: 1,
+            pixelType: .uint8, colorSpace: .grayscale
+        )
+        for y in 0..<32 {
+            for x in 0..<32 {
+                frame.setPixel(x: x, y: y, channel: 0, value: UInt16(min(255, x + y)))
+            }
+        }
+        let buf = MinimalLosslessCodec.buildChannelBuffer(frame, channel: 0)
+        let chosen = MinimalLosslessCodec.bestPredictorForChannel(
+            buf, width: 32, hybridConfig: .defaultConfig
+        )
+        // Any of the interior-residual=1 predictors is a valid choice;
+        // by tie-break rules `.west` wins.
+        let validChoices: Set<PredictorID> = [.west, .north, .gradient, .medianWNGradient]
+        XCTAssertTrue(validChoices.contains(chosen),
+            "diagonal gradient should pick a linear predictor; got \(chosen)")
+        let encoded = try MinimalLosslessCodec.encode(frame)
+        XCTAssertLessThan(encoded.count, 200,
+            "diagonal-gradient 32×32 8-bit should compress under 200 B; got \(encoded.count)")
+        let decoded = try MinimalLosslessCodec.decode(encoded)
+        XCTAssertEqual(decoded.data, frame.data)
+    }
+
+    /// Predictor IDs are written in channel order and recovered
+    /// identically on decode. Stress: an RGB-shaped 3-channel image
+    /// where each channel's pattern favours a different predictor.
+    /// We build it as 3 separate single-channel grayscale frames
+    /// stitched into one (since M0 only consumes 1- or 3-channel
+    /// frames per the colorSpace logic).
+    func testM0_MultiChannel_PerChannelPredictorIDsRoundTrip() throws {
+        // 3-channel 8x8 RGB-like frame with:
+        //   ch 0: vertical stripes  → north predictor
+        //   ch 1: horizontal stripes → west predictor
+        //   ch 2: diagonal gradient → gradient predictor
+        var frame = ImageFrame(
+            width: 8, height: 8, channels: 3,
+            pixelType: .uint8, colorSpace: .sRGB
+        )
+        for y in 0..<8 {
+            for x in 0..<8 {
+                frame.setPixel(x: x, y: y, channel: 0, value: UInt16(x * 16))
+                frame.setPixel(x: x, y: y, channel: 1, value: UInt16(y * 16))
+                frame.setPixel(x: x, y: y, channel: 2, value: UInt16(min(255, (x + y) * 8)))
+            }
+        }
+        let encoded = try MinimalLosslessCodec.encode(frame)
+        let decoded = try MinimalLosslessCodec.decode(encoded)
+        XCTAssertEqual(decoded.width, 8)
+        XCTAssertEqual(decoded.height, 8)
+        XCTAssertEqual(decoded.channels, 3)
+        XCTAssertEqual(decoded.data, frame.data,
+            "multi-channel image with mixed-pattern channels should round-trip exactly")
+    }
+
     /// Float32 isn't supported by M0 — encoder should throw cleanly.
     func testM0_RejectsFloat32() {
         let frame = ImageFrame(

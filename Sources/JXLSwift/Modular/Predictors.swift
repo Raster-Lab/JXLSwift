@@ -54,6 +54,31 @@ public enum Predictor: Sendable, Equatable {
     case medianWNGradient
 }
 
+/// Bit-level tag for serialising a `Predictor` choice into the
+/// codestream. The slot space is u(3) — 8 values — which leaves
+/// headroom for higher-order predictors (Self, SelectGradient, …)
+/// landing in later phases.
+public enum PredictorID: UInt32, Sendable, Equatable, CaseIterable {
+    case zero             = 0
+    case west             = 1
+    case north            = 2
+    case avgWN            = 3
+    case gradient         = 4
+    case medianWNGradient = 5
+
+    /// The `Predictor` this ID names.
+    public var predictor: Predictor {
+        switch self {
+        case .zero:             return .zero
+        case .west:             return .west
+        case .north:            return .north
+        case .avgWN:            return .avgWN
+        case .gradient:         return .gradient
+        case .medianWNGradient: return .medianWNGradient
+        }
+    }
+}
+
 /// A 4-neighbour patch around a pixel. Use `init(at:in:)` to read
 /// from an `Int32` 2-D buffer with edge fall-backs.
 public struct Neighbourhood: Sendable, Equatable {
