@@ -1,13 +1,12 @@
 // swift-tools-version: 6.2
-// The swift-tools-version declares the minimum version of Swift required to build this package.
-
 import PackageDescription
 
-// MARK: - Feature Flags
-
-/// Enable the LibJXL reference backend (requires libjxl C library).
-/// Pass `-Xswiftc -DJXL_ENABLE_LIBJXL` to enable.
-let enableLibJXL = false
+// JXLSwift wraps libjxl (Homebrew jpeg-xl) via a C systemLibrary target.
+// On macOS / Apple Silicon the headers and dylibs are at
+//   /opt/homebrew/include/jxl/* and /opt/homebrew/lib/libjxl{,_threads}.dylib
+// On Intel Macs, /usr/local/...
+let homebrewIncludes = ["/opt/homebrew/include", "/usr/local/include"]
+let homebrewLibs     = ["/opt/homebrew/lib",     "/usr/local/lib"]
 
 let package = Package(
     name: "JXLSwift",
@@ -16,36 +15,40 @@ let package = Package(
         .iOS(.v16),
         .tvOS(.v16),
         .watchOS(.v9),
-        .visionOS(.v1)
+        .visionOS(.v1),
     ],
     products: [
-        // Main compression library (backend-agnostic public API)
-        .library(
-            name: "JXLSwift",
-            targets: ["JXLSwift"]),
-        // Command line tool
-        .executable(
-            name: "jxl-tool",
-            targets: ["JXLTool"]),
+        .library(name: "JXLSwift", targets: ["JXLSwift"]),
+        .executable(name: "jxl-tool", targets: ["JXLTool"]),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.5.0"),
-        .package(url: "https://github.com/apple/swift-docc-plugin", from: "1.0.0"),
     ],
     targets: [
-        // Core compression codec (Native backend, always built)
+        // C systemLibrary wrapping the Homebrew libjxl install. Uses
+        // pkg-config to locate headers and libraries portably.
+        .systemLibrary(
+            name: "Cjxl",
+            path: "Sources/Cjxl",
+            pkgConfig: "libjxl"
+        ),
+        // Pure-Swift public API on top of Cjxl. The unsafeFlags here are
+        // a fallback when pkg-config isn't installed — Homebrew's default
+        // prefixes are passed explicitly so the headers and dylibs can
+        // still be found.
         .target(
             name: "JXLSwift",
-            dependencies: [],
-            exclude: [
-                "Hardware/Vulkan/Shaders.comp"
+            dependencies: ["Cjxl"],
+            swiftSettings: [
+                .unsafeFlags(homebrewIncludes.flatMap { ["-I", $0] }),
             ],
-            resources: [
-                .process("Hardware/Metal/Shaders.metal")
+            linkerSettings: [
+                .unsafeFlags(homebrewLibs.flatMap { ["-L", $0] }),
+                .linkedLibrary("jxl"),
+                .linkedLibrary("jxl_threads"),
             ]
         ),
-        
-        // Command line tool
+        // Command line tool.
         .executableTarget(
             name: "JXLTool",
             dependencies: [
@@ -53,8 +56,7 @@ let package = Package(
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
         ),
-        
-        // Tests
+        // Integration tests against LocalDatasets/medical-dicom-organized.
         .testTarget(
             name: "JXLSwiftTests",
             dependencies: ["JXLSwift"]

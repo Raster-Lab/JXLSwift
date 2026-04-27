@@ -1,0 +1,6 @@
+module Cjxl [system] {
+    umbrella header "shim.h"
+    link "jxl"
+    link "jxl_threads"
+    export *
+}
