@@ -4355,6 +4355,120 @@ extension FoundationTests {
     }
 }
 
+// MARK: - EntropySectionHeader (§C.6 prefix)
+
+extension FoundationTests {
+
+    /// Round-trip the simplest entropy section: 1 context, no LZ77,
+    /// rANS (no prefix code), default HybridUintConfig.
+    func testEntropySectionHeader_RoundTrip_Simple() throws {
+        let header = EntropySectionHeader(
+            lz77: .disabled,
+            contextMap: .trivial(numContexts: 1),
+            usePrefixCode: false,
+            logAlphaSize: 8,
+            uintConfigs: [.defaultConfig]
+        )
+        var w = BitWriter()
+        try header.write(to: &w, numContexts: 1)
+        var r = BitReader(w.finishToData())
+        let parsed = try EntropySectionHeader.read(
+            from: &r, numContexts: 1
+        )
+        XCTAssertFalse(parsed.lz77.enabled)
+        XCTAssertEqual(parsed.contextMap.numClusters, 1)
+        XCTAssertFalse(parsed.usePrefixCode)
+        XCTAssertEqual(parsed.logAlphaSize, 8)
+        XCTAssertEqual(parsed.uintConfigs.count, 1)
+        XCTAssertEqual(parsed.uintConfigs[0].splitExponent, 4)
+    }
+
+    /// Round-trip a multi-cluster entropy section. 4 contexts mapped
+    /// to 2 clusters (`[0, 1, 0, 1]`), prefix-code mode, 2 different
+    /// HybridUintConfigs.
+    func testEntropySectionHeader_RoundTrip_MultiClusterPrefix() throws {
+        let cm = try ContextMap(numClusters: 2, map: [0, 1, 0, 1])
+        let header = EntropySectionHeader(
+            lz77: .disabled,
+            contextMap: cm,
+            usePrefixCode: true,
+            logAlphaSize: 15,         // PREFIX_MAX_BITS
+            uintConfigs: [
+                HybridUintConfig(splitExponent: 4, msbInToken: 2, lsbInToken: 0),
+                HybridUintConfig(splitExponent: 6, msbInToken: 1, lsbInToken: 1),
+            ]
+        )
+        var w = BitWriter()
+        try header.write(to: &w, numContexts: 4)
+        var r = BitReader(w.finishToData())
+        let parsed = try EntropySectionHeader.read(
+            from: &r, numContexts: 4
+        )
+        XCTAssertEqual(parsed.contextMap.numClusters, 2)
+        XCTAssertEqual(parsed.contextMap.map, [0, 1, 0, 1])
+        XCTAssertTrue(parsed.usePrefixCode)
+        XCTAssertEqual(parsed.logAlphaSize, 15)
+        XCTAssertEqual(parsed.uintConfigs.count, 2)
+        XCTAssertEqual(parsed.uintConfigs[0].splitExponent, 4)
+        XCTAssertEqual(parsed.uintConfigs[0].msbInToken, 2)
+        XCTAssertEqual(parsed.uintConfigs[1].splitExponent, 6)
+        XCTAssertEqual(parsed.uintConfigs[1].msbInToken, 1)
+        XCTAssertEqual(parsed.uintConfigs[1].lsbInToken, 1)
+    }
+
+    /// Round-trip with LZ77 enabled. Adds an implicit extra context
+    /// (the distance context). With a single user context, that means
+    /// the decoder reads a 2-cluster context map for the LZ77 case.
+    func testEntropySectionHeader_RoundTrip_LZ77Enabled() throws {
+        let cm = try ContextMap(numClusters: 2, map: [0, 1])
+        let header = EntropySectionHeader(
+            lz77: LZ77Config(
+                enabled: true, minSymbol: 224, minLength: 3,
+                lengthUintConfig: .defaultConfig
+            ),
+            contextMap: cm,
+            usePrefixCode: false,
+            logAlphaSize: 8,
+            uintConfigs: [.defaultConfig, .defaultConfig]
+        )
+        var w = BitWriter()
+        try header.write(to: &w, numContexts: 1)   // user requests 1 context
+        var r = BitReader(w.finishToData())
+        let parsed = try EntropySectionHeader.read(
+            from: &r, numContexts: 1
+        )
+        XCTAssertTrue(parsed.lz77.enabled)
+        XCTAssertEqual(parsed.lz77.minSymbol, 224)
+        XCTAssertEqual(parsed.contextMap.numClusters, 2)
+        XCTAssertEqual(parsed.uintConfigs.count, 2)
+    }
+
+    /// Sweep over `logAlphaSize` values 5, 6, 7, 8 — confirms the
+    /// `5 + u(2)` write/read pair recovers each value bit-identically.
+    func testEntropySectionHeader_LogAlphaSize_Sweep() throws {
+        for logAlpha in 5...8 {
+            let header = EntropySectionHeader(
+                lz77: .disabled,
+                contextMap: .trivial(numContexts: 1),
+                usePrefixCode: false,
+                logAlphaSize: logAlpha,
+                uintConfigs: [HybridUintConfig(
+                    splitExponent: min(logAlpha, 4),
+                    msbInToken: 0, lsbInToken: 0
+                )]
+            )
+            var w = BitWriter()
+            try header.write(to: &w, numContexts: 1)
+            var r = BitReader(w.finishToData())
+            let parsed = try EntropySectionHeader.read(
+                from: &r, numContexts: 1
+            )
+            XCTAssertEqual(parsed.logAlphaSize, logAlpha,
+                "logAlphaSize round-trip failed at \(logAlpha)")
+        }
+    }
+}
+
 /// Helper: serialise a distribution of the requested shape and
 /// immediately deserialise it back, returning the resulting
 /// `ANSDistribution`. The encoder/decoder both need the same
