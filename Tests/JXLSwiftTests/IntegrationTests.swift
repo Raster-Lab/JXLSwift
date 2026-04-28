@@ -4401,6 +4401,74 @@ extension FoundationTests {
     }
 }
 
+// MARK: - GroupHeader (per-group Modular prelude)
+
+extension FoundationTests {
+
+    /// Hand-derived: the all-default GroupHeader is just 4 bits.
+    /// `useGlobalTree=1` + `wpHeader.allDefault=1` + numTransforms
+    /// selector "0,0" (= 0). LSB-first: 1, 1, 0, 0 → byte 0x03.
+    func testGroupHeader_HandDerived_AllDefault() throws {
+        // Build the bytestream by hand at the bit level.
+        var w = BitWriter()
+        w.writeBit(true)        // useGlobalTree = 1
+        w.writeBit(true)        // wpHeader allDefault = 1
+        w.write(bits: 2, value: 0)   // numTransforms = 0 via U32 sel 0
+        let bytes = [UInt8](w.finishToData())
+        XCTAssertEqual(bytes, [0x03],
+            "all-default GroupHeader should pack to byte 0x03")
+        var r = BitReader(w.finishToData())
+        let parsed = try GroupHeader.read(from: &r)
+        XCTAssertTrue(parsed.useGlobalTree)
+        XCTAssertTrue(parsed.wpHeader.allDefault)
+        XCTAssertEqual(parsed.transforms.count, 0)
+    }
+
+    /// Round-trip the all-default GroupHeader by encoding it via raw
+    /// bit writes (since we don't yet have a `write` method on
+    /// `GroupHeader`) and reading it back via the spec-compliant
+    /// reader.
+    func testGroupHeader_RoundTrip_PerGroupTree() throws {
+        // useGlobalTree = 0 (a non-default — the group has its own tree).
+        var w = BitWriter()
+        w.writeBit(false)       // useGlobalTree = 0
+        w.writeBit(true)        // wpHeader allDefault
+        w.write(bits: 2, value: 0)   // num_transforms = 0
+        var r = BitReader(w.finishToData())
+        let parsed = try GroupHeader.read(from: &r)
+        XCTAssertFalse(parsed.useGlobalTree)
+        XCTAssertTrue(parsed.wpHeader.allDefault)
+        XCTAssertEqual(parsed.transforms.count, 0)
+    }
+
+    /// Round-trip a GroupHeader carrying one RCT transform. Confirms
+    /// the U32 distributions for transform id, begin_c, and rct_type
+    /// decode in order.
+    func testGroupHeader_RoundTrip_OneRCTTransform() throws {
+        var w = BitWriter()
+        w.writeBit(true)        // useGlobalTree
+        w.writeBit(true)        // wpHeader default
+        // numTransforms = 1 → U32 selector 1 (literal 1).
+        w.write(bits: 2, value: 1)
+        // Transform id = kRCT (0): U32(0,1,2,3) sel 0 = 2 bits.
+        w.write(bits: 2, value: 0)
+        // begin_c = 0: U32(Bits(3), 8+u(6), 72+u(10), 1096+u(13)) sel 0
+        // = 2 (selector) + 3 (bits) = 5 bits, value 0.
+        w.write(bits: 2, value: 0)        // sel 0
+        w.write(bits: 3, value: 0)        // 3 raw bits = 0
+        // rct_type = 6 (default YCoCg): U32(Val(6), Bits(2), 2+u(4), 10+u(6))
+        // selector 0, no extras.
+        w.write(bits: 2, value: 0)
+        var r = BitReader(w.finishToData())
+        let parsed = try GroupHeader.read(from: &r)
+        XCTAssertTrue(parsed.useGlobalTree)
+        XCTAssertEqual(parsed.transforms.count, 1)
+        XCTAssertEqual(parsed.transforms.first?.id, .rct)
+        XCTAssertEqual(parsed.transforms.first?.beginC, 0)
+        XCTAssertEqual(parsed.transforms.first?.rctType, 6)
+    }
+}
+
 // MARK: - VarLenUint (libjxl DecodeVarLenUint8/16)
 
 extension FoundationTests {
