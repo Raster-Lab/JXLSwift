@@ -134,7 +134,7 @@ public struct ModularTree: Sendable, Equatable {
     /// reasonable upper bound to abort on infinite-tree corruption.
     public static func decode(
         from r: inout BitReader,
-        stream: TokenStreamReader,
+        stream: inout TokenStreamReader,
         treeSizeLimit: Int = 1 << 22
     ) throws -> ModularTree {
         // libjxl context indices:
@@ -171,19 +171,19 @@ public struct ModularTree: Sendable, Equatable {
             let property = Int32(prop1) &- 1
             if property == -1 {
                 // Leaf node.
-                let predictorRaw = try readToken(stream, kPredictorContext, &r)
+                let predictorRaw = try readToken(&stream, kPredictorContext, &r)
                 if predictorRaw >= 14 {
                     throw ModularTreeError.invalidPredictor(predictorRaw)
                 }
-                let offsetRaw = try readToken(stream, kOffsetContext, &r)
+                let offsetRaw = try readToken(&stream, kOffsetContext, &r)
                 let predictorOffset = Int64(unpackSigned(offsetRaw))
-                let mulLog = try readToken(stream, kMultiplierLogContext, &r)
+                let mulLog = try readToken(&stream, kMultiplierLogContext, &r)
                 if mulLog >= 31 {
                     throw ModularTreeError.invalidMultiplier(
                         log: mulLog, bits: 0
                     )
                 }
-                let mulBits = try readToken(stream, kMultiplierBitsContext, &r)
+                let mulBits = try readToken(&stream, kMultiplierBitsContext, &r)
                 let multiplierLimit: UInt32 = (1 &<< (31 - mulLog)) &- 1
                 if mulBits >= multiplierLimit {
                     throw ModularTreeError.invalidMultiplier(
@@ -204,7 +204,7 @@ public struct ModularTree: Sendable, Equatable {
                 continue
             }
             // Decision node.
-            let splitRaw = try readToken(stream, kSplitValContext, &r)
+            let splitRaw = try readToken(&stream, kSplitValContext, &r)
             let splitVal = unpackSigned(splitRaw)
             // Children land at `nodes.count + toDecode + 1` and `+ 2`
             // — same index arithmetic libjxl uses (tree is stored
@@ -227,7 +227,7 @@ public struct ModularTree: Sendable, Equatable {
 
 @inline(__always)
 private func readToken(
-    _ stream: TokenStreamReader,
+    _ stream: inout TokenStreamReader,
     _ ctx: Int,
     _ r: inout BitReader
 ) throws -> UInt32 {

@@ -200,11 +200,11 @@ public final class JXLDecoder {
                     let treeCB = try? MultiClusterCodebook.read(
                         from: &r, header: treeHdr
                     ) {
-                        let treeStream = TokenStreamReader(
+                        var treeStream = TokenStreamReader(
                             header: treeHdr, codebook: treeCB
                         )
                         if let tree = try? ModularTree.decode(
-                            from: &r, stream: treeStream
+                            from: &r, stream: &treeStream
                         ) {
                             leafCount = tree.leafCount
                             // Try the post-tree section for usePrefix info.

@@ -1834,6 +1834,108 @@ final class FoundationTests: XCTestCase {
         }
     }
 
+    // MARK: - ANSStreamDecoder — BitReader-driven rANS
+
+    /// Streaming rANS round-trip on a uniform alphabet, single cluster.
+    /// Encodes via `ANSStreamEncoder` and decodes via
+    /// `ANSStreamDecoder` over a `BitReader` (rather than a raw byte
+    /// buffer). Asserts the streaming format reads state from the
+    /// FRONT of the bitstream and renorms inline.
+    func testANSStream_RoundTrip_UniformAlphabet() throws {
+        let dist = try ANSDistribution(rawFrequencies: [UInt32](repeating: 1, count: 8))
+        var enc = ANSStreamEncoder(distributions: [dist])
+        let symbols = [0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4]
+        for s in symbols { try enc.write(symbol: s, cluster: 0) }
+        let bytes = enc.finish()
+
+        var r = BitReader(bytes)
+        var dec = ANSStreamDecoder(distributions: [dist])
+        var decoded: [Int] = []
+        for _ in symbols {
+            decoded.append(Int(try dec.readSymbol(cluster: 0, from: &r)))
+        }
+        XCTAssertEqual(decoded, symbols)
+    }
+
+    /// Streaming rANS round-trip on a skewed distribution. Confirms
+    /// the renorm-on-read path works (small frequencies trigger more
+    /// renorms).
+    func testANSStream_RoundTrip_SkewedDistribution() throws {
+        let dist = try ANSDistribution(rawFrequencies: [800, 100, 60, 40])
+        var enc = ANSStreamEncoder(distributions: [dist])
+        var stream: [Int] = []
+        for i in 0..<128 {
+            stream.append(i % 13 == 0 ? 1 : (i % 17 == 0 ? 2 : (i % 23 == 0 ? 3 : 0)))
+        }
+        for s in stream { try enc.write(symbol: s, cluster: 0) }
+        let bytes = enc.finish()
+
+        var r = BitReader(bytes)
+        var dec = ANSStreamDecoder(distributions: [dist])
+        var decoded: [Int] = []
+        for _ in stream {
+            decoded.append(Int(try dec.readSymbol(cluster: 0, from: &r)))
+        }
+        XCTAssertEqual(decoded, stream)
+    }
+
+    /// Multi-cluster: same alphabet, different distributions. Verify
+    /// the streaming decoder routes each symbol read through the
+    /// right cluster's distribution table.
+    func testANSStream_RoundTrip_MultiCluster() throws {
+        let distA = try ANSDistribution(rawFrequencies: [10, 1, 1, 1])  // skew to 0
+        let distB = try ANSDistribution(rawFrequencies: [1, 1, 1, 10])  // skew to 3
+        var enc = ANSStreamEncoder(distributions: [distA, distB])
+        let pairs: [(Int, Int)] = [
+            (0, 0), (3, 1), (1, 0), (3, 1), (2, 0), (0, 1),
+            (0, 0), (3, 1), (1, 0), (2, 1), (3, 0), (3, 1)
+        ]
+        for (sym, cluster) in pairs {
+            try enc.write(symbol: sym, cluster: cluster)
+        }
+        let bytes = enc.finish()
+
+        var r = BitReader(bytes)
+        var dec = ANSStreamDecoder(distributions: [distA, distB])
+        var decoded: [(Int, Int)] = []
+        for (_, cluster) in pairs {
+            let s = try dec.readSymbol(cluster: cluster, from: &r)
+            decoded.append((Int(s), cluster))
+        }
+        XCTAssertEqual(decoded.map { $0.0 }, pairs.map { $0.0 })
+    }
+
+    /// State init only consumes 32 bits on the first read.
+    /// Subsequent reads only consume renorm bits (and only when
+    /// state drops below 2^16).
+    func testANSStream_StateInitConsumes32Bits() throws {
+        let dist = try ANSDistribution(rawFrequencies: [UInt32](repeating: 1, count: 4))
+        var enc = ANSStreamEncoder(distributions: [dist])
+        for s in [0, 1, 2, 3] { try enc.write(symbol: s, cluster: 0) }
+        let bytes = enc.finish()
+
+        var r = BitReader(bytes)
+        var dec = ANSStreamDecoder(distributions: [dist])
+        XCTAssertFalse(dec.hasInitialised)
+        XCTAssertEqual(r.position, 0)
+        _ = try dec.readSymbol(cluster: 0, from: &r)
+        XCTAssertTrue(dec.hasInitialised)
+        // After first read: at least 32 bits consumed (state init),
+        // possibly a renorm too.
+        XCTAssertGreaterThanOrEqual(r.position, 32)
+    }
+
+    /// The streaming decoder must throw `bitstream` errors when the
+    /// underlying BitReader runs out (e.g., before reading the 32-bit
+    /// state init).
+    func testANSStream_RejectsTruncatedStateInit() throws {
+        let dist = try ANSDistribution(rawFrequencies: [UInt32](repeating: 1, count: 4))
+        let truncated = Data([0xFF, 0xFF])  // only 16 bits available
+        var r = BitReader(truncated)
+        var dec = ANSStreamDecoder(distributions: [dist])
+        XCTAssertThrowsError(try dec.readSymbol(cluster: 0, from: &r))
+    }
+
     // MARK: - Phase E4b: rANS distribution serialisation (§C.6.3.2)
 
     /// Hand-derived bit pattern for a constant (single-symbol)
@@ -5092,7 +5194,7 @@ extension FoundationTests {
         let codebook = try MultiClusterCodebook.read(
             from: &r, header: hdr
         )
-        let stream = TokenStreamReader(header: hdr, codebook: codebook)
+        var stream = TokenStreamReader(header: hdr, codebook: codebook)
 
         // Decode the tree per libjxl `DecodeTree`:
         //   to_decode = 1
@@ -5200,8 +5302,8 @@ extension FoundationTests {
         XCTAssertTrue(hasTree)
         let hdr = try EntropySectionHeader.read(from: &r, numContexts: 6)
         let codebook = try MultiClusterCodebook.read(from: &r, header: hdr)
-        let stream = TokenStreamReader(header: hdr, codebook: codebook)
-        let tree = try ModularTree.decode(from: &r, stream: stream)
+        var stream = TokenStreamReader(header: hdr, codebook: codebook)
+        let tree = try ModularTree.decode(from: &r, stream: &stream)
         // Structural invariants.
         XCTAssertGreaterThan(tree.nodes.count, 0,
             "tree must have at least one node")
@@ -5283,10 +5385,10 @@ extension FoundationTests {
         let treeCodebook = try MultiClusterCodebook.read(
             from: &r, header: treeHdr
         )
-        let treeStream = TokenStreamReader(
+        var treeStream = TokenStreamReader(
             header: treeHdr, codebook: treeCodebook
         )
-        let tree = try ModularTree.decode(from: &r, stream: treeStream)
+        let tree = try ModularTree.decode(from: &r, stream: &treeStream)
         let postTreeHdr = try EntropySectionHeader.read(
             from: &r, numContexts: tree.leafCount
         )
@@ -5375,10 +5477,10 @@ extension FoundationTests {
         let treeCodebook = try MultiClusterCodebook.read(
             from: &r, header: treeHdr
         )
-        let treeStream = TokenStreamReader(
+        var treeStream = TokenStreamReader(
             header: treeHdr, codebook: treeCodebook
         )
-        let tree = try ModularTree.decode(from: &r, stream: treeStream)
+        let tree = try ModularTree.decode(from: &r, stream: &treeStream)
         // Now read the post-tree entropy section. numContexts =
         // leafCount (one context per leaf — every pixel routes to a
         // leaf which then provides its prediction context).
@@ -5407,6 +5509,132 @@ extension FoundationTests {
                 "post-tree codebook read encountered an unsupported path: \(error)")
             return
         }
+    }
+
+    /// **Cross-validation**: walk all 12 spec layers deep into a real
+    /// cjxl-emitted Modular lossless file and pull the FIRST per-pixel
+    /// rANS-coded token through the streaming `ANSStreamDecoder`.
+    /// Stack: signature → SizeHeader → ImageMetadata → FrameHeader →
+    /// TOC → DequantMatricesDC flag → has_tree → tree-section
+    /// EntropySectionHeader → tree codebook → MA-tree decode →
+    /// post-tree EntropySectionHeader → post-tree codebook → byte
+    /// boundary → GroupHeader → first rANS-coded pixel token.
+    ///
+    /// We don't yet know the GROUND TRUTH first pixel, so this test
+    /// asserts only that:
+    ///  • the post-tree section uses rANS (not prefix codes — cjxl
+    ///    typically picks rANS for actual pixel data),
+    ///  • the streaming decoder consumes 32 bits of state init plus
+    ///    optional renorm bits without error, and
+    ///  • the first decoded token is in range for the cluster's
+    ///    alphabet (which is bounded by `1 << logAlphaSize`).
+    func testCrossValidate_Cjxl_ModularFirstPixelToken() throws {
+        guard let cjxl = whichTool("cjxl") else {
+            try XCTSkipIf(true, "cjxl not on PATH")
+            return
+        }
+        let pnmPath = NSTemporaryDirectory() + "fpix-\(UUID().uuidString).ppm"
+        let jxlPath = NSTemporaryDirectory() + "fpix-\(UUID().uuidString).jxl"
+        defer {
+            try? FileManager.default.removeItem(atPath: pnmPath)
+            try? FileManager.default.removeItem(atPath: jxlPath)
+        }
+        try makeSyntheticPNM(
+            width: 32, height: 32, channels: 3, bitDepth: 8,
+            generator: { x, y, c in UInt16((x &* 7 &+ y &* 13 &+ Int(c)) & 0xFF) }
+        ).write(to: URL(fileURLWithPath: pnmPath))
+        let proc = Process()
+        proc.launchPath = cjxl
+        proc.arguments = ["-q", "100", pnmPath, jxlPath]
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        try proc.run()
+        proc.waitUntilExit()
+        let data = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
+        var r = BitReader(data)
+        _ = try r.read(bits: 8); _ = try r.read(bits: 8)
+        _ = try SizeHeader.read(from: &r)
+        let m = try ImageMetadata.read(from: &r)
+        try r.alignToByte()
+        let ctx = FrameHeaderContext(
+            xybEncoded: m.xybEncoded,
+            numExtraChannels: m.extraChannels.count,
+            haveAnimation: m.animation != nil,
+            haveTimecodes: m.animation?.haveTimecodes ?? false
+        )
+        let fh = try FrameHeader.read(from: &r, context: ctx)
+        let entries = TOC.numEntries(
+            numGroups: 1, numDcGroups: 0,
+            numPasses: Int(fh.passes.numPasses)
+        )
+        _ = try TOC.read(from: &r, numEntries: entries)
+        let matrixDcDefault = try r.readBit()
+        if !matrixDcDefault {
+            for _ in 0..<3 { _ = try r.read(bits: 16) }
+        }
+        let hasTree = try r.readBit()
+        XCTAssertTrue(hasTree)
+        let treeHdr = try EntropySectionHeader.read(from: &r, numContexts: 6)
+        let treeCodebook = try MultiClusterCodebook.read(
+            from: &r, header: treeHdr
+        )
+        var treeStream = TokenStreamReader(
+            header: treeHdr, codebook: treeCodebook
+        )
+        let tree = try ModularTree.decode(from: &r, stream: &treeStream)
+        let postTreeHdr = try EntropySectionHeader.read(
+            from: &r, numContexts: tree.leafCount
+        )
+        let postTreeCodebook: MultiClusterCodebook
+        do {
+            postTreeCodebook = try MultiClusterCodebook.read(
+                from: &r, header: postTreeHdr
+            )
+        } catch {
+            try XCTSkipIf(true,
+                "post-tree codebook decode hit unsupported path: \(error)")
+            return
+        }
+        // libjxl byte-aligns before the per-group blocks.
+        try r.alignToByte()
+        do {
+            _ = try GroupHeader.read(from: &r)
+        } catch {
+            try XCTSkipIf(true,
+                "GroupHeader decode reached an unexpected pattern: \(error)")
+            return
+        }
+        // Now the rANS-coded per-pixel token stream begins. cjxl
+        // typically picks rANS for pixel data — if the section is
+        // prefix-coded instead, skip (this test is specifically
+        // exercising the streaming-ANS path).
+        guard !postTreeHdr.usePrefixCode else {
+            try XCTSkipIf(true,
+                "post-tree section is prefix-coded, not rANS — skipping streaming-ANS validation")
+            return
+        }
+        XCTAssertFalse(postTreeCodebook.ansCounts.isEmpty,
+            "rANS section must have ansCounts populated")
+        // Pull the first pixel token. Cluster 0 / context 0 — the
+        // first read also consumes the 32-bit rANS state init.
+        var pixelStream = TokenStreamReader(
+            header: postTreeHdr, codebook: postTreeCodebook
+        )
+        let posBefore = r.position
+        let token: UInt32
+        do {
+            token = try pixelStream.readToken(context: 0, from: &r)
+        } catch {
+            XCTFail("first rANS pixel token read failed: \(error)")
+            return
+        }
+        XCTAssertGreaterThanOrEqual(r.position, posBefore + 32,
+            "first ANS read must consume at least the 32-bit state init")
+        // Token must be < (1 << logAlphaSize) — that's the alphabet
+        // upper bound for the HybridUint token coming out of rANS.
+        XCTAssertLessThan(token, UInt32(1) &<< UInt32(postTreeHdr.logAlphaSize),
+            "rANS token \(token) out of alphabet range " +
+            "(logAlphaSize=\(postTreeHdr.logAlphaSize))")
     }
 
     /// **Cross-validation**: read per-cluster ANS distributions from a
