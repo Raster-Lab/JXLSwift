@@ -137,6 +137,10 @@ public struct TokenStreamReader: Sendable {
         do { return try cfg.decode(token: symbol, from: &r) }
         catch let e as HybridUintConfigError {
             throw TokenStreamReaderError.hybridUint(e)
+        } catch let e as BitstreamError {
+            // HybridUint extra-bits read can throw BitstreamError
+            // directly — wrap so callers get the structured form.
+            throw TokenStreamReaderError.bitstream(e)
         }
     }
 }

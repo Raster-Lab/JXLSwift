@@ -6499,6 +6499,8 @@ extension FoundationTests {
         let geometries = image.channels.map {
             ModularChannelGeometry(width: $0.width, height: $0.height)
         }
+        let posBeforeChannels = r.position
+        let totalBitsAvailable = r.totalBits
         do {
             let decoded = try decodeAllChannels(
                 channels: geometries, groupId: 0,
@@ -6519,14 +6521,8 @@ extension FoundationTests {
                 }
             }
         } catch {
-            // Currently skips: libjxl runs `ModularGenericDecompress`
-            // TWICE — once for the Global section (which our reader
-            // is currently positioned at) and once per group. The
-            // pixel data lives in the per-group section, with its
-            // own GroupHeader + transforms + ANS state init. Wiring
-            // that two-pass flow is the next-but-one milestone.
             try XCTSkipIf(true,
-                "all-channels decode hit unsupported case: \(error)")
+                "all-channels decode hit unsupported case: \(error) [position=\(r.position)/\(totalBitsAvailable), bits used after channel decode start=\(r.position - posBeforeChannels)]")
         }
     }
 

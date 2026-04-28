@@ -174,7 +174,9 @@ public final class JXLDecoder {
             from: &r, numContexts: tree.leafCount
         )
         let postCB = try MultiClusterCodebook.read(from: &r, header: postHdr)
-        try r.alignToByte()
+        // libjxl `dec_modular.cc::DecodeGlobalInfo` reads the
+        // GroupHeader directly after the post-tree codebook with NO
+        // byte alignment. Match that.
         let groupHeader = try GroupHeader.read(from: &r)
         var pixelStream = TokenStreamReader(header: postHdr, codebook: postCB)
 
