@@ -37,6 +37,18 @@ Every parser is paired with a writer; round-trip tests cover the medical-imaging
 
 Each primitive has round-trip tests; the compression-ratio sanity test confirms rANS reaches near-Shannon-entropy bounds on highly-skewed distributions (1000 symbols → < 50 bytes for a 0.08-bit-entropy stream).
 
+**Spec-compliance pass against libjxl (April 2026):** read libjxl 0.11.2 source side-by-side with each Phase F/H/E header serialiser. Found and fixed eight latent bit-layout bugs that round-trip tests couldn't catch (encoder + decoder were both wrong, so the data flowed through fine):
+- `Enum()` distribution — was `(0, 1, 2, 1+u(4))` (max value 16); spec is `(0, 1, 2+u(4), 18+u(6))` (max 81). Cascaded into wrong reads of every ColorEncoding field; HLG (=18) and DCI-P3 (=17) transfer functions were silently unreachable.
+- ColorEncoding skip flags — XYB implies D65 (no white point on the wire) and grayscale/XYB have no primaries.
+- BitDepth float exponent — raw `1+u(4)`, not the project-internal `(2, 5, 10, 7+u(4))` distribution.
+- ExtraChannelInfo spot color — 4 × F16, not 4 × F32 raw.
+- ExtraChannelInfo dim_shift — `(0, 3, 4, 1+u(3))`, not `(0, 3, 4+u(2), 8+u(3))`.
+- ImageMetadata extensions — read/write a U64, not a 1-bit gate.
+- ContextMap — drop the project-internal `num_clusters - 1` u(8) prefix; derive from `max(map) + 1` as libjxl does.
+- LZ77Config — spec U32 distributions for min_symbol/min_length, embedded length-uint-config always reads at log_alpha_size=8.
+
+Cross-validation tests added against `cjxl`-emitted Linear, sRGB, PQ, and HLG transfer functions to lock in the Enum fix.
+
 `JXLDecoder.inspect(_:)` parses any spec-compliant `.jxl` and reports container form, box list, dimensions, bit depth, channel count, alpha, animation, and HDR metadata — useful as a JXL info tool today.
 
 `JXLEncoder.encode(_:)` / `JXLDecoder.decode(_:)` throw `.notImplemented` because the codec layer isn't done yet.
@@ -47,7 +59,7 @@ See [ROADMAP.md](ROADMAP.md) for the spec-section status grid.
 
 ```bash
 swift build -c release
-swift test  -c release           # 163 tests (foundation + headers + entropy primitives + serialisation), ~50 ms
+swift test  -c release           # 170 tests (foundation + headers + entropy primitives + serialisation + cross-validation), ~50 ms
 .build/release/jxl-tool --version
 .build/release/jxl-tool info path/to/file.jxl
 ```

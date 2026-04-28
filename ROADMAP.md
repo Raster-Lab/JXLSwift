@@ -98,7 +98,7 @@ JXLSwift is designed to be:
 
 ## Implementation status
 
-Spec sections from ISO/IEC 18181-1 and ISO/IEC 18181-2. Each row is verified by a test (where ✅) or a milestone target (where ⏳). The current test suite is **163 / 163 passing** — every ✅ row has a round-trip test that fails when the row stops working. Phase H header parsing is additionally **cross-validated against `cjxl`** dynamically at test time, covering 8/16-bit grayscale, 8/16-bit RGB, RGBA, gray+alpha, float32, and edge cases (1×1, non-multiple-of-8 dimensions).
+Spec sections from ISO/IEC 18181-1 and ISO/IEC 18181-2. Each row is verified by a test (where ✅) or a milestone target (where ⏳). The current test suite is **170 / 170 passing** — every ✅ row has a round-trip test that fails when the row stops working. Phase H header parsing is additionally **cross-validated against `cjxl`** dynamically at test time, covering 8/16-bit grayscale, 8/16-bit RGB, RGBA, gray+alpha, float32, ICC profiles, the four named transfer functions (sRGB / Linear / PQ / HLG), and edge cases (1×1, non-multiple-of-8 dimensions). A spec-compliance pass against libjxl 0.11.2 source (April 2026) corrected eight bit-layout bugs that round-trip alone couldn't catch — see the README for the list.
 
 ### Phase F — Foundation ✅
 
@@ -107,7 +107,7 @@ Spec sections from ISO/IEC 18181-1 and ISO/IEC 18181-2. Each row is verified by 
 | Bitstream primitives (LSB-first) | §2.4 | `BitReader`, `BitWriter`, throws on EOF; 32-bit corner-case fixed |
 | `U32(d0, d1, d2, d3)` | §C.2.4 | round-trip tested |
 | `U64()` | §C.2.5 | round-trip tested across all 4 selectors (zero, small, mid, escape) |
-| `Enum()` | §C.2.6 | round-trip across the full 0…16 spec range; rejects out-of-range values; hand-derived bit patterns for values 0 and 5 |
+| `Enum()` | §C.2.6 | round-trip across the full 0…81 spec range (`(0, 1, 2+u(4), 18+u(6))`); rejects out-of-range values; hand-derived bit patterns for values 0, 5, and 18 |
 | ISOBMFF container parse / build | ISO/IEC 18181-2 | `ftyp`, `jxlc`, `jxlp` (split), naked codestream; verified against real `cjxl`-produced files |
 | Codestream signature `FF 0A` | §C.3.1 | constant + helpers |
 | `SizeHeader` (xsize / ysize) | §C.3.2 | small + large + aspect-ratio shortcuts |
@@ -197,7 +197,7 @@ These are added once a corresponding scalar Swift path is correct. The scalar pa
 
 | Item | Status |
 |---|---|
-| Foundation tests (163) | ✅ |
+| Foundation tests (170) | ✅ |
 | Conformance test vectors (jxl-conformance repo) | ⏳ harness exists; vectors not wired up |
 | Cross-codec round-trip (encode → libjxl `djxl` decode) | ⏳ requires Phase E4-6 + M at minimum |
 | Cross-codec round-trip (libjxl `cjxl` → JXLDecoder) | ⏳ requires Phase E4-6 + M at minimum |
