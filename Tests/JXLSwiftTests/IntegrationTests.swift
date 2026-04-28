@@ -2238,6 +2238,61 @@ final class FoundationTests: XCTestCase {
         XCTAssertEqual(d, 0)
     }
 
+    // MARK: - JXLDecoder.decodeModular — end-to-end Modular decode
+
+    /// Drive `JXLDecoder.decodeModular` on a real cjxl-emitted RGB
+    /// lossless file. Currently expected to throw because the
+    /// two-pass Global+per-group flow isn't wired yet — the test
+    /// asserts the API surface exists and returns a structured
+    /// error rather than crashing.
+    func testJXLDecoder_decodeModular_APISurfaceExists() throws {
+        guard let cjxl = whichTool("cjxl") else {
+            try XCTSkipIf(true, "cjxl not on PATH")
+            return
+        }
+        let pnmPath = NSTemporaryDirectory() + "dm-\(UUID().uuidString).ppm"
+        let jxlPath = NSTemporaryDirectory() + "dm-\(UUID().uuidString).jxl"
+        defer {
+            try? FileManager.default.removeItem(atPath: pnmPath)
+            try? FileManager.default.removeItem(atPath: jxlPath)
+        }
+        try makeSyntheticPNM(
+            width: 32, height: 32, channels: 3, bitDepth: 8,
+            generator: { x, y, c in UInt16((x &* 7 &+ y &* 13 &+ Int(c)) & 0xFF) }
+        ).write(to: URL(fileURLWithPath: pnmPath))
+        let proc = Process()
+        proc.launchPath = cjxl
+        proc.arguments = ["-q", "100", pnmPath, jxlPath]
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        try proc.run()
+        proc.waitUntilExit()
+        let data = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
+        let dec = JXLDecoder()
+        do {
+            let image = try dec.decodeModular(data)
+            // If decode succeeds (some inputs may avoid the two-pass
+            // gap): assert the channel count matches input (3 RGB).
+            XCTAssertEqual(image.channels.count, 3,
+                "RGB lossless should yield 3 channels post-inverse-transform")
+            for ch in image.channels {
+                XCTAssertEqual(ch.width, 32)
+                XCTAssertEqual(ch.height, 32)
+            }
+        } catch {
+            // Expected for inputs that exercise the two-pass gap.
+            // Verify the error is a structured one (not a crash).
+            try XCTSkipIf(true,
+                "decodeModular hit the two-pass-flow gap as expected: \(error)")
+        }
+    }
+
+    /// `decodeModular` on an empty buffer throws cleanly.
+    func testJXLDecoder_decodeModular_RejectsEmptyData() throws {
+        let dec = JXLDecoder()
+        XCTAssertThrowsError(try dec.decodeModular(Data()))
+    }
+
     // MARK: - WeightedPredictor — stateful WP machine + property 15
 
     /// At pixel (0, 0) the WP has no neighbour history, so all

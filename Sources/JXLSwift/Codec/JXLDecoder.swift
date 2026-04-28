@@ -96,6 +96,114 @@ public final class JXLDecoder {
         throw DecoderError.notImplemented("multi-frame decoding")
     }
 
+    /// **Experimental** end-to-end Modular pixel decode. Walks the
+    /// container + headers, decodes the MA-tree + post-tree codebook,
+    /// reads the GroupHeader, applies meta-transforms, decodes every
+    /// wire-level channel via `decodeAllChannels`, then runs the
+    /// inverse transform chain via `applyInverseTransforms`.
+    ///
+    /// Returns a `ModularImage` whose channels are the post-inverse-
+    /// transform colour channels (so for an RGB lossless cjxl input
+    /// with one RCT, channel 0 holds the R values, channel 1 G,
+    /// channel 2 B, in the spec-defined output order).
+    ///
+    /// **Status:** the pipeline is wired end-to-end but not yet
+    /// byte-equal to djxl. The remaining gap is the two-pass
+    /// `ModularGenericDecompress` flow (Global section + per-group
+    /// section, each with its own GroupHeader / transforms / ANS
+    /// state init); right now this method only reads the first
+    /// section's GroupHeader + decodes against the first section's
+    /// channels. Wiring the second pass is the next milestone.
+    public func decodeModular(_ data: Data) throws -> ModularImage {
+        let inspection = try inspect(data)
+        guard let m = inspection.metadata else {
+            throw DecoderError.notImplemented(
+                "ImageMetadata couldn't be parsed"
+            )
+        }
+        let codestream: Data
+        switch inspection.form {
+        case .naked:
+            codestream = data
+        case .container:
+            guard let parsed = try? parseJXLContainer(data),
+                  case let .iso(boxes) = parsed,
+                  let cs = try? extractCodestream(from: boxes, in: data) else {
+                throw DecoderError.notImplemented(
+                    "container codestream extraction failed"
+                )
+            }
+            codestream = cs
+        }
+        var r = BitReader(codestream, startingAt: 16)
+        _ = try SizeHeader.read(from: &r)
+        _ = try ImageMetadata.read(from: &r)
+        try r.alignToByte()
+        let ctx = FrameHeaderContext(
+            xybEncoded: m.xybEncoded,
+            numExtraChannels: m.extraChannels.count,
+            haveAnimation: m.animation != nil,
+            haveTimecodes: m.animation?.haveTimecodes ?? false
+        )
+        let fh = try FrameHeader.read(from: &r, context: ctx)
+        guard fh.encoding == .modular else {
+            throw DecoderError.notImplemented(
+                "decodeModular requires a Modular frame; got \(fh.encoding)"
+            )
+        }
+        let tocEntries = TOC.numEntries(
+            numGroups: 1, numDcGroups: 0,
+            numPasses: Int(fh.passes.numPasses)
+        )
+        _ = try TOC.read(from: &r, numEntries: tocEntries)
+        let matrixDcDefault = try r.readBit()
+        if !matrixDcDefault {
+            for _ in 0..<3 { _ = try r.read(bits: 16) }
+        }
+        let hasTree = try r.readBit()
+        guard hasTree else {
+            throw DecoderError.notImplemented(
+                "single-leaf-default modular tree decode"
+            )
+        }
+        let treeHdr = try EntropySectionHeader.read(from: &r, numContexts: 6)
+        let treeCB = try MultiClusterCodebook.read(from: &r, header: treeHdr)
+        var treeStream = TokenStreamReader(header: treeHdr, codebook: treeCB)
+        let tree = try ModularTree.decode(from: &r, stream: &treeStream)
+        let postHdr = try EntropySectionHeader.read(
+            from: &r, numContexts: tree.leafCount
+        )
+        let postCB = try MultiClusterCodebook.read(from: &r, header: postHdr)
+        try r.alignToByte()
+        let groupHeader = try GroupHeader.read(from: &r)
+        var pixelStream = TokenStreamReader(header: postHdr, codebook: postCB)
+
+        let nbColor = (m.colorEncoding.colorSpace == .grayscale) ? 1 : 3
+        var image = ModularImage.fresh(
+            xsize: Int(inspection.xsize),
+            ysize: Int(inspection.ysize),
+            nbColor: nbColor
+        )
+        try metaApplyTransforms(
+            image: &image, transforms: groupHeader.transforms
+        )
+        let geometries = image.channels.map {
+            ModularChannelGeometry(width: $0.width, height: $0.height)
+        }
+        let decoded = try decodeAllChannels(
+            channels: geometries, groupId: 0,
+            tree: tree, stream: &pixelStream, from: &r,
+            wpHeader: groupHeader.wpHeader
+        )
+        for i in 0..<image.channels.count {
+            image.channels[i].pixels = decoded[i]
+        }
+        try applyInverseTransforms(
+            image: &image, transforms: groupHeader.transforms
+        )
+        return image
+    }
+
     /// Inspect frame-level structure of a JXL byte stream — the
     /// FrameHeader, TOC, and (for Modular frames) the MA-tree
     /// statistics. Best-effort: each field is `nil` if our reader
