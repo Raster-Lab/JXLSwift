@@ -35,6 +35,9 @@ public enum ModularChannelDecoderError: Error, Sendable {
     case tokenReader(TokenStreamReaderError)
     case treeWalk(ModularTreeError)
     case tokenOutOfRange(token: UInt32, leafId: Int)
+    /// Wraps a token-read error with the (x, y) position where it
+    /// occurred — useful for diagnostics when the decoder gives up.
+    case tokenAtPosition(x: Int, y: Int, inner: TokenStreamReaderError)
 }
 
 /// Decode one Modular channel. `width × height` pixel values fill
@@ -97,7 +100,9 @@ public func decodeModularChannel(
             let token: UInt32
             do { token = try stream.readToken(context: leaf.leafId, from: &r) }
             catch let e as TokenStreamReaderError {
-                throw ModularChannelDecoderError.tokenReader(e)
+                throw ModularChannelDecoderError.tokenAtPosition(
+                    x: x, y: y, inner: e
+                )
             }
             // Predictor neighbourhood — substitute available
             // neighbours at edges (different rules from properties).

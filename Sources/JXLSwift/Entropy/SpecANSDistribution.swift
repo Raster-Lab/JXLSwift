@@ -363,15 +363,23 @@ public enum SpecANSDistribution {
     }
 }
 
-/// `min(max(val - shift, 0), logTabSize - shift)` per libjxl's
-/// `GetPopulationCountPrecision`. Determines the number of extra
-/// bits read to refine a logcount-only count value.
+/// libjxl `GetPopulationCountPrecision`. Returns the number of extra
+/// bits to refine a logcount-only count value:
+///
+///     r = min(logcount, shift - ((ANS_LOG_TAB_SIZE - logcount) >> 1))
+///     return max(r, 0)
+///
+/// (The previous incorrect implementation used `max(val - shift, 0),
+/// min(raw, logTabSize - shift)`, which gave wrong bit counts for
+/// most inputs and thus consumed wrong bits during histogram
+/// reconstruction — silently breaking byte-equality with cjxl.)
 @inline(__always)
 private func getPopulationCountPrecision(
     _ val: Int32, _ shift: Int32, logTabSize: Int32
 ) -> Int {
-    let raw = max(val &- shift, 0)
-    return Int(min(raw, logTabSize &- shift))
+    let term = shift &- ((logTabSize &- val) &>> 1)
+    let r = min(val, term)
+    return Int(max(r, 0))
 }
 
 /// Floor of log2 for nonzero positive values (returns 0 for value=1).
