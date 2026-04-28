@@ -4355,6 +4355,154 @@ extension FoundationTests {
     }
 }
 
+// MARK: - VarLenUint (libjxl DecodeVarLenUint8/16)
+
+extension FoundationTests {
+
+    /// Hand-derived: `writeVarLenUint8(0)` emits a single 0 bit.
+    func testVarLenUint8_HandDerived_Zero() throws {
+        var w = BitWriter()
+        try w.writeVarLenUint8(0)
+        let bytes = [UInt8](w.finishToData())
+        XCTAssertEqual(bytes, [0x00])
+    }
+
+    /// Round-trip across the full 0..255 range — every value the
+    /// VarLenUint8 encoding covers, hitting every nbits ∈ {0, 1, …, 7}.
+    func testVarLenUint8_RoundTrip_AllValues() throws {
+        for v: UInt32 in 0...255 {
+            var w = BitWriter()
+            try w.writeVarLenUint8(v)
+            var r = BitReader(w.finishToData())
+            XCTAssertEqual(try r.readVarLenUint8(), v,
+                "round-trip failed for VarLenUint8(\(v))")
+        }
+    }
+
+    /// Round-trip a sweep of VarLenUint16 values covering each nbits
+    /// branch (0, 1, …, 15 — the 4-bit nbits field's full range).
+    func testVarLenUint16_RoundTrip_Sweep() throws {
+        let cases: [UInt32] = [
+            0, 1,
+            2, 3,                        // nbits = 1
+            4, 5, 7,                     // nbits = 2
+            8, 15,                       // nbits = 3
+            16, 31,                      // nbits = 4
+            255, 256, 1023, 1024,
+            32768, 65535,                // nbits = 15 (max)
+        ]
+        for v in cases {
+            var w = BitWriter()
+            try w.writeVarLenUint16(v)
+            var r = BitReader(w.finishToData())
+            XCTAssertEqual(try r.readVarLenUint16(), v,
+                "round-trip failed for VarLenUint16(\(v))")
+        }
+    }
+
+    /// Encoder rejects values that don't fit the VarLenUint8 / 16
+    /// ranges.
+    func testVarLenUint_RejectsOutOfRange() {
+        var w = BitWriter()
+        XCTAssertThrowsError(try w.writeVarLenUint8(256))
+        XCTAssertThrowsError(try w.writeVarLenUint16(65_536))
+    }
+}
+
+// MARK: - SpecANSDistribution (§C.6.3.2 ReadHistogram)
+
+extension FoundationTests {
+
+    /// Round-trip a 1-symbol simple distribution: all probability
+    /// mass on a single symbol. Reader recovers `counts[s] == range`.
+    func testSpecANSDistribution_RoundTrip_SimpleOneSymbol() throws {
+        for symbol in [0, 5, 200] {
+            var counts = [Int32](repeating: 0, count: symbol + 1)
+            counts[symbol] = 4096
+            var w = BitWriter()
+            try SpecANSDistribution.writeHistogram(counts, to: &w)
+            var r = BitReader(w.finishToData())
+            let decoded = try SpecANSDistribution.readHistogram(from: &r)
+            // Reader returns counts up to maxSymbol+1 only; pad to compare.
+            var padded = decoded
+            while padded.count < counts.count { padded.append(0) }
+            XCTAssertEqual(padded, counts,
+                "1-symbol round-trip failed for symbol \(symbol)")
+        }
+    }
+
+    /// Round-trip a 2-symbol simple distribution. Counts split via
+    /// the precision-bits raw field.
+    func testSpecANSDistribution_RoundTrip_SimpleTwoSymbols() throws {
+        let cases: [(Int, Int, Int32)] = [
+            (0, 1, 2048),       // 50/50 split
+            (3, 7, 1000),       // 1000 / 3096
+            (1, 100, 4090),     // 4090 / 6
+        ]
+        for (s0, s1, c0) in cases {
+            var counts = [Int32](repeating: 0, count: max(s0, s1) + 1)
+            counts[s0] = c0
+            counts[s1] = 4096 - c0
+            var w = BitWriter()
+            try SpecANSDistribution.writeHistogram(counts, to: &w)
+            var r = BitReader(w.finishToData())
+            let decoded = try SpecANSDistribution.readHistogram(from: &r)
+            var padded = decoded
+            while padded.count < counts.count { padded.append(0) }
+            XCTAssertEqual(padded, counts,
+                "2-symbol round-trip failed for (\(s0)→\(c0), \(s1)→\(4096 - c0))")
+        }
+    }
+
+    /// Round-trip a flat distribution. Reader's `CreateFlatHistogram`
+    /// matches the writer's input bit-identically.
+    func testSpecANSDistribution_RoundTrip_Flat() throws {
+        for alphabetSize in [2, 4, 7, 16, 64, 256] {
+            // Build the canonical flat distribution.
+            let range: Int32 = 4096
+            let base = range / Int32(alphabetSize)
+            let leftover = range - base * Int32(alphabetSize)
+            var counts = [Int32](repeating: base, count: alphabetSize)
+            for i in 0..<Int(leftover) { counts[i] &+= 1 }
+            XCTAssertTrue(SpecANSDistribution.isFlat(counts: counts, range: range))
+            var w = BitWriter()
+            try SpecANSDistribution.writeHistogram(counts, to: &w)
+            var r = BitReader(w.finishToData())
+            let decoded = try SpecANSDistribution.readHistogram(from: &r)
+            XCTAssertEqual(decoded, counts,
+                "flat round-trip failed for alphabet \(alphabetSize)")
+        }
+    }
+
+    /// The writer rejects a non-flat, >2-symbol distribution because
+    /// the complex path (RLE + per-position log-counts) isn't
+    /// implemented yet.
+    func testSpecANSDistribution_WriterRejectsComplex() {
+        // 4 distinct symbols, non-flat → throws.
+        let counts: [Int32] = [1000, 100, 2000, 996]
+        var w = BitWriter()
+        XCTAssertThrowsError(
+            try SpecANSDistribution.writeHistogram(counts, to: &w)
+        ) { err in
+            XCTAssertEqual(err as? SpecANSDistributionError,
+                           .complexPathNotImplemented)
+        }
+    }
+
+    /// Reader: hand-built bitstream covering the simple 1-symbol path.
+    /// Layout (LSB-first): simple=1, num_symbols-1=0, varlenuint8(0)=0.
+    /// Bits: 1, 0, 0 → byte = 0b00000001 = 0x01.
+    func testSpecANSDistribution_HandDerived_SimpleZero() throws {
+        var w = BitWriter()
+        w.writeBit(true)        // simple = 1
+        w.writeBit(false)       // num_symbols - 1 = 0
+        w.writeBit(false)       // varlenuint8(0) = single 0 bit
+        var r = BitReader(w.finishToData())
+        let counts = try SpecANSDistribution.readHistogram(from: &r)
+        XCTAssertEqual(counts, [4096])
+    }
+}
+
 // MARK: - EntropySectionHeader (§C.6 prefix)
 
 extension FoundationTests {
