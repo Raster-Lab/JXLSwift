@@ -67,10 +67,11 @@ public struct ExtraChannelInfo: Sendable {
         let typeRaw = try r.readEnum()
         let type = ExtraChannelType(rawValue: typeRaw) ?? .optional
         let bitDepth = try BitDepth.read(from: &r)
+        // dim_shift distribution per libjxl image_metadata.cc
+        // (`Val(0), Val(3), Val(4), BitsOffset(3, 1)`):
         let dimShift = try r.readU32((
-            .literal(0), .literal(3),
-            .offset(constant: 4, extraBits: 2),
-            .offset(constant: 8, extraBits: 3)
+            .literal(0), .literal(3), .literal(4),
+            .offset(constant: 1, extraBits: 3)
         ))
         let nameLen = try r.readU32((
             .literal(0),

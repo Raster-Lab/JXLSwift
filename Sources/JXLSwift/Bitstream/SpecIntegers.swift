@@ -65,13 +65,21 @@ extension BitReader {
     }
 
     /// Decode an enum from the spec's "Enum()" pattern (ISO/IEC 18181-1
-    /// §C.2.6): `U32(0, 1, 2, 1+u(4))`. Result range is 0…16
-    /// (selectors 0–2 yield 0, 1, 2 directly; selector 3 yields
-    /// `1 + u(4)` which spans 1..16).
+    /// §C.2.6 — see also libjxl `Visitor::Enum`): `U32(0, 1, 2+u(4),
+    /// 18+u(6))`. The four selector cases:
+    ///
+    ///   • `00`        → 0           (kUnknown / first reserved value)
+    ///   • `01`        → 1           (most common — usually default value)
+    ///   • `10xxxx`    → 2..17       (general path for medium values)
+    ///   • `11yyyyyy`  → 18..81      (extended path for higher enum values)
+    ///
+    /// This is what carries values like TransferFunction.HLG (=18) and
+    /// .DCI-P3 (=17) which a `1+u(4)` distribution cannot reach.
     public mutating func readEnum() throws -> UInt32 {
         try readU32((
-            .literal(0), .literal(1), .literal(2),
-            .offset(constant: 1, extraBits: 4)
+            .literal(0), .literal(1),
+            .offset(constant: 2, extraBits: 4),
+            .offset(constant: 18, extraBits: 6)
         ))
     }
 }
@@ -97,13 +105,14 @@ extension BitWriter {
     }
 
     /// Encode an enum value via the spec's "Enum()" pattern (ISO/IEC
-    /// 18181-1 §C.2.6): `U32(0, 1, 2, 1+u(4))`. Result range is 0…16.
-    /// Throws `BitstreamError.malformedValue` for values outside that
-    /// range.
+    /// 18181-1 §C.2.6 — see also libjxl `Visitor::Enum`):
+    /// `U32(0, 1, 2+u(4), 18+u(6))`. Reachable range is 0..81. Throws
+    /// `BitstreamError.malformedValue` for values outside that range.
     public mutating func writeEnum(_ value: UInt32) throws {
         try writeU32(value, distributions: (
-            .literal(0), .literal(1), .literal(2),
-            .offset(constant: 1, extraBits: 4)
+            .literal(0), .literal(1),
+            .offset(constant: 2, extraBits: 4),
+            .offset(constant: 18, extraBits: 6)
         ))
     }
 

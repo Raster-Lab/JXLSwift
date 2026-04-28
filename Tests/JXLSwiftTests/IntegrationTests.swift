@@ -449,6 +449,101 @@ final class FoundationTests: XCTestCase {
             "tone-mapping intensityTarget should match cjxl --intensity_target=4000")
     }
 
+    /// Helper: run cjxl with a `-x color_space=...` flag and assert
+    /// our parser extracts the expected primaries + transfer function.
+    /// Locks in the spec-correct Enum() distribution
+    /// `(0, 1, 2+u(4), 18+u(6))` against cjxl's output.
+    private func runColorEncodingCrossValidation(
+        cjxlColorSpace: String,
+        expectedPrimaries: Primaries,
+        expectedTF: TransferFunction
+    ) throws {
+        guard let cjxl = whichTool("cjxl") else {
+            try XCTSkipIf(true, "cjxl not on PATH")
+            return
+        }
+        let pnmPath = NSTemporaryDirectory() + "tf-\(UUID().uuidString).ppm"
+        let jxlPath = NSTemporaryDirectory() + "tf-\(UUID().uuidString).jxl"
+        defer {
+            try? FileManager.default.removeItem(atPath: pnmPath)
+            try? FileManager.default.removeItem(atPath: jxlPath)
+        }
+        try makeSyntheticPNM(
+            width: 16, height: 16, channels: 3, bitDepth: 8,
+            generator: { x, y, c in UInt16((x &+ y &+ Int(c)) & 0xFF) }
+        ).write(to: URL(fileURLWithPath: pnmPath))
+        let proc = Process()
+        proc.launchPath = cjxl
+        proc.arguments = ["-q", "100", "-x", "color_space=\(cjxlColorSpace)",
+                          pnmPath, jxlPath]
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        try proc.run()
+        proc.waitUntilExit()
+        guard proc.terminationStatus == 0 else {
+            XCTFail("cjxl failed with status \(proc.terminationStatus) for color_space=\(cjxlColorSpace)")
+            return
+        }
+        let data = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
+        let inspect = try JXLDecoder().inspect(data)
+        guard let m = inspect.metadata else {
+            XCTFail("inspect() returned nil ImageMetadata")
+            return
+        }
+        XCTAssertEqual(m.colorEncoding.primaries, expectedPrimaries,
+            "primaries mismatch for color_space=\(cjxlColorSpace): got \(String(describing: m.colorEncoding.primaries))")
+        XCTAssertEqual(m.colorEncoding.transferFunction, expectedTF,
+            "transferFunction mismatch for color_space=\(cjxlColorSpace): got \(m.colorEncoding.transferFunction)")
+        XCTAssertEqual(m.colorEncoding.renderingIntent, .relative,
+            "renderingIntent mismatch for color_space=\(cjxlColorSpace): got \(m.colorEncoding.renderingIntent)")
+    }
+
+    /// Cross-validate sRGB primaries + Linear transfer function. The
+    /// Linear TF (=8) reaches via `Enum() selector 2 + u(4)=6` —
+    /// previously misread by the wrong `1+u(4)` Enum distribution.
+    func testCrossValidate_Cjxl_LinearTF_Match() throws {
+        try runColorEncodingCrossValidation(
+            cjxlColorSpace: "RGB_D65_SRG_Rel_Lin",
+            expectedPrimaries: .srgb,
+            expectedTF: .linear
+        )
+    }
+
+    /// Cross-validate sRGB primaries + sRGB transfer function via the
+    /// non-allDefault path. cjxl writes this configuration when the
+    /// rendering intent is forced to non-default.
+    func testCrossValidate_Cjxl_SRGB_Match() throws {
+        try runColorEncodingCrossValidation(
+            cjxlColorSpace: "RGB_D65_SRG_Rel_SRG",
+            expectedPrimaries: .srgb,
+            expectedTF: .srgb
+        )
+    }
+
+    /// Cross-validate Rec.2100 primaries + PQ transfer function. PQ
+    /// (=16) is the high-end of the `2+u(4)` slot — just barely
+    /// reachable. BT.2100 primaries (=9) lives in the same slot at
+    /// `2+u(4)=7`.
+    func testCrossValidate_Cjxl_Rec2100PQ_Match() throws {
+        try runColorEncodingCrossValidation(
+            cjxlColorSpace: "RGB_D65_202_Rel_PeQ",
+            expectedPrimaries: .bt2100,
+            expectedTF: .pq
+        )
+    }
+
+    /// Cross-validate sRGB primaries + HLG transfer function. HLG
+    /// (=18) is the FIRST value in the extended `18+u(6)` Enum slot —
+    /// totally unreachable by the old `1+u(4)` Enum distribution. This
+    /// test would have failed before the Enum fix.
+    func testCrossValidate_Cjxl_HLG_Match() throws {
+        try runColorEncodingCrossValidation(
+            cjxlColorSpace: "RGB_D65_SRG_Rel_HLG",
+            expectedPrimaries: .srgb,
+            expectedTF: .hlg
+        )
+    }
+
     /// ICC profile path: cjxl with `-x icc_pathname=...` produces a
     /// codestream whose `ColorEncoding.useICC = 1`. Our parser must
     /// detect this and skip the per-field colour-encoding reads.
@@ -552,19 +647,51 @@ final class FoundationTests: XCTestCase {
             "float32 exponent should be 8 — spec uses (2, 5, 10, 7+u(4)) distribution")
     }
 
-    /// **Writer-side cross-validation (RGB only)**: an M0 file with
+    /// **Writer-side cross-validation (grayscale)**: an M0 file with a
+    /// non-default `ColorEncoding` (the `colorSpace = grayscale` path
+    /// that takes the full-structure CE write) must parse cleanly
+    /// through `jxlinfo`'s header section. This was previously broken
+    /// — `jxlinfo` errored on the grayscale path because the writer
+    /// emitted the wrong Enum() distribution and the colour fields
+    /// drifted off-by-bits — and recovered when the spec-correct
+    /// `(0, 1, 2+u(4), 18+u(6))` Enum distribution landed.
+    func testCrossValidate_M0WriterHeaders_GrayscaleSpecParseable() throws {
+        guard let jxlinfoPath = whichTool("jxlinfo") else {
+            try XCTSkipIf(true, "jxlinfo not on PATH")
+            return
+        }
+        var frame = ImageFrame(
+            width: 32, height: 32, channels: 1,
+            pixelType: .uint8, colorSpace: .grayscale
+        )
+        for i in 0..<frame.data.count { frame.data[i] = UInt8(i & 0xFF) }
+        let m0 = try MinimalLosslessCodec.encode(frame)
+        let path = NSTemporaryDirectory() + "jxlswift-gray-xv-\(UUID().uuidString).m0"
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        try m0.write(to: URL(fileURLWithPath: path))
+
+        let proc = Process()
+        proc.launchPath = jxlinfoPath
+        proc.arguments = [path]
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = pipe
+        try proc.run()
+        proc.waitUntilExit()
+        let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(),
+                         encoding: .utf8) ?? ""
+
+        XCTAssertTrue(out.contains("32x32"),
+            "jxlinfo must print 32x32 for our grayscale writer; got: \(out)")
+        XCTAssertTrue(out.contains("8-bit"),
+            "jxlinfo must print 8-bit; got: \(out)")
+    }
+
+    /// **Writer-side cross-validation (RGB)**: an M0 file with
     /// default-sRGB headers (i.e. our 3-channel path that takes the
     /// `ColorEncoding.allDefault = 1` shortcut) parses cleanly
     /// through `jxlinfo`'s header section even though the M0 marker
     /// isn't valid frame data.
-    ///
-    /// (The grayscale-writer equivalent doesn't yet pass through
-    /// `jxlinfo` reliably — `jxlinfo` errors before printing
-    /// dimensions when the ColorEncoding takes the full-structure
-    /// path, which suggests there's still an unknown bit-layout
-    /// disagreement on the grayscale path. Reader cross-validation
-    /// for the same shape works fine, so the issue is symmetric on
-    /// the writer side. Defer until spec-text is available.)
     func testCrossValidate_M0WriterHeaders_RGBSpecParseable() throws {
         guard let jxlinfoPath = whichTool("jxlinfo") else {
             try XCTSkipIf(true, "jxlinfo not on PATH")
@@ -2047,10 +2174,14 @@ final class FoundationTests: XCTestCase {
 
     /// Values above 16 fall outside Enum()'s representable range and
     /// must throw rather than silently producing an aliased encoding.
+    /// The spec-correct Enum() distribution covers 0..81 — values
+    /// outside that throw `BitstreamError.malformedValue`. (The old
+    /// `1+u(4)` distribution capped at 16; updating this test was
+    /// part of the same fix that recovered TF=HLG/DCI parsing.)
     func testEnum_RejectsOutOfRange() {
         var w = BitWriter()
-        XCTAssertThrowsError(try w.writeEnum(17))
-        XCTAssertThrowsError(try w.writeEnum(100))
+        XCTAssertThrowsError(try w.writeEnum(82))
+        XCTAssertThrowsError(try w.writeEnum(1000))
     }
 
     /// Hand-derived: writeEnum(0) emits selector 0, no extra bits → 2 bits total.
@@ -2062,14 +2193,40 @@ final class FoundationTests: XCTestCase {
         XCTAssertEqual(bytes, [0x00])
     }
 
-    /// Hand-derived: writeEnum(5) goes via the offset(1, u(4)) branch:
-    /// selector 3 = 0b11, then `5 - 1 = 4` as u(4) = 0b0100.
-    /// LSB-first: 1,1,0,0,1,0 → byte = 0b0001_0011 = 0x13.
+    /// Hand-derived: writeEnum(5) goes via the `2+u(4)` branch:
+    /// selector 2 = LSB-first `0,1`, then `5 - 2 = 3` as u(4) =
+    /// LSB-first `1,1,0,0`. Combined `0,1,1,1,0,0` (6 bits) → byte
+    /// (LSB-first, padded) = 0b0000_1110 = 0x0E.
     func testEnum_HandDerived_Five() throws {
         var w = BitWriter()
         try w.writeEnum(5)
         let bytes = [UInt8](w.finishToData())
-        XCTAssertEqual(bytes, [0x13])
+        XCTAssertEqual(bytes, [0x0E])
+    }
+
+    /// Hand-derived: writeEnum(18) goes via the `18+u(6)` branch:
+    /// selector 3 = LSB-first `1,1`, then `18 - 18 = 0` as u(6) =
+    /// `0,0,0,0,0,0`. Combined `1,1,0,0,0,0,0,0` = 0x03. This is the
+    /// single bit pattern that the old `1+u(4)` distribution could not
+    /// represent — TransferFunction.HLG (=18) was unreachable until
+    /// the Enum dist was fixed.
+    func testEnum_HandDerived_Eighteen() throws {
+        var w = BitWriter()
+        try w.writeEnum(18)
+        let bytes = [UInt8](w.finishToData())
+        XCTAssertEqual(bytes, [0x03])
+    }
+
+    /// Round-trip writeEnum + readEnum across all reachable values
+    /// (0..81). Validates that any value the writer accepts is
+    /// recoverable bit-identically by the reader.
+    func testEnum_RoundTrip_AllReachable() throws {
+        for v: UInt32 in 0...81 {
+            var w = BitWriter()
+            try w.writeEnum(v)
+            var r = BitReader(w.finishToData())
+            XCTAssertEqual(try r.readEnum(), v, "round-trip failed for \(v)")
+        }
     }
 
     // MARK: - SimpleEntropyStream — integration of the entropy primitives

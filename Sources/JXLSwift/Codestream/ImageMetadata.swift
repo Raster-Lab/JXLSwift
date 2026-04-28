@@ -389,10 +389,10 @@ extension ColorEncoding {
         }
         w.writeBit(false)
         w.writeBit(useICC)
-        try w.writeU32(colorSpace.rawValue, distributions: (
-            .literal(0), .literal(1), .literal(2),
-            .offset(constant: 1, extraBits: 4)
-        ))
+        // ColorSpace via Enum() — see SpecIntegers.readEnum for the
+        // distribution. Reachable values 0..81; named JXL values
+        // 0=RGB, 1=Gray, 2=XYB, 3=Unknown.
+        try w.writeEnum(colorSpace.rawValue)
         guard !useICC && colorSpace != .xyb else { return }
 
         // White point — `Enum()` per spec §C.3.4.
@@ -405,11 +405,9 @@ extension ColorEncoding {
 
         if colorSpace != .grayscale {
             let prim = primaries ?? .srgb
-            // Primaries: spec distribution
-            // `(literal(11), literal(1), literal(9), literal(2))`.
-            try w.writeU32(prim.rawValue, distributions: (
-                .literal(11), .literal(1), .literal(9), .literal(2)
-            ))
+            // Primaries — `Enum()`. Named: 1=sRGB, 2=custom,
+            // 9=BT2100, 11=DCI-P3.
+            try w.writeEnum(prim.rawValue)
             if prim == .custom, let cp = customPrimaries {
                 func writeChrom(_ ch: (UInt32, UInt32)) throws {
                     try w.writeU32(ch.0, distributions: (.bits(19), .bits(19), .bits(20), .bits(21)))
@@ -421,30 +419,22 @@ extension ColorEncoding {
             }
         }
 
-        // Transfer function. Custom distribution per spec —
-        // `(literal(2), literal(8), literal(13), 1 + u(4))` — so the
-        // most common values (unknown, linear, sRGB) take 2 bits
-        // total; rarer values reach via `selector 3 = 1+u(4)` (range
-        // 1..16, sufficient for bt709=1, PQ=16; DCI=17 and HLG=18
-        // are out of Enum-range and not currently writable).
-        let tfDist: (UInt32Distribution, UInt32Distribution,
-                     UInt32Distribution, UInt32Distribution) = (
-            .literal(2), .literal(8), .literal(13),
-            .offset(constant: 1, extraBits: 4)
-        )
+        // Transfer function. `have_gamma` u(1) flag, then either a
+        // 24-bit gamma value or the TF as Enum() — covering all named
+        // values 1=BT709, 2=Unknown, 8=Linear, 13=sRGB, 16=PQ,
+        // 17=DCI, 18=HLG (the last two reach via `18+u(6)` and so
+        // need the spec-correct Enum dist, not a custom 1+u(4) one).
         switch transferFunction {
         case .gamma(let g):
             w.writeBit(true)
             w.write(bits: 24, value: g)
-        case .bt709:   w.writeBit(false); try w.writeU32(1,  distributions: tfDist)
-        case .unknown: w.writeBit(false); try w.writeU32(2,  distributions: tfDist)
-        case .linear:  w.writeBit(false); try w.writeU32(8,  distributions: tfDist)
-        case .srgb:    w.writeBit(false); try w.writeU32(13, distributions: tfDist)
-        case .pq:      w.writeBit(false); try w.writeU32(16, distributions: tfDist)
-        case .dci, .hlg:
-            // 17/18 don't fit selector 3's 1..16 range; fall back to
-            // the linear approximation rather than throw.
-            w.writeBit(false); try w.writeU32(8, distributions: tfDist)
+        case .bt709:   w.writeBit(false); try w.writeEnum(1)
+        case .unknown: w.writeBit(false); try w.writeEnum(2)
+        case .linear:  w.writeBit(false); try w.writeEnum(8)
+        case .srgb:    w.writeBit(false); try w.writeEnum(13)
+        case .pq:      w.writeBit(false); try w.writeEnum(16)
+        case .dci:     w.writeBit(false); try w.writeEnum(17)
+        case .hlg:     w.writeBit(false); try w.writeEnum(18)
         }
 
         // Rendering intent — `Enum()` per spec.
@@ -472,9 +462,8 @@ extension ExtraChannelInfo {
         ))
         try bitDepth.write(to: &w)
         try w.writeU32(dimShift, distributions: (
-            .literal(0), .literal(3),
-            .offset(constant: 4, extraBits: 2),
-            .offset(constant: 8, extraBits: 3)
+            .literal(0), .literal(3), .literal(4),
+            .offset(constant: 1, extraBits: 3)
         ))
 
         let nameBytes = Array(name.utf8)

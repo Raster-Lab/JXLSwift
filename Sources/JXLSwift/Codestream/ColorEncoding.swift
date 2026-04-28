@@ -115,14 +115,9 @@ public struct ColorEncoding: Sendable {
             return .srgb
         }
         let useICC = try r.readBit()
-        // 2-bit ColorSpace selector. The spec uses a U32(0,1,2,1+u(4))
-        // pattern that maps 0→RGB, 1→Gray, 2→XYB, 3→Unknown for the first
-        // three; the offset(1+u(4)) reaches values up to 16 but most are
-        // reserved.
-        let csRaw = try r.readU32((
-            .literal(0), .literal(1), .literal(2),
-            .offset(constant: 1, extraBits: 4)
-        ))
+        // ColorSpace via Enum() — `U32(0, 1, 2+u(4), 18+u(6))`. Named
+        // values: 0=RGB, 1=Gray, 2=XYB, 3=Unknown. Spec §C.3.4.
+        let csRaw = try r.readEnum()
         let cs = ColorSpaceID(rawValue: csRaw) ?? .unknown
 
         var wp: WhitePoint? = nil
@@ -149,15 +144,11 @@ public struct ColorEncoding: Sendable {
             }
 
             if cs != .grayscale {
-                // Primaries — uses spec-specific distribution
-                // `(literal(11), literal(1), literal(9), literal(2))`.
-                // Selector 1 = sRGB(1), selector 2 = BT2100(9) —
-                // verified empirically against cjxl output for
-                // both linear-transfer (sRGB primaries) and
-                // PQ-transfer (BT2100 primaries) files.
-                let pRaw = try r.readU32((
-                    .literal(11), .literal(1), .literal(9), .literal(2)
-                ))
+                // Primaries via Enum() — same `U32(0, 1, 2+u(4),
+                // 18+u(6))` pattern as colorSpace. Named values 1=sRGB,
+                // 2=custom, 9=BT2100/Rec.2100, 11=DCI-P3. cjxl reaches 9
+                // and 11 via `selector 2 + u(4)` with offset 2.
+                let pRaw = try r.readEnum()
                 prim = Primaries(rawValue: pRaw)
                 if prim == .custom {
                     func chrom() throws -> (UInt32, UInt32) {
@@ -172,23 +163,20 @@ public struct ColorEncoding: Sendable {
                 }
             }
 
-            // Transfer function. The spec's U32 distribution here is
-            // **not** `Enum()` — it's `(literal(2), literal(8),
-            // literal(13), 1 + u(4))` so the common values (unknown,
-            // linear, sRGB) are 2-bit selector + 0 extras while less
-            // common ones (PQ=16, DCI=17, HLG=18) reach via
-            // `selector 3 = 1+u(4)`. Note: bt709 (value 1) and gamma
-            // are handled separately — bt709 is reachable via
-            // selector 3, gamma uses the 24-bit gamma path above.
+            // Transfer function. After a `have_gamma` u(1) flag,
+            // gamma path reads a u(24) gamma value, otherwise the TF
+            // is encoded as Enum() — `U32(0, 1, 2+u(4), 18+u(6))`.
+            // Named values: 1=BT.709, 2=Unknown, 8=Linear, 13=sRGB,
+            // 16=PQ, 17=DCI-P3, 18=HLG. The Enum extended slot
+            // (`18+u(6)`) is what makes HLG (=18) and DCI (=17)
+            // reachable — the previous `1+u(4)` distribution capped
+            // at 16 and silently corrupted parsing for those files.
             let isGamma = try r.readBit()
             if isGamma {
                 let g = try r.read(bits: 24)
                 transfer = .gamma(g)
             } else {
-                let tfRaw = try r.readU32((
-                    .literal(2), .literal(8), .literal(13),
-                    .offset(constant: 1, extraBits: 4)
-                ))
+                let tfRaw = try r.readEnum()
                 switch tfRaw {
                 case 1:  transfer = .bt709
                 case 2:  transfer = .unknown

@@ -161,7 +161,6 @@ public struct ANSEncoder {
 
         var state: UInt32 = ANSConstants.stateLowerBound
         let tab = ANSConstants.tabSize
-        let logTab = UInt32(ANSConstants.logTabSize)
 
         // Encode in REVERSE order.
         // Renormalisation bound (UInt64 to avoid 1<<32 overflow on UInt32):
