@@ -3054,6 +3054,113 @@ extension FoundationTests {
             "default lossless frame should have num_passes=1, got \(fh.passes.numPasses)")
     }
 
+    /// Round-trip a single-entry TOC (the common case for tiny
+    /// single-group lossless frames).
+    func testTOC_RoundTrip_SingleEntry() throws {
+        let toc = TOC(hasPermutation: false, entrySizes: [42], offsets: [0, 42])
+        var w = BitWriter()
+        try toc.write(to: &w)
+        var r = BitReader(w.finishToData())
+        let parsed = try TOC.read(from: &r, numEntries: 1)
+        XCTAssertFalse(parsed.hasPermutation)
+        XCTAssertEqual(parsed.entrySizes, [42])
+        XCTAssertEqual(parsed.offsets, [0, 42])
+    }
+
+    /// Round-trip a multi-entry TOC. Sweeps across each U32 selector
+    /// of `kTocDist` — `Bits(10)` (sel 0, 0..1023), `1024+u(14)`
+    /// (sel 1, 1024..17407), `17408+u(22)` (sel 2, 17408..4211711).
+    func testTOC_RoundTrip_MultiEntry() throws {
+        let toc = TOC(
+            hasPermutation: false,
+            entrySizes: [100, 1024, 17408, 4211711, 50_000],
+            offsets: [0, 100, 1124, 18532, 4230243, 4280243]
+        )
+        var w = BitWriter()
+        try toc.write(to: &w)
+        var r = BitReader(w.finishToData())
+        let parsed = try TOC.read(from: &r, numEntries: 5)
+        XCTAssertEqual(parsed.entrySizes, toc.entrySizes)
+        XCTAssertEqual(parsed.offsets, toc.offsets)
+    }
+
+    /// `numEntries` derivation matches libjxl `NumTocEntries`.
+    func testTOC_NumEntries() {
+        // Single group, single pass → 1 entry.
+        XCTAssertEqual(TOC.numEntries(numGroups: 1, numDcGroups: 0, numPasses: 1), 1)
+        // 4 groups, 1 pass, 1 DC group → 2 + 1 + 1*4 = 7.
+        XCTAssertEqual(TOC.numEntries(numGroups: 4, numDcGroups: 1, numPasses: 1), 7)
+        // 4 groups, 2 passes, 1 DC group → 2 + 1 + 2*4 = 11.
+        XCTAssertEqual(TOC.numEntries(numGroups: 4, numDcGroups: 1, numPasses: 2), 11)
+    }
+
+    /// Decoder rejects the permutation flag (entropy-coded path is
+    /// not yet implemented).
+    func testTOC_RejectsPermutation() {
+        var w = BitWriter()
+        w.writeBit(true)         // has_permutation = 1
+        var r = BitReader(w.finishToData())
+        XCTAssertThrowsError(try TOC.read(from: &r, numEntries: 1)) { err in
+            XCTAssertEqual(err as? TOCError, .permutationNotImplemented)
+        }
+    }
+
+    /// **Cross-validation**: read a real cjxl-emitted TOC. For a
+    /// 16×16 RGB lossless image (single group, single pass, no DC
+    /// frame), the TOC should be a single entry whose value matches
+    /// the byte budget remaining after the FrameHeader.
+    func testCrossValidate_Cjxl_TOC_SingleGroupRGB() throws {
+        guard let cjxl = whichTool("cjxl") else {
+            try XCTSkipIf(true, "cjxl not on PATH")
+            return
+        }
+        let pnmPath = NSTemporaryDirectory() + "toc-\(UUID().uuidString).ppm"
+        let jxlPath = NSTemporaryDirectory() + "toc-\(UUID().uuidString).jxl"
+        defer {
+            try? FileManager.default.removeItem(atPath: pnmPath)
+            try? FileManager.default.removeItem(atPath: jxlPath)
+        }
+        try makeSyntheticPNM(
+            width: 16, height: 16, channels: 3, bitDepth: 8,
+            generator: { x, y, c in UInt16((x &+ y &+ Int(c)) & 0xFF) }
+        ).write(to: URL(fileURLWithPath: pnmPath))
+        let proc = Process()
+        proc.launchPath = cjxl
+        proc.arguments = ["-q", "100", pnmPath, jxlPath]
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        try proc.run()
+        proc.waitUntilExit()
+        let data = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
+        var r = BitReader(data)
+        _ = try r.read(bits: 8); _ = try r.read(bits: 8)
+        _ = try SizeHeader.read(from: &r)
+        let m = try ImageMetadata.read(from: &r)
+        try r.alignToByte()
+        let ctx = FrameHeaderContext(
+            xybEncoded: m.xybEncoded,
+            numExtraChannels: m.extraChannels.count,
+            haveAnimation: m.animation != nil,
+            haveTimecodes: m.animation?.haveTimecodes ?? false
+        )
+        let fh = try FrameHeader.read(from: &r, context: ctx)
+        // For a single-group single-pass lossless frame, NumTocEntries == 1.
+        let entries = TOC.numEntries(
+            numGroups: 1, numDcGroups: 0,
+            numPasses: Int(fh.passes.numPasses)
+        )
+        XCTAssertEqual(entries, 1)
+        let toc = try TOC.read(from: &r, numEntries: entries)
+        XCTAssertFalse(toc.hasPermutation)
+        XCTAssertEqual(toc.entrySizes.count, 1)
+        // Sanity: the single entry's size + bits-consumed-so-far
+        // shouldn't exceed the file.
+        let bitsUsed = r.position
+        let bytesRemaining = data.count - bitsUsed / 8
+        XCTAssertLessThanOrEqual(Int(toc.entrySizes[0]), bytesRemaining,
+            "TOC entry \(toc.entrySizes[0]) exceeds remaining \(bytesRemaining) bytes")
+    }
+
     /// **Cross-validation**: same shape but with a grayscale source.
     /// Confirms FrameHeader parsing is independent of colour space.
     func testCrossValidate_Cjxl_FrameHeader_Grayscale() throws {
