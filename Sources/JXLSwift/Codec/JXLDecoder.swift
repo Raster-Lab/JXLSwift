@@ -197,6 +197,14 @@ public final class JXLDecoder {
         // GroupHeader directly after the post-tree codebook with NO
         // byte alignment. Match that.
         let groupHeader = try GroupHeader.read(from: &r)
+        if ProcessInfo.processInfo.environment["JXL_TRACE"] != nil {
+            let msg = "TRACE GH(no-align): useGlobal=\(groupHeader.useGlobalTree), wpDefault=\(groupHeader.wpHeader.allDefault), numTransforms=\(groupHeader.transforms.count)\n"
+            FileHandle.standardError.write(Data(msg.utf8))
+            for (ti, t) in groupHeader.transforms.enumerated() {
+                let tmsg = "TRACE   transform[\(ti)]: id=\(t.id) beginC=\(t.beginC) numC=\(t.numC) rctType=\(t.rctType)\n"
+                FileHandle.standardError.write(Data(tmsg.utf8))
+            }
+        }
         var pixelStream = TokenStreamReader(header: postHdr, codebook: postCB)
 
         let nbColor = (m.colorEncoding.colorSpace == .grayscale) ? 1 : 3

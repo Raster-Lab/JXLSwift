@@ -105,7 +105,9 @@ public struct MultiClusterCodebook: Sendable {
         counts.reserveCapacity(n)
         var alphabetSizes = [Int]()
         alphabetSizes.reserveCapacity(n)
-        for _ in 0..<n {
+        let trace = ProcessInfo.processInfo.environment["JXL_TRACE"] != nil
+        for ci in 0..<n {
+            let posBefore = r.position
             let cnt: [Int32]
             do {
                 cnt = try SpecANSDistribution.readHistogram(
@@ -113,6 +115,10 @@ public struct MultiClusterCodebook: Sendable {
                 )
             } catch let e as SpecANSDistributionError {
                 throw MultiClusterCodebookError.ans(e)
+            }
+            if trace {
+                let msg = "TRACE histo[\(ci)]: posBefore=\(posBefore) posAfter=\(r.position) (\(r.position - posBefore) bits) alphabet=\(cnt.count)\n"
+                FileHandle.standardError.write(Data(msg.utf8))
             }
             counts.append(cnt)
             alphabetSizes.append(cnt.count)
