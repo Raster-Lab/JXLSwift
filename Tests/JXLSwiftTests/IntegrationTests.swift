@@ -4933,6 +4933,85 @@ extension FoundationTests {
             "binary-tree invariant: leaves should equal splits + 1, got \(leafCount) vs \(splitCount + 1)")
     }
 
+    /// **Cross-validation**: decode the full Modular MA-tree
+    /// structure from a cjxl file via `ModularTree.decode`. Verifies
+    /// that the tree is well-formed: complete binary (leaves = splits + 1),
+    /// every leaf has a valid predictor, every decision node's
+    /// children point at indices later in the pre-order array.
+    func testCrossValidate_Cjxl_ModularTree_Structure() throws {
+        guard let cjxl = whichTool("cjxl") else {
+            try XCTSkipIf(true, "cjxl not on PATH")
+            return
+        }
+        let pnmPath = NSTemporaryDirectory() + "tree2-\(UUID().uuidString).ppm"
+        let jxlPath = NSTemporaryDirectory() + "tree2-\(UUID().uuidString).jxl"
+        defer {
+            try? FileManager.default.removeItem(atPath: pnmPath)
+            try? FileManager.default.removeItem(atPath: jxlPath)
+        }
+        try makeSyntheticPNM(
+            width: 32, height: 32, channels: 3, bitDepth: 8,
+            generator: { x, y, c in UInt16((x &* 7 &+ y &* 13 &+ Int(c)) & 0xFF) }
+        ).write(to: URL(fileURLWithPath: pnmPath))
+        let proc = Process()
+        proc.launchPath = cjxl
+        proc.arguments = ["-q", "100", pnmPath, jxlPath]
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        try proc.run()
+        proc.waitUntilExit()
+        let data = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
+        var r = BitReader(data)
+        _ = try r.read(bits: 8); _ = try r.read(bits: 8)
+        _ = try SizeHeader.read(from: &r)
+        let m = try ImageMetadata.read(from: &r)
+        try r.alignToByte()
+        let ctx = FrameHeaderContext(
+            xybEncoded: m.xybEncoded,
+            numExtraChannels: m.extraChannels.count,
+            haveAnimation: m.animation != nil,
+            haveTimecodes: m.animation?.haveTimecodes ?? false
+        )
+        let fh = try FrameHeader.read(from: &r, context: ctx)
+        let entries = TOC.numEntries(
+            numGroups: 1, numDcGroups: 0,
+            numPasses: Int(fh.passes.numPasses)
+        )
+        _ = try TOC.read(from: &r, numEntries: entries)
+        let matrixDcDefault = try r.readBit()
+        if !matrixDcDefault {
+            for _ in 0..<3 { _ = try r.read(bits: 16) }
+        }
+        let hasTree = try r.readBit()
+        XCTAssertTrue(hasTree)
+        let hdr = try EntropySectionHeader.read(from: &r, numContexts: 6)
+        let codebook = try MultiClusterCodebook.read(from: &r, header: hdr)
+        let stream = TokenStreamReader(header: hdr, codebook: codebook)
+        let tree = try ModularTree.decode(from: &r, stream: stream)
+        // Structural invariants.
+        XCTAssertGreaterThan(tree.nodes.count, 0,
+            "tree must have at least one node")
+        XCTAssertEqual(tree.nodes.count, 2 * tree.leafCount - 1,
+            "complete binary tree: nodes = 2*leaves - 1, got \(tree.nodes.count) vs \(2 * tree.leafCount - 1)")
+        // Every decision node's children must point inside the array.
+        for (idx, node) in tree.nodes.enumerated() {
+            if !node.isLeaf {
+                XCTAssertGreaterThan(node.leftChild, idx,
+                    "decision node \(idx) has leftChild \(node.leftChild) <= itself")
+                XCTAssertLessThan(node.leftChild, tree.nodes.count,
+                    "decision node \(idx) leftChild \(node.leftChild) out of range")
+                XCTAssertGreaterThan(node.rightChild, idx,
+                    "decision node \(idx) has rightChild \(node.rightChild) <= itself")
+                XCTAssertLessThan(node.rightChild, tree.nodes.count,
+                    "decision node \(idx) rightChild \(node.rightChild) out of range")
+            } else {
+                XCTAssertGreaterThanOrEqual(node.leafId, 0)
+                XCTAssertLessThan(node.leafId, tree.leafCount,
+                    "leaf \(idx) has leafId \(node.leafId) outside [0, \(tree.leafCount))")
+            }
+        }
+    }
+
     /// **Cross-validation**: read per-cluster ANS distributions from a
     /// real cjxl-emitted Modular tree section. After the
     /// `EntropySectionHeader` prefix (LZ77 + ContextMap +
