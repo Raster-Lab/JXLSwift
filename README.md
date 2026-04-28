@@ -55,6 +55,8 @@ Cross-validation tests added against `cjxl`-emitted Linear, sRGB, PQ, and HLG tr
 - `EntropySectionHeader` (§C.6 prefix) — the structural prefix every JXL ANS or prefix-coded section shares: LZ77 config, optional context map, `use_prefix_code`, `log_alpha_size`, and per-cluster HybridUintConfig.
 - `MultiClusterCodebook` (§C.6 body) — per-cluster code tables that follow the entropy-section header. Picks Huffman vs rANS based on `usePrefixCode`. For prefix codes: `VarLenUint16+1` alphabet sizes per cluster, then `PrefixCodeFormat.decode` (which dispatches simple / complex by `hskip`). For rANS: `SpecANSDistribution.readHistogram` per cluster. Both `ReadHistogram` shape branches (simple, flat, RLE-coded complex) implemented; the `cll` static-Huffman lookup uses the spec's 16-entry table with Kraft-budget early termination.
 - `TokenStreamReader` (libjxl `ANSSymbolReader::ReadHybridUint`) — context-routed token reads from an entropy section. Looks up `cluster = contextMap[ctx]`, decodes a Huffman symbol from `huffmanTables[cluster]`, then expands via the cluster's HybridUintConfig. Prefix-code path complete; ANS-mode rANS state integration is the next chain milestone.
+- `ModularTree` (§C.7.4) — typed `[ModularTreeNode]` reconstructed from the MA-tree token stream. Decision nodes carry `(property, splitVal, leftChild, rightChild)`; leaves carry `(predictor, predictorOffset, multiplier)`.
+- `GroupHeader` (§C.7.2) — per-group prelude with `useGlobalTree`, the `WeightedPredictorHeader` (`all_default` bit + custom 7×u(5)+4×u(4) weights), and the per-group `ModularTransform` array (RCT, Palette, Squeeze with their full distribution sets).
 - `VarLenUint8` / `VarLenUint16` (libjxl `DecodeVarLenUint*`) — the variable-length integer codings used inside histogram bodies and per-cluster alphabet sizes.
 
 The codestream reader chain now walks **ten spec layers deep** into a real cjxl-emitted Modular lossless file: signature → SizeHeader → ImageMetadata → FrameHeader → TOC → DequantMatrices DC flag → Modular `has_tree` flag → tree-section EntropySectionHeader → per-cluster Huffman tables → MA-tree token stream → typed `ModularTree` value → **post-tree pixel-data EntropySectionHeader**. `ModularTree.decode` produces a `[ModularTreeNode]` that satisfies the complete-binary-tree invariant (`nodes = 2 × leaves - 1`); every decision node's children point at later pre-order indices; every leaf carries a valid `predictor`, signed `predictorOffset`, and power-of-two `multiplier`. The post-tree entropy section uses `numContexts = leafCount` (one context per tree leaf, per libjxl `dec_ma.cc:202`) and is the gateway to per-channel pixel residual decoding — the next milestone.
@@ -69,7 +71,7 @@ See [ROADMAP.md](ROADMAP.md) for the spec-section status grid.
 
 ```bash
 swift build -c release
-swift test  -c release           # 202 tests (foundation + headers + entropy primitives + frame header + TOC + entropy section bodies + token stream + Modular tree + post-tree pixel-data section + cross-validation), ~50 ms
+swift test  -c release           # 205 tests (foundation + headers + entropy primitives + frame header + TOC + entropy section bodies + token stream + Modular tree + GroupHeader + cross-validation), ~50 ms
 .build/release/jxl-tool --version
 .build/release/jxl-tool info path/to/file.jxl
 ```
