@@ -3952,51 +3952,32 @@ extension FoundationTests {
         }
     }
 
-    /// Decoder rejects a malformed bits_per_entry that can't address
-    /// all clusters.
-    func testContextMap_RejectsBitsPerEntryTooSmall() throws {
-        // Hand-build a bitstream:
-        //   num_clusters_minus_1 = 3 (4 clusters)
-        //   is_simple = 1
-        //   bits_per_entry = 1   (1 bit per entry → only 0..1, < 4 needed)
-        var w = BitWriter()
-        w.write(bits: 8, value: 3)         // num_clusters - 1
-        w.writeBit(true)                   // is_simple
-        w.write(bits: 2, value: 1)         // bits_per_entry = 1
-        // 4 entries would follow, but the decoder must throw before
-        // reading them.
-        var r = BitReader(w.finishToData())
-        XCTAssertThrowsError(try ContextMap.read(numContexts: 4, from: &r)) { err in
-            guard let e = err as? ContextMapError,
-                  case .bitsPerEntryTooSmall = e else {
-                XCTFail("expected bitsPerEntryTooSmall, got \(err)"); return
-            }
-        }
-    }
-
     /// Hand-derived bit pattern: 4-cluster map [0, 1, 2, 3] over 4
-    /// contexts. Layout (LSB-first):
-    ///   num_clusters - 1 = 3        u(8)
+    /// contexts. Layout (LSB-first), matching libjxl
+    /// `DecodeContextMap`:
     ///   is_simple = 1               u(1)
     ///   bits_per_entry = 2          u(2)  → LSB-first: 0, 1
     ///   map[0..3] = 0,1,2,3         u(2) each
-    /// Bits emitted (positions 0..10 of the post-num_clusters stream):
+    /// Bits emitted (positions 0..10):
     ///   1, 0,1, 0,0, 1,0, 0,1, 1,1
     func testContextMap_HandDerived_4Clusters() throws {
         let cm = try ContextMap(numClusters: 4, map: [0, 1, 2, 3])
         var w = BitWriter()
         try cm.write(to: &w)
         let bytes = [UInt8](w.finishToData())
-        // Byte 0: u(8) for num_clusters-1 = 3 → 0x03.
-        // Byte 1 covers stream positions 0..7:
-        //   pos 0 = 1, pos 1 = 0, pos 2 = 1, pos 3 = 0,
-        //   pos 4 = 0, pos 5 = 1, pos 6 = 0, pos 7 = 0
+        // Byte 0 covers stream positions 0..7:
+        //   pos 0 = 1 (is_simple)
+        //   pos 1 = 0, pos 2 = 1 (bits_per_entry = 2 LSB-first)
+        //   pos 3 = 0, pos 4 = 0 (entry 0 = 0)
+        //   pos 5 = 1, pos 6 = 0 (entry 1 = 1)
+        //   pos 7 = 0 (first bit of entry 2 = 2)
         //   → 1 + 4 + 32 = 37 = 0x25
-        // Byte 2 covers stream positions 8..10:
-        //   pos 8 = 1, pos 9 = 1, pos 10 = 1
+        // Byte 1 covers stream positions 8..10 + padding:
+        //   pos 8 = 1 (second bit of entry 2)
+        //   pos 9 = 1, pos 10 = 1 (entry 3 = 3 LSB-first)
         //   → 1 + 2 + 4 = 7 = 0x07
-        XCTAssertEqual(bytes, [0x03, 0x25, 0x07],
-            "hand-derived 4-cluster map should be [0x03, 0x25, 0x07]; got \(bytes)")
+        XCTAssertEqual(bytes, [0x25, 0x07],
+            "hand-derived 4-cluster map should be [0x25, 0x07]; got \(bytes)")
     }
 
     /// End-to-end: SimpleEntropyStream + ContextMap together. The
