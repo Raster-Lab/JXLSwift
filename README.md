@@ -79,6 +79,22 @@ swift test  -c release           # 212 tests (foundation + headers + entropy pri
 
 Requires Swift 6.2+ on macOS 13+. **No external dependencies.** (`swift-argument-parser` for the CLI is the only Swift-package dep.)
 
+`jxl-tool info` now reports the frame structure of any cjxl-emitted file — encoding mode, TOC entries, MA-tree leaf count, post-tree pixel codec (prefix codes vs rANS):
+
+```
+$ jxl-tool info hdr.jxl
+File:         hdr.jxl
+Dimensions:   16×16
+--- ImageMetadata ---
+HDR:          intensity target = 10000.0 cd/m²
+--- Frame structure ---
+Encoding:     Modular
+TOC entries:  1 (106B)
+MA-tree:      present
+Tree leaves:  4
+Pixel codec:  rANS
+```
+
 ### M0 placeholder codec — exercise the pixel pipeline today
 
 `encode-m0` / `decode-m0` round-trip **8/16-bit grayscale, gray+alpha, RGB, and RGBA** images through the **project-internal M0 placeholder format** (`MinimalLosslessCodec`). Reads and writes binary PNM (PGM for 1-channel, PPM for RGB, PAM for alpha-bearing images) so any tool that handles PNM can feed pixels in:
