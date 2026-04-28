@@ -3800,17 +3800,18 @@ extension FoundationTests {
     /// disabled state.
     func testLZ77Config_RoundTrip_Disabled() throws {
         var w = BitWriter()
-        try LZ77Config.disabled.write(to: &w, logAlpha: 8)
+        try LZ77Config.disabled.write(to: &w)
         let bytes = [UInt8](w.finishToData())
         // Single bit (0) padded to a byte → 0x00.
         XCTAssertEqual(bytes, [0x00])
         var r = BitReader(w.finishToData())
-        let parsed = try LZ77Config.read(from: &r, logAlpha: 8)
+        let parsed = try LZ77Config.read(from: &r)
         XCTAssertFalse(parsed.enabled)
     }
 
     /// Enabled LZ77 with default values: round-trip every field,
-    /// including the embedded distance HybridUintConfig.
+    /// including the embedded length-token HybridUintConfig (which is
+    /// always serialised at log_alpha_size=8 per libjxl convention).
     func testLZ77Config_RoundTrip_EnabledDefaults() throws {
         let cfg = LZ77Config(
             enabled: true,
@@ -3819,9 +3820,9 @@ extension FoundationTests {
             lengthUintConfig: HybridUintConfig.defaultConfig
         )
         var w = BitWriter()
-        try cfg.write(to: &w, logAlpha: 8)
+        try cfg.write(to: &w)
         var r = BitReader(w.finishToData())
-        let parsed = try LZ77Config.read(from: &r, logAlpha: 8)
+        let parsed = try LZ77Config.read(from: &r)
         XCTAssertTrue(parsed.enabled)
         XCTAssertEqual(parsed.minSymbol, 224)
         XCTAssertEqual(parsed.minLength, 3)
@@ -3833,52 +3834,48 @@ extension FoundationTests {
     /// Sweep across (minSymbol, minLength, lengthUintConfig) tuples
     /// reachable by the spec U32 distributions
     /// `(224, 512, 4096, 8+u(15))` and `(3, 4, 5+u(2), 9+u(8))`. Ranges
-    /// are bounded — minSymbol max is 32775, minLength max is 264.
+    /// are bounded — minSymbol max is 32775, minLength max is 264. The
+    /// embedded HybridUintConfig is always serialised at logAlpha=8.
     func testLZ77Config_RoundTrip_Sweep() throws {
-        struct Case { let logAlpha: Int; let cfg: LZ77Config }
-        let cases: [Case] = [
+        let cases: [LZ77Config] = [
             // Common defaults — sel 0 / sel 0.
-            Case(logAlpha: 5, cfg: LZ77Config(
-                enabled: true, minSymbol: 224, minLength: 3,
-                lengthUintConfig: HybridUintConfig(splitExponent: 3,
-                                                  msbInToken: 1,
-                                                  lsbInToken: 1))),
+            LZ77Config(enabled: true, minSymbol: 224, minLength: 3,
+                       lengthUintConfig: HybridUintConfig(splitExponent: 3,
+                                                         msbInToken: 1,
+                                                         lsbInToken: 1)),
             // Selector 1 for both — minSymbol=512, minLength=4.
-            Case(logAlpha: 6, cfg: LZ77Config(
-                enabled: true, minSymbol: 512, minLength: 4,
-                lengthUintConfig: HybridUintConfig(splitExponent: 6,
-                                                  msbInToken: 0,
-                                                  lsbInToken: 0))),
+            LZ77Config(enabled: true, minSymbol: 512, minLength: 4,
+                       lengthUintConfig: HybridUintConfig(splitExponent: 6,
+                                                         msbInToken: 0,
+                                                         lsbInToken: 0)),
             // Selector 2 minLength (5+u(2) range), variable minSymbol.
-            Case(logAlpha: 7, cfg: LZ77Config(
-                enabled: true, minSymbol: 4096, minLength: 8,
-                lengthUintConfig: HybridUintConfig(splitExponent: 5,
-                                                  msbInToken: 1,
-                                                  lsbInToken: 0))),
+            LZ77Config(enabled: true, minSymbol: 4096, minLength: 8,
+                       lengthUintConfig: HybridUintConfig(splitExponent: 5,
+                                                         msbInToken: 1,
+                                                         lsbInToken: 0)),
             // Selector 3 for both — exercises the variable-width
             // path of each U32 distribution.
-            Case(logAlpha: 8, cfg: LZ77Config(
-                enabled: true, minSymbol: 32775, minLength: 264,
-                lengthUintConfig: HybridUintConfig(splitExponent: 4,
-                                                  msbInToken: 2,
-                                                  lsbInToken: 0))),
+            LZ77Config(enabled: true, minSymbol: 32775, minLength: 264,
+                       lengthUintConfig: HybridUintConfig(splitExponent: 4,
+                                                         msbInToken: 2,
+                                                         lsbInToken: 0)),
         ]
-        for c in cases {
+        for cfg in cases {
             var w = BitWriter()
-            try c.cfg.write(to: &w, logAlpha: c.logAlpha)
+            try cfg.write(to: &w)
             var r = BitReader(w.finishToData())
-            let parsed = try LZ77Config.read(from: &r, logAlpha: c.logAlpha)
-            XCTAssertEqual(parsed.enabled, c.cfg.enabled)
-            XCTAssertEqual(parsed.minSymbol, c.cfg.minSymbol,
-                "minSymbol mismatch at logAlpha=\(c.logAlpha)")
-            XCTAssertEqual(parsed.minLength, c.cfg.minLength,
-                "minLength mismatch at logAlpha=\(c.logAlpha)")
+            let parsed = try LZ77Config.read(from: &r)
+            XCTAssertEqual(parsed.enabled, cfg.enabled)
+            XCTAssertEqual(parsed.minSymbol, cfg.minSymbol,
+                "minSymbol mismatch")
+            XCTAssertEqual(parsed.minLength, cfg.minLength,
+                "minLength mismatch")
             XCTAssertEqual(parsed.lengthUintConfig.splitExponent,
-                           c.cfg.lengthUintConfig.splitExponent)
+                           cfg.lengthUintConfig.splitExponent)
             XCTAssertEqual(parsed.lengthUintConfig.msbInToken,
-                           c.cfg.lengthUintConfig.msbInToken)
+                           cfg.lengthUintConfig.msbInToken)
             XCTAssertEqual(parsed.lengthUintConfig.lsbInToken,
-                           c.cfg.lengthUintConfig.lsbInToken)
+                           cfg.lengthUintConfig.lsbInToken)
         }
     }
 
@@ -3892,14 +3889,14 @@ extension FoundationTests {
             enabled: true, minSymbol: 100_000, minLength: 3,
             lengthUintConfig: .defaultConfig
         )
-        XCTAssertThrowsError(try badMinSymbol.write(to: &w, logAlpha: 8))
+        XCTAssertThrowsError(try badMinSymbol.write(to: &w))
 
         var w2 = BitWriter()
         let badMinLength = LZ77Config(
             enabled: true, minSymbol: 224, minLength: 1000,
             lengthUintConfig: .defaultConfig
         )
-        XCTAssertThrowsError(try badMinLength.write(to: &w2, logAlpha: 8))
+        XCTAssertThrowsError(try badMinLength.write(to: &w2))
     }
 }
 

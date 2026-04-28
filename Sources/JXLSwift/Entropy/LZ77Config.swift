@@ -17,20 +17,24 @@
 // in the codebase consumes it yet — Phase M0 (1×1 grayscale lossless)
 // won't enable LZ77, so the back-reference machinery can wait.
 //
-// **Bit layout (matches libjxl `LZ77Params::VisitFields` exactly):**
+// **Bit layout (matches libjxl `LZ77Params::VisitFields` +
+// `DecodeHistograms` exactly):**
 //
 //     lz77_enabled        u(1)
 //     if lz77_enabled == 1:
 //         min_symbol      U32(224, 512, 4096, 8+u(15))
 //         min_length      U32(3,   4,   5+u(2), 9+u(8))
-//         length_uint_config HybridUintConfig (sized to logAlpha)
+//         length_uint_config HybridUintConfig (log_alpha_size = 8 fixed)
 //
-// The "distance config" hinted at by the field name in earlier drafts
-// of this file doesn't exist as a separate header field — back-
-// references inherit their distance distribution from the cluster
-// pointed to by `context_map.back()`, and the `length_uint_config`
-// embedded here applies only to LZ77 length tokens (entropy symbols
-// >= `min_symbol`).
+// libjxl reads `length_uint_config` with `log_alpha_size = 8`
+// hardcoded inside `DecodeHistograms`, regardless of the surrounding
+// stream's actual log-alphabet size — the LZ77 length token uses an
+// 8-bit alphabet by convention. The "distance config" hinted at by
+// the field name in earlier drafts of this file doesn't exist as a
+// separate header field — back-references inherit their distance
+// distribution from the cluster pointed to by `context_map.back()`,
+// and the `length_uint_config` embedded here applies only to LZ77
+// length tokens (entropy symbols >= `min_symbol`).
 //
 // When `lz77_enabled == 0`, only the 1-bit flag is emitted.
 
@@ -67,10 +71,13 @@ public struct LZ77Config: Sendable, Equatable {
 
 extension LZ77Config {
 
-    /// Serialise this config. `logAlpha` is the surrounding context's
-    /// log-alphabet-size — needed to size the embedded
-    /// `lengthUintConfig` field (only emitted when `enabled`).
-    public func write(to w: inout BitWriter, logAlpha: Int) throws {
+    /// log_alpha_size used to (de)serialise `length_uint_config` —
+    /// libjxl hardcodes this to 8 in `DecodeHistograms`.
+    public static let lengthUintConfigLogAlpha: Int = 8
+
+    /// Serialise this config. Has no `logAlpha` argument — the LZ77
+    /// length token alphabet is always 2^8 by spec convention.
+    public func write(to w: inout BitWriter) throws {
         w.writeBit(enabled)
         if !enabled { return }
         // min_symbol — `U32(Val(224), Val(512), Val(4096),
@@ -90,14 +97,14 @@ extension LZ77Config {
         } catch let e as BitstreamError {
             throw LZ77ConfigError.bitstream(e)
         }
-        do { try lengthUintConfig.write(to: &w, logAlpha: logAlpha) }
+        do { try lengthUintConfig.write(to: &w, logAlpha: Self.lengthUintConfigLogAlpha) }
         catch let e as HybridUintConfigError {
             throw LZ77ConfigError.hybridConfig(e)
         }
     }
 
-    /// Deserialise. `logAlpha` matches what the encoder used.
-    public static func read(from r: inout BitReader, logAlpha: Int) throws -> LZ77Config {
+    /// Deserialise.
+    public static func read(from r: inout BitReader) throws -> LZ77Config {
         let enabled: Bool
         do { enabled = try r.readBit() }
         catch let e as BitstreamError { throw LZ77ConfigError.bitstream(e) }
@@ -120,7 +127,7 @@ extension LZ77Config {
             throw LZ77ConfigError.bitstream(e)
         }
         let lengthCfg: HybridUintConfig
-        do { lengthCfg = try HybridUintConfig.read(from: &r, logAlpha: logAlpha) }
+        do { lengthCfg = try HybridUintConfig.read(from: &r, logAlpha: lengthUintConfigLogAlpha) }
         catch let e as HybridUintConfigError {
             throw LZ77ConfigError.hybridConfig(e)
         }
