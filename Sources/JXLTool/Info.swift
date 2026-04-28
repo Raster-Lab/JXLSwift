@@ -69,6 +69,38 @@ struct Info: ParsableCommand {
                 print("RCT variant:  \(rctLabel(m0.rctVariant))")
             }
             print("Predictors:   \(m0.channelPredictors.map(predictorLabel).joined(separator: ", "))")
+        } else if !MinimalLosslessCodec.isM0(data) {
+            // Frame structure for real cjxl-emitted codestreams (skip
+            // for our project-internal M0 placeholder).
+            let fi = JXLDecoder().inspectFrameStructure(data)
+            if fi.encoding != nil || fi.tocSizes != nil {
+                print()
+                print("--- Frame structure ---")
+                if let enc = fi.encoding {
+                    print("Encoding:     \(enc == .modular ? "Modular" : "VarDCT")")
+                }
+                if let last = fi.isLast {
+                    print("Last frame:   \(last ? "yes" : "no")")
+                }
+                if let flags = fi.flags, flags != 0 {
+                    print("Flags:        0x\(String(flags, radix: 16))")
+                }
+                if let np = fi.numPasses, np > 1 {
+                    print("Passes:       \(np)")
+                }
+                if let toc = fi.tocSizes {
+                    print("TOC entries:  \(toc.count) (\(toc.map { "\($0)B" }.joined(separator: ", ")))")
+                }
+                if let ht = fi.hasModularTree {
+                    print("MA-tree:      \(ht ? "present" : "default (single-leaf)")")
+                    if let leaves = fi.modularTreeLeafCount {
+                        print("Tree leaves:  \(leaves)")
+                    }
+                }
+                if let upc = fi.usePrefixCode {
+                    print("Pixel codec:  \(upc ? "prefix codes" : "rANS")")
+                }
+            }
         }
     }
 }
