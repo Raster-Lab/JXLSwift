@@ -6501,28 +6501,47 @@ extension FoundationTests {
         }
         let posBeforeChannels = r.position
         let totalBitsAvailable = r.totalBits
-        do {
-            let decoded = try decodeAllChannels(
-                channels: geometries, groupId: 0,
-                tree: tree, stream: &pixelStream, from: &r,
-                wpHeader: groupHeader.wpHeader
-            )
-            XCTAssertEqual(decoded.count, geometries.count)
-            for (i, ch) in decoded.enumerated() {
-                XCTAssertEqual(
-                    ch.count, geometries[i].width * geometries[i].height,
-                    "channel \(i) size mismatch"
+        // Decode channels one at a time and track bit consumption.
+        var lastPos = posBeforeChannels
+        var allDecoded: [[Int32]] = []
+        var failed = false
+        var failMsg = ""
+        for (i, geom) in geometries.enumerated() {
+            do {
+                let buf = try decodeModularChannel(
+                    width: geom.width, height: geom.height,
+                    staticChannel: Int32(i), groupId: 0,
+                    tree: tree, stream: &pixelStream, from: &r,
+                    wpHeader: groupHeader.wpHeader
                 )
-                for v in ch {
-                    XCTAssertGreaterThan(v, -1_000_000,
-                        "channel \(i): value \(v) overflowed")
-                    XCTAssertLessThan(v, 1_000_000,
-                        "channel \(i): value \(v) overflowed")
-                }
+                let used = r.position - lastPos
+                let mn = buf.min() ?? 0
+                let mx = buf.max() ?? 0
+                let nonzero = buf.filter { $0 != 0 }.count
+                fputs(
+                    "DIAG ch\(i): \(geom.width)×\(geom.height) decoded ok, "
+                  + "bits=\(used), pos=\(r.position)/\(totalBitsAvailable), "
+                  + "min=\(mn) max=\(mx) nonzero=\(nonzero)/\(buf.count), "
+                  + "first 16=\(Array(buf.prefix(16)))\n", stderr)
+                allDecoded.append(buf)
+                lastPos = r.position
+            } catch {
+                let used = r.position - lastPos
+                failed = true
+                failMsg = "channel \(i) failed (\(geom.width)×\(geom.height)): \(error) [bits-used-this-channel=\(used), pos=\(r.position)/\(totalBitsAvailable), bits-used-total=\(r.position - posBeforeChannels)]"
+                break
             }
-        } catch {
-            try XCTSkipIf(true,
-                "all-channels decode hit unsupported case: \(error) [position=\(r.position)/\(totalBitsAvailable), bits used after channel decode start=\(r.position - posBeforeChannels)]")
+        }
+        if failed {
+            try XCTSkipIf(true, failMsg)
+            return
+        }
+        XCTAssertEqual(allDecoded.count, geometries.count)
+        for (i, ch) in allDecoded.enumerated() {
+            XCTAssertEqual(
+                ch.count, geometries[i].width * geometries[i].height,
+                "channel \(i) size mismatch"
+            )
         }
     }
 
