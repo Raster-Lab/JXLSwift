@@ -43,15 +43,16 @@ import Foundation
 /// out-of-range).
 ///
 /// Properties 0–14 are computed exactly per libjxl. Property 15
-/// (weighted-predictor output) is **not yet computed** — set to 0
-/// here. Trees that don't branch on property 15 (the common case
-/// for cjxl-emitted modular lossless) decode unaffected.
+/// (weighted-predictor output) is sourced from `wpProperty` — pass
+/// the value `WeightedPredictor.propertyValue(...)` returns for the
+/// current pixel, or `0` when no WP state machine is active.
 public func computeModularProperties(
     staticChannel: Int32, groupId: Int32,
     x: Int32, y: Int32,
     top: Int32, left: Int32,
     topLeft: Int32, topRight: Int32,
-    leftLeft: Int32, topTop: Int32
+    leftLeft: Int32, topTop: Int32,
+    wpProperty: Int32 = 0
 ) -> [Int32] {
     var p = [Int32](repeating: 0, count: 16)
     p[0] = staticChannel
@@ -74,10 +75,9 @@ public func computeModularProperties(
     p[12] = top &- topRight
     p[13] = top &- topTop
     p[14] = left &- leftLeft
-    // Property 15 (weighted predictor) — placeholder zero. Real
-    // pixel decoding for trees that branch on it requires the
-    // weighted-predictor state machine; not yet implemented.
-    p[15] = 0
+    // Property 15 (weighted predictor) — caller supplies via
+    // WeightedPredictor.propertyValue(...).
+    p[15] = wpProperty
     return p
 }
 

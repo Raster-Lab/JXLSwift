@@ -1979,6 +1979,67 @@ final class FoundationTests: XCTestCase {
         XCTAssertEqual(applyLibjxlPredictor(raw: 5, neighbourhood: nbh), 10)
     }
 
+    // MARK: - WeightedPredictor — stateful WP machine + property 15
+
+    /// At pixel (0, 0) the WP has no neighbour history, so all
+    /// per-predictor errors are zero — sub-predictions all evaluate
+    /// to 0, the weighted average is 0, and the property value is 0.
+    func testWeightedPredictor_FirstPixel_PropertyZero() throws {
+        let header = WeightedPredictorHeader.default
+        let wp = WeightedPredictor(header: header, xsize: 4)
+        XCTAssertEqual(wp.propertyValue(x: 0, y: 0, xsize: 4), 0)
+    }
+
+    /// Driving the WP through a constant row should produce
+    /// predictions that quickly converge to the constant value.
+    /// After several pixels of value 100, the WP prediction should
+    /// be exactly 100 (or very close — the sub-predictors converge to
+    /// the constant).
+    func testWeightedPredictor_ConvergesOnConstantRow() throws {
+        let header = WeightedPredictorHeader.default
+        var wp = WeightedPredictor(header: header, xsize: 8)
+        let value: Int32 = 100
+        // Decode pixels left to right. Skip pixel 0 (no neighbours);
+        // after several pixels, prediction should equal value.
+        for x in 0..<8 {
+            let n: Int32 = 0  // no row above — y=0 means top is out of range
+            let left: Int32 = (x == 0) ? 0 : value
+            let nw: Int32 = 0
+            let ne: Int32 = 0
+            let nn: Int32 = 0
+            _ = wp.predict(x: x, y: 0, xsize: 8,
+                           n: n, w: left, ne: ne, nw: nw, nn: nn)
+            wp.update(actual: value, x: x, y: 0, xsize: 8)
+        }
+        // Now predict at (0, 1) where the row above is all `value`s.
+        // sub[0] = W + NE - N. For x=0, y=1, n=value (top), w=0
+        //         (substituted out-of-range, but we pass 0), ne=value.
+        // Each sub-predictor uses the running errors from row 0.
+        // We don't assert the exact value — it depends on the
+        // weighted average — but it should be in the right ballpark.
+        let pred = wp.predict(x: 1, y: 1, xsize: 8,
+                              n: value, w: value, ne: value, nw: value, nn: 0)
+        // After several samples on a constant row, the WP must come
+        // very close to the constant. Allow ±5 wiggle room.
+        XCTAssertEqual(pred, value, accuracy: 5)
+    }
+
+    /// PropertyValue tracks the largest absolute neighbour error.
+    /// After decoding a pixel with a known mismatch, property[15]
+    /// at the next pixel should be non-zero.
+    func testWeightedPredictor_PropertyTracksError() throws {
+        let header = WeightedPredictorHeader.default
+        var wp = WeightedPredictor(header: header, xsize: 4)
+        // Pixel (0, 0): predict + update. WP predicts 0; we decode 50.
+        _ = wp.predict(x: 0, y: 0, xsize: 4,
+                       n: 0, w: 0, ne: 0, nw: 0, nn: 0)
+        wp.update(actual: 50, x: 0, y: 0, xsize: 4)
+        // At (1, 0), the W neighbour error should be non-zero.
+        let prop = wp.propertyValue(x: 1, y: 0, xsize: 4)
+        XCTAssertNotEqual(prop, 0,
+            "after a 50-magnitude error, WP property must be non-zero")
+    }
+
     // MARK: - ModularChannelDecoder — per-pixel decode driver
 
     /// Decode a 4x4 channel where the MA-tree is a single leaf with

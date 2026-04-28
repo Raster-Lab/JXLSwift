@@ -5,25 +5,22 @@
 // DecodeModularChannelMAANS`). For each pixel `(x, y)`, the decoder:
 //
 //   1. Reads the 4-/6-neighbour patch from the partial channel buffer.
-//   2. Computes the 16 standard properties (`ModularProperties.swift`).
+//   2. Computes the WP property from the running weighted-predictor
+//      state, then the 16 standard properties (`ModularProperties`).
 //   3. Walks the MA-tree to find the leaf node whose context governs
 //      this pixel's residual (`ModularTree.walk`).
 //   4. Pulls a HybridUint-decoded token from the post-tree
 //      `TokenStreamReader` at `context = leaf.leafId`.
 //   5. Recovers the signed residual: `r = unpackSigned(token) * leaf.multiplier`.
 //   6. Applies the leaf's predictor (with `leaf.predictorOffset` added):
-//      `pixel = predictorOutput + leaf.predictorOffset + r`.
+//      `pixel = predictorOutput + leaf.predictorOffset + r`. Predictor
+//      6 (Weighted) sources its prediction from the WP state machine.
+//   7. Updates the WP state with the actual decoded pixel value.
 //
-// **Limitations** at this point:
-//   • Predictor 6 (Weighted) returns 0 — see `LibjxlPredictor.swift`.
-//     Pixels gated on it decode incorrectly until the WP state machine
-//     is wired through.
-//   • Property 15 (kWPProp, weighted-predictor property) is also 0
-//     in `computeModularProperties`; trees branching on it pick the
-//     wrong leaf.
-//   • Edge fall-backs follow `Neighbourhood.init(at:_:in:width:)`'s
-//     spec-aligned rules: missing W/N substitute the available
-//     neighbour or 0.
+// **Edge fall-backs** for prediction neighbours follow `Neighbourhood.
+// init(at:_:in:width:)`'s spec-aligned rules: missing W/N substitute
+// the available neighbour or 0. **Property-computation** neighbours
+// substitute 0 (matching libjxl `FillProperties`).
 //
 // The decoder does NOT apply Modular Transforms (RCT, Squeeze,
 // Palette) — those operate on the assembled channel arrays as a
@@ -44,12 +41,16 @@ public enum ModularChannelDecoderError: Error, Sendable {
 /// `out` in row-major order. `staticChannel` and `groupId` are the
 /// values libjxl uses for properties 0 and 1 — pass the correct
 /// indices so trees branching on those properties decode correctly.
+/// `wpHeader` parameterises the weighted predictor (predictor 6 +
+/// property 15); pass the parsed `WeightedPredictorHeader` from the
+/// frame's `GroupHeader`.
 public func decodeModularChannel(
     width: Int, height: Int,
     staticChannel: Int32, groupId: Int32,
     tree: ModularTree,
     stream: inout TokenStreamReader,
     from r: inout BitReader,
+    wpHeader: WeightedPredictorHeader = .default,
     out: inout [Int32]
 ) throws {
     precondition(out.count == width * height,
@@ -66,6 +67,7 @@ public func decodeModularChannel(
         if x < 0 || y < 0 || x >= width || y >= height { return 0 }
         return at(x, y)
     }
+    var wp = WeightedPredictor(header: wpHeader, xsize: width)
     for y in 0..<height {
         for x in 0..<width {
             let top      = neighbourValue(x,     y - 1)
@@ -74,30 +76,42 @@ public func decodeModularChannel(
             let topRight = neighbourValue(x + 1, y - 1)
             let topTop   = neighbourValue(x,     y - 2)
             let leftLeft = neighbourValue(x - 2, y)
+            // Compute property 15 (WP property) BEFORE running predict
+            // — libjxl `FillProperties` reads `WeightedPredictor::
+            // PropertyValue` first, *then* invokes Predict if the leaf's
+            // predictor is Weighted.
+            let wpProp = wp.propertyValue(x: x, y: y, xsize: width)
             let props = computeModularProperties(
                 staticChannel: staticChannel, groupId: groupId,
                 x: Int32(x), y: Int32(y),
                 top: top, left: left,
                 topLeft: topLeft, topRight: topRight,
-                leftLeft: leftLeft, topTop: topTop
+                leftLeft: leftLeft, topTop: topTop,
+                wpProperty: wpProp
             )
             let leaf: ModularTreeNode
             do { leaf = try tree.walk(properties: props) }
             catch let e as ModularTreeError {
                 throw ModularChannelDecoderError.treeWalk(e)
             }
-            // Read residual token at this leaf's context.
             let token: UInt32
             do { token = try stream.readToken(context: leaf.leafId, from: &r) }
             catch let e as TokenStreamReaderError {
                 throw ModularChannelDecoderError.tokenReader(e)
             }
-            // Predictor neighbourhood fall-backs are different from
-            // FillProperties' zero substitution: they substitute
-            // available neighbours.
+            // Predictor neighbourhood — substitute available
+            // neighbours at edges (different rules from properties).
             let nbh = Neighbourhood(at: x, y, in: out, width: width)
+            // Always run WP.predict so the state stays in sync, even
+            // if the leaf doesn't use predictor 6. (libjxl drives WP
+            // unconditionally for any tree that *might* use it; we
+            // mirror that by always running predict + update.)
+            let wpPred = wp.predict(
+                x: x, y: y, xsize: width,
+                n: top, w: left, ne: topRight, nw: topLeft, nn: topTop
+            )
             let predicted = applyLibjxlPredictor(
-                raw: leaf.rawPredictor, neighbourhood: nbh
+                raw: leaf.rawPredictor, neighbourhood: nbh, wpResult: wpPred
             )
             let signedRes = ZigZag.unpack(token)
             let scaled = Int32(truncatingIfNeeded:
@@ -107,6 +121,7 @@ public func decodeModularChannel(
                 &+ Int64(leaf.predictorOffset)
                 &+ Int64(scaled))
             out[y * width + x] = value
+            wp.update(actual: value, x: x, y: y, xsize: width)
         }
     }
 }
@@ -118,13 +133,15 @@ public func decodeModularChannel(
     staticChannel: Int32, groupId: Int32,
     tree: ModularTree,
     stream: inout TokenStreamReader,
-    from r: inout BitReader
+    from r: inout BitReader,
+    wpHeader: WeightedPredictorHeader = .default
 ) throws -> [Int32] {
     var buf = [Int32](repeating: 0, count: width * height)
     try decodeModularChannel(
         width: width, height: height,
         staticChannel: staticChannel, groupId: groupId,
-        tree: tree, stream: &stream, from: &r, out: &buf
+        tree: tree, stream: &stream, from: &r,
+        wpHeader: wpHeader, out: &buf
     )
     return buf
 }
