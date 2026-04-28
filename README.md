@@ -55,8 +55,9 @@ Cross-validation tests added against `cjxl`-emitted Linear, sRGB, PQ, and HLG tr
 - `EntropySectionHeader` (§C.6 prefix) — the structural prefix every JXL ANS or prefix-coded section shares: LZ77 config, optional context map, `use_prefix_code`, `log_alpha_size`, and per-cluster HybridUintConfig.
 - `MultiClusterCodebook` (§C.6 body) — per-cluster code tables that follow the entropy-section header. Picks Huffman vs rANS based on `usePrefixCode`. For prefix codes: `VarLenUint16+1` alphabet sizes per cluster, then `PrefixCodeFormat.decode` (which dispatches simple / complex by `hskip`). For rANS: `SpecANSDistribution.readHistogram` per cluster. Both `ReadHistogram` shape branches (simple, flat, RLE-coded complex) implemented; the `cll` static-Huffman lookup uses the spec's 16-entry table with Kraft-budget early termination.
 - `TokenStreamReader` (libjxl `ANSSymbolReader::ReadHybridUint`) — context-routed token reads from an entropy section. Looks up `cluster = contextMap[ctx]`, decodes a Huffman symbol from `huffmanTables[cluster]`, then expands via the cluster's HybridUintConfig. Prefix-code path complete; ANS-mode rANS state integration is the next chain milestone.
-- `ModularTree` (§C.7.4) — typed `[ModularTreeNode]` reconstructed from the MA-tree token stream. Decision nodes carry `(property, splitVal, leftChild, rightChild)`; leaves carry `(predictor, predictorOffset, multiplier)`.
+- `ModularTree` (§C.7.4) — typed `[ModularTreeNode]` reconstructed from the MA-tree token stream. Decision nodes carry `(property, splitVal, leftChild, rightChild)`; leaves carry `(predictor, predictorOffset, multiplier)`. `ModularTree.walk(properties:)` routes a 16-element properties array to a leaf using libjxl's `>` decision rule.
 - `GroupHeader` (§C.7.2) — per-group prelude with `useGlobalTree`, the `WeightedPredictorHeader` (`all_default` bit + custom 7×u(5)+4×u(4) weights), and the per-group `ModularTransform` array (RCT, Palette, Squeeze with their full distribution sets).
+- `computeModularProperties` (§C.7.4) — computes the 16 standard pixel-context features from a pixel's neighbours (top, left, topLeft, topRight, leftLeft, topTop). Properties 0–14 match libjxl exactly; property 15 (the weighted-predictor output) is placeholder zero, deferred until the WP state machine lands.
 - `VarLenUint8` / `VarLenUint16` (libjxl `DecodeVarLenUint*`) — the variable-length integer codings used inside histogram bodies and per-cluster alphabet sizes.
 
 The codestream reader chain now walks **eleven spec layers deep** into a real cjxl-emitted Modular lossless file: signature → SizeHeader → ImageMetadata → FrameHeader → TOC → DequantMatrices DC flag → Modular `has_tree` flag → tree-section EntropySectionHeader → per-cluster Huffman tables → MA-tree token stream → typed `ModularTree` value → post-tree pixel-data EntropySectionHeader → byte-aligned **`GroupHeader`**. The next milestone is per-channel pixel residual decoding (read residual tokens from the post-tree section, walk the tree per pixel using computed properties, apply predictor + offset + multiplier).
@@ -71,7 +72,7 @@ See [ROADMAP.md](ROADMAP.md) for the spec-section status grid.
 
 ```bash
 swift build -c release
-swift test  -c release           # 206 tests (foundation + headers + entropy primitives + frame header + TOC + entropy section bodies + token stream + Modular tree + GroupHeader + cross-validation 11-layers-deep), ~50 ms
+swift test  -c release           # 212 tests (foundation + headers + entropy primitives + frame header + TOC + entropy section bodies + token stream + Modular tree + tree walk + properties + GroupHeader + cross-validation 11-layers-deep), ~50 ms
 .build/release/jxl-tool --version
 .build/release/jxl-tool info path/to/file.jxl
 ```
