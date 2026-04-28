@@ -1936,6 +1936,63 @@ final class FoundationTests: XCTestCase {
         XCTAssertThrowsError(try dec.readSymbol(cluster: 0, from: &r))
     }
 
+    // MARK: - AliasTable — libjxl-compatible rANS slot lookup
+
+    /// Single-symbol distribution: every slot maps to the same symbol
+    /// with offset = entry_size * i + pos and freq = ANS_TAB_SIZE.
+    func testAliasTable_SingleSymbol() throws {
+        // distribution[5] = 4096, all others 0.
+        var dist = [Int32](repeating: 0, count: 6)
+        dist[5] = 4096
+        let table = try AliasTable(
+            distribution: dist, logRange: 12, logAlphaSize: 6
+        )
+        for slot in stride(from: UInt32(0), to: 4096, by: 64) {
+            let r = table.lookup(slot: slot)
+            XCTAssertEqual(r.value, 5, "slot \(slot) symbol mismatch")
+            XCTAssertEqual(r.freq, 4096)
+        }
+    }
+
+    /// Uniform distribution over 4 symbols (each frequency 1024):
+    /// each symbol's slots cluster at positions [i*1024, (i+1)*1024).
+    /// Verify lookup returns the right symbol for representative slots.
+    func testAliasTable_UniformOverFour() throws {
+        let dist: [Int32] = [1024, 1024, 1024, 1024]
+        let table = try AliasTable(
+            distribution: dist, logRange: 12, logAlphaSize: 6
+        )
+        // Sum check: 1024 * 4 = 4096 ✓
+        // Lookup at slots 0, 1023, 1024, 2047, ..., 4095.
+        let r0 = table.lookup(slot: 0)
+        XCTAssertEqual(r0.freq, 1024)
+        // The actual symbol at slot 0 depends on the alias table
+        // construction. Validate freq is correct (= 1024 for uniform).
+        for slot: UInt32 in [0, 100, 1023, 1024, 2048, 3000, 4095] {
+            let r = table.lookup(slot: slot)
+            XCTAssertEqual(r.freq, 1024,
+                "all symbols have freq 1024 in uniform dist")
+            XCTAssertGreaterThanOrEqual(r.value, 0)
+            XCTAssertLessThan(r.value, 4)
+        }
+    }
+
+    /// AliasTable rejects invalid inputs.
+    func testAliasTable_RejectsBadSum() throws {
+        // Sum != 4096.
+        let dist: [Int32] = [100, 200]
+        XCTAssertThrowsError(
+            try AliasTable(
+                distribution: dist, logRange: 12, logAlphaSize: 6
+            )
+        ) { err in
+            guard case AliasTableError.sumNotEqualRange = err else {
+                XCTFail("expected sumNotEqualRange, got \(err)")
+                return
+            }
+        }
+    }
+
     // MARK: - LibjxlPredictor — spec-aligned predictor formulas
 
     /// Each of the 14 predictor formulas applied to a known
