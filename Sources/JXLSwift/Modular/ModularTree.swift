@@ -97,11 +97,20 @@ public struct ModularTree: Sendable, Equatable {
 
     /// Walk the tree from the root to a leaf using the supplied
     /// properties array. Each decision node tests
-    /// `properties[node.property] > splitVal` (per libjxl's `> vs ≤`
-    /// convention — left if false, right if true). Returns the leaf
-    /// node. Throws if a decision node references a property index
-    /// out of range, or if the tree is malformed (cycle, dangling
-    /// child).
+    /// `properties[node.property] > splitVal`. Per libjxl convention
+    /// (verified by tracing libjxl's `FilterTree` and the
+    /// `FlatDecisionNode` lookup against a 32×32 cjxl test):
+    /// `lchild` (the FIRST decoded child) is the **">" match** branch;
+    /// `rchild` (the second decoded) is the **"≤" match** branch.
+    /// Our decoder labels the first decoded as `leftChild`, so:
+    ///
+    ///   prop > splitVal  →  leftChild (libjxl lchild)
+    ///   prop ≤ splitVal  →  rightChild (libjxl rchild)
+    ///
+    /// (The earlier convention `≤ → leftChild` was the bug that
+    /// caused channel 0 first-pixel decode to land on cluster 0
+    /// instead of cluster 4 in cjxl-emitted streams — see the
+    /// byte-equality investigation in ROADMAP.md.)
     public func walk(properties: [Int32]) throws -> ModularTreeNode {
         var idx = 0
         var safety = nodes.count + 1
@@ -118,12 +127,10 @@ public struct ModularTree: Sendable, Equatable {
             guard propIdx >= 0 && propIdx < properties.count else {
                 throw ModularTreeError.invalidProperty(UInt32(propIdx))
             }
-            // libjxl uses `> splitval` for the right branch. We use
-            // the same convention here (left = property ≤ splitval).
             if properties[propIdx] > node.splitVal {
-                idx = node.rightChild
-            } else {
                 idx = node.leftChild
+            } else {
+                idx = node.rightChild
             }
         }
         throw ModularTreeError.tokenReader(

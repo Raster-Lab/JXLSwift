@@ -2553,7 +2553,9 @@ final class FoundationTests: XCTestCase {
     /// and the rest to leaf 1. Verify the decoder reads tokens from
     /// the right cluster.
     func testModularChannelDecoder_TreeRoutesByX() throws {
-        // Decision node tests property 3 (=x) ≤ 0 → leaf 0; else leaf 1.
+        // Per libjxl convention: lchild = ">" match, rchild = "≤".
+        // Decision node tests property 3 (=x) > 0 → lchild (leaf 0);
+        // else (x ≤ 0, i.e., x = 0) → rchild (leaf 1).
         let nodes = [
             ModularTreeNode(
                 property: 3, splitVal: 0,
@@ -2561,15 +2563,14 @@ final class FoundationTests: XCTestCase {
                 predictor: .zero, predictorOffset: 0, multiplier: 1,
                 rawPredictor: 0
             ),
-            // Leaf 0 — pixels with x == 0 (since x is non-negative
-            // and `> 0` ⇒ right; x == 0 ⇒ left).
+            // Leaf 0 (lchild = ">" match) — pixels with x > 0.
             ModularTreeNode(
                 property: -1, splitVal: 0,
                 leftChildOrLeafId: 0, rightChild: 0,
                 predictor: .zero, predictorOffset: 100, multiplier: 1,
                 rawPredictor: 0
             ),
-            // Leaf 1 — pixels with x > 0.
+            // Leaf 1 (rchild = "≤" match) — pixels with x = 0.
             ModularTreeNode(
                 property: -1, splitVal: 0,
                 leftChildOrLeafId: 1, rightChild: 0,
@@ -2580,16 +2581,18 @@ final class FoundationTests: XCTestCase {
         let tree = ModularTree(nodes: nodes)
         XCTAssertEqual(tree.leafCount, 2)
 
-        // Build a 2-context entropy section. Context 0 (leaf 0) yields
-        // token 0 (residual = 0 → pixel = 0 + 100 = 100); context 1
-        // (leaf 1) yields token 0 (residual = 0 → pixel = 0 + 200 = 200).
+        // Build a 2-context entropy section. cluster 0 (leaf 0, x>0)
+        // yields token 0 → residual 0 → pixel 100. cluster 1 (leaf 1,
+        // x=0) yields token 0 → pixel 200.
         let dist0 = try ANSDistribution(rawFrequencies: [4096, 0])
         let dist1 = try ANSDistribution(rawFrequencies: [4096, 0])
         var enc = ANSStreamEncoder(distributions: [dist0, dist1])
         // Order: row-major. width=3, height=2 → 6 pixels, x = 0,1,2,0,1,2.
         let xs: [Int32] = [0, 1, 2, 0, 1, 2]
         for x in xs {
-            let cluster = (x == 0) ? 0 : 1
+            // x = 0 → cluster 1 (leaf 1, "≤" match).
+            // x > 0 → cluster 0 (leaf 0, ">" match).
+            let cluster = (x == 0) ? 1 : 0
             try enc.write(symbol: 0, cluster: cluster)
         }
         let body = enc.finish()
@@ -2623,8 +2626,8 @@ final class FoundationTests: XCTestCase {
             staticChannel: 0, groupId: 0,
             tree: tree, stream: &stream, from: &br
         )
-        // Expect: 100, 200, 200, 100, 200, 200.
-        XCTAssertEqual(decoded, [100, 200, 200, 100, 200, 200])
+        // Expect: 200 for x=0, 100 for x>0. Row-major.
+        XCTAssertEqual(decoded, [200, 100, 100, 200, 100, 100])
     }
 
     // MARK: - Phase E4b: rANS distribution serialisation (§C.6.3.2)
@@ -5289,8 +5292,10 @@ extension FoundationTests {
         XCTAssertEqual(leaf.leafId, 0)
     }
 
-    /// Walk a 3-node tree that branches on property[0] ≤ 5.
-    /// Expected: leaf 0 (left) when property[0] ≤ 5; leaf 1 (right) otherwise.
+    /// Walk a 3-node tree that branches on property[0] vs 5.
+    /// Per libjxl convention: lchild (= leftChildOrLeafId) is the
+    /// **">" match** branch; rchild (= rightChild) is **"≤"** match.
+    /// Verified by tracing libjxl's FilterTree static-property prune.
     func testModularTree_Walk_ThreeNodes_BranchOnProperty0() throws {
         let tree = ModularTree(nodes: [
             // Decision: property 0, splitVal 5, left = 1, right = 2
@@ -5299,27 +5304,27 @@ extension FoundationTests {
                 leftChildOrLeafId: 1, rightChild: 2,
                 predictor: .zero, predictorOffset: 0, multiplier: 1
             ),
-            // Leaf 0 (left)
+            // First decoded child (= lchild = ">" match per libjxl)
             ModularTreeNode(
                 property: -1, splitVal: 0,
                 leftChildOrLeafId: 0, rightChild: 0,
                 predictor: .west, predictorOffset: 1, multiplier: 1
             ),
-            // Leaf 1 (right)
+            // Second decoded child (= rchild = "≤" match per libjxl)
             ModularTreeNode(
                 property: -1, splitVal: 0,
                 leftChildOrLeafId: 1, rightChild: 0,
                 predictor: .north, predictorOffset: -2, multiplier: 2
             ),
         ])
-        // Left branch: property[0] = 5 (≤ 5).
-        let left = try tree.walk(properties: [5, 0])
-        XCTAssertEqual(left.predictor, .west)
-        XCTAssertEqual(left.leafId, 0)
-        // Right branch: property[0] = 100 (> 5).
-        let right = try tree.walk(properties: [100, 0])
-        XCTAssertEqual(right.predictor, .north)
-        XCTAssertEqual(right.leafId, 1)
+        // property[0] = 5: 5 > 5 is FALSE → ≤ → rchild (north).
+        let r1 = try tree.walk(properties: [5, 0])
+        XCTAssertEqual(r1.predictor, .north)
+        XCTAssertEqual(r1.leafId, 1)
+        // property[0] = 100: 100 > 5 is TRUE → lchild (west).
+        let r2 = try tree.walk(properties: [100, 0])
+        XCTAssertEqual(r2.predictor, .west)
+        XCTAssertEqual(r2.leafId, 0)
     }
 
     /// Walking a tree with an out-of-range property index throws.
