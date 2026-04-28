@@ -1722,15 +1722,23 @@ final class FoundationTests: XCTestCase {
         //          cll for symbol 17 = 1
         //          all other cll     = 0
         // Each cll is written via the spec's static 16-entry Huffman:
-        //   cll = 0 → "00"   (2 bits, writeBits=2 value=0)
-        //   cll = 1 → "1110" (4 bits, writeBits=4 value=0b0111)
+        //   cll = 0 → "00"   (2 bits)
+        //   cll = 1 → "1110" (4 bits, codeword 0b0111)
+        // The decoder stops once the Kraft budget `space=32` hits 0 —
+        // each non-zero cll value v subtracts 32>>v. With cll=1
+        // appearing twice we use 16+16 = 32 → decoder stops at i=6
+        // (the symbol-17 cll). So we only emit cll values for
+        // positions 0..6 of the order; the remainder is implicit zero.
         let order: [Int] = [1, 2, 3, 4, 0, 5, 17, 6, 16, 7, 8, 9, 10, 11, 12, 13, 14, 15]
-        for i in 0..<18 {
+        var space = 32
+        for i in 0..<18 where space > 0 {
             let sym = order[i]
-            if sym == 2 || sym == 17 {
-                w.write(bits: 4, value: 0b0111)   // cll = 1
+            let cll: UInt8 = (sym == 2 || sym == 17) ? 1 : 0
+            if cll == 0 {
+                w.write(bits: 2, value: 0)
             } else {
-                w.write(bits: 2, value: 0)        // cll = 0
+                w.write(bits: 4, value: 0b0111)
+                space &-= 32 &>> Int(cll)
             }
         }
 
@@ -4777,21 +4785,9 @@ extension FoundationTests {
         let hdr = try EntropySectionHeader.read(
             from: &r, numContexts: 6
         )
-        // Reading the cjxl-emitted prefix-code body has a known
-        // discrepancy — the cll Huffman lookup decodes valid lengths
-        // for our own round-trip cases but produces an oversubscribed
-        // Kraft sum on the cjxl bit pattern. Diagnosing the precise
-        // bit-level disagreement is the next milestone in this chain;
-        // until then we attempt the read and skip when it fails so the
-        // suite stays green.
-        let codebook: MultiClusterCodebook
-        do {
-            codebook = try MultiClusterCodebook.read(from: &r, header: hdr)
-        } catch {
-            try XCTSkipIf(true,
-                "cjxl prefix-code body decode discrepancy — pending fix: \(error)")
-            return
-        }
+        let codebook = try MultiClusterCodebook.read(
+            from: &r, header: hdr
+        )
         // Sanity checks.
         if hdr.usePrefixCode {
             XCTAssertEqual(codebook.huffmanTables.count, hdr.numHistograms,

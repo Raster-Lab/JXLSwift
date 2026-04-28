@@ -321,11 +321,16 @@ public struct ComplexPrefixCodeFormat {
         // hskip. Each cll is encoded by the static 16-entry Huffman
         // table `kCLLHuffman` — values 0..5 with codeword lengths
         // 2..4 bits — peeked from the next 4 bits of the stream.
+        //
+        // The loop terminates EARLY when the Kraft budget `space`
+        // (initialised to 32 = 2^5) hits zero — each non-zero cll
+        // value `v` consumes `32 >> v` of the budget. This matches
+        // libjxl `dec_huffman.cc::ReadFromBitStream` line 210, and
+        // is what stops short codes from forming an oversubscribed
+        // meta-Huffman.
         var cll = [UInt8](repeating: 0, count: 18)
-        for i in hskip..<18 {
-            // Peek up to 4 bits — at the very end of the stream we
-            // may have fewer remaining; the table is degenerate
-            // enough that a partial peek still resolves valid prefixes.
+        var space = 32
+        for i in hskip..<18 where space > 0 {
             let peekBits = min(4, r.bitsRemaining)
             var idx: UInt32 = 0
             if peekBits > 0 {
@@ -333,7 +338,11 @@ public struct ComplexPrefixCodeFormat {
             }
             let entry = kCLLHuffman[Int(idx) & 0x0F]
             try r.skip(bits: entry.consume)
-            cll[kCodeLengthCodeOrder[i]] = entry.value
+            let v = entry.value
+            cll[kCodeLengthCodeOrder[i]] = v
+            if v != 0 {
+                space &-= 32 &>> Int(v)
+            }
         }
 
         // Build the meta-Huffman code over alphabet 0..18.
@@ -427,12 +436,18 @@ public struct ComplexPrefixCodeFormat {
         let metaLengths = lengthLimitedCanonicalHuffman(
             counts: histo, maxLength: 5, alphabetSize: 19
         )
-        // cll values are written in the prescribed order, all 18, via
-        // the static-Huffman codewords (`kCLLEncodings`) the spec
-        // mandates — not raw u(3).
-        for i in 0..<18 {
+        // cll values are written in the prescribed order, via the
+        // static-Huffman codewords (`kCLLEncodings`) the spec
+        // mandates. We stop early once the Kraft budget `space`
+        // (initialised to 32) hits zero — the decoder uses the same
+        // termination, so writing more would desync the cursors.
+        var space = 32
+        for i in 0..<18 where space > 0 {
             let v = metaLengths[kCodeLengthCodeOrder[i]]
             try writeCLLValue(v, to: &w)
+            if v != 0 {
+                space &-= 32 &>> Int(v)
+            }
         }
 
         // Build the meta-Huffman from the just-emitted cll values, then
