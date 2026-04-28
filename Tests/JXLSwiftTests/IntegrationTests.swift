@@ -449,6 +449,53 @@ final class FoundationTests: XCTestCase {
             "tone-mapping intensityTarget should match cjxl --intensity_target=4000")
     }
 
+    /// ICC profile path: cjxl with `-x icc_pathname=...` produces a
+    /// codestream whose `ColorEncoding.useICC = 1`. Our parser must
+    /// detect this and skip the per-field colour-encoding reads.
+    func testCrossValidate_Cjxl_ICCProfile_HeadersMatch() throws {
+        guard let cjxl = whichTool("cjxl") else {
+            try XCTSkipIf(true, "cjxl not on PATH")
+            return
+        }
+        let iccPath = "/System/Library/ColorSync/Profiles/Display P3.icc"
+        guard FileManager.default.fileExists(atPath: iccPath) else {
+            try XCTSkipIf(true, "no system ICC profile available at \(iccPath)")
+            return
+        }
+        let pnmPath = NSTemporaryDirectory() + "icc-test.ppm"
+        let jxlPath = NSTemporaryDirectory() + "icc-test.jxl"
+        defer {
+            try? FileManager.default.removeItem(atPath: pnmPath)
+            try? FileManager.default.removeItem(atPath: jxlPath)
+        }
+        try makeSyntheticPNM(
+            width: 16, height: 16, channels: 3, bitDepth: 8,
+            generator: { x, y, c in UInt16((x &+ y &+ Int(c)) & 0xFF) }
+        ).write(to: URL(fileURLWithPath: pnmPath))
+        let proc = Process()
+        proc.launchPath = cjxl
+        proc.arguments = ["-q", "100", "-x", "icc_pathname=\(iccPath)",
+                          pnmPath, jxlPath]
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        try proc.run()
+        proc.waitUntilExit()
+        guard proc.terminationStatus == 0 else {
+            XCTFail("cjxl failed with status \(proc.terminationStatus)")
+            return
+        }
+        let data = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
+        let inspect = try JXLDecoder().inspect(data)
+        XCTAssertEqual(inspect.xsize, 16)
+        XCTAssertEqual(inspect.ysize, 16)
+        guard let m = inspect.metadata else {
+            XCTFail("inspect() returned nil ImageMetadata")
+            return
+        }
+        XCTAssertTrue(m.colorEncoding.useICC,
+            "ICC-bearing file should set useICC=true; got \(m.colorEncoding.useICC)")
+    }
+
     /// Float32 grayscale via PFM input — exercises the float branch
     /// of `BitDepth` (isFloat=1, bps via U32 distribution, exp via
     /// the spec-specific `(2, 5, 10, 7+u(4))` distribution). Caught
