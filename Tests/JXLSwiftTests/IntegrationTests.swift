@@ -2795,17 +2795,21 @@ extension FoundationTests {
     }
 
     /// Round-trip a header with an explicit (cropped) frame size.
-    /// Confirms the have_crop=true branch routes through SizeHeader
-    /// correctly.
-    func testFrameHeader_RoundTrip_HaveCrop() throws {
+    /// `customSizeOrOrigin = true` triggers the U32-encoded
+    /// origin/size fields (`Bits(8) | 256+u(11) | 2304+u(14) |
+    /// 18688+u(30)`) per libjxl frame_header.cc.
+    func testFrameHeader_RoundTrip_CustomSize() throws {
         let cfg = FrameHeader(
             allDefault: false,
             frameType: .regular,
             encoding: .modular,
             flags: 0,
+            colorTransform: .none,
             groupSizeShift: 2,
-            isLast: false,
-            frameSize: SizeHeader(xsize: 640, ysize: 480)
+            customSizeOrOrigin: true,
+            frameOrigin: (0, 0),
+            frameSize: SizeHeader(xsize: 640, ysize: 480),
+            isLast: false
         )
         var w = BitWriter()
         try cfg.write(to: &w)
@@ -2815,12 +2819,15 @@ extension FoundationTests {
         XCTAssertEqual(parsed.encoding, .modular)
         XCTAssertEqual(parsed.groupSizeShift, 2)
         XCTAssertFalse(parsed.isLast)
+        XCTAssertTrue(parsed.customSizeOrOrigin)
         XCTAssertEqual(parsed.frameSize?.xsize, 640)
         XCTAssertEqual(parsed.frameSize?.ysize, 480)
     }
 
     /// Sweep across each (frameType, encoding) combination to confirm
-    /// the 2-bit / 1-bit selectors decode cleanly.
+    /// the U32 frame-type field and 1-bit `is_modular` decode cleanly.
+    /// DCFrame needs a non-zero dcLevel (the U32(1, 2, 3, 4) doesn't
+    /// admit zero); ReferenceOnly forces is_last=false.
     func testFrameHeader_RoundTrip_FrameTypeAndEncodingMatrix() throws {
         for ft in FrameType.allCases {
             for enc: FrameEncoding in [.varDCT, .modular] {
@@ -2829,9 +2836,10 @@ extension FoundationTests {
                     frameType: ft,
                     encoding: enc,
                     flags: 0,
+                    colorTransform: .none,
                     groupSizeShift: 1,
-                    isLast: true,
-                    frameSize: nil
+                    dcLevel: ft == .dcFrame ? 1 : 0,
+                    isLast: ft != .referenceOnly
                 )
                 var w = BitWriter()
                 try cfg.write(to: &w)
@@ -2845,19 +2853,141 @@ extension FoundationTests {
         }
     }
 
-    /// Encoder rejects flags above the placeholder u(8) limit.
-    func testFrameHeader_RejectsLargeFlags() {
+    /// Round-trip a flags U64 value larger than 8 bits — exercises the
+    /// U64 selector 2 branch (17+u(8)).
+    func testFrameHeader_RoundTrip_FlagsU64() throws {
         let cfg = FrameHeader(
-            allDefault: false, frameType: .regular, encoding: .modular,
-            flags: 0x100, groupSizeShift: 1, isLast: true, frameSize: nil
+            allDefault: false,
+            frameType: .regular,
+            encoding: .varDCT,
+            flags: 0x82,    // patches | skipAdaptiveDcSmoothing
+            colorTransform: .none,
+            isLast: true
         )
         var w = BitWriter()
-        XCTAssertThrowsError(try cfg.write(to: &w)) { err in
-            guard let e = err as? FrameHeaderError,
-                  case .unsupportedField = e else {
-                XCTFail("expected unsupportedField, got \(err)"); return
-            }
-        }
+        try cfg.write(to: &w)
+        var r = BitReader(w.finishToData())
+        let parsed = try FrameHeader.read(from: &r)
+        XCTAssertEqual(parsed.flags, 0x82)
+    }
+
+    /// Round-trip a YCbCr frame with chroma subsampling. Exercises
+    /// the YCbCrChromaSubsampling block (3 × u(2)) which is only
+    /// emitted when `color_transform == kYCbCr`.
+    func testFrameHeader_RoundTrip_YCbCrChromaSubsampling() throws {
+        let cfg = FrameHeader(
+            allDefault: false,
+            frameType: .regular,
+            encoding: .varDCT,
+            flags: 0,
+            colorTransform: .yCbCr,
+            chromaSubsampling: YCbCrChromaSubsampling(y: 0, cb: 1, cr: 2),
+            isLast: true
+        )
+        var w = BitWriter()
+        try cfg.write(to: &w)
+        var r = BitReader(w.finishToData())
+        let parsed = try FrameHeader.read(from: &r)
+        XCTAssertEqual(parsed.colorTransform, .yCbCr)
+        XCTAssertEqual(parsed.chromaSubsampling.channelModes.0, 0)
+        XCTAssertEqual(parsed.chromaSubsampling.channelModes.1, 1)
+        XCTAssertEqual(parsed.chromaSubsampling.channelModes.2, 2)
+    }
+
+    /// XYB-encoded frame: the writer encoding chooses ColorTransform
+    /// implicitly (no alternate bit on the wire). Reader picks it
+    /// from the supplied `FrameHeaderContext.xybEncoded = true`.
+    func testFrameHeader_RoundTrip_XYBContext() throws {
+        let cfg = FrameHeader(
+            allDefault: false,
+            frameType: .regular,
+            encoding: .varDCT,
+            flags: 0,
+            colorTransform: .xyb,
+            xQmScale: 4, bQmScale: 1,
+            isLast: true
+        )
+        let ctx = FrameHeaderContext(xybEncoded: true)
+        var w = BitWriter()
+        try cfg.write(to: &w, context: ctx)
+        var r = BitReader(w.finishToData())
+        let parsed = try FrameHeader.read(from: &r, context: ctx)
+        XCTAssertEqual(parsed.colorTransform, .xyb)
+        XCTAssertEqual(parsed.xQmScale, 4)
+        XCTAssertEqual(parsed.bQmScale, 1)
+    }
+
+    /// Round-trip a multi-pass progressive frame — exercises the
+    /// `Passes` block (num_passes, num_downsample, shifts[],
+    /// downsamples[], lastPasses[]).
+    func testFrameHeader_RoundTrip_MultiPass() throws {
+        let passes = Passes(
+            numPasses: 3, numDownsample: 1,
+            shifts: [1, 2, 0],
+            downsamples: [4],
+            lastPasses: [1]
+        )
+        let cfg = FrameHeader(
+            allDefault: false,
+            frameType: .regular,
+            encoding: .modular,
+            flags: 0,
+            colorTransform: .none,
+            passes: passes,
+            isLast: true
+        )
+        var w = BitWriter()
+        try cfg.write(to: &w)
+        var r = BitReader(w.finishToData())
+        let parsed = try FrameHeader.read(from: &r)
+        XCTAssertEqual(parsed.passes.numPasses, 3)
+        XCTAssertEqual(parsed.passes.numDownsample, 1)
+        XCTAssertEqual(parsed.passes.shifts, [1, 2, 0])
+        XCTAssertEqual(parsed.passes.downsamples, [4])
+        XCTAssertEqual(parsed.passes.lastPasses, [1])
+    }
+
+    /// Round-trip an animated frame — exercises the AnimationFrame
+    /// block (duration via U32(0, 1, u(8), u(32)), optional u(32)
+    /// timecode). Duration is only emitted when the surrounding
+    /// metadata says `haveAnimation = true`.
+    func testFrameHeader_RoundTrip_AnimationDuration() throws {
+        let cfg = FrameHeader(
+            allDefault: false,
+            frameType: .regular,
+            encoding: .modular,
+            flags: 0,
+            colorTransform: .none,
+            animationFrame: AnimationFrame(duration: 100, timecode: 0),
+            isLast: false
+        )
+        let ctx = FrameHeaderContext(haveAnimation: true)
+        var w = BitWriter()
+        try cfg.write(to: &w, context: ctx)
+        var r = BitReader(w.finishToData())
+        let parsed = try FrameHeader.read(from: &r, context: ctx)
+        XCTAssertEqual(parsed.animationFrame.duration, 100)
+        XCTAssertFalse(parsed.isLast)
+    }
+
+    /// Round-trip a frame with a name string. Tests `VisitNameString`
+    /// — `U32(0, u(4), 16+u(5), 48+u(10))` for byte length, then raw
+    /// u(8) bytes.
+    func testFrameHeader_RoundTrip_NameString() throws {
+        let cfg = FrameHeader(
+            allDefault: false,
+            frameType: .regular,
+            encoding: .modular,
+            flags: 0,
+            colorTransform: .none,
+            isLast: true,
+            name: "frame-1"
+        )
+        var w = BitWriter()
+        try cfg.write(to: &w)
+        var r = BitReader(w.finishToData())
+        let parsed = try FrameHeader.read(from: &r)
+        XCTAssertEqual(parsed.name, "frame-1")
     }
 }
 
