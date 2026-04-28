@@ -4401,6 +4401,81 @@ extension FoundationTests {
     }
 }
 
+// MARK: - ModularProperties (16 standard pixel-context features)
+
+extension FoundationTests {
+
+    /// Hand-derived: a corner pixel (x=0, y=0) with all neighbours 0
+    /// should produce all-zero properties (except for the static
+    /// channel/group_id and x/y).
+    func testModularProperties_HandDerived_TopLeftCorner() {
+        let p = computeModularProperties(
+            staticChannel: 0, groupId: 0,
+            x: 0, y: 0,
+            top: 0, left: 0,
+            topLeft: 0, topRight: 0,
+            leftLeft: 0, topTop: 0
+        )
+        XCTAssertEqual(p.count, 16)
+        XCTAssertEqual(p[0], 0)   // channel
+        XCTAssertEqual(p[1], 0)   // group_id
+        XCTAssertEqual(p[2], 0)   // y
+        XCTAssertEqual(p[3], 0)   // x
+        XCTAssertEqual(p[4], 0)   // |top|
+        XCTAssertEqual(p[5], 0)   // |left|
+        XCTAssertEqual(p[6], 0)   // top
+        XCTAssertEqual(p[7], 0)   // left
+        XCTAssertEqual(p[8], 0)   // left - top
+        XCTAssertEqual(p[9], 0)   // left + top - topleft
+        for i in 10..<15 { XCTAssertEqual(p[i], 0) }
+        XCTAssertEqual(p[15], 0)  // WP — placeholder
+    }
+
+    /// Verify each property formula on a hand-picked neighbour layout.
+    /// top=10, left=20, topLeft=15, topRight=8, leftLeft=18, topTop=12.
+    func testModularProperties_FormulasMatchSpec() {
+        let p = computeModularProperties(
+            staticChannel: 1, groupId: 2,
+            x: 5, y: 7,
+            top: 10, left: 20,
+            topLeft: 15, topRight: 8,
+            leftLeft: 18, topTop: 12
+        )
+        XCTAssertEqual(p[0], 1)
+        XCTAssertEqual(p[1], 2)
+        XCTAssertEqual(p[2], 7)
+        XCTAssertEqual(p[3], 5)
+        XCTAssertEqual(p[4], 10)               // |top|
+        XCTAssertEqual(p[5], 20)               // |left|
+        XCTAssertEqual(p[6], 10)               // top
+        XCTAssertEqual(p[7], 20)               // left
+        XCTAssertEqual(p[8], 10)               // left - top = 20 - 10
+        XCTAssertEqual(p[9], 15)               // left + top - topLeft = 20 + 10 - 15
+        XCTAssertEqual(p[10], 5)               // left - topLeft
+        XCTAssertEqual(p[11], 5)               // topLeft - top
+        XCTAssertEqual(p[12], 2)               // top - topRight
+        XCTAssertEqual(p[13], -2)              // top - topTop
+        XCTAssertEqual(p[14], 2)               // left - leftLeft
+    }
+
+    /// Negative neighbour values produce signed properties; absolute-
+    /// value properties (|top|, |left|) flip sign correctly.
+    func testModularProperties_NegativeNeighbours() {
+        let p = computeModularProperties(
+            staticChannel: 0, groupId: 0,
+            x: 1, y: 1,
+            top: -10, left: -5,
+            topLeft: -3, topRight: -7,
+            leftLeft: -2, topTop: -8
+        )
+        XCTAssertEqual(p[4], 10)   // |top| = |-10|
+        XCTAssertEqual(p[5], 5)    // |left| = |-5|
+        XCTAssertEqual(p[6], -10)  // top
+        XCTAssertEqual(p[7], -5)   // left
+        XCTAssertEqual(p[8], 5)    // left - top = -5 - (-10) = 5
+    }
+}
+
 // MARK: - ModularTree.walk
 
 extension FoundationTests {
