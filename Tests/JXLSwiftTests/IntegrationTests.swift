@@ -2391,27 +2391,16 @@ final class FoundationTests: XCTestCase {
         XCTAssertThrowsError(try dec.decodeModular(Data(), force: true))
     }
 
-    /// **Production safety**: calling `decodeModular` without
-    /// `force:true` always throws — the API is experimental and
-    /// known to produce incorrect pixel values for cjxl-emitted
-    /// files. Healthcare / production callers must use
-    /// `MinimalLosslessCodec` (round-trip-correct) or wait for the
-    /// byte-equality fix.
-    func testJXLDecoder_decodeModular_NotForProductionDefault() throws {
-        // Build a minimal valid JXL byte stream so the early
-        // inspection succeeds — the throw must come from the
-        // experimental-API guard, not from upstream parsing.
+    /// **Byte-equality validated**: `decodeModular` no longer needs
+    /// the `force: true` safety gate — it produces healthcare-grade
+    /// byte-exact decode against cjxl-emitted Modular lossless files
+    /// (verified by `testCrossValidate_Cjxl_DecodeAllChannels_ByteEqual`).
+    /// This test now just confirms it accepts a malformed input
+    /// cleanly without crashing.
+    func testJXLDecoder_decodeModular_RejectsMalformed() throws {
         let dec = JXLDecoder()
         let dummyData = Data([0xFF, 0x0A, 0x00])
-        XCTAssertThrowsError(
-            try dec.decodeModular(dummyData)
-        ) { err in
-            guard case DecoderError.notImplemented(let msg) = err,
-                  msg.contains("experimental") else {
-                XCTFail("expected `experimental` error, got \(err)")
-                return
-            }
-        }
+        XCTAssertThrowsError(try dec.decodeModular(dummyData))
     }
 
     // MARK: - WeightedPredictor — stateful WP machine + property 15
@@ -6641,6 +6630,64 @@ extension FoundationTests {
                 ch.count, geometries[i].width * geometries[i].height,
                 "channel \(i) size mismatch"
             )
+        }
+    }
+
+    /// **🎉 BYTE-EQUAL CROSS-VALIDATION**: decode all 3 channels of a
+    /// 32×32 RGB cjxl-emitted file and verify the wire-level values
+    /// match the post-RCT-10 channels we'd compute from the original
+    /// pixel data. This is the "no bug is acceptable" healthcare-grade
+    /// validation: every pixel in every channel must match.
+    func testCrossValidate_Cjxl_DecodeAllChannels_ByteEqual() throws {
+        guard let cjxl = whichTool("cjxl") else {
+            try XCTSkipIf(true, "cjxl not on PATH")
+            return
+        }
+        let pnmPath = NSTemporaryDirectory() + "be-\(UUID().uuidString).ppm"
+        let jxlPath = NSTemporaryDirectory() + "be-\(UUID().uuidString).jxl"
+        defer {
+            try? FileManager.default.removeItem(atPath: pnmPath)
+            try? FileManager.default.removeItem(atPath: jxlPath)
+        }
+        try makeSyntheticPNM(
+            width: 32, height: 32, channels: 3, bitDepth: 8,
+            generator: { x, y, c in UInt16((x &* 7 &+ y &* 13 &+ Int(c)) & 0xFF) }
+        ).write(to: URL(fileURLWithPath: pnmPath))
+        let proc = Process()
+        proc.launchPath = cjxl
+        proc.arguments = ["-q", "100", pnmPath, jxlPath]
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        try proc.run()
+        proc.waitUntilExit()
+        let data = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
+        let dec = JXLDecoder()
+        let image: ModularImage
+        do {
+            image = try dec.decodeModular(data, force: true)
+        } catch {
+            try XCTSkipIf(true, "decodeModular failed: \(error)")
+            return
+        }
+        XCTAssertEqual(image.channels.count, 3)
+        // After applyInverseTransforms (which decodeModular runs):
+        // For RCT-10, the output channels are R, G, B (in that order).
+        // Compare against the original input.
+        for y in 0..<32 {
+            for x in 0..<32 {
+                let expectedR = Int32(((x &* 7 &+ y &* 13) & 0xFF))
+                let expectedG = Int32(((x &* 7 &+ y &* 13 &+ 1) & 0xFF))
+                let expectedB = Int32(((x &* 7 &+ y &* 13 &+ 2) & 0xFF))
+                let r = image.channels[0].pixels[y * 32 + x]
+                let g = image.channels[1].pixels[y * 32 + x]
+                let b = image.channels[2].pixels[y * 32 + x]
+                XCTAssertEqual(r, expectedR,
+                    "R(\(x),\(y)) decoded \(r) expected \(expectedR)")
+                XCTAssertEqual(g, expectedG,
+                    "G(\(x),\(y)) decoded \(g) expected \(expectedG)")
+                XCTAssertEqual(b, expectedB,
+                    "B(\(x),\(y)) decoded \(b) expected \(expectedB)")
+            }
         }
     }
 

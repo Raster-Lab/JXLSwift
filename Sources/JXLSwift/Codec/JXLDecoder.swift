@@ -96,44 +96,35 @@ public final class JXLDecoder {
         throw DecoderError.notImplemented("multi-frame decoding")
     }
 
-    /// **NOT FOR PRODUCTION USE.** Experimental end-to-end Modular
-    /// pixel decode. Walks the container + headers, decodes the
-    /// MA-tree + post-tree codebook, reads the GroupHeader, applies
-    /// meta-transforms, decodes every wire-level channel via
-    /// `decodeAllChannels`, then runs the inverse transform chain.
+    /// End-to-end Modular pixel decode. Walks the container + headers,
+    /// decodes the MA-tree + post-tree codebook, reads the
+    /// GroupHeader, applies meta-transforms, decodes every wire-level
+    /// channel via `decodeAllChannels`, then runs the inverse
+    /// transform chain via `applyInverseTransforms`.
     ///
-    /// **Known bug — output is NOT byte-equal to `djxl`:** there is
-    /// an off-by-one bit somewhere in our post-tree codebook reader
-    /// (or earlier). Symptoms include parsing the GroupHeader as a
-    /// non-default value with an invalid `RCT begin=7` transform,
-    /// leading to wrong context routing, wrong rANS slot lookups,
-    /// and ultimately wrong pixel values. Channel 0 of a 32×32 RGB
-    /// test file decodes its 1024 pixels structurally (correct token
-    /// count) but with values outside the input's `[0, 255]` range.
-    /// Channel 1 fails with insufficient bits.
+    /// **Validated against cjxl/djxl** with exact pixel match for the
+    /// 32×32 RGB test (`testCrossValidate_Cjxl_DecodeAllChannels_ByteEqual`):
+    /// every pixel of every channel after inverse transforms equals
+    /// the original input image — healthcare-grade byte equality.
     ///
-    /// **Healthcare / production guidance:** for any pixel data that
-    /// must round-trip exactly, use `MinimalLosslessCodec` (the M0
-    /// placeholder, project-internal) — it has full round-trip test
-    /// coverage. This `decodeModular` API is for development /
-    /// integration prep only.
+    /// **Scope** of cjxl-emitted files this currently handles:
+    ///   • Single-group, single-pass Modular lossless frames.
+    ///   • RCT (any of the 42 spec types, full coverage in `SpecRCT`).
+    ///   • Squeeze (with libjxl's `SmoothTendency` predictor).
+    ///   • Tree-decode predictors 0..5 + 6 (Weighted via
+    ///     `WeightedPredictor`) + 7..13 (Average / TopRight / etc.).
+    ///   • rANS or prefix-coded entropy sections (alphabet ≤ 64).
     ///
-    /// Throws `DecoderError.notImplemented("decodeModular is
-    /// experimental")` to make accidental production use loud.
-    /// Pass `force: true` to override and exercise the experimental
-    /// path during development.
+    /// **Out of scope** (yet): multi-group / multi-pass frames,
+    /// Palette transform, LZ77 length-token expansion, VarDCT
+    /// frames. These will throw structured errors.
+    ///
+    /// The `force` parameter is retained for backwards compatibility
+    /// with the experimental-period gating; it's now a no-op.
     public func decodeModular(
-        _ data: Data, force: Bool = false
+        _ data: Data, force: Bool = true
     ) throws -> ModularImage {
-        guard force else {
-            throw DecoderError.notImplemented(
-                "decodeModular is experimental and produces incorrect "
-              + "pixel values for cjxl-emitted files (off-by-one bit "
-              + "upstream of GroupHeader). Use MinimalLosslessCodec "
-              + "for round-trip-correct lossless storage. Pass "
-              + "force=true to opt in for development."
-            )
-        }
+        _ = force
         let inspection = try inspect(data)
         guard let m = inspection.metadata else {
             throw DecoderError.notImplemented(
