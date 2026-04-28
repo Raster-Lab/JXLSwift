@@ -48,9 +48,14 @@ public struct ModularTreeNode: Sendable, Equatable {
     public let leftChildOrLeafId: Int
     /// Index of the right-child node. Ignored on leaves.
     public let rightChild: Int
-    /// Modular predictor for leaf nodes. Decisions emit
-    /// `Predictor.zero`.
+    /// Modular predictor for leaf nodes (semantic mapping into our
+    /// `Predictor` enum, for round-trip with our M0 encoder).
+    /// Decision nodes carry `Predictor.zero`.
     public let predictor: Predictor
+    /// Raw libjxl predictor index 0..13 — the source-of-truth for
+    /// per-pixel reconstruction. Used by the streaming decoder; the
+    /// `predictor` field is the lossy semantic mapping.
+    public let rawPredictor: UInt32
     /// Signed offset added to predictor output (leaf only).
     public let predictorOffset: Int64
     /// Multiplier applied to residuals (leaf only). Always a power
@@ -60,13 +65,15 @@ public struct ModularTreeNode: Sendable, Equatable {
     public init(
         property: Int32, splitVal: Int32,
         leftChildOrLeafId: Int, rightChild: Int,
-        predictor: Predictor, predictorOffset: Int64, multiplier: UInt32
+        predictor: Predictor, predictorOffset: Int64, multiplier: UInt32,
+        rawPredictor: UInt32 = 0
     ) {
         self.property = property
         self.splitVal = splitVal
         self.leftChildOrLeafId = leftChildOrLeafId
         self.rightChild = rightChild
         self.predictor = predictor
+        self.rawPredictor = rawPredictor
         self.predictorOffset = predictorOffset
         self.multiplier = multiplier
     }
@@ -198,7 +205,8 @@ public struct ModularTree: Sendable, Equatable {
                     rightChild: 0,
                     predictor: predictor,
                     predictorOffset: predictorOffset,
-                    multiplier: multiplier
+                    multiplier: multiplier,
+                    rawPredictor: predictorRaw
                 ))
                 leafId &+= 1
                 continue

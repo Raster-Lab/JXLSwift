@@ -1936,6 +1936,194 @@ final class FoundationTests: XCTestCase {
         XCTAssertThrowsError(try dec.readSymbol(cluster: 0, from: &r))
     }
 
+    // MARK: - LibjxlPredictor — spec-aligned predictor formulas
+
+    /// Each of the 14 predictor formulas applied to a known
+    /// neighbourhood produces the spec-formula result.
+    func testLibjxlPredictor_HandValues() throws {
+        // W=10, N=20, NW=8, NE=22, WW=6, NN=18.
+        let nbh = Neighbourhood(w: 10, n: 20, nw: 8, ne: 22, ww: 6, nn: 18)
+        XCTAssertEqual(applyLibjxlPredictor(raw: 0, neighbourhood: nbh), 0)
+        XCTAssertEqual(applyLibjxlPredictor(raw: 1, neighbourhood: nbh), 10)
+        XCTAssertEqual(applyLibjxlPredictor(raw: 2, neighbourhood: nbh), 20)
+        XCTAssertEqual(applyLibjxlPredictor(raw: 3, neighbourhood: nbh), 15)
+        // Select: |W-NW|=2, |N-NW|=12, 2 < 12 → return N (20).
+        XCTAssertEqual(applyLibjxlPredictor(raw: 4, neighbourhood: nbh), 20)
+        // ClampedGradient: g = W+N-NW = 22, clamped to [10, 20] → 20.
+        XCTAssertEqual(applyLibjxlPredictor(raw: 5, neighbourhood: nbh), 20)
+        // Predictor 6 (Weighted) returns the caller-supplied value.
+        XCTAssertEqual(
+            applyLibjxlPredictor(raw: 6, neighbourhood: nbh, wpResult: 99), 99)
+        XCTAssertEqual(applyLibjxlPredictor(raw: 7, neighbourhood: nbh), 22)   // NE
+        XCTAssertEqual(applyLibjxlPredictor(raw: 8, neighbourhood: nbh), 8)    // NW
+        XCTAssertEqual(applyLibjxlPredictor(raw: 9, neighbourhood: nbh), 6)    // WW
+        XCTAssertEqual(applyLibjxlPredictor(raw: 10, neighbourhood: nbh), 9)   // (W+NW)/2
+        XCTAssertEqual(applyLibjxlPredictor(raw: 11, neighbourhood: nbh), 14)  // (NW+N)/2
+        XCTAssertEqual(applyLibjxlPredictor(raw: 12, neighbourhood: nbh), 21)  // (N+NE)/2
+        // (W+N+NE+NW)/4 = (10+20+22+8)/4 = 60/4 = 15.
+        XCTAssertEqual(applyLibjxlPredictor(raw: 13, neighbourhood: nbh), 15)
+    }
+
+    /// `Select` (predictor 4) handles the symmetric tie case by
+    /// returning W (libjxl convention: `pa < pb`, ties favour W).
+    func testLibjxlPredictor_SelectTieFavoursLeft() throws {
+        // |W-NW| = 5, |N-NW| = 5 → pa < pb is false → return W.
+        let nbh = Neighbourhood(w: 5, n: 15, nw: 10, ne: 0)
+        XCTAssertEqual(applyLibjxlPredictor(raw: 4, neighbourhood: nbh), 5)
+    }
+
+    /// `ClampedGradient` (predictor 5) clamps inverted gradient.
+    /// W=20, N=10, NW=30 → g = 0, clamp into [10,20] → 10.
+    func testLibjxlPredictor_ClampedGradient_Clamps() throws {
+        let nbh = Neighbourhood(w: 20, n: 10, nw: 30, ne: 0)
+        XCTAssertEqual(applyLibjxlPredictor(raw: 5, neighbourhood: nbh), 10)
+    }
+
+    // MARK: - ModularChannelDecoder — per-pixel decode driver
+
+    /// Decode a 4x4 channel where the MA-tree is a single leaf with
+    /// predictor=Zero, offset=0, multiplier=1. Every residual decodes
+    /// to its raw signed value because predictor output + offset = 0.
+    /// We construct a synthetic post-tree entropy section by serialising
+    /// known tokens through `SimpleEntropyStream` is not directly
+    /// applicable here (that uses a different layout); instead we
+    /// build a minimal `TokenStreamReader` body manually.
+    func testModularChannelDecoder_ZeroPredictor_PassesThroughResidual() throws {
+        // Build a minimal one-leaf tree.
+        let leaf = ModularTreeNode(
+            property: -1, splitVal: 0,
+            leftChildOrLeafId: 0, rightChild: 0,
+            predictor: .zero, predictorOffset: 0, multiplier: 1,
+            rawPredictor: 0
+        )
+        let tree = ModularTree(nodes: [leaf])
+
+        // Build a TokenStreamReader that, when called for context 0,
+        // produces a known sequence of zig-zag-packed UInt32 tokens
+        // matching what we'd get for residuals = pixels.
+        // For predictor=zero, offset=0, multiplier=1:
+        //   pixel = unpack(token)
+        // We want pixels = [1, 2, 3, ..., 16]; tokens = pack(1..16) =
+        // [2, 4, 6, ..., 32].
+        let pixels: [Int32] = (1...16).map { Int32($0) }
+        let tokens: [UInt32] = pixels.map { ZigZag.pack($0) }
+
+        // Build a single-symbol-alphabet entropy section via the
+        // streaming encoder and a single distribution covering all
+        // tokens we want to emit.
+        let alphabet = (tokens.max() ?? 0) + 1  // smallest alphabet covering values
+        let freqs = [UInt32](repeating: 1, count: Int(alphabet))
+        let dist = try ANSDistribution(rawFrequencies: freqs)
+        var enc = ANSStreamEncoder(distributions: [dist])
+        for t in tokens {
+            try enc.write(symbol: Int(t), cluster: 0)
+        }
+        let body = enc.finish()
+
+        // Construct a TokenStreamReader manually with a hand-built
+        // header and codebook that map context 0 → cluster 0 with
+        // identity HybridUintConfig.
+        let header = EntropySectionHeader(
+            lz77: .disabled,
+            contextMap: .trivial(numContexts: 1),
+            usePrefixCode: false,
+            logAlphaSize: 8,
+            uintConfigs: [
+                HybridUintConfig(splitExponent: 8, msbInToken: 0, lsbInToken: 0)
+            ]
+        )
+        let codebook = MultiClusterCodebook(
+            huffmanTables: [], ansCounts: [dist.frequencies.map { Int32(bitPattern: $0) }],
+            alphabetSizes: [Int(alphabet)]
+        )
+        var stream = TokenStreamReader(header: header, codebook: codebook)
+        var br = BitReader(body)
+
+        // Decode the channel.
+        let decoded = try decodeModularChannel(
+            width: 4, height: 4,
+            staticChannel: 0, groupId: 0,
+            tree: tree, stream: &stream, from: &br
+        )
+        XCTAssertEqual(decoded, pixels)
+    }
+
+    /// Tree-walk routes pixels with property[3] (=x) <= 1 to leaf 0
+    /// and the rest to leaf 1. Verify the decoder reads tokens from
+    /// the right cluster.
+    func testModularChannelDecoder_TreeRoutesByX() throws {
+        // Decision node tests property 3 (=x) ≤ 0 → leaf 0; else leaf 1.
+        let nodes = [
+            ModularTreeNode(
+                property: 3, splitVal: 0,
+                leftChildOrLeafId: 1, rightChild: 2,
+                predictor: .zero, predictorOffset: 0, multiplier: 1,
+                rawPredictor: 0
+            ),
+            // Leaf 0 — pixels with x == 0 (since x is non-negative
+            // and `> 0` ⇒ right; x == 0 ⇒ left).
+            ModularTreeNode(
+                property: -1, splitVal: 0,
+                leftChildOrLeafId: 0, rightChild: 0,
+                predictor: .zero, predictorOffset: 100, multiplier: 1,
+                rawPredictor: 0
+            ),
+            // Leaf 1 — pixels with x > 0.
+            ModularTreeNode(
+                property: -1, splitVal: 0,
+                leftChildOrLeafId: 1, rightChild: 0,
+                predictor: .zero, predictorOffset: 200, multiplier: 1,
+                rawPredictor: 0
+            )
+        ]
+        let tree = ModularTree(nodes: nodes)
+        XCTAssertEqual(tree.leafCount, 2)
+
+        // Build a 2-context entropy section. Context 0 (leaf 0) yields
+        // token 0 (residual = 0 → pixel = 0 + 100 = 100); context 1
+        // (leaf 1) yields token 0 (residual = 0 → pixel = 0 + 200 = 200).
+        let dist0 = try ANSDistribution(rawFrequencies: [4096, 0])
+        let dist1 = try ANSDistribution(rawFrequencies: [4096, 0])
+        var enc = ANSStreamEncoder(distributions: [dist0, dist1])
+        // Order: row-major. width=3, height=2 → 6 pixels, x = 0,1,2,0,1,2.
+        let xs: [Int32] = [0, 1, 2, 0, 1, 2]
+        for x in xs {
+            let cluster = (x == 0) ? 0 : 1
+            try enc.write(symbol: 0, cluster: cluster)
+        }
+        let body = enc.finish()
+
+        let header = EntropySectionHeader(
+            lz77: .disabled,
+            // Context 0 → cluster 0, context 1 → cluster 1.
+            contextMap: try ContextMap(numClusters: 2, map: [0, 1]),
+            usePrefixCode: false,
+            logAlphaSize: 8,
+            uintConfigs: [
+                HybridUintConfig(splitExponent: 8, msbInToken: 0, lsbInToken: 0),
+                HybridUintConfig(splitExponent: 8, msbInToken: 0, lsbInToken: 0)
+            ]
+        )
+        let codebook = MultiClusterCodebook(
+            huffmanTables: [],
+            ansCounts: [
+                dist0.frequencies.map { Int32(bitPattern: $0) },
+                dist1.frequencies.map { Int32(bitPattern: $0) }
+            ],
+            alphabetSizes: [2, 2]
+        )
+        var stream = TokenStreamReader(header: header, codebook: codebook)
+        var br = BitReader(body)
+
+        let decoded = try decodeModularChannel(
+            width: 3, height: 2,
+            staticChannel: 0, groupId: 0,
+            tree: tree, stream: &stream, from: &br
+        )
+        // Expect: 100, 200, 200, 100, 200, 200.
+        XCTAssertEqual(decoded, [100, 200, 200, 100, 200, 200])
+    }
+
     // MARK: - Phase E4b: rANS distribution serialisation (§C.6.3.2)
 
     /// Hand-derived bit pattern for a constant (single-symbol)
