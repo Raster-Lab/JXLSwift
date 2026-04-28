@@ -66,6 +66,7 @@ Cross-validation tests added against `cjxl`-emitted Linear, sRGB, PQ, and HLG tr
 - `SpecRCT` (full 42 RCT types) — `inverse(rctType:c0:c1:c2:)` covers permutation × custom for the entire 0..41 range, including YCoCg-R (type 6). Mirrors libjxl `InvRCTRow<custom>` exactly.
 - `SpecSqueeze` (un-squeeze with SmoothTendency) — `inverseHorizontal(ll:residual:)` and `inverseVertical(...)` combine LL + HL channels back into full resolution. Implements libjxl's `SmoothTendency` predictor (small monotone-area correction proportional to `4B − 3n − a`).
 - `applyInverseTransforms(image:transforms:)` — walks the transform list in reverse order and undoes each step on `ModularImage.channels`. RCT routes through `SpecRCT`; Squeeze through `SpecSqueeze`; Palette throws.
+- `JXLDecoder.decodeModular(_:)` — end-to-end experimental Modular pixel-decode API. Walks container → headers → frame → TOC → matrices DC → has_tree → tree-section → post-tree codebook → byte-aligned GroupHeader → metaApply → per-channel decode → inverse transforms → returns a `ModularImage` whose channels are the post-inverse-transform colour channels.
 - `VarLenUint8` / `VarLenUint16` (libjxl `DecodeVarLenUint*`) — the variable-length integer codings used inside histogram bodies and per-cluster alphabet sizes.
 
 The codestream reader chain now walks **thirteen spec layers deep** into a real cjxl-emitted Modular lossless file and runs all 1024 pixels of a 32×32 channel through the **complete** per-pixel pipeline (rANS state init + 1024 token reads + 1024 tree walks with property 15 from WP + 1024 predictor/offset/multiplier applications including predictor 6 sourced from the WP state machine). Layers: signature → SizeHeader → ImageMetadata → FrameHeader → TOC → DequantMatrices DC flag → Modular `has_tree` → tree-section EntropySectionHeader → per-cluster Huffman tables → MA-tree token stream → typed `ModularTree` → post-tree pixel-data EntropySectionHeader → byte-aligned **`GroupHeader`** → **per-pixel `decodeModularChannel` with WP**. The remaining work for byte-equality with djxl is multi-channel iteration + Modular Transform application (RCT inverse, Squeeze inverse) on the reconstructed channel arrays.
@@ -80,7 +81,7 @@ See [ROADMAP.md](ROADMAP.md) for the spec-section status grid.
 
 ```bash
 swift build -c release
-swift test  -c release           # 241 tests (foundation + headers + entropy primitives + frame header + TOC + entropy section bodies + streaming rANS + Modular tree + tree walk + properties + GroupHeader + per-pixel decoder + WeightedPredictor + ModularImage / metaApply + SpecRCT 42 types + SpecSqueeze inverse + cross-validation 13-layers-deep), ~50 ms
+swift test  -c release           # 243 tests (foundation + headers + entropy primitives + frame header + TOC + entropy section bodies + streaming rANS + Modular tree + tree walk + properties + GroupHeader + per-pixel decoder + WeightedPredictor + ModularImage / metaApply + SpecRCT 42 types + SpecSqueeze inverse + JXLDecoder.decodeModular + cross-validation 13-layers-deep), ~50 ms
 .build/release/jxl-tool --version
 .build/release/jxl-tool info path/to/file.jxl
 ```
