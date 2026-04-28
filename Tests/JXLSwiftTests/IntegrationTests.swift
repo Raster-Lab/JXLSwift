@@ -6469,6 +6469,15 @@ extension FoundationTests {
                 "post-tree codebook decode hit unsupported path: \(error)")
             return
         }
+        // Dump histogram counts for diagnostic.
+        for (ci, counts) in postTreeCodebook.ansCounts.enumerated() {
+            let nonZero = counts.enumerated().filter { $0.element != 0 }
+            fputs("DIAG histo[\(ci)]: alphabet=\(counts.count), "
+              + "non-zero=\(nonZero.count): "
+              + nonZero.map { "[\($0.offset)]=\($0.element)" }.joined(separator: " ") + "\n",
+              stderr)
+        }
+        fputs("DIAG postTreeHdr: logAlpha=\(postTreeHdr.logAlphaSize), uintCfgs=\(postTreeHdr.uintConfigs.map { "(split=\($0.splitExponent),msb=\($0.msbInToken),lsb=\($0.lsbInToken))" })\n", stderr)
         try r.alignToByte()
         let groupHeader: GroupHeader
         do {
