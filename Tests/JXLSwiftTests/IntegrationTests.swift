@@ -4443,6 +4443,99 @@ extension FoundationTests {
         XCTAssertEqual(parsed.uintConfigs.count, 2)
     }
 
+    /// **Cross-validation**: parse the EntropySectionHeader of the
+    /// Modular tree section in a real cjxl-emitted lossless frame.
+    ///
+    /// libjxl `dec_frame.cc::DecodeFrame` order, for a Modular frame
+    /// with no splines / noise:
+    ///   1. (skip splines — flag clear)
+    ///   2. (skip noise — flag clear)
+    ///   3. `matrices.DecodeDC`: u(1) `all_default` (3 × F16 only on the
+    ///      non-default branch).
+    ///   4. `modular_frame_decoder.DecodeGlobalInfo`:
+    ///      `has_tree` u(1); if set → `DecodeTree` → `DecodeHistograms`
+    ///      with `kNumTreeContexts = 6`.
+    ///
+    /// We walk through 1–4 and assert step 4's tree-context entropy
+    /// section header parses into a sensible-looking value (no
+    /// out-of-range field counts, logAlphaSize in the spec range).
+    func testCrossValidate_Cjxl_EntropySectionHeader_ModularTree() throws {
+        guard let cjxl = whichTool("cjxl") else {
+            try XCTSkipIf(true, "cjxl not on PATH")
+            return
+        }
+        let pnmPath = NSTemporaryDirectory() + "esh-\(UUID().uuidString).ppm"
+        let jxlPath = NSTemporaryDirectory() + "esh-\(UUID().uuidString).jxl"
+        defer {
+            try? FileManager.default.removeItem(atPath: pnmPath)
+            try? FileManager.default.removeItem(atPath: jxlPath)
+        }
+        // 32×32 RGB has enough material to force a non-trivial tree.
+        try makeSyntheticPNM(
+            width: 32, height: 32, channels: 3, bitDepth: 8,
+            generator: { x, y, c in UInt16((x &* 7 &+ y &* 13 &+ Int(c)) & 0xFF) }
+        ).write(to: URL(fileURLWithPath: pnmPath))
+        let proc = Process()
+        proc.launchPath = cjxl
+        proc.arguments = ["-q", "100", pnmPath, jxlPath]
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        try proc.run()
+        proc.waitUntilExit()
+        let data = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
+        var r = BitReader(data)
+        // 1. Pre-frame headers.
+        _ = try r.read(bits: 8); _ = try r.read(bits: 8)
+        _ = try SizeHeader.read(from: &r)
+        let m = try ImageMetadata.read(from: &r)
+        try r.alignToByte()
+        let ctx = FrameHeaderContext(
+            xybEncoded: m.xybEncoded,
+            numExtraChannels: m.extraChannels.count,
+            haveAnimation: m.animation != nil,
+            haveTimecodes: m.animation?.haveTimecodes ?? false
+        )
+        let fh = try FrameHeader.read(from: &r, context: ctx)
+        // 2. TOC.
+        let entries = TOC.numEntries(
+            numGroups: 1, numDcGroups: 0,
+            numPasses: Int(fh.passes.numPasses)
+        )
+        _ = try TOC.read(from: &r, numEntries: entries)
+        // 3. matrices.DecodeDC — 1 bit. We expect default (true) for
+        // a default lossless frame; either way we skip the F16 branch
+        // since cjxl emits the default for typical inputs.
+        let matrixDcDefault = try r.readBit()
+        if !matrixDcDefault {
+            // Non-default: 3 × F16.
+            for _ in 0..<3 { _ = try r.read(bits: 16) }
+        }
+        // 4. ModularFrameDecoder.DecodeGlobalInfo prefix:
+        //    has_tree u(1) → entropy section header at numContexts=6.
+        let hasTree = try r.readBit()
+        XCTAssertTrue(hasTree,
+            "32×32 RGB lossless should have a non-trivial Modular tree")
+        let entropyHeader = try EntropySectionHeader.read(
+            from: &r, numContexts: 6
+        )
+        // logAlphaSize should be in the spec range (5..8 for ANS,
+        // PREFIX_MAX_BITS=15 for prefix).
+        if entropyHeader.usePrefixCode {
+            XCTAssertEqual(entropyHeader.logAlphaSize, 15,
+                "prefix-code mode should imply logAlphaSize=15")
+        } else {
+            XCTAssertTrue((5...8).contains(entropyHeader.logAlphaSize),
+                "ANS mode logAlphaSize should be 5..8, got \(entropyHeader.logAlphaSize)")
+        }
+        // num_histograms must be at least 1 and at most num_contexts (6).
+        XCTAssertGreaterThanOrEqual(entropyHeader.numHistograms, 1)
+        XCTAssertLessThanOrEqual(entropyHeader.numHistograms, 6,
+            "context map should not produce more clusters than contexts")
+        // uintConfigs.count must equal num_histograms.
+        XCTAssertEqual(entropyHeader.uintConfigs.count,
+                       entropyHeader.numHistograms)
+    }
+
     /// Sweep over `logAlphaSize` values 5, 6, 7, 8 — confirms the
     /// `5 + u(2)` write/read pair recovers each value bit-identically.
     func testEntropySectionHeader_LogAlphaSize_Sweep() throws {
