@@ -5970,14 +5970,16 @@ extension FoundationTests {
             return
         }
         try r.alignToByte()
+        let groupHeader: GroupHeader
         do {
-            _ = try GroupHeader.read(from: &r)
+            groupHeader = try GroupHeader.read(from: &r)
         } catch {
             try XCTSkipIf(true,
                 "GroupHeader decode reached an unexpected pattern: \(error)")
             return
         }
-        // Drive the per-pixel decoder on channel 0 of the image.
+        // Drive the per-pixel decoder on channel 0 of the image,
+        // threading the group's WeightedPredictorHeader through.
         var pixelStream = TokenStreamReader(
             header: postTreeHdr, codebook: postTreeCodebook
         )
@@ -5987,16 +5989,23 @@ extension FoundationTests {
             let decoded = try decodeModularChannel(
                 width: width, height: height,
                 staticChannel: 0, groupId: 0,
-                tree: tree, stream: &pixelStream, from: &r
+                tree: tree, stream: &pixelStream, from: &r,
+                wpHeader: groupHeader.wpHeader
             )
             XCTAssertEqual(decoded.count, width * height)
-            // Without predictor 6 + property 15 we can't assert pixel
-            // values, but we can confirm the loop made it through all
-            // 1024 reads.
+            // Pixel values are *post-WP* but *pre-transform* (RCT
+            // inverse, Squeeze inverse aren't applied yet). For an
+            // 8-bit input file, valid post-RCT-inverse channel values
+            // would be in [0, 255]; pre-transform they can range
+            // wider but should stay in `Int32` (no obvious overflow
+            // wraparound).
+            for v in decoded {
+                XCTAssertGreaterThan(v, -1_000_000,
+                    "channel value \(v) suggests overflow or WP bug")
+                XCTAssertLessThan(v, 1_000_000,
+                    "channel value \(v) suggests overflow or WP bug")
+            }
         } catch {
-            // Trees branching on property 15 or using predictor 6
-            // CAN still drive the pipeline — we just decode incorrect
-            // pixels. Rules out only outright bitstream errors.
             try XCTSkipIf(true,
                 "first-channel decode hit unsupported case: \(error)")
         }
