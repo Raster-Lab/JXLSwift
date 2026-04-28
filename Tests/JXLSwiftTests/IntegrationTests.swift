@@ -2368,7 +2368,7 @@ final class FoundationTests: XCTestCase {
         let data = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
         let dec = JXLDecoder()
         do {
-            let image = try dec.decodeModular(data)
+            let image = try dec.decodeModular(data, force: true)
             // If decode succeeds (some inputs may avoid the two-pass
             // gap): assert the channel count matches input (3 RGB).
             XCTAssertEqual(image.channels.count, 3,
@@ -2388,7 +2388,30 @@ final class FoundationTests: XCTestCase {
     /// `decodeModular` on an empty buffer throws cleanly.
     func testJXLDecoder_decodeModular_RejectsEmptyData() throws {
         let dec = JXLDecoder()
-        XCTAssertThrowsError(try dec.decodeModular(Data()))
+        XCTAssertThrowsError(try dec.decodeModular(Data(), force: true))
+    }
+
+    /// **Production safety**: calling `decodeModular` without
+    /// `force:true` always throws — the API is experimental and
+    /// known to produce incorrect pixel values for cjxl-emitted
+    /// files. Healthcare / production callers must use
+    /// `MinimalLosslessCodec` (round-trip-correct) or wait for the
+    /// byte-equality fix.
+    func testJXLDecoder_decodeModular_NotForProductionDefault() throws {
+        // Build a minimal valid JXL byte stream so the early
+        // inspection succeeds — the throw must come from the
+        // experimental-API guard, not from upstream parsing.
+        let dec = JXLDecoder()
+        let dummyData = Data([0xFF, 0x0A, 0x00])
+        XCTAssertThrowsError(
+            try dec.decodeModular(dummyData)
+        ) { err in
+            guard case DecoderError.notImplemented(let msg) = err,
+                  msg.contains("experimental") else {
+                XCTFail("expected `experimental` error, got \(err)")
+                return
+            }
+        }
     }
 
     // MARK: - WeightedPredictor — stateful WP machine + property 15

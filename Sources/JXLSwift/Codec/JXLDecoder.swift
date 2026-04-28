@@ -96,25 +96,44 @@ public final class JXLDecoder {
         throw DecoderError.notImplemented("multi-frame decoding")
     }
 
-    /// **Experimental** end-to-end Modular pixel decode. Walks the
-    /// container + headers, decodes the MA-tree + post-tree codebook,
-    /// reads the GroupHeader, applies meta-transforms, decodes every
-    /// wire-level channel via `decodeAllChannels`, then runs the
-    /// inverse transform chain via `applyInverseTransforms`.
+    /// **NOT FOR PRODUCTION USE.** Experimental end-to-end Modular
+    /// pixel decode. Walks the container + headers, decodes the
+    /// MA-tree + post-tree codebook, reads the GroupHeader, applies
+    /// meta-transforms, decodes every wire-level channel via
+    /// `decodeAllChannels`, then runs the inverse transform chain.
     ///
-    /// Returns a `ModularImage` whose channels are the post-inverse-
-    /// transform colour channels (so for an RGB lossless cjxl input
-    /// with one RCT, channel 0 holds the R values, channel 1 G,
-    /// channel 2 B, in the spec-defined output order).
+    /// **Known bug — output is NOT byte-equal to `djxl`:** there is
+    /// an off-by-one bit somewhere in our post-tree codebook reader
+    /// (or earlier). Symptoms include parsing the GroupHeader as a
+    /// non-default value with an invalid `RCT begin=7` transform,
+    /// leading to wrong context routing, wrong rANS slot lookups,
+    /// and ultimately wrong pixel values. Channel 0 of a 32×32 RGB
+    /// test file decodes its 1024 pixels structurally (correct token
+    /// count) but with values outside the input's `[0, 255]` range.
+    /// Channel 1 fails with insufficient bits.
     ///
-    /// **Status:** the pipeline is wired end-to-end but not yet
-    /// byte-equal to djxl. The remaining gap is the two-pass
-    /// `ModularGenericDecompress` flow (Global section + per-group
-    /// section, each with its own GroupHeader / transforms / ANS
-    /// state init); right now this method only reads the first
-    /// section's GroupHeader + decodes against the first section's
-    /// channels. Wiring the second pass is the next milestone.
-    public func decodeModular(_ data: Data) throws -> ModularImage {
+    /// **Healthcare / production guidance:** for any pixel data that
+    /// must round-trip exactly, use `MinimalLosslessCodec` (the M0
+    /// placeholder, project-internal) — it has full round-trip test
+    /// coverage. This `decodeModular` API is for development /
+    /// integration prep only.
+    ///
+    /// Throws `DecoderError.notImplemented("decodeModular is
+    /// experimental")` to make accidental production use loud.
+    /// Pass `force: true` to override and exercise the experimental
+    /// path during development.
+    public func decodeModular(
+        _ data: Data, force: Bool = false
+    ) throws -> ModularImage {
+        guard force else {
+            throw DecoderError.notImplemented(
+                "decodeModular is experimental and produces incorrect "
+              + "pixel values for cjxl-emitted files (off-by-one bit "
+              + "upstream of GroupHeader). Use MinimalLosslessCodec "
+              + "for round-trip-correct lossless storage. Pass "
+              + "force=true to opt in for development."
+            )
+        }
         let inspection = try inspect(data)
         guard let m = inspection.metadata else {
             throw DecoderError.notImplemented(
