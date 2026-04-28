@@ -29,22 +29,64 @@ import Foundation
 /// rANS decoder with per-cluster distributions, reading from a
 /// `BitReader`. Mutating across calls — the rANS state lives inside the
 /// decoder and persists for the whole entropy section.
+///
+/// **Lookup mode:** for byte-equality with libjxl-emitted streams,
+/// the decoder uses an `AliasTable` (Vose's alias method) that
+/// matches libjxl's `InitAliasTable`. For round-trip with our own
+/// `ANSStreamEncoder` (which uses our cumulative-frequency layout),
+/// the decoder falls back to a slot LUT built from `ANSDistribution`.
+/// `useAliasTables` selects between the two.
 public struct ANSStreamDecoder: Sendable {
-    /// One distribution per cluster, indexed by the cluster ID resolved
-    /// via the surrounding `ContextMap`.
+    /// One distribution per cluster (cumulative-frequency layout).
     public let distributions: [ANSDistribution]
+    /// One alias table per cluster (libjxl-compatible layout).
+    public let aliasTables: [AliasTable]?
+    /// Which lookup the decoder uses.
+    public let useAliasTables: Bool
     private var state: UInt32 = 0
     private var initialised: Bool = false
 
     public init(distributions: [ANSDistribution]) {
         self.distributions = distributions
+        self.aliasTables = nil
+        self.useAliasTables = false
+    }
+
+    /// Build a libjxl-compatible alias-table-backed decoder from the
+    /// per-cluster `[Int32]` count arrays produced by
+    /// `SpecANSDistribution.readHistogram`. The `logAlphaSize` is the
+    /// post-tree codebook's `log_alpha_size` (5..8 for rANS).
+    public init(counts: [[Int32]], logAlphaSize: Int) throws {
+        var aliases: [AliasTable] = []
+        aliases.reserveCapacity(counts.count)
+        for c in counts {
+            // libjxl trims trailing zeros for the alias-table input;
+            // the alias table itself does the trim too, but we keep
+            // the original counts in `distributions` for diagnostics.
+            aliases.append(try AliasTable(
+                distribution: c,
+                logRange: ANSConstants.logTabSize,
+                logAlphaSize: logAlphaSize
+            ))
+        }
+        // Also build a simple distribution view (for `currentState`
+        // diagnostics — not used in lookup).
+        var dists: [ANSDistribution] = []
+        dists.reserveCapacity(counts.count)
+        for c in counts {
+            let raw = c.map { UInt32(bitPattern: $0) }
+            dists.append(try ANSDistribution(rawFrequencies: raw))
+        }
+        self.distributions = dists
+        self.aliasTables = aliases
+        self.useAliasTables = true
     }
 
     /// Convenience constructor from the per-cluster count arrays
-    /// produced by `SpecANSDistribution.readHistogram`. Each count array
-    /// already sums to `ANSConstants.tabSize` (4096), so the underlying
-    /// `ANSDistribution.init(rawFrequencies:)` keeps the counts intact
-    /// (its renormalisation pass is a no-op in that case).
+    /// produced by `SpecANSDistribution.readHistogram`. Uses the
+    /// cumulative-frequency layout — only useful for round-tripping
+    /// against `ANSStreamEncoder`. For libjxl byte-equality use
+    /// `init(counts:logAlphaSize:)`.
     public static func from(counts: [[Int32]]) throws -> ANSStreamDecoder {
         var dists: [ANSDistribution] = []
         dists.reserveCapacity(counts.count)
@@ -61,26 +103,34 @@ public struct ANSStreamDecoder: Sendable {
         cluster: Int, from r: inout BitReader
     ) throws -> UInt32 {
         if !initialised {
-            // 32-bit state init, LSB-first within the bitstream.
             state = try r.read(bits: 32)
             initialised = true
         }
-        guard cluster >= 0 && cluster < distributions.count else {
+        guard cluster >= 0,
+              cluster < (aliasTables?.count ?? distributions.count) else {
             throw ANSError.symbolHasZeroFrequency(symbol: -1)
         }
-        let dist = distributions[cluster]
         let logTab = UInt32(ANSConstants.logTabSize)
         let mask: UInt32 = ANSConstants.tabSize - 1
         let slot = state & mask
-        let symbol = dist.symbol(forSlot: slot)
-        let freq = dist.frequencies[Int(symbol)]
-        let cum  = dist.cumulative[Int(symbol)]
+
+        let symbol: UInt32
+        let offset: UInt32
+        let freq: UInt32
+        if useAliasTables, let tables = aliasTables {
+            let lr = tables[cluster].lookup(slot: slot)
+            symbol = UInt32(lr.value)
+            offset = lr.offset
+            freq = lr.freq
+        } else {
+            let dist = distributions[cluster]
+            symbol = dist.symbol(forSlot: slot)
+            freq = dist.frequencies[Int(symbol)]
+            offset = slot &- dist.cumulative[Int(symbol)]
+        }
         // rANS decode step.
-        state = freq &* (state >> logTab) &+ slot &- cum
-        // Renormalise: while state < 2^16, shift up and read 16 bits.
-        // libjxl's reader uses an `if`, not a `while` — once the state
-        // is renormalised it can't drop below 2^16 again until the next
-        // decode step. Following libjxl exactly to stay byte-identical.
+        state = freq &* (state >> logTab) &+ offset
+        // Renormalise: if state < 2^16, shift up and read 16 bits.
         if state < ANSConstants.stateLowerBound {
             let w = try r.read(bits: 16)
             state = (state << 16) | w

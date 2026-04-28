@@ -43,13 +43,25 @@ public struct TokenStreamReader: Sendable {
     /// sections.
     private var ansDecoder: ANSStreamDecoder?
 
-    public init(header: EntropySectionHeader, codebook: MultiClusterCodebook) {
+    public init(
+        header: EntropySectionHeader,
+        codebook: MultiClusterCodebook,
+        useAliasTables: Bool = true
+    ) {
         self.header = header
         self.codebook = codebook
         if !header.usePrefixCode {
-            // Lazily constructible — we don't fail the init even if
-            // the counts are malformed; first read will surface that.
-            self.ansDecoder = (try? ANSStreamDecoder.from(counts: codebook.ansCounts))
+            if useAliasTables,
+               let aliasDecoder = try? ANSStreamDecoder(
+                   counts: codebook.ansCounts,
+                   logAlphaSize: header.logAlphaSize
+               ) {
+                self.ansDecoder = aliasDecoder
+            } else {
+                self.ansDecoder = try? ANSStreamDecoder.from(
+                    counts: codebook.ansCounts
+                )
+            }
         } else {
             self.ansDecoder = nil
         }

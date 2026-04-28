@@ -2411,7 +2411,12 @@ final class FoundationTests: XCTestCase {
             huffmanTables: [], ansCounts: [dist.frequencies.map { Int32(bitPattern: $0) }],
             alphabetSizes: [Int(alphabet)]
         )
-        var stream = TokenStreamReader(header: header, codebook: codebook)
+        // useAliasTables=false because this test feeds its synthetic
+        // bytes through `ANSStreamEncoder` (cumulative-frequency
+        // layout) — we need the matching decoder layout.
+        var stream = TokenStreamReader(
+            header: header, codebook: codebook, useAliasTables: false
+        )
         var br = BitReader(body)
 
         // Decode the channel.
@@ -2487,7 +2492,9 @@ final class FoundationTests: XCTestCase {
             ],
             alphabetSizes: [2, 2]
         )
-        var stream = TokenStreamReader(header: header, codebook: codebook)
+        var stream = TokenStreamReader(
+            header: header, codebook: codebook, useAliasTables: false
+        )
         var br = BitReader(body)
 
         let decoded = try decodeModularChannel(
