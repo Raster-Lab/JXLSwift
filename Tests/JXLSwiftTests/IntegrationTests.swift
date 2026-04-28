@@ -2192,31 +2192,50 @@ final class FoundationTests: XCTestCase {
         XCTAssertEqual(image.channels[2].pixels, b)
     }
 
-    /// Squeeze inverse currently throws — documented limitation.
-    func testApplyInverseTransforms_SqueezeNotImplemented() throws {
+    /// Squeeze inverse: a single horizontal Squeeze on a channel of
+    /// constant pixel value round-trips: forward squeeze leaves the
+    /// LL = constant, residuals = 0 (since pairs are identical), and
+    /// inverse Squeeze recovers the original constant channel.
+    func testApplyInverseTransforms_Squeeze_ConstantRoundTrips() throws {
+        // Start with a 4×2 channel of constant value 50.
         var image = ModularImage.fresh(
-            xsize: 32, ysize: 32, nbColor: 3
+            xsize: 4, ysize: 2, nbColor: 1
         )
-        // Apply meta-Squeeze so the channel list looks plausible.
+        image.channels[0].pixels = [Int32](repeating: 50, count: 8)
+        // Pretend the encoder applied horizontal Squeeze: LL holds
+        // 2×2 of 50s (averages of pairs), residual holds 2×2 of 0s
+        // (since `l - r = 0` for identical pairs).
+        // After meta-apply our channel list has the right shape.
         let squeeze = ModularTransform(
-            id: .squeeze, beginC: 0, numC: 3, squeezes: [
+            id: .squeeze, beginC: 0, numC: 1, squeezes: [
                 ModularTransform.SqueezeParams(
                     horizontal: true, inPlace: true,
-                    beginC: 0, numC: 3
+                    beginC: 0, numC: 1
                 )
             ]
         )
         try metaApplyTransforms(image: &image, transforms: [squeeze])
-        XCTAssertThrowsError(
-            try applyInverseTransforms(
-                image: &image, transforms: [squeeze]
-            )
-        ) { err in
-            guard case InverseTransformsError.squeezeNotImplemented = err else {
-                XCTFail("expected squeezeNotImplemented, got \(err)")
-                return
-            }
-        }
+        XCTAssertEqual(image.channels.count, 2)
+        // Fill LL with 50s, residual with 0s.
+        image.channels[0].pixels = [Int32](repeating: 50, count: 4) // 2×2
+        image.channels[1].pixels = [Int32](repeating: 0, count: 4)  // 2×2
+        try applyInverseTransforms(image: &image, transforms: [squeeze])
+        XCTAssertEqual(image.channels.count, 1,
+            "residual channels should be removed after inverse")
+        XCTAssertEqual(image.channels[0].width, 4)
+        XCTAssertEqual(image.channels[0].height, 2)
+        XCTAssertEqual(image.channels[0].pixels,
+                       [Int32](repeating: 50, count: 8),
+                       "constant channel must round-trip")
+    }
+
+    /// `SpecSqueeze.smoothTendency` returns 0 for non-monotonic
+    /// neighbourhoods (the smooth-area condition).
+    func testSpecSqueeze_SmoothTendency_NonMonotonicReturnsZero() throws {
+        // B=10, a=20, n=5 — neither monotonic increasing nor
+        // decreasing → diff stays 0.
+        let d = SpecSqueeze.smoothTendency(B: 10, a: 20, n: 5)
+        XCTAssertEqual(d, 0)
     }
 
     // MARK: - WeightedPredictor — stateful WP machine + property 15
