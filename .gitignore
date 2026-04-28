@@ -38,3 +38,6 @@ test-results.xml
 .idea/
 *.xcworkspace
 *.jxl
+
+# Claude Code runtime state
+.claude/
