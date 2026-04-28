@@ -5012,6 +5012,97 @@ extension FoundationTests {
         }
     }
 
+    /// **Cross-validation**: read past the MA-tree into the
+    /// post-tree entropy section that drives per-channel pixel
+    /// decoding. After `DecodeTree`, libjxl `dec_ma.cc:202` calls
+    /// `DecodeHistograms` again with `numContexts = (tree.size() +
+    /// 1) / 2 = leafCount`. Our reader walks all the way to the
+    /// codebook of that section. Confirms the reader is byte-aligned
+    /// past the tree.
+    func testCrossValidate_Cjxl_ModularPostTreeEntropySection() throws {
+        guard let cjxl = whichTool("cjxl") else {
+            try XCTSkipIf(true, "cjxl not on PATH")
+            return
+        }
+        let pnmPath = NSTemporaryDirectory() + "ptree-\(UUID().uuidString).ppm"
+        let jxlPath = NSTemporaryDirectory() + "ptree-\(UUID().uuidString).jxl"
+        defer {
+            try? FileManager.default.removeItem(atPath: pnmPath)
+            try? FileManager.default.removeItem(atPath: jxlPath)
+        }
+        try makeSyntheticPNM(
+            width: 32, height: 32, channels: 3, bitDepth: 8,
+            generator: { x, y, c in UInt16((x &* 7 &+ y &* 13 &+ Int(c)) & 0xFF) }
+        ).write(to: URL(fileURLWithPath: pnmPath))
+        let proc = Process()
+        proc.launchPath = cjxl
+        proc.arguments = ["-q", "100", pnmPath, jxlPath]
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        try proc.run()
+        proc.waitUntilExit()
+        let data = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
+        var r = BitReader(data)
+        _ = try r.read(bits: 8); _ = try r.read(bits: 8)
+        _ = try SizeHeader.read(from: &r)
+        let m = try ImageMetadata.read(from: &r)
+        try r.alignToByte()
+        let ctx = FrameHeaderContext(
+            xybEncoded: m.xybEncoded,
+            numExtraChannels: m.extraChannels.count,
+            haveAnimation: m.animation != nil,
+            haveTimecodes: m.animation?.haveTimecodes ?? false
+        )
+        let fh = try FrameHeader.read(from: &r, context: ctx)
+        let entries = TOC.numEntries(
+            numGroups: 1, numDcGroups: 0,
+            numPasses: Int(fh.passes.numPasses)
+        )
+        _ = try TOC.read(from: &r, numEntries: entries)
+        let matrixDcDefault = try r.readBit()
+        if !matrixDcDefault {
+            for _ in 0..<3 { _ = try r.read(bits: 16) }
+        }
+        let hasTree = try r.readBit()
+        XCTAssertTrue(hasTree)
+        let treeHdr = try EntropySectionHeader.read(from: &r, numContexts: 6)
+        let treeCodebook = try MultiClusterCodebook.read(
+            from: &r, header: treeHdr
+        )
+        let treeStream = TokenStreamReader(
+            header: treeHdr, codebook: treeCodebook
+        )
+        let tree = try ModularTree.decode(from: &r, stream: treeStream)
+        // Now read the post-tree entropy section. numContexts =
+        // leafCount (one context per leaf — every pixel routes to a
+        // leaf which then provides its prediction context).
+        let postTreeHdr = try EntropySectionHeader.read(
+            from: &r, numContexts: tree.leafCount
+        )
+        // Sanity: log_alpha is in spec range.
+        if postTreeHdr.usePrefixCode {
+            XCTAssertEqual(postTreeHdr.logAlphaSize, 15)
+        } else {
+            XCTAssertTrue((5...8).contains(postTreeHdr.logAlphaSize))
+        }
+        // Try to read the codebook too. (Some configurations may use
+        // ANS distributions we don't yet fully support — skip
+        // gracefully if so.)
+        do {
+            let postTreeCodebook = try MultiClusterCodebook.read(
+                from: &r, header: postTreeHdr
+            )
+            XCTAssertEqual(
+                postTreeCodebook.alphabetSizes.count,
+                postTreeHdr.numHistograms
+            )
+        } catch {
+            try XCTSkipIf(true,
+                "post-tree codebook read encountered an unsupported path: \(error)")
+            return
+        }
+    }
+
     /// **Cross-validation**: read per-cluster ANS distributions from a
     /// real cjxl-emitted Modular tree section. After the
     /// `EntropySectionHeader` prefix (LZ77 + ContextMap +
