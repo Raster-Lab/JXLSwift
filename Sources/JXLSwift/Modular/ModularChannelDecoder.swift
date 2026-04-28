@@ -61,24 +61,30 @@ public func decodeModularChannel(
     @inline(__always) func at(_ x: Int, _ y: Int) -> Int32 {
         out[y * width + x]
     }
-    // Property neighbours (libjxl uses simple zero fall-backs at the
-    // edges for FillProperties — i.e. property values are derived from
-    // *signed* pixel arithmetic with 0 substituted out of range; this
-    // is *different* from the prediction neighbour fall-backs which
-    // substitute the available neighbour). Match libjxl's behaviour.
-    @inline(__always) func neighbourValue(_ x: Int, _ y: Int) -> Int32 {
-        if x < 0 || y < 0 || x >= width || y >= height { return 0 }
-        return at(x, y)
-    }
     var wp = WeightedPredictor(header: wpHeader, xsize: width)
     for y in 0..<height {
         for x in 0..<width {
-            let top      = neighbourValue(x,     y - 1)
-            let left     = neighbourValue(x - 1, y)
-            let topLeft  = neighbourValue(x - 1, y - 1)
-            let topRight = neighbourValue(x + 1, y - 1)
-            let topTop   = neighbourValue(x,     y - 2)
-            let leftLeft = neighbourValue(x - 2, y)
+            // libjxl edge fall-backs (per `lib/jxl/modular/encoding/
+            // context_predict.h::Predict`):
+            //   left:     x>0 ? pp[-1] : (y>0 ? pp[-onerow] : 0)
+            //   top:      y>0 ? pp[-onerow] : left
+            //   topleft:  (x && y) ? pp[-1-onerow] : left
+            //   topright: (x+1<w && y) ? pp[1-onerow] : top
+            //   leftleft: x>1 ? pp[-2] : left
+            //   toptop:   y>1 ? pp[-2*onerow] : top
+            let left: Int32
+            if x > 0 {
+                left = at(x - 1, y)
+            } else if y > 0 {
+                left = at(x, y - 1)
+            } else {
+                left = 0
+            }
+            let top: Int32 = (y > 0) ? at(x, y - 1) : left
+            let topLeft: Int32 = (x > 0 && y > 0) ? at(x - 1, y - 1) : left
+            let topRight: Int32 = (x + 1 < width && y > 0) ? at(x + 1, y - 1) : top
+            let leftLeft: Int32 = (x > 1) ? at(x - 2, y) : left
+            let topTop: Int32 = (y > 1) ? at(x, y - 2) : top
             // Compute property 15 (WP property) BEFORE running predict
             // — libjxl `FillProperties` reads `WeightedPredictor::
             // PropertyValue` first, *then* invokes Predict if the leaf's
