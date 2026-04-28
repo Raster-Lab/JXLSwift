@@ -2086,6 +2086,139 @@ final class FoundationTests: XCTestCase {
         XCTAssertEqual(params[1].numC, 2)
     }
 
+    // MARK: - SpecRCT — full 42-variant inverse RCT
+
+    /// Type 0 is identity — all three channels pass through.
+    func testSpecRCT_Type0_Identity() throws {
+        var c0: [Int32] = [1, 2, 3, 4]
+        var c1: [Int32] = [10, 20, 30, 40]
+        var c2: [Int32] = [100, 200, 300, 400]
+        try SpecRCT.inverse(rctType: 0,
+                            channel0: &c0, channel1: &c1, channel2: &c2)
+        XCTAssertEqual(c0, [1, 2, 3, 4])
+        XCTAssertEqual(c1, [10, 20, 30, 40])
+        XCTAssertEqual(c2, [100, 200, 300, 400])
+    }
+
+    /// Type 6 (YCoCg-R) inverse round-trips through our existing
+    /// `RCT.forward(.ycocgR, ...)`.
+    func testSpecRCT_Type6_YCoCgR_RoundTrips() throws {
+        var r: [Int32] = [10, 50, 100, 200]
+        var g: [Int32] = [20, 80, 120, 220]
+        var b: [Int32] = [5, 30, 80, 180]
+        let r0 = r; let g0 = g; let b0 = b
+        // Forward: (r, g, b) → (y, co, cg).
+        RCT.forward(.ycocgR, channel0: &r, channel1: &g, channel2: &b)
+        // Inverse via SpecRCT type 6 (permutation=0, custom=6 = YCoCg-R).
+        try SpecRCT.inverse(rctType: 6,
+                            channel0: &r, channel1: &g, channel2: &b)
+        XCTAssertEqual(r, r0)
+        XCTAssertEqual(g, g0)
+        XCTAssertEqual(b, b0)
+    }
+
+    /// Type 1 (permutation 0, custom 1): in inverse-direction
+    /// `third = third + first`. Synthetic check with first=10,
+    /// second=20, third=15 → second unchanged, third becomes 25.
+    /// Permutation 0 keeps output order — channel0=first, channel1=
+    /// second, channel2=third.
+    func testSpecRCT_Type1_SubtractThird() throws {
+        var c0: [Int32] = [10]; var c1: [Int32] = [20]; var c2: [Int32] = [15]
+        try SpecRCT.inverse(rctType: 1,
+                            channel0: &c0, channel1: &c1, channel2: &c2)
+        // third = 15 + 10 = 25. second unchanged.
+        XCTAssertEqual(c0, [10])
+        XCTAssertEqual(c1, [20])
+        XCTAssertEqual(c2, [25])
+    }
+
+    /// Out-of-range type rejected.
+    func testSpecRCT_Type42_Rejected() throws {
+        var c0: [Int32] = [0]; var c1: [Int32] = [0]; var c2: [Int32] = [0]
+        XCTAssertThrowsError(
+            try SpecRCT.inverse(
+                rctType: 42, channel0: &c0, channel1: &c1, channel2: &c2
+            )
+        ) { err in
+            guard case SpecRCTError.invalidType(42) = err else {
+                XCTFail("expected SpecRCTError.invalidType(42), got \(err)")
+                return
+            }
+        }
+    }
+
+    // MARK: - applyInverseTransforms — chain undo
+
+    /// applyInverseTransforms with an empty list is a no-op.
+    func testApplyInverseTransforms_NoOp() throws {
+        var image = ModularImage.fresh(
+            xsize: 4, ysize: 4, nbColor: 3
+        )
+        // Fill with distinct values so we can detect mutations.
+        image.channels[0].pixels = [Int32](repeating: 1, count: 16)
+        image.channels[1].pixels = [Int32](repeating: 2, count: 16)
+        image.channels[2].pixels = [Int32](repeating: 3, count: 16)
+        try applyInverseTransforms(image: &image, transforms: [])
+        XCTAssertEqual(image.channels[0].pixels, [Int32](repeating: 1, count: 16))
+        XCTAssertEqual(image.channels[1].pixels, [Int32](repeating: 2, count: 16))
+        XCTAssertEqual(image.channels[2].pixels, [Int32](repeating: 3, count: 16))
+    }
+
+    /// applyInverseTransforms with a single RCT type-6 (YCoCg-R)
+    /// transform recovers the original RGB after a forward
+    /// round-trip.
+    func testApplyInverseTransforms_SingleRCT_RoundTrips() throws {
+        var image = ModularImage.fresh(
+            xsize: 2, ysize: 2, nbColor: 3
+        )
+        let r: [Int32] = [10, 50, 100, 200]
+        let g: [Int32] = [20, 80, 120, 220]
+        let b: [Int32] = [5, 30, 80, 180]
+        image.channels[0].pixels = r
+        image.channels[1].pixels = g
+        image.channels[2].pixels = b
+        // Apply forward RCT YCoCg-R.
+        var rOut = r, gOut = g, bOut = b
+        RCT.forward(.ycocgR,
+                    channel0: &rOut, channel1: &gOut, channel2: &bOut)
+        image.channels[0].pixels = rOut
+        image.channels[1].pixels = gOut
+        image.channels[2].pixels = bOut
+
+        let rct = ModularTransform(id: .rct, beginC: 0, rctType: 6, numC: 3)
+        try applyInverseTransforms(image: &image, transforms: [rct])
+        XCTAssertEqual(image.channels[0].pixels, r)
+        XCTAssertEqual(image.channels[1].pixels, g)
+        XCTAssertEqual(image.channels[2].pixels, b)
+    }
+
+    /// Squeeze inverse currently throws — documented limitation.
+    func testApplyInverseTransforms_SqueezeNotImplemented() throws {
+        var image = ModularImage.fresh(
+            xsize: 32, ysize: 32, nbColor: 3
+        )
+        // Apply meta-Squeeze so the channel list looks plausible.
+        let squeeze = ModularTransform(
+            id: .squeeze, beginC: 0, numC: 3, squeezes: [
+                ModularTransform.SqueezeParams(
+                    horizontal: true, inPlace: true,
+                    beginC: 0, numC: 3
+                )
+            ]
+        )
+        try metaApplyTransforms(image: &image, transforms: [squeeze])
+        XCTAssertThrowsError(
+            try applyInverseTransforms(
+                image: &image, transforms: [squeeze]
+            )
+        ) { err in
+            guard case InverseTransformsError.squeezeNotImplemented = err else {
+                XCTFail("expected squeezeNotImplemented, got \(err)")
+                return
+            }
+        }
+    }
+
     // MARK: - WeightedPredictor — stateful WP machine + property 15
 
     /// At pixel (0, 0) the WP has no neighbour history, so all
