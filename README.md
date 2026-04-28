@@ -49,6 +49,12 @@ Each primitive has round-trip tests; the compression-ratio sanity test confirms 
 
 Cross-validation tests added against `cjxl`-emitted Linear, sRGB, PQ, and HLG transfer functions to lock in the Enum fix.
 
+**Phase F continued — frame structure (§C.8.1):**
+- `FrameHeader` (§C.8.1) — full spec layout. Every field libjxl `FrameHeader::VisitFields` writes round-trips through our Swift implementation: `frame_type`, `is_modular`, `flags` (U64), color transform (XYB / None / YCbCr), `chroma_subsampling`, `upsampling`, `extra_channel_upsampling`, `group_size_shift`, `xQmScale` / `bQmScale`, the multi-pass `Passes` block, `dc_level`, `custom_size_or_origin` with origin/size U32-encoded, per-channel blending info, animation duration and timecode, `is_last`, `save_as_reference`, name string, and the EPF / Gaborish loop filter.
+- `TOC` (§C.8.1.5) — frame Table of Contents. Each TOC entry is a U32 group size; the `numEntries` formula is exposed for callers (single-group single-pass = 1 entry; multi-group = 2 + DC-groups + passes × groups). Permutation flag is recognised; the entropy-coded permutation payload itself is the next E-phase prerequisite.
+
+A 16×16 cjxl-emitted lossless RGB or grayscale image now reads cleanly through signature → SizeHeader → ImageMetadata → FrameHeader → TOC.
+
 `JXLDecoder.inspect(_:)` parses any spec-compliant `.jxl` and reports container form, box list, dimensions, bit depth, channel count, alpha, animation, and HDR metadata — useful as a JXL info tool today.
 
 `JXLEncoder.encode(_:)` / `JXLDecoder.decode(_:)` throw `.notImplemented` because the codec layer isn't done yet.
@@ -59,7 +65,7 @@ See [ROADMAP.md](ROADMAP.md) for the spec-section status grid.
 
 ```bash
 swift build -c release
-swift test  -c release           # 170 tests (foundation + headers + entropy primitives + serialisation + cross-validation), ~50 ms
+swift test  -c release           # 182 tests (foundation + headers + entropy primitives + frame header + TOC + cross-validation), ~50 ms
 .build/release/jxl-tool --version
 .build/release/jxl-tool info path/to/file.jxl
 ```
