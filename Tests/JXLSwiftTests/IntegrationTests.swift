@@ -6478,25 +6478,31 @@ extension FoundationTests {
             haveTimecodes: m.animation?.haveTimecodes ?? false
         )
         let fh = try FrameHeader.read(from: &r, context: ctx)
+        fputs("DIAG fh.flags=0x\(String(fh.flags, radix: 16)), encoding=\(fh.encoding), passes=\(fh.passes.numPasses)\n", stderr)
+        fputs("DIAG pos after FrameHeader=\(r.position)\n", stderr)
         let entries = TOC.numEntries(
             numGroups: 1, numDcGroups: 0,
             numPasses: Int(fh.passes.numPasses)
         )
         _ = try TOC.read(from: &r, numEntries: entries)
+        fputs("DIAG pos after TOC=\(r.position)\n", stderr)
         let matrixDcDefault = try r.readBit()
         if !matrixDcDefault {
             for _ in 0..<3 { _ = try r.read(bits: 16) }
         }
+        fputs("DIAG matrixDcDefault=\(matrixDcDefault), pos=\(r.position)\n", stderr)
         let hasTree = try r.readBit()
         XCTAssertTrue(hasTree)
         let treeHdr = try EntropySectionHeader.read(from: &r, numContexts: 6)
         let treeCodebook = try MultiClusterCodebook.read(
             from: &r, header: treeHdr
         )
+        fputs("DIAG pos after tree section header+codebook=\(r.position)\n", stderr)
         var treeStream = TokenStreamReader(
             header: treeHdr, codebook: treeCodebook
         )
         let tree = try ModularTree.decode(from: &r, stream: &treeStream)
+        fputs("DIAG pos after tree decode=\(r.position) (tree leaves=\(tree.leafCount))\n", stderr)
         // Dump tree for diagnostic.
         for (idx, node) in tree.nodes.enumerated() {
             if node.isLeaf {
@@ -6532,7 +6538,9 @@ extension FoundationTests {
               stderr)
         }
         fputs("DIAG postTreeHdr: logAlpha=\(postTreeHdr.logAlphaSize), uintCfgs=\(postTreeHdr.uintConfigs.map { "(split=\($0.splitExponent),msb=\($0.msbInToken),lsb=\($0.lsbInToken))" })\n", stderr)
+        fputs("DIAG pos after post-tree codebook=\(r.position)\n", stderr)
         try r.alignToByte()
+        fputs("DIAG pos after alignToByte=\(r.position)\n", stderr)
         let groupHeader: GroupHeader
         do {
             groupHeader = try GroupHeader.read(from: &r)
