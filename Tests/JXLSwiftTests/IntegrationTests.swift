@@ -4812,6 +4812,127 @@ extension FoundationTests {
         }
     }
 
+    /// **Cross-validation**: decode the actual Modular MA-tree
+    /// tokens. Walks signature → SizeHeader → ImageMetadata →
+    /// FrameHeader → TOC → DequantMatrices DC flag → has_tree →
+    /// EntropySectionHeader → MultiClusterCodebook → token stream.
+    ///
+    /// Reads tree symbols using libjxl's `DecodeTree` algorithm:
+    ///   • prop1 at kPropertyContext = 1
+    ///   • if prop1 == 0 (leaf): predictor, offset (signed), mul_log,
+    ///     mul_bits
+    ///   • else (decision node): splitval (signed), then 2 more
+    ///     to-decode entries
+    /// Validates that decoded values fall in spec-legal ranges. The
+    /// reader is now **eight spec layers deep** into a real
+    /// cjxl-emitted lossless frame — we read the actual tree.
+    func testCrossValidate_Cjxl_ModularTreeTokens() throws {
+        guard let cjxl = whichTool("cjxl") else {
+            try XCTSkipIf(true, "cjxl not on PATH")
+            return
+        }
+        let pnmPath = NSTemporaryDirectory() + "tree-\(UUID().uuidString).ppm"
+        let jxlPath = NSTemporaryDirectory() + "tree-\(UUID().uuidString).jxl"
+        defer {
+            try? FileManager.default.removeItem(atPath: pnmPath)
+            try? FileManager.default.removeItem(atPath: jxlPath)
+        }
+        try makeSyntheticPNM(
+            width: 32, height: 32, channels: 3, bitDepth: 8,
+            generator: { x, y, c in UInt16((x &* 7 &+ y &* 13 &+ Int(c)) & 0xFF) }
+        ).write(to: URL(fileURLWithPath: pnmPath))
+        let proc = Process()
+        proc.launchPath = cjxl
+        proc.arguments = ["-q", "100", pnmPath, jxlPath]
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        try proc.run()
+        proc.waitUntilExit()
+        let data = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
+        var r = BitReader(data)
+        _ = try r.read(bits: 8); _ = try r.read(bits: 8)
+        _ = try SizeHeader.read(from: &r)
+        let m = try ImageMetadata.read(from: &r)
+        try r.alignToByte()
+        let ctx = FrameHeaderContext(
+            xybEncoded: m.xybEncoded,
+            numExtraChannels: m.extraChannels.count,
+            haveAnimation: m.animation != nil,
+            haveTimecodes: m.animation?.haveTimecodes ?? false
+        )
+        let fh = try FrameHeader.read(from: &r, context: ctx)
+        let entries = TOC.numEntries(
+            numGroups: 1, numDcGroups: 0,
+            numPasses: Int(fh.passes.numPasses)
+        )
+        _ = try TOC.read(from: &r, numEntries: entries)
+        let matrixDcDefault = try r.readBit()
+        if !matrixDcDefault {
+            for _ in 0..<3 { _ = try r.read(bits: 16) }
+        }
+        let hasTree = try r.readBit()
+        XCTAssertTrue(hasTree)
+        let hdr = try EntropySectionHeader.read(
+            from: &r, numContexts: 6
+        )
+        let codebook = try MultiClusterCodebook.read(
+            from: &r, header: hdr
+        )
+        let stream = TokenStreamReader(header: hdr, codebook: codebook)
+
+        // Decode the tree per libjxl `DecodeTree`:
+        //   to_decode = 1
+        //   while to_decode > 0:
+        //     prop1 = readToken(kPropertyContext = 1)
+        //     if prop1 == 0: leaf → predictor, offset, mul_log, mul_bits
+        //     else: split val (signed), to_decode += 2
+        let kSplitValContext = 0
+        let kPropertyContext = 1
+        let kPredictorContext = 2
+        let kOffsetContext = 3
+        let kMultiplierLogContext = 4
+        let kMultiplierBitsContext = 5
+
+        var toDecode = 1
+        var leafCount = 0
+        var splitCount = 0
+        var safetyLimit = 1024  // tree max
+        while toDecode > 0 && safetyLimit > 0 {
+            safetyLimit -= 1
+            toDecode -= 1
+            let prop1 = try stream.readToken(context: kPropertyContext, from: &r)
+            XCTAssertLessThanOrEqual(prop1, 256,
+                "prop1 must be ≤ 256 per libjxl, got \(prop1)")
+            if prop1 == 0 {
+                // Leaf.
+                let predictor = try stream.readToken(
+                    context: kPredictorContext, from: &r)
+                XCTAssertLessThan(predictor, 14,
+                    "predictor must be < kNumModularPredictors (14), got \(predictor)")
+                _ = try stream.readToken(context: kOffsetContext, from: &r)
+                let mulLog = try stream.readToken(
+                    context: kMultiplierLogContext, from: &r)
+                XCTAssertLessThan(mulLog, 31,
+                    "mul_log must be < 31, got \(mulLog)")
+                _ = try stream.readToken(
+                    context: kMultiplierBitsContext, from: &r)
+                leafCount += 1
+            } else {
+                // Decision node.
+                _ = try stream.readToken(context: kSplitValContext, from: &r)
+                toDecode += 2
+                splitCount += 1
+            }
+        }
+        XCTAssertGreaterThan(safetyLimit, 0,
+            "tree decoding ran past safety limit — probable bit misalignment")
+        XCTAssertGreaterThan(leafCount, 0,
+            "tree must have at least one leaf")
+        // Spec invariant: leaves = splits + 1 for a complete binary tree.
+        XCTAssertEqual(leafCount, splitCount + 1,
+            "binary-tree invariant: leaves should equal splits + 1, got \(leafCount) vs \(splitCount + 1)")
+    }
+
     /// **Cross-validation**: read per-cluster ANS distributions from a
     /// real cjxl-emitted Modular tree section. After the
     /// `EntropySectionHeader` prefix (LZ77 + ContextMap +
