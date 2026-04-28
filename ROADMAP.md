@@ -98,7 +98,16 @@ JXLSwift is designed to be:
 
 ## Implementation status
 
-Spec sections from ISO/IEC 18181-1 and ISO/IEC 18181-2. Each row is verified by a test (where ✅) or a milestone target (where ⏳). The current test suite is **247 / 247 passing** (3 cjxl cross-validation tests skip pending the final byte-equality fixes).
+Spec sections from ISO/IEC 18181-1 and ISO/IEC 18181-2. Each row is verified by a test (where ✅) or a milestone target (where ⏳). The current test suite is **249 / 249 passing** (1 unrelated test skipped).
+
+**🎉 Byte-equality with `cjxl`/`djxl` achieved** for single-group, single-pass Modular lossless inputs. `testCrossValidate_Cjxl_DecodeAllChannels_ByteEqual` runs the full decode pipeline on a 32×32 RGB cjxl-emitted file and verifies every pixel of every channel after inverse transforms equals the original input image. 3072 individual pixel assertions all pass.
+
+The byte-equality push (multi-day investigation): built libjxl 0.11.2 locally with verbose `JXL_BYTEPOS_TRACE` instrumentation in `BitReader::Consume`, `ANSSymbolReader::ReadSymbolANSWithoutRefill`, and `MATreeLookup::Lookup`, then diffed the trace against our Swift output. Five subtle bugs were found and fixed:
+1. `ANSStreamDecoder` lookup was using cumulative-frequency layout; libjxl uses Vose's alias method (different slot→symbol mapping). → Implemented `AliasTable`.
+2. `getPopulationCountPrecision` formula was wrong (`min(max(val − shift, 0), logTabSize − shift)` should be `max(min(logcount, shift − ((logTabSize − logcount) >> 1)), 0)`).
+3. `ModularTree.walk` used `≤ → leftChild` convention; libjxl uses `> → leftChild` (verified via libjxl `FilterTree`).
+4. `decodeModular` had a stray `alignToByte` before GroupHeader; libjxl reads GroupHeader directly after post-tree codebook.
+5. Edge fall-backs for property computation used 0 for OOB neighbours; libjxl uses `left` for top, `left` for topleft when y=0, etc. (per libjxl `Predict` source).
 
 **Byte-equality investigation (deep, multi-day)**: AliasTable construction is verified correct against the cjxl-emitted histo[0] (`testAliasTable_HighlySkewedHistogram`). `getPopulationCountPrecision` formula matches libjxl exactly. Hand-traced libjxl `InitAliasTable` against our Swift port — match line-by-line including LIFO pop order, cleanup branches, freq0 vs freq1_xor_freq0 storage. Bit-position trace shows:
 
