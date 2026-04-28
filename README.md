@@ -57,7 +57,7 @@ Cross-validation tests added against `cjxl`-emitted Linear, sRGB, PQ, and HLG tr
 - `TokenStreamReader` (libjxl `ANSSymbolReader::ReadHybridUint`) — context-routed token reads from an entropy section. Looks up `cluster = contextMap[ctx]`, decodes a Huffman symbol from `huffmanTables[cluster]`, then expands via the cluster's HybridUintConfig. Prefix-code path complete; ANS-mode rANS state integration is the next chain milestone.
 - `VarLenUint8` / `VarLenUint16` (libjxl `DecodeVarLenUint*`) — the variable-length integer codings used inside histogram bodies and per-cluster alphabet sizes.
 
-The codestream reader chain now walks **eight spec layers deep** into a real cjxl-emitted Modular lossless file: signature → SizeHeader → ImageMetadata → FrameHeader → TOC → DequantMatrices DC flag → Modular `has_tree` flag → tree-section EntropySectionHeader → per-cluster Huffman tables → **MA-tree token stream**. The token-decoder cross-validation actually walks the binary tree (split / leaf / predictor / offset / multiplier per libjxl `DecodeTree`) and asserts the binary-tree invariant `leaves = splits + 1` against real cjxl bytes.
+The codestream reader chain now walks **nine spec layers deep** into a real cjxl-emitted Modular lossless file: signature → SizeHeader → ImageMetadata → FrameHeader → TOC → DequantMatrices DC flag → Modular `has_tree` flag → tree-section EntropySectionHeader → per-cluster Huffman tables → MA-tree token stream → **typed `ModularTree` value**. `ModularTree.decode` produces a `[ModularTreeNode]` that satisfies the complete-binary-tree invariant (`nodes = 2 × leaves - 1`); every decision node's children point at later pre-order indices; every leaf carries a valid `predictor`, signed `predictorOffset`, and power-of-two `multiplier`.
 
 `JXLDecoder.inspect(_:)` parses any spec-compliant `.jxl` and reports container form, box list, dimensions, bit depth, channel count, alpha, animation, and HDR metadata — useful as a JXL info tool today.
 
@@ -69,7 +69,7 @@ See [ROADMAP.md](ROADMAP.md) for the spec-section status grid.
 
 ```bash
 swift build -c release
-swift test  -c release           # 200 tests (foundation + headers + entropy primitives + frame header + TOC + entropy section bodies + token stream + cross-validation), ~50 ms
+swift test  -c release           # 201 tests (foundation + headers + entropy primitives + frame header + TOC + entropy section bodies + token stream + Modular tree + cross-validation), ~50 ms
 .build/release/jxl-tool --version
 .build/release/jxl-tool info path/to/file.jxl
 ```
