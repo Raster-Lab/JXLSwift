@@ -88,6 +88,42 @@ public struct ModularTree: Sendable, Equatable {
         self.leafCount = nodes.lazy.filter { $0.isLeaf }.count
     }
 
+    /// Walk the tree from the root to a leaf using the supplied
+    /// properties array. Each decision node tests
+    /// `properties[node.property] > splitVal` (per libjxl's `> vs ≤`
+    /// convention — left if false, right if true). Returns the leaf
+    /// node. Throws if a decision node references a property index
+    /// out of range, or if the tree is malformed (cycle, dangling
+    /// child).
+    public func walk(properties: [Int32]) throws -> ModularTreeNode {
+        var idx = 0
+        var safety = nodes.count + 1
+        while safety > 0 {
+            safety -= 1
+            guard idx >= 0 && idx < nodes.count else {
+                throw ModularTreeError.tokenReader(
+                    .clusterOutOfRange(idx, max: nodes.count - 1)
+                )
+            }
+            let node = nodes[idx]
+            if node.isLeaf { return node }
+            let propIdx = Int(node.property)
+            guard propIdx >= 0 && propIdx < properties.count else {
+                throw ModularTreeError.invalidProperty(UInt32(propIdx))
+            }
+            // libjxl uses `> splitval` for the right branch. We use
+            // the same convention here (left = property ≤ splitval).
+            if properties[propIdx] > node.splitVal {
+                idx = node.rightChild
+            } else {
+                idx = node.leftChild
+            }
+        }
+        throw ModularTreeError.tokenReader(
+            .clusterOutOfRange(idx, max: nodes.count - 1)
+        )
+    }
+
     /// Decode a Modular MA-tree from the token stream that follows
     /// the tree's entropy section. Caller has already constructed
     /// the `TokenStreamReader` from `EntropySectionHeader` +

@@ -4401,6 +4401,77 @@ extension FoundationTests {
     }
 }
 
+// MARK: - ModularTree.walk
+
+extension FoundationTests {
+
+    /// Walk a single-leaf tree — every input always reaches the same
+    /// leaf, regardless of properties.
+    func testModularTree_Walk_SingleLeaf() throws {
+        let tree = ModularTree(nodes: [
+            ModularTreeNode(
+                property: -1, splitVal: 0,
+                leftChildOrLeafId: 0, rightChild: 0,
+                predictor: .gradient, predictorOffset: 0, multiplier: 1
+            )
+        ])
+        let leaf = try tree.walk(properties: [42, 7, 0])
+        XCTAssertTrue(leaf.isLeaf)
+        XCTAssertEqual(leaf.predictor, .gradient)
+        XCTAssertEqual(leaf.leafId, 0)
+    }
+
+    /// Walk a 3-node tree that branches on property[0] ≤ 5.
+    /// Expected: leaf 0 (left) when property[0] ≤ 5; leaf 1 (right) otherwise.
+    func testModularTree_Walk_ThreeNodes_BranchOnProperty0() throws {
+        let tree = ModularTree(nodes: [
+            // Decision: property 0, splitVal 5, left = 1, right = 2
+            ModularTreeNode(
+                property: 0, splitVal: 5,
+                leftChildOrLeafId: 1, rightChild: 2,
+                predictor: .zero, predictorOffset: 0, multiplier: 1
+            ),
+            // Leaf 0 (left)
+            ModularTreeNode(
+                property: -1, splitVal: 0,
+                leftChildOrLeafId: 0, rightChild: 0,
+                predictor: .west, predictorOffset: 1, multiplier: 1
+            ),
+            // Leaf 1 (right)
+            ModularTreeNode(
+                property: -1, splitVal: 0,
+                leftChildOrLeafId: 1, rightChild: 0,
+                predictor: .north, predictorOffset: -2, multiplier: 2
+            ),
+        ])
+        // Left branch: property[0] = 5 (≤ 5).
+        let left = try tree.walk(properties: [5, 0])
+        XCTAssertEqual(left.predictor, .west)
+        XCTAssertEqual(left.leafId, 0)
+        // Right branch: property[0] = 100 (> 5).
+        let right = try tree.walk(properties: [100, 0])
+        XCTAssertEqual(right.predictor, .north)
+        XCTAssertEqual(right.leafId, 1)
+    }
+
+    /// Walking a tree with an out-of-range property index throws.
+    func testModularTree_Walk_RejectsBadProperty() {
+        let tree = ModularTree(nodes: [
+            ModularTreeNode(
+                property: 99, splitVal: 0,
+                leftChildOrLeafId: 1, rightChild: 1,
+                predictor: .zero, predictorOffset: 0, multiplier: 1
+            ),
+            ModularTreeNode(
+                property: -1, splitVal: 0,
+                leftChildOrLeafId: 0, rightChild: 0,
+                predictor: .gradient, predictorOffset: 0, multiplier: 1
+            ),
+        ])
+        XCTAssertThrowsError(try tree.walk(properties: [0, 0]))
+    }
+}
+
 // MARK: - GroupHeader (per-group Modular prelude)
 
 extension FoundationTests {
