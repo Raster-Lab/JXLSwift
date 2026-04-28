@@ -52,9 +52,11 @@ Cross-validation tests added against `cjxl`-emitted Linear, sRGB, PQ, and HLG tr
 **Phase F continued — frame structure (§C.8.1):**
 - `FrameHeader` (§C.8.1) — full spec layout. Every field libjxl `FrameHeader::VisitFields` writes round-trips through our Swift implementation: `frame_type`, `is_modular`, `flags` (U64), color transform (XYB / None / YCbCr), `chroma_subsampling`, `upsampling`, `extra_channel_upsampling`, `group_size_shift`, `xQmScale` / `bQmScale`, the multi-pass `Passes` block, `dc_level`, `custom_size_or_origin` with origin/size U32-encoded, per-channel blending info, animation duration and timecode, `is_last`, `save_as_reference`, name string, and the EPF / Gaborish loop filter.
 - `TOC` (§C.8.1.5) — frame Table of Contents. Each TOC entry is a U32 group size; the `numEntries` formula is exposed for callers (single-group single-pass = 1 entry; multi-group = 2 + DC-groups + passes × groups). Permutation flag is recognised; the entropy-coded permutation payload itself is the next E-phase prerequisite.
-- `EntropySectionHeader` (§C.6 prefix) — the structural prefix every JXL ANS or prefix-coded section shares: LZ77 config, optional context map, `use_prefix_code`, `log_alpha_size`, and per-cluster HybridUintConfig. The histogram bodies that follow (per-cluster Huffman tables or per-cluster rANS distributions) are the next entropy-chain milestone.
+- `EntropySectionHeader` (§C.6 prefix) — the structural prefix every JXL ANS or prefix-coded section shares: LZ77 config, optional context map, `use_prefix_code`, `log_alpha_size`, and per-cluster HybridUintConfig.
+- `MultiClusterCodebook` (§C.6 body) — per-cluster code tables that follow the entropy-section header. Picks Huffman vs rANS based on `usePrefixCode`. For prefix codes: `VarLenUint16+1` alphabet sizes per cluster, then `PrefixCodeFormat.decode` (which dispatches simple / complex by `hskip`). For rANS: `SpecANSDistribution.readHistogram` per cluster. Both `ReadHistogram` shape branches (simple, flat, RLE-coded complex) implemented; the `cll` static-Huffman lookup uses the spec's 16-entry table with Kraft-budget early termination.
+- `VarLenUint8` / `VarLenUint16` (libjxl `DecodeVarLenUint*`) — the variable-length integer codings used inside histogram bodies and per-cluster alphabet sizes.
 
-The codestream reader chain now walks **five spec layers deep** into a real cjxl-emitted Modular lossless file: signature → SizeHeader → ImageMetadata → FrameHeader → TOC → DequantMatrices DC flag → Modular `has_tree` flag → tree-section EntropySectionHeader (at `kNumTreeContexts = 6`). Cross-validation tests for every layer.
+The codestream reader chain now walks **seven spec layers deep** into a real cjxl-emitted Modular lossless file: signature → SizeHeader → ImageMetadata → FrameHeader → TOC → DequantMatrices DC flag → Modular `has_tree` flag → tree-section EntropySectionHeader (at `kNumTreeContexts = 6`) → per-cluster Huffman tables. Cross-validation tests for every layer.
 
 `JXLDecoder.inspect(_:)` parses any spec-compliant `.jxl` and reports container form, box list, dimensions, bit depth, channel count, alpha, animation, and HDR metadata — useful as a JXL info tool today.
 
@@ -66,7 +68,7 @@ See [ROADMAP.md](ROADMAP.md) for the spec-section status grid.
 
 ```bash
 swift build -c release
-swift test  -c release           # 187 tests (foundation + headers + entropy primitives + frame header + TOC + EntropySectionHeader + cross-validation), ~50 ms
+swift test  -c release           # 199 tests (foundation + headers + entropy primitives + frame header + TOC + entropy section bodies + cross-validation), ~50 ms
 .build/release/jxl-tool --version
 .build/release/jxl-tool info path/to/file.jxl
 ```
