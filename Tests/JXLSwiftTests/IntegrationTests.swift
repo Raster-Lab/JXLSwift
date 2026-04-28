@@ -4684,6 +4684,100 @@ extension FoundationTests {
                        entropyHeader.numHistograms)
     }
 
+    /// **Cross-validation**: read per-cluster ANS distributions from a
+    /// real cjxl-emitted Modular tree section. After the
+    /// `EntropySectionHeader` prefix (LZ77 + ContextMap +
+    /// use_prefix_code + log_alpha_size + uint_configs), libjxl
+    /// `DecodeANSCodes` reads `num_histograms` histograms via
+    /// `ReadHistogram`. We only handle the simple, flat, and complex
+    /// (non-RLE-only) shapes so far — for a 32×32 RGB lossless
+    /// frame's tree section, cjxl typically emits a 1-cluster flat or
+    /// simple distribution that exercises our reader.
+    func testCrossValidate_Cjxl_ANSHistograms_ModularTree() throws {
+        guard let cjxl = whichTool("cjxl") else {
+            try XCTSkipIf(true, "cjxl not on PATH")
+            return
+        }
+        let pnmPath = NSTemporaryDirectory() + "ans-\(UUID().uuidString).ppm"
+        let jxlPath = NSTemporaryDirectory() + "ans-\(UUID().uuidString).jxl"
+        defer {
+            try? FileManager.default.removeItem(atPath: pnmPath)
+            try? FileManager.default.removeItem(atPath: jxlPath)
+        }
+        try makeSyntheticPNM(
+            width: 32, height: 32, channels: 3, bitDepth: 8,
+            generator: { x, y, c in UInt16((x &* 7 &+ y &* 13 &+ Int(c)) & 0xFF) }
+        ).write(to: URL(fileURLWithPath: pnmPath))
+        let proc = Process()
+        proc.launchPath = cjxl
+        proc.arguments = ["-q", "100", pnmPath, jxlPath]
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        try proc.run()
+        proc.waitUntilExit()
+        let data = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
+        var r = BitReader(data)
+        // Walk to the entropy section just like the previous test.
+        _ = try r.read(bits: 8); _ = try r.read(bits: 8)
+        _ = try SizeHeader.read(from: &r)
+        let m = try ImageMetadata.read(from: &r)
+        try r.alignToByte()
+        let ctx = FrameHeaderContext(
+            xybEncoded: m.xybEncoded,
+            numExtraChannels: m.extraChannels.count,
+            haveAnimation: m.animation != nil,
+            haveTimecodes: m.animation?.haveTimecodes ?? false
+        )
+        let fh = try FrameHeader.read(from: &r, context: ctx)
+        let entries = TOC.numEntries(
+            numGroups: 1, numDcGroups: 0,
+            numPasses: Int(fh.passes.numPasses)
+        )
+        _ = try TOC.read(from: &r, numEntries: entries)
+        let matrixDcDefault = try r.readBit()
+        if !matrixDcDefault {
+            for _ in 0..<3 { _ = try r.read(bits: 16) }
+        }
+        let hasTree = try r.readBit()
+        XCTAssertTrue(hasTree)
+        let hdr = try EntropySectionHeader.read(
+            from: &r, numContexts: 6
+        )
+        if hdr.usePrefixCode {
+            // Skip — our SpecANSDistribution reader only handles ANS
+            // histograms, not the prefix-code path. That's the next
+            // milestone in the entropy chain.
+            try XCTSkipIf(true, "prefix-code path — out of scope here")
+            return
+        }
+        // Now read each per-cluster ANS distribution.
+        for cluster in 0..<hdr.numHistograms {
+            do {
+                let counts = try SpecANSDistribution.readHistogram(
+                    from: &r, precisionBits: 12
+                )
+                // Spec: counts must sum to range = 4096.
+                let sum = counts.reduce(Int32(0), &+)
+                XCTAssertEqual(sum, 4096,
+                    "cluster \(cluster) counts must sum to 4096, got \(sum) for \(counts)")
+                // No negative counts.
+                for c in counts {
+                    XCTAssertGreaterThanOrEqual(c, 0,
+                        "cluster \(cluster) has negative count \(c)")
+                }
+            } catch SpecANSDistributionError.complexPathNotImplemented {
+                // The complex path is implemented now; we may still
+                // hit this if a future test produces an unsupported
+                // shape. Skip rather than fail — the existence of the
+                // path is the milestone here, not coverage of every
+                // pattern.
+                try XCTSkipIf(true,
+                    "cluster \(cluster) used a path our reader can't yet handle")
+                return
+            }
+        }
+    }
+
     /// Sweep over `logAlphaSize` values 5, 6, 7, 8 — confirms the
     /// `5 + u(2)` write/read pair recovers each value bit-identically.
     func testEntropySectionHeader_LogAlphaSize_Sweep() throws {

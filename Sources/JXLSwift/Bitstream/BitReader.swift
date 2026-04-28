@@ -77,6 +77,38 @@ public struct BitReader: Sendable {
         try read(bits: 1) == 1
     }
 
+    /// Peek `count` bits (1...32) without advancing the position. The
+    /// caller is expected to follow up with `skip(bits:)` to consume
+    /// however many bits the lookup-table entry asked for. Used by
+    /// libjxl-style fixed-table Huffman decoders (e.g. ReadHistogram's
+    /// 7-bit logcount table).
+    public func peek(bits count: Int) throws -> UInt32 {
+        guard count >= 0 && count <= 32 else {
+            throw BitstreamError.tooManyBits(requested: count, max: 32)
+        }
+        if count == 0 { return 0 }
+        guard position + count <= totalBits else {
+            throw BitstreamError.outOfBounds(needed: count, remaining: bitsRemaining)
+        }
+        var value: UInt32 = 0
+        var shift = 0
+        var pos = position
+        var remaining = count
+        while remaining > 0 {
+            let byteIndex = pos / 8
+            let bitOffset = pos % 8
+            let take = min(8 - bitOffset, remaining)
+            let mask: UInt32 = (1 &<< UInt32(take)) - 1
+            let byteVal = UInt32(data[data.startIndex + byteIndex])
+            let chunk = (byteVal &>> UInt32(bitOffset)) & mask
+            value |= chunk &<< UInt32(shift)
+            shift += take
+            pos += take
+            remaining -= take
+        }
+        return value
+    }
+
     /// Read a 64-bit value (0 ≤ count ≤ 64).
     public mutating func read64(bits count: Int) throws -> UInt64 {
         guard count >= 0 && count <= 64 else {
