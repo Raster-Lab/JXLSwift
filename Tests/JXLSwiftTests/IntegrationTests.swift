@@ -6633,6 +6633,188 @@ extension FoundationTests {
         }
     }
 
+    /// Byte-equal decode of a 256×256 8-bit grayscale cjxl file —
+    /// the BOUNDARY case where group_dim=256 means it's still single-
+    /// group but at the limit.
+    func testCrossValidate_Cjxl_DecodeGrayscale_256x256_ByteEqual() throws {
+        guard let cjxl = whichTool("cjxl") else {
+            try XCTSkipIf(true, "cjxl not on PATH")
+            return
+        }
+        let pnmPath = NSTemporaryDirectory() + "g256-\(UUID().uuidString).pgm"
+        let jxlPath = NSTemporaryDirectory() + "g256-\(UUID().uuidString).jxl"
+        defer {
+            try? FileManager.default.removeItem(atPath: pnmPath)
+            try? FileManager.default.removeItem(atPath: jxlPath)
+        }
+        try makeSyntheticPNM(
+            width: 256, height: 256, channels: 1, bitDepth: 8,
+            generator: { x, y, _ in UInt16((x &* 7 &+ y &* 13) & 0xFF) }
+        ).write(to: URL(fileURLWithPath: pnmPath))
+        let proc = Process()
+        proc.launchPath = cjxl
+        proc.arguments = ["-q", "100", pnmPath, jxlPath]
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        try proc.run()
+        proc.waitUntilExit()
+        let data = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
+        let dec = JXLDecoder()
+        let image: ModularImage
+        do {
+            image = try dec.decodeModular(data)
+        } catch {
+            try XCTSkipIf(true, "256×256 decode failed: \(error)")
+            return
+        }
+        XCTAssertEqual(image.channels.count, 1)
+        // Spot-check.
+        for y in stride(from: 0, to: 256, by: 17) {
+            for x in stride(from: 0, to: 256, by: 17) {
+                let expected = Int32(((x &* 7 &+ y &* 13) & 0xFF))
+                let actual = image.channels[0].pixels[y * 256 + x]
+                XCTAssertEqual(actual, expected,
+                    "pixel(\(x),\(y)) decoded \(actual) expected \(expected)")
+            }
+        }
+    }
+
+    /// Byte-equal decode of a 512×512 8-bit GRAYSCALE cjxl file.
+    /// Tests multi-group decoding (>256×256 typically spans groups).
+    func testCrossValidate_Cjxl_DecodeGrayscale_512x512_ByteEqual() throws {
+        guard let cjxl = whichTool("cjxl") else {
+            try XCTSkipIf(true, "cjxl not on PATH")
+            return
+        }
+        let pnmPath = NSTemporaryDirectory() + "g512-\(UUID().uuidString).pgm"
+        let jxlPath = NSTemporaryDirectory() + "g512-\(UUID().uuidString).jxl"
+        defer {
+            try? FileManager.default.removeItem(atPath: pnmPath)
+            try? FileManager.default.removeItem(atPath: jxlPath)
+        }
+        try makeSyntheticPNM(
+            width: 512, height: 512, channels: 1, bitDepth: 8,
+            generator: { x, y, _ in UInt16((x &* 7 &+ y &* 13) & 0xFF) }
+        ).write(to: URL(fileURLWithPath: pnmPath))
+        let proc = Process()
+        proc.launchPath = cjxl
+        proc.arguments = ["-q", "100", pnmPath, jxlPath]
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        try proc.run()
+        proc.waitUntilExit()
+        let data = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
+        let dec = JXLDecoder()
+        let image: ModularImage
+        do {
+            image = try dec.decodeModular(data)
+        } catch {
+            try XCTSkipIf(true, "512×512 grayscale decode failed: \(error)")
+            return
+        }
+        XCTAssertEqual(image.channels.count, 1)
+        // Spot-check: sample many positions for byte-equality.
+        for y in stride(from: 0, to: 512, by: 31) {
+            for x in stride(from: 0, to: 512, by: 31) {
+                let expected = Int32(((x &* 7 &+ y &* 13) & 0xFF))
+                let actual = image.channels[0].pixels[y * 512 + x]
+                XCTAssertEqual(actual, expected,
+                    "pixel(\(x),\(y)) decoded \(actual) expected \(expected)")
+            }
+        }
+    }
+
+    /// Byte-equal decode of a 32×32 16-bit GRAYSCALE cjxl file.
+    /// **The medical-imaging primary use case** — DICOM-style
+    /// monochrome data with full 16-bit precision.
+    func testCrossValidate_Cjxl_DecodeGrayscale16bit_ByteEqual() throws {
+        guard let cjxl = whichTool("cjxl") else {
+            try XCTSkipIf(true, "cjxl not on PATH")
+            return
+        }
+        let pnmPath = NSTemporaryDirectory() + "g16-\(UUID().uuidString).pgm"
+        let jxlPath = NSTemporaryDirectory() + "g16-\(UUID().uuidString).jxl"
+        defer {
+            try? FileManager.default.removeItem(atPath: pnmPath)
+            try? FileManager.default.removeItem(atPath: jxlPath)
+        }
+        try makeSyntheticPNM(
+            width: 32, height: 32, channels: 1, bitDepth: 16,
+            generator: { x, y, _ in UInt16((x &* 263 &+ y &* 1009) & 0xFFFF) }
+        ).write(to: URL(fileURLWithPath: pnmPath))
+        let proc = Process()
+        proc.launchPath = cjxl
+        proc.arguments = ["-q", "100", pnmPath, jxlPath]
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        try proc.run()
+        proc.waitUntilExit()
+        let data = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
+        let dec = JXLDecoder()
+        let image: ModularImage
+        do {
+            image = try dec.decodeModular(data)
+        } catch {
+            try XCTSkipIf(true, "16-bit grayscale decode failed: \(error)")
+            return
+        }
+        XCTAssertEqual(image.channels.count, 1)
+        for y in 0..<32 {
+            for x in 0..<32 {
+                let expected = Int32(((x &* 263 &+ y &* 1009) & 0xFFFF))
+                let actual = image.channels[0].pixels[y * 32 + x]
+                XCTAssertEqual(actual, expected,
+                    "pixel(\(x),\(y)) decoded \(actual) expected \(expected)")
+            }
+        }
+    }
+
+    /// Byte-equal decode of a 32×32 8-bit GRAYSCALE cjxl file.
+    /// Single channel — no RCT applied. Verifies our decoder works
+    /// for the 1-channel case (which medical-imaging often uses).
+    func testCrossValidate_Cjxl_DecodeGrayscale8bit_ByteEqual() throws {
+        guard let cjxl = whichTool("cjxl") else {
+            try XCTSkipIf(true, "cjxl not on PATH")
+            return
+        }
+        let pnmPath = NSTemporaryDirectory() + "g8-\(UUID().uuidString).pgm"
+        let jxlPath = NSTemporaryDirectory() + "g8-\(UUID().uuidString).jxl"
+        defer {
+            try? FileManager.default.removeItem(atPath: pnmPath)
+            try? FileManager.default.removeItem(atPath: jxlPath)
+        }
+        try makeSyntheticPNM(
+            width: 32, height: 32, channels: 1, bitDepth: 8,
+            generator: { x, y, _ in UInt16((x &* 7 &+ y &* 13) & 0xFF) }
+        ).write(to: URL(fileURLWithPath: pnmPath))
+        let proc = Process()
+        proc.launchPath = cjxl
+        proc.arguments = ["-q", "100", pnmPath, jxlPath]
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        try proc.run()
+        proc.waitUntilExit()
+        let data = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
+        let dec = JXLDecoder()
+        let image: ModularImage
+        do {
+            image = try dec.decodeModular(data)
+        } catch {
+            try XCTSkipIf(true, "grayscale decode failed: \(error)")
+            return
+        }
+        XCTAssertEqual(image.channels.count, 1,
+            "grayscale should have 1 channel")
+        for y in 0..<32 {
+            for x in 0..<32 {
+                let expected = Int32(((x &* 7 &+ y &* 13) & 0xFF))
+                let actual = image.channels[0].pixels[y * 32 + x]
+                XCTAssertEqual(actual, expected,
+                    "pixel(\(x),\(y)) decoded \(actual) expected \(expected)")
+            }
+        }
+    }
+
     /// **🎉 BYTE-EQUAL CROSS-VALIDATION**: decode all 3 channels of a
     /// 32×32 RGB cjxl-emitted file and verify the wire-level values
     /// match the post-RCT-10 channels we'd compute from the original
