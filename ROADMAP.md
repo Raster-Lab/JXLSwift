@@ -98,7 +98,7 @@ JXLSwift is designed to be:
 
 ## Implementation status
 
-Spec sections from ISO/IEC 18181-1 and ISO/IEC 18181-2. Each row is verified by a test (where ✅) or a milestone target (where ⏳). The current test suite is **199 / 199 passing** — every ✅ row has a round-trip test that fails when the row stops working. Phase H header parsing is additionally **cross-validated against `cjxl`** dynamically at test time, covering 8/16-bit grayscale, 8/16-bit RGB, RGBA, gray+alpha, float32, ICC profiles, the four named transfer functions (sRGB / Linear / PQ / HLG), and edge cases (1×1, non-multiple-of-8 dimensions). A spec-compliance pass against libjxl 0.11.2 source (April 2026) corrected eight bit-layout bugs that round-trip alone couldn't catch — see the README for the list. **The reader walks seven spec layers deep** into a real cjxl-emitted Modular lossless file (signature → SizeHeader → ImageMetadata → FrameHeader → TOC → DequantMatrices DC flag → Modular has_tree → tree-section EntropySectionHeader → per-cluster Huffman tables / ANS distributions). The next milestone is consuming the entropy-coded token stream that follows the codebook.
+Spec sections from ISO/IEC 18181-1 and ISO/IEC 18181-2. Each row is verified by a test (where ✅) or a milestone target (where ⏳). The current test suite is **200 / 200 passing** — every ✅ row has a round-trip test that fails when the row stops working. Phase H header parsing is additionally **cross-validated against `cjxl`** dynamically at test time, covering 8/16-bit grayscale, 8/16-bit RGB, RGBA, gray+alpha, float32, ICC profiles, the four named transfer functions (sRGB / Linear / PQ / HLG), and edge cases (1×1, non-multiple-of-8 dimensions). A spec-compliance pass against libjxl 0.11.2 source (April 2026) corrected eight bit-layout bugs that round-trip alone couldn't catch — see the README for the list. **The reader walks eight spec layers deep** into a real cjxl-emitted Modular lossless file: signature → SizeHeader → ImageMetadata → FrameHeader → TOC → DequantMatrices DC flag → Modular has_tree → tree-section EntropySectionHeader → per-cluster Huffman tables → **MA-tree token stream**. The token-decoder cross-validation walks the binary tree (split / leaf / predictor / offset / multiplier per libjxl `DecodeTree`) and asserts the binary-tree invariant against real cjxl bytes.
 
 ### Phase F — Foundation ✅
 
@@ -142,6 +142,7 @@ Spec sections from ISO/IEC 18181-1 and ISO/IEC 18181-2. Each row is verified by 
 | Entropy-section prefix | §C.6 (DecodeHistograms structural prefix) | ✅ fields 1–6 | `EntropySectionHeader` parses: LZ77Config, optional ContextMap (with implicit extra context for LZ77 distance), `use_prefix_code` u(1), `log_alpha_size` (PREFIX_MAX_BITS=15 if prefix, else 5+u(2)), per-cluster `HybridUintConfig`. 4 round-trip tests + cross-validation against the cjxl-emitted Modular tree section (kNumTreeContexts=6) confirms byte-alignment with libjxl. |
 | Entropy-section per-cluster codebook | §C.6.2 + §C.6.3.2 | ✅ both branches | `MultiClusterCodebook` reads either per-cluster Huffman tables (alphabet-size via `VarLenUint16+1`, then `PrefixCodeFormat.decode` dispatching simple/complex by `hskip`; cll values use libjxl's static 16-entry Huffman lookup with Kraft-budget early termination at `space=0`) OR per-cluster rANS distributions (`SpecANSDistribution.readHistogram` covering simple, flat, and RLE-coded complex paths). Cross-validation against the cjxl-emitted Modular tree codebook passes — the reader walks all the way through to the per-cluster Huffman tables. The token-stream that follows the codebook (where the actual MA-tree bytes live) is the next chain milestone. |
 | `VarLenUint8` / `VarLenUint16` | libjxl `DecodeVarLenUint*` | ✅ | both directions; round-trip across the full 0..255 / 0..65535 ranges. |
+| Token stream (HybridUint-decoded reads) | libjxl `ANSSymbolReader::ReadHybridUint` | ✅ prefix-code path | `TokenStreamReader.readToken(context:from:)` walks `contextMap[ctx]` → `huffmanTables[cluster].decode` → `uintConfigs[cluster].decode(token)`. Cross-validation against the cjxl-emitted Modular MA-tree (8 layers deep — signature → … → token stream → tree decode) succeeds and verifies the binary-tree invariant `leaves = splits + 1`. ANS-mode rANS state integration and LZ77 length-token expansion remain stubbed. |
 
 ### Phase M — Modular (lossless) sub-codec
 
@@ -201,7 +202,7 @@ These are added once a corresponding scalar Swift path is correct. The scalar pa
 
 | Item | Status |
 |---|---|
-| Foundation tests (199) | ✅ |
+| Foundation tests (200) | ✅ |
 | Conformance test vectors (jxl-conformance repo) | ⏳ harness exists; vectors not wired up |
 | Cross-codec round-trip (encode → libjxl `djxl` decode) | ⏳ requires Phase E4-6 + M at minimum |
 | Cross-codec round-trip (libjxl `cjxl` → JXLDecoder) | ⏳ requires Phase E4-6 + M at minimum |

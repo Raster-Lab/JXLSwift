@@ -54,9 +54,10 @@ Cross-validation tests added against `cjxl`-emitted Linear, sRGB, PQ, and HLG tr
 - `TOC` (§C.8.1.5) — frame Table of Contents. Each TOC entry is a U32 group size; the `numEntries` formula is exposed for callers (single-group single-pass = 1 entry; multi-group = 2 + DC-groups + passes × groups). Permutation flag is recognised; the entropy-coded permutation payload itself is the next E-phase prerequisite.
 - `EntropySectionHeader` (§C.6 prefix) — the structural prefix every JXL ANS or prefix-coded section shares: LZ77 config, optional context map, `use_prefix_code`, `log_alpha_size`, and per-cluster HybridUintConfig.
 - `MultiClusterCodebook` (§C.6 body) — per-cluster code tables that follow the entropy-section header. Picks Huffman vs rANS based on `usePrefixCode`. For prefix codes: `VarLenUint16+1` alphabet sizes per cluster, then `PrefixCodeFormat.decode` (which dispatches simple / complex by `hskip`). For rANS: `SpecANSDistribution.readHistogram` per cluster. Both `ReadHistogram` shape branches (simple, flat, RLE-coded complex) implemented; the `cll` static-Huffman lookup uses the spec's 16-entry table with Kraft-budget early termination.
+- `TokenStreamReader` (libjxl `ANSSymbolReader::ReadHybridUint`) — context-routed token reads from an entropy section. Looks up `cluster = contextMap[ctx]`, decodes a Huffman symbol from `huffmanTables[cluster]`, then expands via the cluster's HybridUintConfig. Prefix-code path complete; ANS-mode rANS state integration is the next chain milestone.
 - `VarLenUint8` / `VarLenUint16` (libjxl `DecodeVarLenUint*`) — the variable-length integer codings used inside histogram bodies and per-cluster alphabet sizes.
 
-The codestream reader chain now walks **seven spec layers deep** into a real cjxl-emitted Modular lossless file: signature → SizeHeader → ImageMetadata → FrameHeader → TOC → DequantMatrices DC flag → Modular `has_tree` flag → tree-section EntropySectionHeader (at `kNumTreeContexts = 6`) → per-cluster Huffman tables. Cross-validation tests for every layer.
+The codestream reader chain now walks **eight spec layers deep** into a real cjxl-emitted Modular lossless file: signature → SizeHeader → ImageMetadata → FrameHeader → TOC → DequantMatrices DC flag → Modular `has_tree` flag → tree-section EntropySectionHeader → per-cluster Huffman tables → **MA-tree token stream**. The token-decoder cross-validation actually walks the binary tree (split / leaf / predictor / offset / multiplier per libjxl `DecodeTree`) and asserts the binary-tree invariant `leaves = splits + 1` against real cjxl bytes.
 
 `JXLDecoder.inspect(_:)` parses any spec-compliant `.jxl` and reports container form, box list, dimensions, bit depth, channel count, alpha, animation, and HDR metadata — useful as a JXL info tool today.
 
@@ -68,7 +69,7 @@ See [ROADMAP.md](ROADMAP.md) for the spec-section status grid.
 
 ```bash
 swift build -c release
-swift test  -c release           # 199 tests (foundation + headers + entropy primitives + frame header + TOC + entropy section bodies + cross-validation), ~50 ms
+swift test  -c release           # 200 tests (foundation + headers + entropy primitives + frame header + TOC + entropy section bodies + token stream + cross-validation), ~50 ms
 .build/release/jxl-tool --version
 .build/release/jxl-tool info path/to/file.jxl
 ```
