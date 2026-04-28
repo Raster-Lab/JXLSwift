@@ -1977,6 +1977,47 @@ final class FoundationTests: XCTestCase {
         }
     }
 
+    /// **Critical regression test:** the histogram cjxl emits for
+    /// channel 0 of our 32×32 RGB synthetic input is heavily skewed
+    /// toward symbol 0 (4028 / 4096 ≈ 98%). Verify the alias table
+    /// builds without overflow and produces sensible lookups for
+    /// representative slots. The frequencies sum check is the main
+    /// safety net — if our alias table internal arithmetic
+    /// underflows somewhere, this test would pick it up.
+    func testAliasTable_HighlySkewedHistogram() throws {
+        // histo[0] from the cjxl 32x32 RGB sample
+        var dist = [Int32](repeating: 0, count: 57)
+        dist[0] = 4028
+        dist[1] = 2
+        dist[2] = 2
+        dist[55] = 32
+        dist[56] = 32
+        let table = try AliasTable(
+            distribution: dist, logRange: 12, logAlphaSize: 6
+        )
+        // Verify every slot looks up something sensible:
+        //  - value in [0, 56]
+        //  - freq nonzero (since slot is mapped to a present symbol)
+        //  - the freq at value matches dist[value]
+        var symbolSlotCounts = [Int](repeating: 0, count: 57)
+        for slot in 0..<UInt32(4096) {
+            let r = table.lookup(slot: slot)
+            XCTAssertGreaterThanOrEqual(r.value, 0)
+            XCTAssertLessThan(r.value, 57,
+                "slot \(slot) → symbol \(r.value) out of alphabet")
+            XCTAssertEqual(Int32(r.freq), dist[r.value],
+                "slot \(slot) → symbol \(r.value), freq \(r.freq) ≠ dist[\(r.value)] = \(dist[r.value])")
+            symbolSlotCounts[r.value] &+= 1
+        }
+        // Each symbol should occupy exactly its frequency in slots.
+        for sym in 0..<57 {
+            XCTAssertEqual(
+                symbolSlotCounts[sym], Int(dist[sym]),
+                "symbol \(sym) occupies \(symbolSlotCounts[sym]) slots, expected \(dist[sym])"
+            )
+        }
+    }
+
     /// AliasTable rejects invalid inputs.
     func testAliasTable_RejectsBadSum() throws {
         // Sum != 4096.
@@ -6456,6 +6497,18 @@ extension FoundationTests {
             header: treeHdr, codebook: treeCodebook
         )
         let tree = try ModularTree.decode(from: &r, stream: &treeStream)
+        // Dump tree for diagnostic.
+        for (idx, node) in tree.nodes.enumerated() {
+            if node.isLeaf {
+                fputs("DIAG tree[\(idx)]: leaf id=\(node.leafId) "
+                  + "rawPred=\(node.rawPredictor) offset=\(node.predictorOffset) "
+                  + "mul=\(node.multiplier)\n", stderr)
+            } else {
+                fputs("DIAG tree[\(idx)]: split prop=\(node.property) "
+                  + "splitVal=\(node.splitVal) "
+                  + "left=\(node.leftChild) right=\(node.rightChild)\n", stderr)
+            }
+        }
         let postTreeHdr = try EntropySectionHeader.read(
             from: &r, numContexts: tree.leafCount
         )
@@ -6469,6 +6522,7 @@ extension FoundationTests {
                 "post-tree codebook decode hit unsupported path: \(error)")
             return
         }
+        fputs("DIAG ctxMap: \(postTreeHdr.contextMap.map)\n", stderr)
         // Dump histogram counts for diagnostic.
         for (ci, counts) in postTreeCodebook.ansCounts.enumerated() {
             let nonZero = counts.enumerated().filter { $0.element != 0 }
