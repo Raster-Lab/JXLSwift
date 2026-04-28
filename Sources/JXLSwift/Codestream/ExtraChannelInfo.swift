@@ -94,11 +94,12 @@ public struct ExtraChannelInfo: Sendable {
         case .alpha:
             alphaAssociated = try r.readBit()
         case .spotColor:
-            // 4 × float32 RGBA values, raw 32-bit
-            let rr = Float(bitPattern: try r.read(bits: 32))
-            let gg = Float(bitPattern: try r.read(bits: 32))
-            let bb = Float(bitPattern: try r.read(bits: 32))
-            let aa = Float(bitPattern: try r.read(bits: 32))
+            // 4 × half-float (16-bit) RGBA values per libjxl
+            // image_metadata.cc — `visitor->F16(0, &c)` per channel.
+            let rr = halfToFloat(UInt16(try r.read(bits: 16)))
+            let gg = halfToFloat(UInt16(try r.read(bits: 16)))
+            let bb = halfToFloat(UInt16(try r.read(bits: 16)))
+            let aa = halfToFloat(UInt16(try r.read(bits: 16)))
             spotRGBA = (rr, gg, bb, aa)
         case .cfa:
             cfaIdx = try r.readU32((

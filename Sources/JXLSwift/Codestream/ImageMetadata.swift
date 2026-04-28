@@ -481,14 +481,13 @@ extension ExtraChannelInfo {
         case .alpha:
             w.writeBit(alphaAssociated)
         case .spotColor:
-            if let s = spotColorRGBA {
-                w.write(bits: 32, value: s.0.bitPattern)
-                w.write(bits: 32, value: s.1.bitPattern)
-                w.write(bits: 32, value: s.2.bitPattern)
-                w.write(bits: 32, value: s.3.bitPattern)
-            } else {
-                for _ in 0..<4 { w.write(bits: 32, value: 0) }
-            }
+            // 4 × half-float (16-bit) RGBA values to match libjxl
+            // image_metadata.cc.
+            let s = spotColorRGBA ?? (0, 0, 0, 0)
+            w.write(bits: 16, value: UInt32(floatToHalf(s.0)))
+            w.write(bits: 16, value: UInt32(floatToHalf(s.1)))
+            w.write(bits: 16, value: UInt32(floatToHalf(s.2)))
+            w.write(bits: 16, value: UInt32(floatToHalf(s.3)))
         case .cfa:
             try w.writeU32(cfaChannel ?? 1, distributions: (
                 .literal(1),

@@ -36,19 +36,6 @@ public struct BitDepth: Sendable, Equatable {
         floatingPoint: false, bitsPerSample: 8, exponentBitsPerSample: 0
     )
 
-    /// U32 distribution for the exponent field of a float `BitDepth`.
-    /// Spec §C.3.5: `(literal(2), literal(5), literal(10), 7 + u(4))`.
-    /// The named selectors are uncommon exponent values (2 bits,
-    /// 5 bits = float16, 10 bits = some custom). Selector 3 is the
-    /// general path covering 7..22 and is what cjxl uses for the
-    /// most common case (float32 with 8 exponent bits, encoded as
-    /// `7 + u(4) = 7+1 = 8`).
-    private static let expDistribution: (UInt32Distribution, UInt32Distribution,
-                                         UInt32Distribution, UInt32Distribution) = (
-        .literal(2), .literal(5), .literal(10),
-        .offset(constant: 7, extraBits: 4)
-    )
-
     public static func read(from r: inout BitReader) throws -> BitDepth {
         let isFloat = try r.readBit()
         if isFloat {
@@ -56,7 +43,10 @@ public struct BitDepth: Sendable, Equatable {
                 .literal(32), .literal(16), .literal(24),
                 .offset(constant: 1, extraBits: 6)
             ))
-            let exp = try r.readU32(expDistribution)
+            // Exponent bits — raw u(4), encoded as `exponent - 1` per
+            // libjxl image_metadata.cc (`Bits(4, 8 - offset, &val)`
+            // with offset=1). So float32's exponent=8 lands as u(4)=7.
+            let exp = (try r.read(bits: 4)) &+ 1
             return BitDepth(floatingPoint: true, bitsPerSample: bps, exponentBitsPerSample: exp)
         } else {
             let bps = try r.readU32((
@@ -74,7 +64,8 @@ public struct BitDepth: Sendable, Equatable {
                 .literal(32), .literal(16), .literal(24),
                 .offset(constant: 1, extraBits: 6)
             ))
-            try w.writeU32(exponentBitsPerSample, distributions: BitDepth.expDistribution)
+            // Inverse of read — emit `exponent - 1` as u(4).
+            w.write(bits: 4, value: exponentBitsPerSample &- 1)
         } else {
             try w.writeU32(bitsPerSample, distributions: (
                 .literal(8), .literal(10), .literal(12),
