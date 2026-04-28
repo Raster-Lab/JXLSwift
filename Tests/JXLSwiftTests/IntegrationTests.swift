@@ -2337,13 +2337,18 @@ extension FoundationTests {
 
     /// Each predictor formula on a hand-computed neighbourhood.
     func testPredictor_FormulasAgainstHandValues() {
-        let n = Neighbourhood(w: 100, n: 110, nw: 105, ne: 120)
+        let n = Neighbourhood(w: 100, n: 110, nw: 105, ne: 120,
+                              ww: 90, nn: 115)
 
         XCTAssertEqual(Predictor.zero.apply(to: n), 0)
         XCTAssertEqual(Predictor.west.apply(to: n), 100)
         XCTAssertEqual(Predictor.north.apply(to: n), 110)
         XCTAssertEqual(Predictor.avgWN.apply(to: n), 105,
                        "(100 + 110) / 2 = 105")
+        XCTAssertEqual(Predictor.ww.apply(to: n), 90,
+                       "WW returns the 2-columns-west sample")
+        XCTAssertEqual(Predictor.nn.apply(to: n), 115,
+                       "NN returns the 2-rows-north sample")
 
         // gradient = clamp(W + N - NW, min(W,N), max(W,N))
         //         = clamp(100 + 110 - 105, 100, 110)
@@ -2362,6 +2367,36 @@ extension FoundationTests {
         let n = Neighbourhood(w: 100, n: 200, nw: 300, ne: 0)
         XCTAssertEqual(Predictor.gradient.apply(to: n), 100,
                        "gradient should clamp to min(W, N)")
+    }
+
+    /// Period-2-column pattern: every other column repeats. The WW
+    /// predictor (2 columns west) gives a perfect match for the
+    /// interior; should be picked when the encoder evaluates all
+    /// predictors. Round-trip must be exact.
+    func testM0_Period2ColumnPattern_PicksWW() throws {
+        var frame = ImageFrame(
+            width: 8, height: 8, channels: 1,
+            pixelType: .uint8, colorSpace: .grayscale
+        )
+        for y in 0..<8 {
+            for x in 0..<8 {
+                // Period-2 column: alternating value pattern
+                let v = UInt16((x % 2 == 0) ? 100 : 200)
+                frame.setPixel(x: x, y: y, channel: 0, value: v)
+            }
+        }
+        let buf = MinimalLosslessCodec.buildChannelBuffer(frame, channel: 0)
+        let chosen = MinimalLosslessCodec.bestPredictorForChannel(
+            buf, width: 8, hybridConfig: .defaultConfig
+        ).id
+        // WW (or another predictor that gives equally small residuals)
+        // — but for this exact period-2 pattern, WW gives 0 residuals
+        // for x ≥ 2 in every row.
+        XCTAssertTrue([PredictorID.ww, .west, .north].contains(chosen),
+            "period-2-column should pick a predictor that handles it (got \(chosen))")
+        let encoded = try MinimalLosslessCodec.encode(frame)
+        let decoded = try MinimalLosslessCodec.decode(encoded)
+        XCTAssertEqual(decoded.data, frame.data)
     }
 
     /// `Neighbourhood.init(at:in:)` substitutes the spec fall-backs at

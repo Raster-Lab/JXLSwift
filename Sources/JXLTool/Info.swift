@@ -88,6 +88,8 @@ private func predictorLabel(_ p: PredictorID) -> String {
     case .avgWN:            return "avgWN"
     case .gradient:         return "gradient"
     case .medianWNGradient: return "medianWNGradient"
+    case .ww:               return "ww"
+    case .nn:               return "nn"
     }
 }
 

@@ -52,12 +52,18 @@ public enum Predictor: Sendable, Equatable {
     case avgWN
     case gradient
     case medianWNGradient
+    /// `WW` — pixel two columns to the west, useful for column-period-2
+    /// patterns and for completing the neighbourhood when prediction
+    /// from W alone produces too much error.
+    case ww
+    /// `NN` — pixel two rows above; symmetric counterpart to `ww`.
+    case nn
 }
 
 /// Bit-level tag for serialising a `Predictor` choice into the
-/// codestream. The slot space is u(3) — 8 values — which leaves
-/// headroom for higher-order predictors (Self, SelectGradient, …)
-/// landing in later phases.
+/// codestream. The slot space is u(3) — 8 values; 6 are
+/// definitively used and 2 are reserved for future spec-aligned
+/// predictors.
 public enum PredictorID: UInt32, Sendable, Equatable, CaseIterable {
     case zero             = 0
     case west             = 1
@@ -65,6 +71,8 @@ public enum PredictorID: UInt32, Sendable, Equatable, CaseIterable {
     case avgWN            = 3
     case gradient         = 4
     case medianWNGradient = 5
+    case ww               = 6
+    case nn               = 7
 
     /// The `Predictor` this ID names.
     public var predictor: Predictor {
@@ -75,20 +83,27 @@ public enum PredictorID: UInt32, Sendable, Equatable, CaseIterable {
         case .avgWN:            return .avgWN
         case .gradient:         return .gradient
         case .medianWNGradient: return .medianWNGradient
+        case .ww:               return .ww
+        case .nn:               return .nn
         }
     }
 }
 
-/// A 4-neighbour patch around a pixel. Use `init(at:in:)` to read
+/// A 4-neighbour patch around a pixel plus the second-order WW/NN
+/// values for higher-order predictors. Use `init(at:in:)` to read
 /// from an `Int32` 2-D buffer with edge fall-backs.
 public struct Neighbourhood: Sendable, Equatable {
     public let w:  Int32   // west
     public let n:  Int32   // north
     public let nw: Int32   // north-west
     public let ne: Int32   // north-east
+    public let ww: Int32   // 2 columns west (= west of west)
+    public let nn: Int32   // 2 rows north (= north of north)
 
-    public init(w: Int32, n: Int32, nw: Int32, ne: Int32) {
+    public init(w: Int32, n: Int32, nw: Int32, ne: Int32,
+                ww: Int32 = 0, nn: Int32 = 0) {
         self.w = w; self.n = n; self.nw = nw; self.ne = ne
+        self.ww = ww; self.nn = nn
     }
 
     /// Read the 4-neighbour patch around `(x, y)` from `buffer`,
@@ -97,6 +112,8 @@ public struct Neighbourhood: Sendable, Equatable {
     ///   • If a neighbour falls outside the image, substitute another
     ///     neighbour: prefer W, then N. If neither exists (top-left
     ///     pixel) substitute 0.
+    ///   • `WW` falls back to W when only one column exists west;
+    ///     `NN` falls back to N when only one row exists north.
     ///
     /// `buffer.count` must equal `width * height` and entries are
     /// row-major.
@@ -113,13 +130,18 @@ public struct Neighbourhood: Sendable, Equatable {
         let hasN  = y - 1 >= 0
         let hasNW = hasW && hasN
         let hasNE = (x + 1 < width) && hasN
+        let hasWW = x - 2 >= 0
+        let hasNN = y - 2 >= 0
 
         let wVal:  Int32 = hasW  ? at(x - 1, y)     : (hasN ? at(x, y - 1) : 0)
         let nVal:  Int32 = hasN  ? at(x, y - 1)     : wVal
         let nwVal: Int32 = hasNW ? at(x - 1, y - 1) : (hasW ? wVal : nVal)
         let neVal: Int32 = hasNE ? at(x + 1, y - 1) : nVal
+        let wwVal: Int32 = hasWW ? at(x - 2, y)     : wVal
+        let nnVal: Int32 = hasNN ? at(x, y - 2)     : nVal
 
         self.w = wVal; self.n = nVal; self.nw = nwVal; self.ne = neVal
+        self.ww = wwVal; self.nn = nnVal
     }
 }
 
@@ -152,6 +174,10 @@ extension Predictor {
             // median(W, N, W + N − NW).
             let g = nbh.w &+ nbh.n &- nbh.nw
             return medianOf3(nbh.w, nbh.n, g).clamped(lo: lo, hi: hi)
+        case .ww:
+            return nbh.ww
+        case .nn:
+            return nbh.nn
         }
     }
 }
