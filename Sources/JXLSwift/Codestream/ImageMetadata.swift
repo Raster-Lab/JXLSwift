@@ -214,18 +214,15 @@ public struct ImageMetadata: Sendable {
             }
         }
 
-        // Reserved bits for forward compatibility.
-        let extensionsPresent = try r.readBit()
-        if extensionsPresent {
-            // We don't decode extensions; skip the 64-bit "used_extensions"
-            // bitfield and any per-extension data they describe.
-            _ = try r.readU64()
-            // The actual extension payloads vary per bit set in `used`.
-            // For an MVP foundation we don't try to decode them; skip
-            // gracefully by leaving the reader where it is. Real use
-            // would require iterating the bitfield. (Not yet hit on the
-            // medical-imaging corpus.)
-        }
+        // Extensions bitfield — `BeginExtensions` reads a U64 directly
+        // (libjxl fields.h `VisitorBase::BeginExtensions` =
+        // `U64(0, &extensions)`). U64=0 takes only the 2-bit selector
+        // "00", so the no-extensions case stays compact. We don't yet
+        // decode any extension payloads — the per-extension U64 size
+        // fields would let a real implementation skip past unknown
+        // extensions, which the current parser relies on no
+        // codestreams using.
+        _ = try r.readU64()
 
         return ImageMetadata(
             allDefault: false,
@@ -331,8 +328,8 @@ extension ImageMetadata {
             }
         }
 
-        // No extensions.
-        w.writeBit(false)
+        // No extensions — U64(0) emits the 2-bit selector "00".
+        w.writeU64(0)
     }
 
     /// True when every field matches the spec defaults — what
