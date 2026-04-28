@@ -145,3 +145,43 @@ public func decodeModularChannel(
     )
     return buf
 }
+
+/// One channel's geometry for `decodeAllChannels(...)`. `width` and
+/// `height` are post-shift dimensions (i.e., already accounting for
+/// `hshift` / `vshift` in chroma-subsampled inputs).
+public struct ModularChannelGeometry: Sendable, Equatable {
+    public let width: Int
+    public let height: Int
+    public init(width: Int, height: Int) {
+        self.width = width
+        self.height = height
+    }
+}
+
+/// Decode every channel listed in `channels` from a single shared
+/// `TokenStreamReader`. Each channel gets its own fresh
+/// `WeightedPredictor` state (the WP arrays are per-channel, not
+/// shared). Channel index becomes property 0 (`staticChannel`); pass
+/// the same `groupId` for all channels in a group.
+///
+/// Returns one `[Int32]` buffer per input channel, in the same order.
+public func decodeAllChannels(
+    channels: [ModularChannelGeometry],
+    groupId: Int32,
+    tree: ModularTree,
+    stream: inout TokenStreamReader,
+    from r: inout BitReader,
+    wpHeader: WeightedPredictorHeader = .default
+) throws -> [[Int32]] {
+    var out = [[Int32]]()
+    out.reserveCapacity(channels.count)
+    for (i, g) in channels.enumerated() {
+        let buf = try decodeModularChannel(
+            width: g.width, height: g.height,
+            staticChannel: Int32(i), groupId: groupId,
+            tree: tree, stream: &stream, from: &r, wpHeader: wpHeader
+        )
+        out.append(buf)
+    }
+    return out
+}

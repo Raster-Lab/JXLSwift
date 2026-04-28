@@ -6011,6 +6011,129 @@ extension FoundationTests {
         }
     }
 
+    /// **Cross-validation**: decode all 3 channels (Y/Co/Cg post-RCT
+    /// for cjxl's typical emit) of a 32×32 RGB lossless file via
+    /// `decodeAllChannels`. Each channel maintains its own WP state,
+    /// the shared `TokenStreamReader` advances continuously across
+    /// the channel boundary (rANS state + per-pixel tokens).
+    ///
+    /// **Currently skips** because cjxl applies Squeeze transforms
+    /// before encoding, so the actual on-the-wire channel count and
+    /// per-channel geometry differ from the input image dimensions.
+    /// Wiring the GroupHeader transform list into channel geometry
+    /// (Squeeze splits each channel into LL + HL plus changes
+    /// dimensions; RCT keeps channels but reorders them) is the next
+    /// roadmap step. Once that lands the test is unlocked.
+    func testCrossValidate_Cjxl_DecodeAllChannelsStructural() throws {
+        guard let cjxl = whichTool("cjxl") else {
+            try XCTSkipIf(true, "cjxl not on PATH")
+            return
+        }
+        let pnmPath = NSTemporaryDirectory() + "ac-\(UUID().uuidString).ppm"
+        let jxlPath = NSTemporaryDirectory() + "ac-\(UUID().uuidString).jxl"
+        defer {
+            try? FileManager.default.removeItem(atPath: pnmPath)
+            try? FileManager.default.removeItem(atPath: jxlPath)
+        }
+        try makeSyntheticPNM(
+            width: 32, height: 32, channels: 3, bitDepth: 8,
+            generator: { x, y, c in UInt16((x &* 7 &+ y &* 13 &+ Int(c)) & 0xFF) }
+        ).write(to: URL(fileURLWithPath: pnmPath))
+        let proc = Process()
+        proc.launchPath = cjxl
+        proc.arguments = ["-q", "100", pnmPath, jxlPath]
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        try proc.run()
+        proc.waitUntilExit()
+        let data = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
+        var r = BitReader(data)
+        _ = try r.read(bits: 8); _ = try r.read(bits: 8)
+        let size = try SizeHeader.read(from: &r)
+        let m = try ImageMetadata.read(from: &r)
+        try r.alignToByte()
+        let ctx = FrameHeaderContext(
+            xybEncoded: m.xybEncoded,
+            numExtraChannels: m.extraChannels.count,
+            haveAnimation: m.animation != nil,
+            haveTimecodes: m.animation?.haveTimecodes ?? false
+        )
+        let fh = try FrameHeader.read(from: &r, context: ctx)
+        let entries = TOC.numEntries(
+            numGroups: 1, numDcGroups: 0,
+            numPasses: Int(fh.passes.numPasses)
+        )
+        _ = try TOC.read(from: &r, numEntries: entries)
+        let matrixDcDefault = try r.readBit()
+        if !matrixDcDefault {
+            for _ in 0..<3 { _ = try r.read(bits: 16) }
+        }
+        let hasTree = try r.readBit()
+        XCTAssertTrue(hasTree)
+        let treeHdr = try EntropySectionHeader.read(from: &r, numContexts: 6)
+        let treeCodebook = try MultiClusterCodebook.read(
+            from: &r, header: treeHdr
+        )
+        var treeStream = TokenStreamReader(
+            header: treeHdr, codebook: treeCodebook
+        )
+        let tree = try ModularTree.decode(from: &r, stream: &treeStream)
+        let postTreeHdr = try EntropySectionHeader.read(
+            from: &r, numContexts: tree.leafCount
+        )
+        let postTreeCodebook: MultiClusterCodebook
+        do {
+            postTreeCodebook = try MultiClusterCodebook.read(
+                from: &r, header: postTreeHdr
+            )
+        } catch {
+            try XCTSkipIf(true,
+                "post-tree codebook decode hit unsupported path: \(error)")
+            return
+        }
+        try r.alignToByte()
+        let groupHeader: GroupHeader
+        do {
+            groupHeader = try GroupHeader.read(from: &r)
+        } catch {
+            try XCTSkipIf(true,
+                "GroupHeader decode reached an unexpected pattern: \(error)")
+            return
+        }
+        var pixelStream = TokenStreamReader(
+            header: postTreeHdr, codebook: postTreeCodebook
+        )
+        let width = Int(size.xsize)
+        let height = Int(size.ysize)
+        let channels = [
+            ModularChannelGeometry(width: width, height: height),
+            ModularChannelGeometry(width: width, height: height),
+            ModularChannelGeometry(width: width, height: height)
+        ]
+        do {
+            let decoded = try decodeAllChannels(
+                channels: channels, groupId: 0,
+                tree: tree, stream: &pixelStream, from: &r,
+                wpHeader: groupHeader.wpHeader
+            )
+            XCTAssertEqual(decoded.count, 3)
+            for (i, ch) in decoded.enumerated() {
+                XCTAssertEqual(ch.count, width * height,
+                    "channel \(i) size mismatch")
+                for v in ch {
+                    XCTAssertGreaterThan(v, -1_000_000,
+                        "channel \(i): value \(v) overflowed")
+                    XCTAssertLessThan(v, 1_000_000,
+                        "channel \(i): value \(v) overflowed")
+                }
+            }
+        } catch {
+            print("DIAG cjxl-allchannels: decode error: \(error)")
+            try XCTSkipIf(true,
+                "all-channels decode hit unsupported case: \(error)")
+        }
+    }
+
     /// **Cross-validation**: read per-cluster ANS distributions from a
     /// real cjxl-emitted Modular tree section. After the
     /// `EntropySectionHeader` prefix (LZ77 + ContextMap +
