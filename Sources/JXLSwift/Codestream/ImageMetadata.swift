@@ -393,17 +393,24 @@ extension ColorEncoding {
         // distribution. Reachable values 0..81; named JXL values
         // 0=RGB, 1=Gray, 2=XYB, 3=Unknown.
         try w.writeEnum(colorSpace.rawValue)
-        guard !useICC && colorSpace != .xyb else { return }
+        guard !useICC else { return }
 
-        // White point — `Enum()` per spec §C.3.4.
-        let wp = whitePoint ?? .d65
-        try w.writeEnum(wp.rawValue)
-        if wp == .custom, let cw = customWhite {
-            try w.writeU32(cw.0, distributions: (.bits(19), .bits(19), .bits(20), .bits(21)))
-            try w.writeU32(cw.1, distributions: (.bits(19), .bits(19), .bits(20), .bits(21)))
+        // Per-field skip flags match libjxl: XYB has implicit D65,
+        // gray/XYB have no primaries. TF + rendering intent are always
+        // emitted in the non-ICC branch.
+        let implicitWhitePoint = (colorSpace == .xyb)
+        let hasPrimaries = (colorSpace != .grayscale && colorSpace != .xyb)
+
+        if !implicitWhitePoint {
+            let wp = whitePoint ?? .d65
+            try w.writeEnum(wp.rawValue)
+            if wp == .custom, let cw = customWhite {
+                try w.writeU32(cw.0, distributions: (.bits(19), .bits(19), .bits(20), .bits(21)))
+                try w.writeU32(cw.1, distributions: (.bits(19), .bits(19), .bits(20), .bits(21)))
+            }
         }
 
-        if colorSpace != .grayscale {
+        if hasPrimaries {
             let prim = primaries ?? .srgb
             // Primaries — `Enum()`. Named: 1=sRGB, 2=custom,
             // 9=BT2100, 11=DCI-P3.

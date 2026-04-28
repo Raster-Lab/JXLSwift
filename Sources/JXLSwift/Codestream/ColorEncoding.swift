@@ -127,27 +127,38 @@ public struct ColorEncoding: Sendable {
         var transfer: TransferFunction = .srgb
         var intent: RenderingIntent = .relative
 
-        if !useICC && cs != .xyb {
-            // White point. Spec §C.3.4 encodes this as `Enum()` —
-            // i.e. `U32(0, 1, 2, 1+u(4))` — not a per-value-literal
-            // distribution. Values 1, 2, 10, 11 are the named
-            // WhitePoint variants; selector 3 reaches 1..16 via
-            // `1 + u(4)`.
-            let wpRaw = try r.readEnum()
-            wp = WhitePoint(rawValue: wpRaw)
-            if wp == .custom {
-                customWhite = (try r.readU32((
-                    .bits(19), .bits(19), .bits(20), .bits(21)
-                )), try r.readU32((
-                    .bits(19), .bits(19), .bits(20), .bits(21)
-                )))
+        if !useICC {
+            // Per-field skip flags match libjxl exactly:
+            //   • XYB colour space implies WhitePoint = D65 (no wp bits
+            //     on the wire — `ImplicitWhitePoint()` returns true).
+            //   • Grayscale and XYB have no primaries (`HasPrimaries()`
+            //     returns false).
+            //   • TF and rendering intent are still read for both
+            //     XYB and grayscale.
+            let implicitWhitePoint = (cs == .xyb)
+            let hasPrimaries = (cs != .grayscale && cs != .xyb)
+
+            if !implicitWhitePoint {
+                // White point — `Enum()` per spec §C.3.4. Named values
+                // 1=D65, 2=custom, 10=E, 11=DCI.
+                let wpRaw = try r.readEnum()
+                wp = WhitePoint(rawValue: wpRaw)
+                if wp == .custom {
+                    customWhite = (try r.readU32((
+                        .bits(19), .bits(19), .bits(20), .bits(21)
+                    )), try r.readU32((
+                        .bits(19), .bits(19), .bits(20), .bits(21)
+                    )))
+                }
+            } else {
+                wp = .d65   // implied
             }
 
-            if cs != .grayscale {
-                // Primaries via Enum() — same `U32(0, 1, 2+u(4),
-                // 18+u(6))` pattern as colorSpace. Named values 1=sRGB,
-                // 2=custom, 9=BT2100/Rec.2100, 11=DCI-P3. cjxl reaches 9
-                // and 11 via `selector 2 + u(4)` with offset 2.
+            if hasPrimaries {
+                // Primaries via `Enum()` — `U32(0, 1, 2+u(4), 18+u(6))`.
+                // Named values 1=sRGB, 2=custom, 9=BT2100/Rec.2100,
+                // 11=DCI-P3. cjxl reaches 9 and 11 via `selector 2 +
+                // u(4)` with offset 2.
                 let pRaw = try r.readEnum()
                 prim = Primaries(rawValue: pRaw)
                 if prim == .custom {
@@ -189,8 +200,7 @@ public struct ColorEncoding: Sendable {
                 }
             }
 
-            // Rendering intent — `Enum()` ranges 0..16; the named
-            // `RenderingIntent` enum only covers 0..3.
+            // Rendering intent — `Enum()`.
             let intentRaw = try r.readEnum()
             intent = RenderingIntent(rawValue: intentRaw) ?? .relative
         }
