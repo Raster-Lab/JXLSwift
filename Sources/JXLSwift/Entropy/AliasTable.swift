@@ -137,6 +137,12 @@ public struct AliasTable: Sendable {
             entries[i].freq0 = UInt16(freq0)
             entries[i].freq1 = UInt16(freq1)
         }
+        if ProcessInfo.processInfo.environment["JXL_TRACE"] != nil {
+            for (i, e) in entries.enumerated() {
+                let msg = "TRACE swift-alias[\(i)]: cutoff=\(e.cutoff) right=\(e.rightValue) offsets1=\(e.offsets1) freq0=\(e.freq0) freq1=\(e.freq1)\n"
+                FileHandle.standardError.write(Data(msg.utf8))
+            }
+        }
         self.entries = entries
         self.logEntrySize = logRange - logAlphaSize
         self.entrySizeMinusOne = entrySize - 1

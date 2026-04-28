@@ -135,6 +135,10 @@ public struct ANSStreamDecoder: Sendable {
             freq = dist.frequencies[Int(symbol)]
             offset = slot &- dist.cumulative[Int(symbol)]
         }
+        if ProcessInfo.processInfo.environment["JXL_TRACE"] != nil {
+            let msg = "TRACE swift-ANS: cluster=\(cluster) state=0x\(String(state, radix: 16)) slot=\(slot) symbol=\(symbol) offset=\(offset) freq=\(freq)\n"
+            FileHandle.standardError.write(Data(msg.utf8))
+        }
         // rANS decode step.
         state = freq &* (state >> logTab) &+ offset
         // Renormalise: if state < 2^16, shift up and read 16 bits.

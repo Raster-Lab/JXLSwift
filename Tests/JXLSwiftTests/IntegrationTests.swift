@@ -6567,8 +6567,8 @@ extension FoundationTests {
         }
         fputs("DIAG postTreeHdr: logAlpha=\(postTreeHdr.logAlphaSize), uintCfgs=\(postTreeHdr.uintConfigs.map { "(split=\($0.splitExponent),msb=\($0.msbInToken),lsb=\($0.lsbInToken))" })\n", stderr)
         fputs("DIAG pos after post-tree codebook=\(r.position)\n", stderr)
-        try r.alignToByte()
-        fputs("DIAG pos after alignToByte=\(r.position)\n", stderr)
+        // NO alignToByte — libjxl reads GroupHeader directly after
+        // the post-tree codebook.
         let groupHeader: GroupHeader
         do {
             groupHeader = try GroupHeader.read(from: &r)

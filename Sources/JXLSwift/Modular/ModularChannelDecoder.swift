@@ -126,6 +126,10 @@ public func decodeModularChannel(
                 &+ Int64(leaf.predictorOffset)
                 &+ Int64(scaled))
             out[y * width + x] = value
+            if ProcessInfo.processInfo.environment["JXL_TRACE"] != nil, x < 4, y == 0 {
+                let msg = "TRACE pixel ch=\(staticChannel) (\(x),\(y)) leaf=\(leaf.leafId) rawPred=\(leaf.rawPredictor) wpPred=\(wpPred) predicted=\(predicted) token=\(token) residual=\(signedRes) value=\(value)\n"
+                FileHandle.standardError.write(Data(msg.utf8))
+            }
             wp.update(actual: value, x: x, y: y, xsize: width)
         }
     }
