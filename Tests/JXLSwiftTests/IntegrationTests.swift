@@ -1979,6 +1979,113 @@ final class FoundationTests: XCTestCase {
         XCTAssertEqual(applyLibjxlPredictor(raw: 5, neighbourhood: nbh), 10)
     }
 
+    // MARK: - ModularImage / metaApplyTransforms
+
+    /// Empty transform list: the channel layout is unchanged.
+    func testMetaApply_NoTransforms_Identity() throws {
+        var image = ModularImage.fresh(
+            xsize: 32, ysize: 32, nbColor: 3
+        )
+        try metaApplyTransforms(image: &image, transforms: [])
+        XCTAssertEqual(image.channels.count, 3)
+        for ch in image.channels {
+            XCTAssertEqual(ch.width, 32)
+            XCTAssertEqual(ch.height, 32)
+            XCTAssertEqual(ch.hshift, 0)
+            XCTAssertEqual(ch.vshift, 0)
+        }
+    }
+
+    /// RCT is a colour-space rotation; it does NOT change channel
+    /// geometry. Verify metaApply leaves the channel list intact.
+    func testMetaApply_RCT_GeometryUnchanged() throws {
+        var image = ModularImage.fresh(
+            xsize: 32, ysize: 32, nbColor: 3
+        )
+        let rct = ModularTransform(id: .rct, beginC: 0, rctType: 6, numC: 3)
+        try metaApplyTransforms(image: &image, transforms: [rct])
+        XCTAssertEqual(image.channels.count, 3)
+    }
+
+    /// Single explicit horizontal Squeeze on channels [0, 0+3) of a
+    /// 32×32 RGB image: each colour channel is halved horizontally
+    /// and a residual placeholder is inserted right after.
+    func testMetaApply_Squeeze_HorizontalInPlace() throws {
+        var image = ModularImage.fresh(
+            xsize: 32, ysize: 32, nbColor: 3
+        )
+        let squeeze = ModularTransform(
+            id: .squeeze, beginC: 0, numC: 3, squeezes: [
+                ModularTransform.SqueezeParams(
+                    horizontal: true, inPlace: true,
+                    beginC: 0, numC: 3
+                )
+            ]
+        )
+        try metaApplyTransforms(image: &image, transforms: [squeeze])
+        // After in-place horizontal squeeze on 3 channels:
+        // 6 channels total — 3 LL (16×32) followed by 3 HL (16×32).
+        XCTAssertEqual(image.channels.count, 6)
+        for i in 0..<3 {
+            XCTAssertEqual(image.channels[i].width, 16,
+                "channel \(i) LL width")
+            XCTAssertEqual(image.channels[i].height, 32,
+                "channel \(i) LL height")
+            XCTAssertEqual(image.channels[i].hshift, 1,
+                "channel \(i) hshift")
+        }
+        for i in 3..<6 {
+            XCTAssertEqual(image.channels[i].width, 16,
+                "channel \(i) HL width")
+            XCTAssertEqual(image.channels[i].height, 32,
+                "channel \(i) HL height")
+        }
+    }
+
+    /// Vertical Squeeze halves height instead of width, and bumps
+    /// vshift instead of hshift.
+    func testMetaApply_Squeeze_VerticalInPlace() throws {
+        var image = ModularImage.fresh(
+            xsize: 32, ysize: 32, nbColor: 3
+        )
+        let squeeze = ModularTransform(
+            id: .squeeze, beginC: 0, numC: 3, squeezes: [
+                ModularTransform.SqueezeParams(
+                    horizontal: false, inPlace: true,
+                    beginC: 0, numC: 3
+                )
+            ]
+        )
+        try metaApplyTransforms(image: &image, transforms: [squeeze])
+        XCTAssertEqual(image.channels.count, 6)
+        for i in 0..<3 {
+            XCTAssertEqual(image.channels[i].height, 16)
+            XCTAssertEqual(image.channels[i].vshift, 1)
+        }
+    }
+
+    /// `defaultSqueezeParameters` matches libjxl's `DefaultSqueezeParameters`
+    /// for a 32×32 RGB image: 4:2:0 chroma squeezes (horizontal then
+    /// vertical for channels 1,2) followed by main vertical /
+    /// horizontal squeezes that bring the LL down to ≤ 8×8.
+    func testMetaApply_DefaultSqueezeParameters_32x32_RGB() throws {
+        let image = ModularImage.fresh(
+            xsize: 32, ysize: 32, nbColor: 3
+        )
+        let params = defaultSqueezeParameters(image: image)
+        // First two are 4:2:0 chroma: (h, !inPlace, beginC=1, numC=2)
+        // and (v, !inPlace, beginC=1, numC=2).
+        XCTAssertGreaterThanOrEqual(params.count, 2)
+        XCTAssertTrue(params[0].horizontal)
+        XCTAssertFalse(params[0].inPlace)
+        XCTAssertEqual(params[0].beginC, 1)
+        XCTAssertEqual(params[0].numC, 2)
+        XCTAssertFalse(params[1].horizontal)
+        XCTAssertFalse(params[1].inPlace)
+        XCTAssertEqual(params[1].beginC, 1)
+        XCTAssertEqual(params[1].numC, 2)
+    }
+
     // MARK: - WeightedPredictor — stateful WP machine + property 15
 
     /// At pixel (0, 0) the WP has no neighbour history, so all
@@ -6011,19 +6118,19 @@ extension FoundationTests {
         }
     }
 
-    /// **Cross-validation**: decode all 3 channels (Y/Co/Cg post-RCT
-    /// for cjxl's typical emit) of a 32×32 RGB lossless file via
-    /// `decodeAllChannels`. Each channel maintains its own WP state,
-    /// the shared `TokenStreamReader` advances continuously across
-    /// the channel boundary (rANS state + per-pixel tokens).
-    ///
-    /// **Currently skips** because cjxl applies Squeeze transforms
-    /// before encoding, so the actual on-the-wire channel count and
-    /// per-channel geometry differ from the input image dimensions.
-    /// Wiring the GroupHeader transform list into channel geometry
-    /// (Squeeze splits each channel into LL + HL plus changes
-    /// dimensions; RCT keeps channels but reorders them) is the next
-    /// roadmap step. Once that lands the test is unlocked.
+    /// **Cross-validation**: decode every wire-level channel of a
+    /// real cjxl-emitted 32×32 RGB lossless file. cjxl typically
+    /// applies a chain of Squeeze transforms (4:2:0 chroma + main
+    /// recursive squeeze) so the on-the-wire channel count is much
+    /// larger than 3. We:
+    ///   1. Parse `GroupHeader.transforms`.
+    ///   2. Build a fresh `ModularImage` of 3 × 32×32 channels.
+    ///   3. Run `metaApplyTransforms` to compute the wire geometry.
+    ///   4. Decode every channel through `decodeModularChannel`.
+    ///   5. Assert all decoded values stay in Int32 range (no overflow).
+    /// Inverse transforms are NOT applied (the test only validates
+    /// that the wire geometry + per-channel decode keeps the bit
+    /// stream consistent).
     func testCrossValidate_Cjxl_DecodeAllChannelsStructural() throws {
         guard let cjxl = whichTool("cjxl") else {
             try XCTSkipIf(true, "cjxl not on PATH")
@@ -6105,21 +6212,34 @@ extension FoundationTests {
         )
         let width = Int(size.xsize)
         let height = Int(size.ysize)
-        let channels = [
-            ModularChannelGeometry(width: width, height: height),
-            ModularChannelGeometry(width: width, height: height),
-            ModularChannelGeometry(width: width, height: height)
-        ]
+        // Apply meta-transforms to compute the wire-level channel list.
+        var image = ModularImage.fresh(
+            xsize: width, ysize: height, nbColor: 3
+        )
+        do {
+            try metaApplyTransforms(
+                image: &image, transforms: groupHeader.transforms
+            )
+        } catch {
+            try XCTSkipIf(true,
+                "metaApply hit unsupported transform: \(error)")
+            return
+        }
+        let geometries = image.channels.map {
+            ModularChannelGeometry(width: $0.width, height: $0.height)
+        }
         do {
             let decoded = try decodeAllChannels(
-                channels: channels, groupId: 0,
+                channels: geometries, groupId: 0,
                 tree: tree, stream: &pixelStream, from: &r,
                 wpHeader: groupHeader.wpHeader
             )
-            XCTAssertEqual(decoded.count, 3)
+            XCTAssertEqual(decoded.count, geometries.count)
             for (i, ch) in decoded.enumerated() {
-                XCTAssertEqual(ch.count, width * height,
-                    "channel \(i) size mismatch")
+                XCTAssertEqual(
+                    ch.count, geometries[i].width * geometries[i].height,
+                    "channel \(i) size mismatch"
+                )
                 for v in ch {
                     XCTAssertGreaterThan(v, -1_000_000,
                         "channel \(i): value \(v) overflowed")
@@ -6128,7 +6248,12 @@ extension FoundationTests {
                 }
             }
         } catch {
-            print("DIAG cjxl-allchannels: decode error: \(error)")
+            // Currently skips: libjxl runs `ModularGenericDecompress`
+            // TWICE — once for the Global section (which our reader
+            // is currently positioned at) and once per group. The
+            // pixel data lives in the per-group section, with its
+            // own GroupHeader + transforms + ANS state init. Wiring
+            // that two-pass flow is the next-but-one milestone.
             try XCTSkipIf(true,
                 "all-channels decode hit unsupported case: \(error)")
         }
