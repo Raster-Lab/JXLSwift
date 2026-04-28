@@ -159,6 +159,79 @@ func ceilLog2(_ value: UInt32) -> UInt32 {
     return 32 - UInt32((value &- 1).leadingZeroBitCount)
 }
 
+// MARK: - Unified prefix-code decoder
+
+public enum PrefixCodeFormatError: Error, Sendable, Equatable {
+    case simple(SimplePrefixCodeError)
+    case complex(ComplexPrefixCodeError)
+    case zeroAlphabet
+}
+
+/// Decode a prefix-code table from a bitstream. Picks between the
+/// simple and complex sub-formats by peeking the leading 2-bit
+/// `hskip` field — `hskip == 1` selects simple, otherwise complex.
+/// Returns a ready-to-use `PrefixCodeTable`.
+///
+/// Mirrors libjxl `PrefixCodeData::ReadFromBitStream`.
+public enum PrefixCodeFormat {
+
+    /// Single-entry decode: returns a `PrefixCodeTable` for a code
+    /// with `alphabetSize` symbols. Caller must position the reader
+    /// at the `hskip` header bits.
+    public static func decode(
+        from r: inout BitReader, alphabetSize: Int
+    ) throws -> PrefixCodeTable {
+        guard alphabetSize >= 1 else {
+            throw PrefixCodeFormatError.zeroAlphabet
+        }
+        // Special case: single-symbol alphabets emit zero header bits
+        // and have a trivial decode (always emit symbol 0).
+        if alphabetSize == 1 {
+            // PrefixCodeTable requires lengths.count == alphabetSize
+            // and at least one zero entry — synthesise.
+            do {
+                return try PrefixCodeTable(lengths: [0])
+            } catch let e as PrefixCodeError {
+                throw PrefixCodeFormatError.complex(.prefixCode(e))
+            }
+        }
+        // Peek the 2-bit hskip to decide which sub-format to use,
+        // *without* advancing the reader (each sub-format reads its
+        // own hskip).
+        let hskip: UInt32
+        do { hskip = try r.peek(bits: 2) }
+        catch let e as BitstreamError {
+            throw PrefixCodeFormatError.complex(.bitstream(e))
+        }
+        if hskip == 1 {
+            let lengths: [UInt8]
+            do {
+                lengths = try SimplePrefixCodeFormat.decode(
+                    from: &r, alphabetSize: alphabetSize
+                )
+            } catch let e as SimplePrefixCodeError {
+                throw PrefixCodeFormatError.simple(e)
+            }
+            do { return try PrefixCodeTable(lengths: lengths) }
+            catch let e as PrefixCodeError {
+                throw PrefixCodeFormatError.complex(.prefixCode(e))
+            }
+        }
+        let lengths: [UInt8]
+        do {
+            lengths = try ComplexPrefixCodeFormat.decode(
+                from: &r, alphabetSize: alphabetSize
+            )
+        } catch let e as ComplexPrefixCodeError {
+            throw PrefixCodeFormatError.complex(e)
+        }
+        do { return try PrefixCodeTable(lengths: lengths) }
+        catch let e as PrefixCodeError {
+            throw PrefixCodeFormatError.complex(.prefixCode(e))
+        }
+    }
+}
+
 // MARK: - Complex prefix-code-table format (§C.6.2.1, complex branch)
 //
 // When the `hskip` header is 0, 2, or 3, the prefix-code-table is
@@ -191,10 +264,39 @@ public enum ComplexPrefixCodeError: Error, Sendable, Equatable {
 
 /// Order in which the 18 code-length-code lengths are read from the
 /// bitstream. Permits skipping the first `hskip` values to save bits
-/// when those are zero (the spec-recommended common case).
+/// when those are zero (the spec-recommended common case). Mirrors
+/// libjxl `dec_huffman.cc::kCodeLengthCodeOrder` exactly.
 let kCodeLengthCodeOrder: [Int] = [
-    1, 2, 3, 4, 0, 5, 17, 6, 16, 7, 8, 9, 10, 11, 12, 13, 14, 15, 18
+    1, 2, 3, 4, 0, 5, 17, 6, 16, 7, 8, 9, 10, 11, 12, 13, 14, 15
 ]
+
+/// Static Huffman table for the 6 valid cll (code-length-code-length)
+/// values. Indexed by 4 peeked LSB-first bits; each entry is
+/// `(bits_to_consume, decoded_cll)`. From libjxl `dec_huffman.cc:206`.
+fileprivate let kCLLHuffman: [(consume: Int, value: UInt8)] = [
+    (2, 0), (2, 4), (2, 3), (3, 2), (2, 0), (2, 4), (2, 3), (4, 1),
+    (2, 0), (2, 4), (2, 3), (3, 2), (2, 0), (2, 4), (2, 3), (4, 5),
+]
+
+/// Inverse of `kCLLHuffman` — codeword and length per cll value 0..5.
+/// LSB-first patterns: 0→"00", 1→"1110", 2→"110", 3→"01", 4→"10",
+/// 5→"1111".
+fileprivate let kCLLEncodings: [(codeword: UInt32, length: Int)?] = [
+    /* 0 */ (0b00,   2),
+    /* 1 */ (0b0111, 4),
+    /* 2 */ (0b011,  3),
+    /* 3 */ (0b10,   2),
+    /* 4 */ (0b01,   2),
+    /* 5 */ (0b1111, 4),
+]
+
+@inline(__always)
+fileprivate func writeCLLValue(_ v: UInt8, to w: inout BitWriter) throws {
+    guard v < kCLLEncodings.count, let enc = kCLLEncodings[Int(v)] else {
+        throw ComplexPrefixCodeError.reservedCLL(value: Int(v))
+    }
+    w.write(bits: enc.length, value: enc.codeword)
+}
 
 /// The complex format, mirror of `SimplePrefixCodeFormat`. Decoder is
 /// implemented; encoder uses a deliberately simple ("no-run-length-
@@ -215,16 +317,23 @@ public struct ComplexPrefixCodeFormat {
             throw ComplexPrefixCodeError.wrongHeader(gotHskip: hskip)
         }
 
-        // Read the 18 cll values in spec order, skipping the first hskip.
-        // Index 18 (symbol 18 / "long zero run") is reserved per our
-        // current scope — any non-zero cll there throws.
-        var cll = [UInt8](repeating: 0, count: 19)
+        // Read the 18 cll values in spec order, skipping the first
+        // hskip. Each cll is encoded by the static 16-entry Huffman
+        // table `kCLLHuffman` — values 0..5 with codeword lengths
+        // 2..4 bits — peeked from the next 4 bits of the stream.
+        var cll = [UInt8](repeating: 0, count: 18)
         for i in hskip..<18 {
-            let raw = try r.read(bits: 3)
-            if raw > 5 {
-                throw ComplexPrefixCodeError.reservedCLL(value: Int(raw))
+            // Peek up to 4 bits — at the very end of the stream we
+            // may have fewer remaining; the table is degenerate
+            // enough that a partial peek still resolves valid prefixes.
+            let peekBits = min(4, r.bitsRemaining)
+            var idx: UInt32 = 0
+            if peekBits > 0 {
+                idx = try r.peek(bits: peekBits)
             }
-            cll[kCodeLengthCodeOrder[i]] = UInt8(raw)
+            let entry = kCLLHuffman[Int(idx) & 0x0F]
+            try r.skip(bits: entry.consume)
+            cll[kCodeLengthCodeOrder[i]] = entry.value
         }
 
         // Build the meta-Huffman code over alphabet 0..18.
@@ -318,10 +427,12 @@ public struct ComplexPrefixCodeFormat {
         let metaLengths = lengthLimitedCanonicalHuffman(
             counts: histo, maxLength: 5, alphabetSize: 19
         )
-        // cll values are written in the prescribed order, all 18.
-        // (We already wrote hskip = 0 above, so all 18 are emitted.)
+        // cll values are written in the prescribed order, all 18, via
+        // the static-Huffman codewords (`kCLLEncodings`) the spec
+        // mandates — not raw u(3).
         for i in 0..<18 {
-            w.write(bits: 3, value: UInt32(metaLengths[kCodeLengthCodeOrder[i]]))
+            let v = metaLengths[kCodeLengthCodeOrder[i]]
+            try writeCLLValue(v, to: &w)
         }
 
         // Build the meta-Huffman from the just-emitted cll values, then
