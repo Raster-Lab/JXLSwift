@@ -789,14 +789,23 @@ public struct MinimalLosslessCodec {
                 trial[1] = c1
                 trial[2] = c2
             }
+            // Per-channel predictor selection. Parallelise across
+            // channels when there are 2+: each channel's
+            // bestPredictorForChannel is independent and dominated by
+            // 6 sequential predictor passes per channel, so 4-channel
+            // RGBA gets a 4× theoretical speedup on multi-core.
+            let trialFrozen = trial   // capture immutable copy for @Sendable closure
+            let choices: [ChannelPredictorChoice] = parallelMap(trialFrozen.count) { i in
+                bestPredictorForChannel(
+                    trialFrozen[i], width: width, hybridConfig: hybridConfig
+                )
+            }
             var predictors: [PredictorID] = []
+            predictors.reserveCapacity(choices.count)
             var residuals: [UInt32] = []
             residuals.reserveCapacity(width * (channelBuffers[0].count / width) * channels)
             var score = 0
-            for buf in trial {
-                let choice = bestPredictorForChannel(
-                    buf, width: width, hybridConfig: hybridConfig
-                )
+            for choice in choices {
                 predictors.append(choice.id)
                 residuals.append(contentsOf: choice.residuals)
                 score &+= choice.distinctCount
@@ -888,5 +897,38 @@ public struct MinimalLosslessCodec {
         }
     }
 
+}
+
+/// Run `work(i)` for each `i` in `0..<count` in parallel where
+/// possible, collecting the results into an ordered array. Falls
+/// through to a sequential loop for `count <= 1` (no dispatch
+/// overhead).
+///
+/// Uses GCD `concurrentPerform` under the hood; the closure is
+/// `@Sendable` and we coordinate writes to disjoint indices via
+/// `withUnsafeMutableBufferPointer` (a scoped, Swift-stdlib-
+/// blessed escape hatch — not the prohibited
+/// `nonisolated(unsafe)` long-lived state pattern).
+@inline(__always)
+private func parallelMap<T: Sendable>(
+    _ count: Int,
+    _ work: @Sendable (Int) -> T
+) -> [T] {
+    if count <= 1 {
+        return (0..<count).map(work)
+    }
+    var results: [T?] = Array(repeating: nil, count: count)
+    results.withUnsafeMutableBufferPointer { buffer in
+        // Capture the buffer's base pointer as a Sendable
+        // raw-pointer integer — disjoint-index writes are safe.
+        let base = UInt(bitPattern: Int(bitPattern: OpaquePointer(buffer.baseAddress!)))
+        DispatchQueue.concurrentPerform(iterations: count) { i in
+            let p = UnsafeMutablePointer<T?>(
+                bitPattern: Int(bitPattern: base)
+            )!
+            p.advanced(by: i).pointee = work(i)
+        }
+    }
+    return results.map { $0! }
 }
 
