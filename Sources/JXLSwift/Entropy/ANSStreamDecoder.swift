@@ -103,8 +103,15 @@ public struct ANSStreamDecoder: Sendable {
         cluster: Int, from r: inout BitReader
     ) throws -> UInt32 {
         if !initialised {
+            let posBefore = r.position
             state = try r.read(bits: 32)
             initialised = true
+            if ProcessInfo.processInfo.environment["JXL_TRACE"] != nil {
+                let slot = state & (ANSConstants.tabSize - 1)
+                FileHandle.standardError.write(Data(
+                    "TRACE ANS init: posBefore=\(posBefore) state=0x\(String(state, radix: 16)) slot=\(slot)\n".utf8
+                ))
+            }
         }
         guard cluster >= 0,
               cluster < (aliasTables?.count ?? distributions.count) else {
