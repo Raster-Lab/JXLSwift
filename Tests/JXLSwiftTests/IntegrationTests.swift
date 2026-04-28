@@ -2989,6 +2989,113 @@ extension FoundationTests {
         let parsed = try FrameHeader.read(from: &r)
         XCTAssertEqual(parsed.name, "frame-1")
     }
+
+    /// **Cross-validation**: parse the FrameHeader emitted by cjxl
+    /// for a tiny lossless RGB PPM. After ImageMetadata + the U64
+    /// extensions tail, libjxl `JumpToByteBoundary()`s and then reads
+    /// the FrameHeader. Our reader should succeed and report
+    /// is_modular=true, frameType=regular, isLast=true for a single-
+    /// frame lossless image.
+    func testCrossValidate_Cjxl_FrameHeader_ModularLossless() throws {
+        guard let cjxl = whichTool("cjxl") else {
+            try XCTSkipIf(true, "cjxl not on PATH")
+            return
+        }
+        let pnmPath = NSTemporaryDirectory() + "fh-\(UUID().uuidString).ppm"
+        let jxlPath = NSTemporaryDirectory() + "fh-\(UUID().uuidString).jxl"
+        defer {
+            try? FileManager.default.removeItem(atPath: pnmPath)
+            try? FileManager.default.removeItem(atPath: jxlPath)
+        }
+        // Tiny 16×16 RGB.
+        try makeSyntheticPNM(
+            width: 16, height: 16, channels: 3, bitDepth: 8,
+            generator: { x, y, c in UInt16((x &+ y &+ Int(c)) & 0xFF) }
+        ).write(to: URL(fileURLWithPath: pnmPath))
+        let proc = Process()
+        proc.launchPath = cjxl
+        proc.arguments = ["-q", "100", pnmPath, jxlPath]
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        try proc.run()
+        proc.waitUntilExit()
+        guard proc.terminationStatus == 0 else {
+            XCTFail("cjxl failed"); return
+        }
+        let data = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
+        var r = BitReader(data)
+        // Read up to and including ImageMetadata via the public
+        // header-only path (mirror of decode.cc's pre-frame work).
+        _ = try r.read(bits: 8)   // signature 0xFF
+        _ = try r.read(bits: 8)   // 0x0A
+        _ = try SizeHeader.read(from: &r)
+        let m = try ImageMetadata.read(from: &r)
+        // Align to byte boundary before frame header (matches libjxl
+        // decode.cc:1061 `JumpToByteBoundary`).
+        try r.alignToByte()
+        let ctx = FrameHeaderContext(
+            xybEncoded: m.xybEncoded,
+            numExtraChannels: m.extraChannels.count,
+            haveAnimation: m.animation != nil,
+            haveTimecodes: m.animation?.haveTimecodes ?? false
+        )
+        let fh = try FrameHeader.read(from: &r, context: ctx)
+        XCTAssertEqual(fh.frameType, .regular,
+            "lossless single-frame should be Regular, got \(fh.frameType)")
+        XCTAssertEqual(fh.encoding, .modular,
+            "lossless q=100 should select Modular encoding, got \(fh.encoding)")
+        XCTAssertTrue(fh.isLast,
+            "single-frame image should have is_last=true")
+        XCTAssertEqual(fh.flags, 0,
+            "default lossless frame should have flags=0, got \(fh.flags)")
+        XCTAssertEqual(fh.upsampling, 1,
+            "default lossless frame should have upsampling=1, got \(fh.upsampling)")
+        XCTAssertEqual(fh.passes.numPasses, 1,
+            "default lossless frame should have num_passes=1, got \(fh.passes.numPasses)")
+    }
+
+    /// **Cross-validation**: same shape but with a grayscale source.
+    /// Confirms FrameHeader parsing is independent of colour space.
+    func testCrossValidate_Cjxl_FrameHeader_Grayscale() throws {
+        guard let cjxl = whichTool("cjxl") else {
+            try XCTSkipIf(true, "cjxl not on PATH")
+            return
+        }
+        let pgmPath = NSTemporaryDirectory() + "fh-gray-\(UUID().uuidString).pgm"
+        let jxlPath = NSTemporaryDirectory() + "fh-gray-\(UUID().uuidString).jxl"
+        defer {
+            try? FileManager.default.removeItem(atPath: pgmPath)
+            try? FileManager.default.removeItem(atPath: jxlPath)
+        }
+        try makeSyntheticPNM(
+            width: 32, height: 32, channels: 1, bitDepth: 8,
+            generator: { x, y, _ in UInt16((x &+ y) & 0xFF) }
+        ).write(to: URL(fileURLWithPath: pgmPath))
+        let proc = Process()
+        proc.launchPath = cjxl
+        proc.arguments = ["-q", "100", pgmPath, jxlPath]
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        try proc.run()
+        proc.waitUntilExit()
+        let data = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
+        var r = BitReader(data)
+        _ = try r.read(bits: 8); _ = try r.read(bits: 8)
+        _ = try SizeHeader.read(from: &r)
+        let m = try ImageMetadata.read(from: &r)
+        try r.alignToByte()
+        let ctx = FrameHeaderContext(
+            xybEncoded: m.xybEncoded,
+            numExtraChannels: m.extraChannels.count,
+            haveAnimation: m.animation != nil,
+            haveTimecodes: m.animation?.haveTimecodes ?? false
+        )
+        let fh = try FrameHeader.read(from: &r, context: ctx)
+        XCTAssertEqual(fh.encoding, .modular)
+        XCTAssertEqual(fh.frameType, .regular)
+        XCTAssertTrue(fh.isLast)
+        XCTAssertEqual(fh.flags, 0)
+    }
 }
 
 // MARK: - Phase M0 vertical slice — MinimalLosslessCodec

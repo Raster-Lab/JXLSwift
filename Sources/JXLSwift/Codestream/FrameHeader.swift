@@ -346,39 +346,95 @@ public struct Passes: Sendable, Equatable {
     }
 }
 
-/// Restoration / loop-filter configuration. The `default` case (all
-/// fields default — Gaborish on, EPF iters=2, no custom weights) emits
-/// a single `all_default = 1` bit. Non-default cases can be added
-/// incrementally; the decoder currently throws `.unsupportedField`
-/// when a non-default loop filter is encountered.
+/// Restoration / loop-filter configuration. Mirrors libjxl
+/// `LoopFilter::VisitFields` in lib/jxl/loop_filter.cc.
+///
+/// The decoder reads every field; the writer currently only emits the
+/// `all_default = 1` shortcut. The non-default write path (custom
+/// Gaborish weights, EPF custom LUTs, etc.) is incremental future
+/// work — the read path covers it so we can cross-validate against
+/// cjxl-emitted frames.
 public struct LoopFilter: Sendable, Equatable {
     public let allDefault: Bool
+    /// Gaborish smoothing on (default true).
+    public let gab: Bool
+    /// EPF iteration count (default 2, range 0..3 per `Bits(2)`).
+    public let epfIters: UInt32
 
-    public init(allDefault: Bool = true) {
+    public init(allDefault: Bool = true,
+                gab: Bool = true,
+                epfIters: UInt32 = 2) {
         self.allDefault = allDefault
+        self.gab = gab
+        self.epfIters = epfIters
     }
 
     public static let `default` = LoopFilter()
 
     public func write(to w: inout BitWriter) throws {
-        // We only support the all_default=true path.
-        guard allDefault else {
-            throw FrameHeaderError.unsupportedField("non-default LoopFilter")
+        if allDefault {
+            w.writeBit(true)
+            // BeginExtensions U64.
+            w.writeU64(0)
+            return
         }
-        w.writeBit(true)
-        // Extensions: U64(0).
-        w.writeU64(0)
+        // Non-default write not yet implemented — would need to
+        // mirror loop_filter.cc's full structure (gab_custom, EPF
+        // custom LUTs, sigma scales, etc.).
+        throw FrameHeaderError.unsupportedField("non-default LoopFilter writer")
     }
 
-    public static func read(from r: inout BitReader) throws -> LoopFilter {
+    /// Read a LoopFilter. `isModular` gates a few EPF sub-blocks per
+    /// libjxl loop_filter.cc — Modular and VarDCT take different
+    /// branches inside the EPF section.
+    public static func read(
+        from r: inout BitReader, isModular: Bool
+    ) throws -> LoopFilter {
         let isDefault = try r.readBit()
-        guard isDefault else {
-            throw FrameHeaderError.unsupportedField("non-default LoopFilter")
+        if isDefault {
+            // BeginExtensions U64 follows even on the default path.
+            _ = try r.readU64()
+            return LoopFilter(allDefault: true)
         }
-        // Skip the BeginExtensions U64 — same pattern as
-        // ImageMetadata's tail.
+        // Gaborish flag.
+        let gab = try r.readBit()
+        if gab {
+            let gabCustom = try r.readBit()
+            if gabCustom {
+                // 6 × F16 for X/Y/B weight pairs.
+                for _ in 0..<6 { _ = try r.read(bits: 16) }
+            }
+        }
+        // EPF iters — raw u(2). Default 2.
+        let epfIters = try r.read(bits: 2)
+        if epfIters > 0 {
+            if !isModular {
+                let epfSharpCustom = try r.readBit()
+                if epfSharpCustom {
+                    // 8 entries of the per-sharpness LUT, each F16.
+                    for _ in 0..<8 { _ = try r.read(bits: 16) }
+                }
+            }
+            let epfWeightCustom = try r.readBit()
+            if epfWeightCustom {
+                // 3 channel scales + 2 zeroflush thresholds.
+                for _ in 0..<5 { _ = try r.read(bits: 16) }
+            }
+            let epfSigmaCustom = try r.readBit()
+            if epfSigmaCustom {
+                if !isModular {
+                    _ = try r.read(bits: 16)   // epf_quant_mul
+                }
+                // 3 × F16: pass-0 sigma, pass-2 sigma, border SAD.
+                for _ in 0..<3 { _ = try r.read(bits: 16) }
+            }
+            if isModular {
+                _ = try r.read(bits: 16)   // epf_sigma_for_modular
+            }
+        }
+        // Extensions: U64.
         _ = try r.readU64()
-        return LoopFilter(allDefault: true)
+        return LoopFilter(allDefault: false, gab: gab, epfIters: epfIters)
     }
 }
 
@@ -899,7 +955,9 @@ extension FrameHeader {
             }
 
             let name = try readNameString(from: &r)
-            let loopFilter = try LoopFilter.read(from: &r)
+            let loopFilter = try LoopFilter.read(
+                from: &r, isModular: encoding == .modular
+            )
 
             // Extensions — U64.
             _ = try r.readU64()
