@@ -188,12 +188,10 @@ public enum EPF {
                       params: params)
         }
         if params.epfIters >= 3 {
-            // EPF0 (7×7 plus-with-diagonals, 12 neighbours) — defer
-            // until a fixture forces it. epf_iters=3 is uncommon.
-            throw EPFError.unsupportedNonZeroSharpness(
-                blockX: 0, blockY: 0,
-                invSigma: invSigmaPerBlock.first ?? 0
-            )
+            applyEPF0(planeX: &planeX, planeY: &planeY, planeB: &planeB,
+                      width: width, height: height,
+                      blocksX: blocksX, invSigmaPerBlock: invSigmaPerBlock,
+                      params: params)
         }
     }
 
@@ -392,6 +390,124 @@ public enum EPF {
                 outX[y * width + x] = (cX + wT * txN + wL * lxN + wR * rxN + wBo * bxN) * invW
                 outY[y * width + x] = (cY + wT * tyN + wL * lyN + wR * ryN + wBo * byN) * invW
                 outB[y * width + x] = (cB + wT * tbN + wL * lbN + wR * rbN + wBo * bbN) * invW
+            }
+        }
+        planeX = outX
+        planeY = outY
+        planeB = outB
+    }
+
+    // MARK: - EPF0 (7×7 plus-with-diagonals, 12 neighbours, 3×3-plus SAD per neighbour)
+
+    /// EPF0 stage — the largest of the three EPF passes; only emitted
+    /// when `epf_iters >= 3` (less common than EPF1/EPF2).
+    ///
+    /// Same template as EPF1: per-pixel weighted bilateral average,
+    /// where the weight per neighbour comes from a SAD between two
+    /// 3×3-plus shapes (centre-plus and neighbour-plus). The
+    /// difference vs EPF1 is the neighbour set:
+    ///
+    ///     EPF1: 4 neighbours at offsets (0,±1), (±1,0)
+    ///     EPF0: 12 neighbours forming a 5×5 plus shape:
+    ///           (-2,0), (-1,-1), (-1,0), (-1,1),
+    ///           (0,-2), (0,-1), (0,1), (0,2),
+    ///           (1,-1), (1,0), (1,1), (2,0)
+    ///
+    /// Plus a different sigma scale (`epf_pass0_sigma_scale * 1.65`).
+    /// libjxl: `render_pipeline/stage_epf.cc::EPF0Stage`.
+    static func applyEPF0(
+        planeX: inout [Float], planeY: inout [Float], planeB: inout [Float],
+        width: Int, height: Int,
+        blocksX: Int, invSigmaPerBlock: [Float],
+        params: EPFParams
+    ) {
+        let inX = planeX, inY = planeY, inB = planeB
+        var outX = inX
+        var outY = inY
+        var outB = inB
+        let sm: Float = params.pass0SigmaScale * 1.65
+        let bsm: Float = sm * params.borderSadMul
+        @inline(__always)
+        func sadMul(ix: Int, iy: Int) -> Float {
+            if iy == 0 || iy == 7 { return bsm }
+            return (ix == 0 || ix == 7) ? bsm : sm
+        }
+        @inline(__always)
+        func clamp(_ v: Int, _ lo: Int, _ hi: Int) -> Int {
+            return v < lo ? lo : (v > hi ? hi : v)
+        }
+        let scaleX = params.channelScale.0
+        let scaleY = params.channelScale.1
+        let scaleB = params.channelScale.2
+
+        // 12 neighbour offsets forming a 5×5 plus (sads_off in libjxl).
+        let neighbourOffsets: [(Int, Int)] = [
+            (-2,  0), (-1, -1), (-1,  0), (-1,  1),
+            ( 0, -2), ( 0, -1), ( 0,  1), ( 0,  2),
+            ( 1, -1), ( 1,  0), ( 1,  1), ( 2,  0),
+        ]
+        // 5 pixel pairs forming the 3×3-plus SAD shape (plus_off).
+        let plusOffsets: [(Int, Int)] = [
+            (0, 0), (-1, 0), (0, -1), (1, 0), (0, 1),
+        ]
+
+        for y in 0..<height {
+            for x in 0..<width {
+                let bx = x / 8, by = y / 8
+                let invSigmaBase = invSigmaPerBlock[by * blocksX + bx]
+                if invSigmaBase < kMinSigma {
+                    outX[y * width + x] = inX[y * width + x]
+                    outY[y * width + x] = inY[y * width + x]
+                    outB[y * width + x] = inB[y * width + x]
+                    continue
+                }
+                let invSigma = invSigmaBase * sadMul(ix: x % 8, iy: y % 8)
+
+                @inline(__always)
+                func get(_ p: [Float], _ xx: Int, _ yy: Int) -> Float {
+                    let cx = clamp(xx, 0, width - 1)
+                    let cy = clamp(yy, 0, height - 1)
+                    return p[cy * width + cx]
+                }
+                @inline(__always)
+                func sadFor(dx: Int, dy: Int) -> Float {
+                    let nx = x + dx, ny = y + dy
+                    var sX: Float = 0, sY: Float = 0, sB: Float = 0
+                    for (dxC, dyC) in plusOffsets {
+                        let ax = x + dxC, ay = y + dyC
+                        let bx2 = nx + dxC, by2 = ny + dyC
+                        sX += abs(get(inX, ax, ay) - get(inX, bx2, by2))
+                        sY += abs(get(inY, ax, ay) - get(inY, bx2, by2))
+                        sB += abs(get(inB, ax, ay) - get(inB, bx2, by2))
+                    }
+                    return sX * scaleX + sY * scaleY + sB * scaleB
+                }
+                @inline(__always)
+                func weight(_ sad: Float) -> Float {
+                    return max(0, sad * invSigma + 1)
+                }
+
+                let cX = inX[y * width + x]
+                let cY = inY[y * width + x]
+                let cB = inB[y * width + x]
+                var accX = cX
+                var accY = cY
+                var accB = cB
+                var wSum: Float = 1
+                for (dx, dy) in neighbourOffsets {
+                    let nX = get(inX, x + dx, y + dy)
+                    let nY = get(inY, x + dx, y + dy)
+                    let nB = get(inB, x + dx, y + dy)
+                    let w = weight(sadFor(dx: dx, dy: dy))
+                    accX += w * nX
+                    accY += w * nY
+                    accB += w * nB
+                    wSum += w
+                }
+                let invW = 1.0 / wSum
+                outX[y * width + x] = accX * invW
+                outY[y * width + x] = accY * invW
+                outB[y * width + x] = accB * invW
             }
         }
         planeX = outX

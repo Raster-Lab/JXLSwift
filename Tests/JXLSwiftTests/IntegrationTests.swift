@@ -7104,20 +7104,14 @@ extension FoundationTests {
         XCTAssertEqual(invSigma, -10000.0, accuracy: 0.5)
     }
 
-    /// EPF non-zero sharpness drives the bilateral kernel — currently
-    /// throws `unsupportedNonZeroSharpness` since the kernel itself
-    /// is deferred. This test pins down the threshold so we'll know
-    /// when it's time to land the full math (e.g., when a textured
-    /// fixture trips this branch).
-    func testVarDCT_EPF_NonZeroSharpnessThrowsUntilImplemented() {
-        // sharpness=4, rowQuant=5: lut[4] ≈ 0.571, sigma_quant is a
-        // small negative number, sigma ≈ -tiny, inv_sigma ≈ -large
-        // *still* < kMinSigma. We need a configuration where sigma
-        // is closer to zero (so inv_sigma is close to kMinSigma).
-        // For a pathological large sharpness with reduced quantMul
-        // the kernel does fire — drive it with custom params.
-        let pathological = EPFParams(
-            epfIters: 1,
+    /// EPF0 (epf_iters >= 3, the 7×7 plus-with-diagonals 12-neighbour
+    /// stage) preserves a constant plane the same way EPF1/EPF2 do —
+    /// all neighbours have zero SAD, weights all equal 1, weighted
+    /// average is the same constant. Pins down the EPF0 path now
+    /// that it ships (was a `notImplemented` throw until v0.8.0l).
+    func testVarDCT_EPF0_ConstantPlanePreservedAtIters3() throws {
+        let pathologicalIters3 = EPFParams(
+            epfIters: 3,
             quantMul: 1.0,
             sharpLut: [0, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0],
             channelScale: (40.0, 5.0, 3.5),
@@ -7126,33 +7120,21 @@ extension FoundationTests {
             borderSadMul: 2.0 / 3.0
         )
         var px = [Float](repeating: 0.5, count: 64)
-        var py = [Float](repeating: 0.5, count: 64)
-        var pb = [Float](repeating: 0.5, count: 64)
-        // With epfIters=3 the kernel hits the deferred EPF0 path —
-        // EPF1+EPF2 now run, then we throw on EPF0.
-        let pathologicalIters3 = EPFParams(
-            epfIters: 3,
-            quantMul: pathological.quantMul,
-            sharpLut: pathological.sharpLut,
-            channelScale: pathological.channelScale,
-            pass1ZeroFlush: pathological.pass1ZeroFlush,
-            pass2ZeroFlush: pathological.pass2ZeroFlush,
-            pass0SigmaScale: pathological.pass0SigmaScale,
-            pass2SigmaScale: pathological.pass2SigmaScale,
-            borderSadMul: pathological.borderSadMul
-        )
-        XCTAssertThrowsError(try EPF.applyAllStages(
+        var py = [Float](repeating: 0.3, count: 64)
+        var pb = [Float](repeating: 0.7, count: 64)
+        try EPF.applyAllStages(
             planeX: &px, planeY: &py, planeB: &pb,
             width: 8, height: 8,
             sharpnessField: [7],
             perBlockQF: [1], quantScale: 1.0,
             params: pathologicalIters3
-        )) { err in
-            guard case EPFError.unsupportedNonZeroSharpness(_, _, _) = err else {
-                XCTFail("expected unsupportedNonZeroSharpness, got \(err)")
-                return
-            }
-        }
+        )
+        // All 3 stages run on a constant plane; SADs are zero,
+        // weights are all 1, weighted averages are the original
+        // values. Mirrored borders also see constant input → same.
+        for v in px { XCTAssertEqual(v, 0.5, accuracy: 1e-5) }
+        for v in py { XCTAssertEqual(v, 0.3, accuracy: 1e-5) }
+        for v in pb { XCTAssertEqual(v, 0.7, accuracy: 1e-5) }
     }
 
     /// EPF1 (4-neighbour bilateral) on a constant-value plane should
