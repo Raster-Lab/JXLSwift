@@ -610,14 +610,17 @@ public final class JXLDecoder {
         // routing for multi-cluster fixtures) and the dequant loop
         // can index it.
         let acMetaCh2 = acMetaValues[2]
-        var perBlockQF = [Int32]()
-        perBlockQF.reserveCapacity(acMetaCount)
+        // Per-first-block QF in raster-scan order (same order ACMeta
+        // channel 2 enumerates first-blocks). `firstBlockQF[i]` is
+        // the QF of the i-th first-block.
+        var firstBlockQF = [Int32]()
+        firstBlockQF.reserveCapacity(acMetaCount)
         for i in 0..<acMetaCount {
             let raw = acMetaCh2.count > acMetaCount + i
                 ? acMetaCh2[acMetaCount + i] : 0
-            perBlockQF.append(1 + max(0, min(raw, 255)))
+            firstBlockQF.append(1 + max(0, min(raw, 255)))
         }
-        let qfRow = perBlockQF.first ?? 5
+        let qfRow = firstBlockQF.first ?? 5
 
         // Build the per-cell AC strategy plane. ACMeta channel 2's
         // `count` first-block strategy IDs expand into the full
@@ -648,6 +651,32 @@ public final class JXLDecoder {
             FileHandle.standardError.write(Data(
                 "TRACE ACStrategyImage: \(acsImage.firstBlocks.count) first-blocks, strategies=\(counts)\n".utf8
             ))
+        }
+
+        // Build a per-CELL QF array (`perBlockQF`). The first-block-
+        // ordered `firstBlockQF` carries a QF per first-block in
+        // raster scan order; we stamp each first-block's QF onto all
+        // its covered cells so subsequent indexers can use cell index
+        // directly. Mirrors libjxl's `qf_row[bx]` semantics where the
+        // QF for each cell equals its parent first-block's QF.
+        var perBlockQF = [Int32](
+            repeating: qfRow,
+            count: xsizeBlocks * ysizeBlocks
+        )
+        for (i, fb) in acsImage.firstBlocks.enumerated() {
+            guard i < firstBlockQF.count else { break }
+            let qfVal = firstBlockQF[i]
+            let s = acsImage.at(x: fb.x, y: fb.y).strategy
+            let cells = s.blockCells
+            for cy in 0..<cells.cellsY {
+                for cx in 0..<cells.cellsX {
+                    let cellX = fb.x + cx
+                    let cellY = fb.y + cy
+                    if cellX < xsizeBlocks && cellY < ysizeBlocks {
+                        perBlockQF[cellY * xsizeBlocks + cellX] = qfVal
+                    }
+                }
+            }
         }
 
         // For multi-section frames, AC global lives at section
