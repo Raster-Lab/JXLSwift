@@ -986,6 +986,47 @@ public final class JXLDecoder {
             }
         }
 
+        // EPF — edge-preserving filter, up to 3 iterations gated by
+        // `lf.epfIters`. For our cjxl-d=1 fixture the EPF sharpness
+        // field (ACMeta channel 3) is all zeros and the default
+        // `epf_sharp_lut[0] = 0` collapses sigma to -1e-4 → inv_sigma
+        // = -10000 → below `kMinSigma`, so EPF is a structural no-op.
+        // Real-world fixtures with non-zero sharpness drive the
+        // bilateral kernel — wired but not yet implemented (throws
+        // `unsupportedNonZeroSharpness` if hit).
+        if fh.loopFilter.epfIters > 0 {
+            // Sharpness field per block is in ACMetadata channel 3
+            // (1 entry per 8×8 block; for our 8×8 fixture, just 1
+            // value). Default LUT.
+            let sharpField: [UInt8] = (acMetaValues.count > 3
+                ? acMetaValues[3].map { UInt8(clamping: $0) }
+                : [0])
+            do {
+                try EPF.applyAllStages(
+                    planeX: &planeX, planeY: &planeY, planeB: &planeB,
+                    width: 8, height: 8,
+                    sharpnessField: sharpField,
+                    rowQuant: Int32(qfRow),
+                    quantScale: Float(qp.globalScale)
+                        / Float(1 << 16),  // libjxl `Quantizer::Scale()`
+                    params: EPFParams.default
+                )
+                if trace {
+                    FileHandle.standardError.write(Data(
+                        "TRACE EPF: \(fh.loopFilter.epfIters) iter(s); sharpness=\(sharpField); no-op fast path\n".utf8
+                    ))
+                }
+            } catch let e as EPFError {
+                throw DecoderError.notImplemented(
+                    "VarDCT decode: EPF bilateral kernel not yet "
+                    + "implemented for non-zero sharpness: \(e). The "
+                    + "no-op fast path covers cjxl-d=1 fixtures with "
+                    + "sharpness=0; richer fixtures will land the full "
+                    + "kernel."
+                )
+            }
+        }
+
         // Per-pixel XYB → linear RGB → sRGB → 8-bit.
         var rgb8 = [UInt8](repeating: 0, count: 8 * 8 * 3)
         for i in 0..<64 {

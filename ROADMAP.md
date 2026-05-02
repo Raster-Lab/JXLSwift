@@ -289,7 +289,8 @@ Frontier-marker test: [`testVarDCT_RealCjxlFixture_ProgressMarker`](Tests/JXLSwi
 | Section | Spec ref | Status |
 |---|---|---|
 | Gaborish (3×3 separable smoothing) | §C.9.1 | ✅ — `Gaborish.apply` wired into `decodeVarDCTPartial` after color correlation, before `OpsinXYB.inverse`. Default weights match libjxl: `1.1 × 0.104699568` / `1.1 × 0.055680538`. Per-channel application gated by `fh.loopFilter.gab`. |
-| EPF (loop filter — 3-stage edge-preserving filter) | §C.9.2 | ⏳ — current frontier. 7×7 plus-kernel, per-pixel sigma from EPF sharpness field (read from ACMeta channel 3), `epf_iters` ∈ {0,1,2,3} (default 2). Substantial: each stage does SAD-based bilateral filtering with threshold-weighted neighbour contributions. |
+| EPF (loop filter — sigma calc + no-op fast path) | §C.9.2 | ✅ — `EPF.computeInvSigma` mirrors libjxl's `epf.cc::ComputeSigma` (`sigma_quant = epf_quant_mul / (quant_scale × row_quant × kInvSigmaNum)`, multiply by `epf_sharp_lut[s]`, clamp, invert). `EPF.isNoOp` checks `invSigma < kMinSigma` (`-3.905...`). Wired into the decode pipeline after Gaborish. **For cjxl-d=1 fixtures** the default LUT collapses sharpness=0 → sigma=-1e-4 → inv_sigma=-10000 → no-op fast path; the bilateral kernel itself throws `unsupportedNonZeroSharpness` until a fixture forces it. Two unit tests pin both branches. |
+| EPF — full bilateral kernel (EPF0/EPF1/EPF2 stages) | §C.9.2 | ⏳ — defer until a fixture with non-zero sharpness lands; current cjxl-d=1 fixture takes the no-op path. |
 
 ### Phase J — Reversible JPEG transcoding
 

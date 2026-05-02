@@ -6830,6 +6830,67 @@ extension FoundationTests {
         print("[v0.5.0] our RGB means: \(oursMean) vs djxl reference (114, 113, 114)")
     }
 
+    /// EPF sigma calculation early-exits for sharpness=0 with the
+    /// default LUT — `inv_sigma` falls below `kMinSigma`, signalling
+    /// pass-through. Cross-validated against libjxl's epf.cc:
+    ///
+    ///     sigma_quant = epf_quant_mul / (quant_scale × row_quant × kInvSigmaNum)
+    ///     sigma       = sigma_quant × epf_sharp_lut[0]   // = 0 for default LUT
+    ///     sigma       = min(-1e-4, sigma)                 // = -1e-4
+    ///     inv_sigma   = 1 / sigma                         // = -10000
+    ///     -10000 < kMinSigma (-3.905) → pass-through
+    func testVarDCT_EPF_NoOpForZeroSharpness() {
+        let invSigma = EPF.computeInvSigma(
+            sharpness: 0,
+            rowQuant: 5,
+            quantScale: 5111.0 / Float(1 << 16),
+            params: .default
+        )
+        XCTAssertTrue(EPF.isNoOp(invSigma: invSigma),
+            "sharpness=0 must put inv_sigma below kMinSigma — got \(invSigma)")
+        XCTAssertLessThan(invSigma, EPF.kMinSigma)
+        // Concretely: sharpLut[0] = 0, sigma = -1e-4 → inv_sigma = -10000.
+        XCTAssertEqual(invSigma, -10000.0, accuracy: 0.5)
+    }
+
+    /// EPF non-zero sharpness drives the bilateral kernel — currently
+    /// throws `unsupportedNonZeroSharpness` since the kernel itself
+    /// is deferred. This test pins down the threshold so we'll know
+    /// when it's time to land the full math (e.g., when a textured
+    /// fixture trips this branch).
+    func testVarDCT_EPF_NonZeroSharpnessThrowsUntilImplemented() {
+        // sharpness=4, rowQuant=5: lut[4] ≈ 0.571, sigma_quant is a
+        // small negative number, sigma ≈ -tiny, inv_sigma ≈ -large
+        // *still* < kMinSigma. We need a configuration where sigma
+        // is closer to zero (so inv_sigma is close to kMinSigma).
+        // For a pathological large sharpness with reduced quantMul
+        // the kernel does fire — drive it with custom params.
+        let pathological = EPFParams(
+            epfIters: 1,
+            quantMul: 1.0,
+            sharpLut: [0, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0],
+            channelScale: (40.0, 5.0, 3.5),
+            pass1ZeroFlush: 0.45, pass2ZeroFlush: 0.6,
+            pass0SigmaScale: 0.9, pass2SigmaScale: 6.5,
+            borderSadMul: 2.0 / 3.0
+        )
+        var px = [Float](repeating: 0.5, count: 64)
+        var py = [Float](repeating: 0.5, count: 64)
+        var pb = [Float](repeating: 0.5, count: 64)
+        XCTAssertThrowsError(try EPF.applyAllStages(
+            planeX: &px, planeY: &py, planeB: &pb,
+            width: 8, height: 8,
+            sharpnessField: [7],
+            rowQuant: 1, quantScale: 1.0,
+            params: pathological
+        )) { err in
+            guard case EPFError.unsupportedNonZeroSharpness(_, _, _) = err else {
+                XCTFail("expected unsupportedNonZeroSharpness, got \(err)")
+                return
+            }
+        }
+    }
+
     /// `QuantEncoding.read` — Library mode (3-bit selector,
     /// no payload at the spec-default `kNumPredefinedTables == 1`).
     func testVarDCT_QuantEncoding_LibraryMode() throws {
