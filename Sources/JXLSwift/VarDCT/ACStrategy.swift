@@ -48,8 +48,13 @@ public enum ACStrategy: UInt8, Sendable, CaseIterable {
     case dct256x128   = 25
     case dct128x256   = 26
 
-    /// Block dimensions in 8-pixel cells. e.g. `DCT16x16 →
-    /// (2, 2)` (covers 16×16 pixels = 2×2 cells).
+    /// Block dimensions in 8-pixel cells (`cellsX` = horizontal,
+    /// `cellsY` = vertical). libjxl name convention is `DCT[N]X[M]` =
+    /// `N` tall × `M` wide, i.e. **height × width**, so
+    /// `dct16x8 → (cellsX=1, cellsY=2)` (8 wide × 16 tall, = 1
+    /// horizontal cell × 2 vertical cells). Cross-checked against
+    /// libjxl `ac_strategy.h` `covered_blocks_x` / `covered_blocks_y`
+    /// LUTs at `static constexpr uint8_t kLut[]`.
     public var blockCells: (cellsX: Int, cellsY: Int) {
         switch self {
         case .dct8x8, .hornuss, .dct2x2, .dct4x4,
@@ -57,21 +62,21 @@ public enum ACStrategy: UInt8, Sendable, CaseIterable {
             return (1, 1)
         case .dct16x16:                       return (2, 2)
         case .dct32x32:                       return (4, 4)
-        case .dct16x8:                        return (2, 1)
-        case .dct8x16:                        return (1, 2)
-        case .dct32x8:                        return (4, 1)
-        case .dct8x32:                        return (1, 4)
-        case .dct32x16:                       return (4, 2)
-        case .dct16x32:                       return (2, 4)
+        case .dct16x8:                        return (1, 2)  // 8w × 16h
+        case .dct8x16:                        return (2, 1)  // 16w × 8h
+        case .dct32x8:                        return (1, 4)  // 8w × 32h
+        case .dct8x32:                        return (4, 1)  // 32w × 8h
+        case .dct32x16:                       return (2, 4)  // 16w × 32h
+        case .dct16x32:                       return (4, 2)  // 32w × 16h
         case .dct64x64:                       return (8, 8)
-        case .dct64x32:                       return (8, 4)
-        case .dct32x64:                       return (4, 8)
+        case .dct64x32:                       return (4, 8)  // 32w × 64h
+        case .dct32x64:                       return (8, 4)  // 64w × 32h
         case .dct128x128:                     return (16, 16)
-        case .dct128x64:                      return (16, 8)
-        case .dct64x128:                      return (8, 16)
+        case .dct128x64:                      return (8, 16) // 64w × 128h
+        case .dct64x128:                      return (16, 8) // 128w × 64h
         case .dct256x256:                     return (32, 32)
-        case .dct256x128:                     return (32, 16)
-        case .dct128x256:                     return (16, 32)
+        case .dct256x128:                     return (16, 32) // 128w × 256h
+        case .dct128x256:                     return (32, 16) // 256w × 128h
         }
     }
 

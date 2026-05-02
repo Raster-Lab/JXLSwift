@@ -6469,6 +6469,96 @@ extension FoundationTests {
         }
     }
 
+    /// `CoeffOrders.decodeLehmerCode` — port of libjxl
+    /// `lehmer_code.h::DecodeLehmerCode`. Verifies the round-trip:
+    /// build a permutation, derive its Lehmer code by hand, decode
+    /// it back, expect to recover the original.
+    func testVarDCT_DecodeLehmerCode_RoundTrip() throws {
+        // Identity permutation: all-zero Lehmer code → [0, 1, 2, ...].
+        let n = 8
+        let identity = CoeffOrders.decodeLehmerCode(
+            [UInt32](repeating: 0, count: n), size: n
+        )
+        XCTAssertEqual(identity, Array(0..<n),
+            "all-zero Lehmer code → identity permutation")
+
+        // Reverse permutation: code = [n-1, n-2, ..., 1, 0].
+        // (At step i, pick the LAST unused = rank n-i, which is
+        // code[i] = n - 1 - i.)
+        var revCode = [UInt32](repeating: 0, count: n)
+        for i in 0..<n { revCode[i] = UInt32(n - 1 - i) }
+        let reversed = CoeffOrders.decodeLehmerCode(revCode, size: n)
+        XCTAssertEqual(reversed, Array((0..<n).reversed()),
+            "descending-rank Lehmer code → reverse permutation")
+
+        // Cross-check: any decoded permutation is a valid permutation.
+        let mixed: [UInt32] = [3, 1, 0, 2, 0, 1, 0, 0]  // arbitrary valid
+        let perm = CoeffOrders.decodeLehmerCode(mixed, size: n)
+        var seen = [Bool](repeating: false, count: n)
+        for v in perm {
+            XCTAssertTrue(v >= 0 && v < n, "out of range \(v)")
+            XCTAssertFalse(seen[v], "duplicate \(v)")
+            seen[v] = true
+        }
+    }
+
+    /// `CoeffOrders.naturalCoeffOrder(for:)` — port of libjxl
+    /// `ac_strategy.cc::CoeffOrderAndLut`. Verifies invariants any
+    /// natural order must satisfy and that DCT8x8 reproduces the
+    /// hand-coded `naturalCoeffOrderDCT8` table byte-for-byte.
+    func testVarDCT_NaturalCoeffOrder_Invariants() throws {
+        // 1. DCT8x8 must reproduce the hand-coded table.
+        let dct8 = CoeffOrders.naturalCoeffOrder(for: .dct8x8)
+        XCTAssertEqual(dct8.count, 64)
+        XCTAssertEqual(dct8, naturalCoeffOrderDCT8,
+            "DCT8x8 natural order must match hand-coded table")
+
+        // 2. Every order is a permutation of [0, size) and starts
+        //    with the LLF positions in row-major order.
+        let strategies: [(ACStrategy, cx: Int, cy: Int)] = [
+            (.dct8x8,     1, 1),
+            (.dct16x16,   2, 2),
+            (.dct32x32,   4, 4),
+            (.dct8x16,    2, 1),  // CoefficientLayout swaps to (2,1)
+            (.dct16x8,    2, 1),  // same coef layout — same order
+            (.dct32x16,   4, 2),
+            (.dct16x32,   4, 2),
+            (.dct64x64,   8, 8),
+        ]
+        for (acs, cx, cy) in strategies {
+            let order = CoeffOrders.naturalCoeffOrder(for: acs)
+            let size = cx * cy * 64
+            XCTAssertEqual(order.count, size, "[\(acs)] size")
+
+            // Permutation: every value in [0, size) appears exactly once.
+            var seen = [Bool](repeating: false, count: size)
+            for v in order {
+                XCTAssertTrue(v >= 0 && v < size, "[\(acs)] out of range \(v)")
+                XCTAssertFalse(seen[v], "[\(acs)] duplicate \(v)")
+                seen[v] = true
+            }
+
+            // LLF: first cx*cy entries are the top-left cx × cy corner
+            // of the coefficient grid (cx*8 wide), in row-major order.
+            let width = cx * 8
+            for ly in 0..<cy {
+                for lx in 0..<cx {
+                    let scanIndex = ly * cx + lx
+                    let expected = ly * width + lx
+                    XCTAssertEqual(order[scanIndex], expected,
+                        "[\(acs)] LLF mismatch at scan \(scanIndex)")
+                }
+            }
+        }
+
+        // 3. DCT16x8 and DCT8x16 must produce identical orders
+        //    (CoefficientLayout collapses both to (cx=2, cy=1)).
+        let h16 = CoeffOrders.naturalCoeffOrder(for: .dct16x8)
+        let h8x16 = CoeffOrders.naturalCoeffOrder(for: .dct8x16)
+        XCTAssertEqual(h16, h8x16,
+            "XxY and YxX strategies share natural order")
+    }
+
     /// Gaborish smoothing kernel preserves DC (a uniform image
     /// stays uniform) and reduces high-frequency contrast at a
     /// step edge — both invariants any 3×3 averaging filter must
@@ -6512,18 +6602,21 @@ extension FoundationTests {
             "default ctx map clusters into 15 block classes")
         XCTAssertEqual(m.numDcCtxs, 1)
         XCTAssertEqual(m.qfThresholds.count, 0)
-        // Spot-check the channel-reorder: Y (c=1) maps to mappedC=0,
-        // X (c=0) maps to mappedC=1, B (c=2) maps to mappedC=2.
+        // Channel-reorder: input is libjxl STORAGE c (0=Y, 1=X, 2=B).
+        // Internal `c^1 if c<2` maps storage→ctx_map row, putting:
+        // X (storage 1) at row 0 (own clusters 0–6); Y (storage 0)
+        // at row 1 (shared clusters 7–14); B (storage 2) at row 2
+        // (also clusters 7–14 — rows 1+2 are identical).
         // ord=0 (DCT8x8) for each:
-        let ctxY = m.context(dcIdx: 0, qf: 0, ord: 0, c: 1)
-        let ctxX = m.context(dcIdx: 0, qf: 0, ord: 0, c: 0)
+        let ctxX = m.context(dcIdx: 0, qf: 0, ord: 0, c: 1)
+        let ctxY = m.context(dcIdx: 0, qf: 0, ord: 0, c: 0)
         let ctxB = m.context(dcIdx: 0, qf: 0, ord: 0, c: 2)
-        XCTAssertEqual(ctxY, Int(kDefaultBlockCtxMap[0]),
-            "Y (c=1) ord=0 → first table entry")
-        XCTAssertEqual(ctxX, Int(kDefaultBlockCtxMap[kNumOrders]),
-            "X (c=0) ord=0 → second-channel-block entry")
+        XCTAssertEqual(ctxX, Int(kDefaultBlockCtxMap[0]),
+            "X (storage c=1) ord=0 → row 0 entry (cluster 0)")
+        XCTAssertEqual(ctxY, Int(kDefaultBlockCtxMap[kNumOrders]),
+            "Y (storage c=0) ord=0 → row 1 entry (cluster 7)")
         XCTAssertEqual(ctxB, Int(kDefaultBlockCtxMap[2 * kNumOrders]),
-            "B (c=2) ord=0 → third-channel-block entry")
+            "B (storage c=2) ord=0 → row 2 entry (cluster 7)")
         // Total AC contexts = numCtxs * (kNonZeroBuckets + kZeroDensityContextCount).
         XCTAssertEqual(m.numACContexts, 15 * (37 + 458))
     }

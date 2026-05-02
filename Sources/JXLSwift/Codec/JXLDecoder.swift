@@ -619,6 +619,37 @@ public final class JXLDecoder {
         }
         let qfRow = perBlockQF.first ?? 5
 
+        // Build the per-cell AC strategy plane. ACMeta channel 2's
+        // `count` first-block strategy IDs expand into the full
+        // `numBlocksX × numBlocksY` grid via libjxl's raster-walk
+        // covered-block tracking. First-blocks are the only cells
+        // the AC decode loop visits — non-first cells (covered by
+        // multi-block transforms like DCT16×16) are skipped.
+        let xsizeBlocks = (xsize + 7) / 8
+        let ysizeBlocks = (ysize + 7) / 8
+        let acsImage: ACStrategyImage
+        do {
+            acsImage = try ACStrategyImage.build(
+                from: acMetaCh2, count: acMetaCount,
+                numBlocksX: xsizeBlocks, numBlocksY: ysizeBlocks
+            )
+        } catch let e as ACStrategyImageError {
+            throw DecoderError.notImplemented(
+                "VarDCT decode: AC strategy plane build failed: \(e)"
+            )
+        }
+        if trace {
+            // Tally strategies for visibility.
+            var counts = [Int: Int]()
+            for fb in acsImage.firstBlocks {
+                let s = acsImage.at(x: fb.x, y: fb.y).strategy
+                counts[Int(s.rawValue), default: 0] += 1
+            }
+            FileHandle.standardError.write(Data(
+                "TRACE ACStrategyImage: \(acsImage.firstBlocks.count) first-blocks, strategies=\(counts)\n".utf8
+            ))
+        }
+
         // For multi-section frames, AC global lives at section
         // `1 + num_dc_groups` (= 2 for our 1-DC-group fixtures).
         if tocEntries > 1 {
@@ -678,6 +709,10 @@ public final class JXLDecoder {
         let numPassesActual = max(1, Int(fh.passes.numPasses))
         var usedOrdersPerPass: [UInt32] = []
         usedOrdersPerPass.reserveCapacity(numPassesActual)
+        // Per-pass per-ord per-channel coeff orders. Empty when
+        // `used_orders` bit is unset (caller falls back to natural).
+        var coeffOrdersPerPass: [[Int: [[Int]]]] = []
+        coeffOrdersPerPass.reserveCapacity(numPassesActual)
         for passIdx in 0..<numPassesActual {
             let uoStart = r.position
             let used: UInt32
@@ -728,8 +763,9 @@ public final class JXLDecoder {
                     before: pHdrStart, after: r.position
                 )
                 var pStream = TokenStreamReader(header: pHdr, codebook: pCB)
+                let decoded: [Int: [[Int]]]
                 do {
-                    try CoeffOrders.skipUnusedPermutations(
+                    decoded = try CoeffOrders.decodePermutations(
                         usedOrders: UInt16(used & 0xFFFF),
                         from: &r, stream: &pStream
                     )
@@ -739,11 +775,14 @@ public final class JXLDecoder {
                         + "failed: \(e)"
                     )
                 }
+                coeffOrdersPerPass.append(decoded)
                 if trace {
                     FileHandle.standardError.write(Data(
-                        "TRACE ACGlobal.perms[\(passIdx)]: usedOrders=\(used), bits consumed at pos=\(r.position)\n".utf8
+                        "TRACE ACGlobal.perms[\(passIdx)]: usedOrders=\(used), decoded ords=\(decoded.keys.sorted()), bits consumed at pos=\(r.position)\n".utf8
                     ))
                 }
+            } else {
+                coeffOrdersPerPass.append([:])
             }
         }
 
@@ -832,6 +871,11 @@ public final class JXLDecoder {
         // `groupDim` pixel region (cropped at frame edges).
         let firstACHist = acHistsPerPass[0]
         let dctOrder = naturalCoeffOrderDCT8
+        // Per-ord natural-order cache. Lazily populated during the AC
+        // decode loop — most fixtures only touch DCT8 (ord 0) but
+        // textured cjxl-d=1 frames mix in DCT16x16 (ord 2),
+        // DCT32x16/16x32 (ord 6), etc.
+        var naturalOrderCache: [Int: [Int]] = [:]
         let totalBlocksX = (xsize + 7) / 8
         let totalBlocksY = (ysize + 7) / 8
         // acBlocks[totalBlockIdx][iterC] is the 64-coef block for the
@@ -866,51 +910,96 @@ public final class JXLDecoder {
             var acTokenStream = TokenStreamReader(
                 header: firstACHist.0, codebook: firstACHist.1
             )
-            // Per-group row_nzeros tracking (used by `predictNnz`).
-            var rowNZAbove = [Int32](repeating: 0,
-                                     count: groupBlocksX * 3)
-            var rowNZCurrent = [Int32](repeating: 0,
-                                       count: groupBlocksX * 3)
+            // Per-group nzeros plane (per channel × cell grid). For
+            // multi-block strategies (DCT16x16 etc.) we stamp the
+            // first-block's nzeros to ALL covered cells so subsequent
+            // first-blocks see the right neighbour values when
+            // computing `predNnz`. Mirrors libjxl `dec_group.cc`'s
+            // `nzeros_pos[(y+cy)*stride + (x+cx)] = nzeros` loop.
+            let groupBlocksY = byEnd - byStart
+            var nzPlane = [Int32](
+                repeating: 0,
+                count: 3 * groupBlocksY * groupBlocksX
+            )
+            @inline(__always) func nzPredict(
+                c: Int, gx: Int, gy: Int
+            ) -> UInt32 {
+                let stride = groupBlocksX
+                let chanOff = c * groupBlocksY * stride
+                if gy == 0 && gx == 0 { return 32 }
+                if gy == 0 {
+                    return UInt32(nzPlane[chanOff + (gx - 1)])
+                }
+                if gx == 0 {
+                    return UInt32(nzPlane[chanOff + (gy - 1) * stride + gx])
+                }
+                let above = nzPlane[chanOff + (gy - 1) * stride + gx]
+                let left  = nzPlane[chanOff + gy * stride + (gx - 1)]
+                return UInt32((above + left + 1) >> 1)
+            }
             for by in byStart..<byEnd {
                 let groupRowIdx = by - byStart
                 for bx in bxStart..<bxEnd {
                     let groupColIdx = bx - bxStart
+                    // Per-cell strategy lookup. Skip non-first-block
+                    // cells (covered by a multi-block transform whose
+                    // first-block we already decoded).
+                    let entry = acsImage.at(x: bx, y: by)
+                    if !entry.isFirstBlock { continue }
+                    let strategy = entry.strategy
+                    let strategySize = strategy.coveredBlocks * 64
+                    let ord = strategy.orderBucket
+                    // Default natural order for this ord (cached). Used
+                    // when used_orders bit is unset; otherwise replaced
+                    // by the per-channel decoded permutation below.
+                    let naturalOrder: [Int] = {
+                        if let cached = naturalOrderCache[ord] { return cached }
+                        let computed = CoeffOrders.naturalCoeffOrder(for: strategy)
+                        naturalOrderCache[ord] = computed
+                        return computed
+                    }()
+                    let acBlockQF = UInt32(entry.qf)
                     var blockChannels: [[Int32]] = []
                     blockChannels.reserveCapacity(3)
-                    // Look up per-block QF for context routing. Block
-                    // index in the DC group's flat layout is
-                    // `by * dcWidth + bx` (1 entry per AC block since
-                    // we currently only handle DCT8). For default
-                    // BlockCtxMap, dcIdx is 0 (no DC thresholds).
-                    let acBlockIdxFlat = by * totalBlocksX + bx
-                    let acBlockQF = acBlockIdxFlat < perBlockQF.count
-                        ? UInt32(perBlockQF[acBlockIdxFlat])
-                        : UInt32(qfRow)
-                    for c in 0..<3 {
-                        var blk = [Int32](repeating: 0, count: 64)
-                        let predNnz: UInt32 = ACDecoder.predictNnz(
-                            rowAbove: groupRowIdx == 0 ? nil
-                                : Array(rowNZAbove[c * groupBlocksX ..<
-                                                  (c + 1) * groupBlocksX]),
-                            rowCurrent: Array(rowNZCurrent[c * groupBlocksX ..<
-                                                           (c + 1) * groupBlocksX]),
-                            bx: groupColIdx
+                    let cellsX = strategy.blockCells.cellsX
+                    let cellsY = strategy.blockCells.cellsY
+                    // libjxl `dec_group.cc:554` iterates channels in
+                    // STORAGE order `{1, 0, 2}` (X, then Y, then B —
+                    // libjxl stores Y at slot 0 and X at slot 1, so
+                    // storage 1 == X, storage 0 == Y, storage 2 == B).
+                    // Iteration index `iterIdx` is also the XYB channel
+                    // index after this mapping (0=X, 1=Y, 2=B).
+                    for iterIdx in 0..<3 {
+                        let storageC = [1, 0, 2][iterIdx]  // libjxl storage c
+                        let xybC = iterIdx                  // 0=X, 1=Y, 2=B
+                        var blk = [Int32](repeating: 0, count: strategySize)
+                        let predNnz = nzPredict(
+                            c: iterIdx, gx: groupColIdx, gy: groupRowIdx
                         )
-                        // Map iter→XYB and compute block_ctx via the
-                        // BlockCtxMap. For multi-cluster fixtures
-                        // (numClusters > 1), wrong routing causes the
-                        // ANS decoder to pull from the wrong distribution
-                        // → wrong token values → desynced bitstream.
-                        // libjxl iter order = {1, 0, 2} (Y, X, B).
-                        let xybC = [1, 0, 2][c]
+                        // BlockCtxMap.Context takes libjxl STORAGE c
+                        // (it does the `c^1 if c<2` swap internally
+                        // to map storage→ctx_map row).
                         let blockCtx = bctx.context(
-                            dcIdx: 0, qf: acBlockQF, ord: 0, c: xybC
+                            dcIdx: 0, qf: acBlockQF,
+                            ord: strategy.orderBucket, c: storageC
                         )
+                        // Per-channel coeff order. When the bitstream
+                        // emitted a Lehmer-coded permutation for this
+                        // (pass, ord, storage_c), use it; otherwise fall
+                        // back to the default natural order.
+                        let strategyOrder: [Int] = {
+                            if let perOrd = coeffOrdersPerPass.first?[ord],
+                               storageC < perOrd.count {
+                                return perOrd[storageC]
+                            }
+                            return naturalOrder
+                        }()
                         do {
                             try ACDecoder.decodeBlock(
                                 block: &blk,
-                                order: dctOrder,
-                                coveredBlocks: 1, log2CoveredBlocks: 0,
+                                order: strategyOrder,
+                                coveredBlocks: strategy.coveredBlocks,
+                                log2CoveredBlocks: strategy.log2CoveredBlocks,
                                 blockCtx: blockCtx,
                                 predictedNnz: predNnz,
                                 ctxOffset: 0,
@@ -922,19 +1011,59 @@ public final class JXLDecoder {
                         } catch let e as ACDecoderError {
                             throw DecoderError.notImplemented(
                                 "VarDCT decode: AC group \(groupIdx) block "
-                                + "(\(bx),\(by)) channel iter \(c) "
-                                + "(xybC=\(xybC), blockCtx=\(blockCtx)) "
+                                + "(\(bx),\(by)) strategy=\(strategy) "
+                                + "iter \(iterIdx) (xybC=\(xybC), "
+                                + "storageC=\(storageC), blockCtx=\(blockCtx)) "
                                 + "decode failed: \(e)"
                             )
                         }
-                        let nz = Int32(blk.lazy.filter { $0 != 0 }.count)
-                        rowNZCurrent[c * groupBlocksX + groupColIdx] = nz
+                        // libjxl divides nz by coveredBlocks before
+                        // stamping (so all covered cells share an
+                        // "average" nnz). Round-up division matches
+                        // `dec_group.cc::DecodeACVarBlock` post-stamp.
+                        let nzTotal = Int32(
+                            blk.lazy.filter { $0 != 0 }.count
+                        )
+                        let nzPerCell =
+                            (nzTotal + Int32(strategy.coveredBlocks) - 1)
+                                / Int32(strategy.coveredBlocks)
+                        let stride = groupBlocksX
+                        let chanOff = iterIdx * groupBlocksY * stride
+                        for cy in 0..<cellsY {
+                            for cx in 0..<cellsX {
+                                nzPlane[chanOff
+                                    + (groupRowIdx + cy) * stride
+                                    + (groupColIdx + cx)] = nzPerCell
+                            }
+                        }
                         blockChannels.append(blk)
+                    }
+                    // Per-strategy IDCT support frontier: DCT8x8 is
+                    // primary, DCT16x16 ships in v0.8.0d. Other multi-
+                    // cell strategies still rely on the per-cell DC
+                    // fallback (which gives the correct result only
+                    // for all-zero AC — typical of solid-colour
+                    // content). Throw early when the bitstream needs
+                    // a path we don't ship yet.
+                    let strategyIDCTSupported =
+                        (strategy == .dct8x8 || strategy == .dct16x16)
+                    if !strategyIDCTSupported {
+                        let nzAny = blockChannels.contains {
+                            $0.contains { $0 != 0 }
+                        }
+                        if nzAny {
+                            throw DecoderError.notImplemented(
+                                "VarDCT decode: AC strategy \(strategy) "
+                                + "with non-zero AC at block (\(bx),\(by)) — "
+                                + "per-strategy IDCT not yet implemented "
+                                + "(next v0.8.0 bite). All-zero AC blocks "
+                                + "(typical of solid-colour content) are "
+                                + "handled by filling with DC value."
+                            )
+                        }
                     }
                     acBlocks[by * totalBlocksX + bx] = blockChannels
                 }
-                swap(&rowNZAbove, &rowNZCurrent)
-                for i in 0..<rowNZCurrent.count { rowNZCurrent[i] = 0 }
             }
         }
         let numBlocksXAC = totalBlocksX
@@ -993,14 +1122,15 @@ public final class JXLDecoder {
         // For DC, channels were decoded in storage order (slot 0 → 2),
         // so `dcValues[i]` lives at `storageToXYB[i]` in the XYB tables.
         //
-        // For AC, libjxl's `LoadBlock` iterates **XYB c ∈ {1, 0, 2}**
-        // (i.e., Y, X, B). Our `acBlocks[i]` was decoded in our
-        // iteration order `for c in 0..<3`, which has identical bit
-        // consumption (single histogram routing) but treats `i` as
-        // libjxl iteration index — `acIterToXYB[i]` is the XYB channel
-        // for the i-th decoded AC block.
+        // For AC, libjxl's `LoadBlock` iterates STORAGE c ∈ {1, 0, 2}
+        // (i.e., storage X, then Y, then B — the storage swap puts
+        // X at slot 1, Y at slot 0). The AC decode loop above adopts
+        // this iteration order via the same `[1, 0, 2]` table so that
+        // `iterIdx` lines up directly with the XYB channel index
+        // (iter 0 = X, iter 1 = Y, iter 2 = B). `acBlocks[blkIdx][i]`
+        // is therefore indexed by XYB channel directly.
         let storageToXYB: [Int] = [1, 0, 2]
-        let acIterToXYB: [Int] = [1, 0, 2]
+        let acIterToXYB: [Int] = [0, 1, 2]
 
         // ACMeta channel 2 shape = `count × 2` (row 0 = ACS values,
         // row 1 = QF values). Flat indices: [ACS_0..ACS_{n-1},
@@ -1143,6 +1273,143 @@ public final class JXLDecoder {
                 }
             }
         }
+
+        // Per-strategy IDCT overlay pass. Iterates over first-blocks
+        // and OVERWRITES the per-cell-DCT8 fallback output with the
+        // proper per-strategy IDCT for the strategies we now ship
+        // natively (currently DCT16x16; next bites add 32x32, 4x8/8x4,
+        // 16x8/8x16, etc.). Solid-colour content (all-zero AC) was
+        // already correct from the per-cell pass; the overlay just
+        // handles textured content.
+        let dct16Bands = DefaultQuantBands.scaledForBitstream(
+            DefaultQuantBands.dct16x16
+        )
+        let qweights16: [Float]
+        do {
+            qweights16 = try QuantWeights.getQuantWeights(
+                rows: 16, cols: 16, bands: dct16Bands
+            )
+        } catch {
+            throw DecoderError.notImplemented(
+                "VarDCT decode: DCT16x16 quant weights computation failed: \(error)"
+            )
+        }
+        guard
+            let iterX16 = acIterToXYB.firstIndex(of: 0),
+            let iterY16 = acIterToXYB.firstIndex(of: 1),
+            let iterB16 = acIterToXYB.firstIndex(of: 2)
+        else {
+            throw DecoderError.notImplemented(
+                "VarDCT decode: AC iter mapping incomplete (DCT16x16 pass)"
+            )
+        }
+        for by in 0..<numBlocksYAC {
+            for bx in 0..<numBlocksXAC {
+                let entry = acsImage.at(x: bx, y: by)
+                if !entry.isFirstBlock { continue }
+                if entry.strategy != .dct16x16 { continue }
+                guard bx + 1 < numBlocksXAC, by + 1 < numBlocksYAC else {
+                    continue  // safety net; ACStrategyImage.build already
+                              // rejects overflowing strategies.
+                }
+                // Per-block QF (every covered cell shares the
+                // first-block's QF — the per-cell perBlockQF entry
+                // was set when ACMeta was decoded).
+                let blockIdxFirst = by * totalBlocksX + bx
+                let blockQF = blockIdxFirst < perBlockQF.count
+                    ? perBlockQF[blockIdxFirst] : qfRow
+                let blockInvQuantAC = invGlobalScale / Float(blockQF)
+                // Per channel: build the 256-entry coefficient block,
+                // dequant + bridge + IDCT, then place into the plane.
+                var coef = [[Float]](
+                    repeating: [Float](repeating: 0, count: 256),
+                    count: 3
+                )
+                // Cell DC values (4 cells × 3 channels in pixel space,
+                // already DC-CFL'd later — here we apply DC-CFL
+                // ourselves since the per-cell loop handled CFL on
+                // its 8×8 patches but we need it on the LLF coefs).
+                let cellOffsets = [
+                    (0, 0), (1, 0), (0, 1), (1, 1)
+                ]
+                var dcXYB: [[Float]] = (0..<3).map { _ in
+                    [Float](repeating: 0, count: 4)
+                }
+                for (i, off) in cellOffsets.enumerated() {
+                    let (dx, dy) = off
+                    let cellBX = bx + dx
+                    let cellBY = by + dy
+                    var cellDC = [Float](repeating: 0, count: 3)
+                    for storageSlot in 0..<3 {
+                        let xybC = storageToXYB[storageSlot]
+                        let dcQuant = Float(
+                            dcValues[storageSlot][cellBY * dcWidth + cellBX]
+                        )
+                        cellDC[xybC] = dcQuant * mulDC[xybC] * dcExtraFactor
+                    }
+                    // Apply DC-CFL on the cell DC values (same factors
+                    // the per-cell loop uses).
+                    let dcY = cellDC[1]
+                    dcXYB[0][i] = cellDC[0] + dcCflX * dcY
+                    dcXYB[1][i] = dcY
+                    dcXYB[2][i] = cellDC[2] + dcCflB * dcY
+                }
+                // LLF coefficients per channel via 2×2 forward DCT +
+                // resample scaling. Map to natural-order positions
+                // 0, 1, 16, 17 of the 16×16 coef grid.
+                let llfX = LowestFrequenciesFromDC.dct16x16(dc: dcXYB[0])
+                let llfY = LowestFrequenciesFromDC.dct16x16(dc: dcXYB[1])
+                let llfB = LowestFrequenciesFromDC.dct16x16(dc: dcXYB[2])
+                let llfPositions = [0, 1, 16, 17]
+                for (i, pos) in llfPositions.enumerated() {
+                    coef[0][pos] = llfX[i]
+                    coef[1][pos] = llfY[i]
+                    coef[2][pos] = llfB[i]
+                }
+                // AC coefficients per channel: dequant via DCT16x16
+                // quant matrix + AC-CFL. AC tokens were stored in
+                // natural-order layout already (decodeBlock writes
+                // to block[order[k]]) so we iterate natural positions
+                // directly — only the LLF positions (filled above)
+                // are skipped.
+                let acYBlock = acBlocks[blockIdxFirst][iterY16]
+                let acXBlock = acBlocks[blockIdxFirst][iterX16]
+                let acBBlock = acBlocks[blockIdxFirst][iterB16]
+                let llfSet: Set<Int> = [0, 1, 16, 17]
+                for np in 0..<256 where !llfSet.contains(np) {
+                    let acYDeq = Float(acYBlock[np])
+                        / qweights16[1 * 256 + np] * blockInvQuantAC
+                    let acXDeq = Float(acXBlock[np])
+                        / qweights16[0 * 256 + np] * blockInvQuantAC
+                    let acBDeq = Float(acBBlock[np])
+                        / qweights16[2 * 256 + np] * blockInvQuantAC
+                    coef[1][np] = acYDeq
+                    coef[0][np] = acXDeq + xCCMul * acYDeq
+                    coef[2][np] = acBDeq + bCCMul * acYDeq
+                }
+                // Bridge ×16 (DC=mean → orthonormal F[0,0]=mean·N).
+                for c in 0..<3 {
+                    for k in 0..<256 { coef[c][k] *= 16 }
+                }
+                // 16×16 IDCT per channel.
+                DCT2D.inverse(&coef[0], size: 16)
+                DCT2D.inverse(&coef[1], size: 16)
+                DCT2D.inverse(&coef[2], size: 16)
+                // Place 16×16 patch at (bx*8, by*8).
+                let xOrigin = bx * 8
+                let yOrigin = by * 8
+                for py in 0..<16 {
+                    let srcRow = py * 16
+                    let dstRow = (yOrigin + py) * planeWidth + xOrigin
+                    for px in 0..<16 {
+                        planeXYB[0][dstRow + px] = coef[0][srcRow + px]
+                        planeXYB[1][dstRow + px] = coef[1][srcRow + px]
+                        planeXYB[2][dstRow + px] = coef[2][srcRow + px]
+                    }
+                }
+            }
+        }
+
         if trace {
             let labels = ["X", "Y", "B"]
             for c in 0..<3 {

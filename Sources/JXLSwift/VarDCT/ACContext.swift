@@ -126,7 +126,13 @@ public struct BlockCtxMap: Sendable {
 
     /// Look up a block class. `dcIdx` is in `[0, numDcCtxs)`; `qf`
     /// is the per-block quantiser-field value; `ord` ∈ `[0, kNumOrders)`
-    /// (from `kStrategyOrder[acStrategyRaw]`); `c` ∈ {0=X, 1=Y, 2=B}.
+    /// (from `kStrategyOrder[acStrategyRaw]`); `c` is the libjxl
+    /// **STORAGE** channel index (0=Y, 1=X, 2=B — libjxl swaps X/Y
+    /// at storage so Y lives at slot 0 and X at slot 1). The internal
+    /// `c^1 if c<2` mapping converts storage→ctx_map row, putting X
+    /// at row 0 (its own clusters 0–6) and Y+B at rows 1–2 (shared
+    /// clusters 7–14). Callers that have an XYB index need to convert:
+    /// `storageC = (xybC == 0 || xybC == 1) ? (1 - xybC) : 2`.
     public func context(
         dcIdx: Int, qf: UInt32, ord: Int, c: Int
     ) -> Int {
@@ -134,7 +140,8 @@ public struct BlockCtxMap: Sendable {
         // QF bucket: how many thresholds does qf exceed?
         var qfIdx = 0
         for t in qfThresholds where qf > t { qfIdx += 1 }
-        // libjxl reorders X↔Y so Y maps to 0, X to 1, B to 2.
+        // libjxl storage→ctx_map row mapping: storage 0 (Y) → row 1,
+        // storage 1 (X) → row 0, storage 2 (B) → row 2.
         let mappedC = (c < 2) ? (c ^ 1) : 2
         var idx = mappedC * kNumOrders + ord
         idx = idx * (qfThresholds.count + 1) + qfIdx
