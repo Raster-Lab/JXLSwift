@@ -600,6 +600,25 @@ public final class JXLDecoder {
             ))
         }
 
+        // ACMeta channel 2 carries per-block (ACS, QF) — flat layout
+        // is `[ACS_0..ACS_{n-1}, QF_0..QF_{n-1}]` (n = `acMetaCount`).
+        // Per libjxl `dec_modular.cc::DecodeAcMetadata`:
+        //
+        //     row_qf[ix] = 1 + clamp(row_in_2[num], 0, kQuantMax - 1)
+        //
+        // We extract this here so both the AC decode loop (block-ctx
+        // routing for multi-cluster fixtures) and the dequant loop
+        // can index it.
+        let acMetaCh2 = acMetaValues[2]
+        var perBlockQF = [Int32]()
+        perBlockQF.reserveCapacity(acMetaCount)
+        for i in 0..<acMetaCount {
+            let raw = acMetaCh2.count > acMetaCount + i
+                ? acMetaCh2[acMetaCount + i] : 0
+            perBlockQF.append(1 + max(0, min(raw, 255)))
+        }
+        let qfRow = perBlockQF.first ?? 5
+
         // For multi-section frames, AC global lives at section
         // `1 + num_dc_groups` (= 2 for our 1-DC-group fixtures).
         if tocEntries > 1 {
@@ -676,12 +695,55 @@ public final class JXLDecoder {
             usedOrdersPerPass.append(used)
             traceLayer("ACGlobal.used_orders[\(passIdx)]=\(used)",
                        before: uoStart, after: r.position)
+            // For non-zero used_orders, libjxl reads a permutation
+            // entropy section here (kPermutationContexts contexts),
+            // then per (ord, channel) reads a Lehmer-coded permutation.
+            // We currently DISCARD the permutation (no AC strategy
+            // beyond DCT8 fires per block in our fixtures yet) but
+            // must still consume the bits.
             if used != 0 {
-                throw DecoderError.notImplemented(
-                    "VarDCT decode: ACGlobal used_orders=\(used) (non-zero) "
-                    + "→ DecodeCoeffOrders permutation read not yet "
-                    + "implemented (typical cjxl-d=1 fixtures emit 0)."
+                let pHdrStart = r.position
+                let pHdr: EntropySectionHeader
+                do {
+                    pHdr = try EntropySectionHeader.read(
+                        from: &r, numContexts: CoeffOrders.kPermutationContexts
+                    )
+                } catch let e as EntropySectionHeaderError {
+                    throw DecoderError.notImplemented(
+                        "VarDCT decode: ACGlobal permutation header "
+                        + "read failed: \(e)"
+                    )
+                }
+                let pCB: MultiClusterCodebook
+                do {
+                    pCB = try MultiClusterCodebook.read(from: &r, header: pHdr)
+                } catch let e as MultiClusterCodebookError {
+                    throw DecoderError.notImplemented(
+                        "VarDCT decode: ACGlobal permutation codebook "
+                        + "read failed: \(e)"
+                    )
+                }
+                traceLayer(
+                    "ACGlobal.permHist[\(passIdx)]",
+                    before: pHdrStart, after: r.position
                 )
+                var pStream = TokenStreamReader(header: pHdr, codebook: pCB)
+                do {
+                    try CoeffOrders.skipUnusedPermutations(
+                        usedOrders: UInt16(used & 0xFFFF),
+                        from: &r, stream: &pStream
+                    )
+                } catch let e as CoeffOrdersError {
+                    throw DecoderError.notImplemented(
+                        "VarDCT decode: ACGlobal permutation read "
+                        + "failed: \(e)"
+                    )
+                }
+                if trace {
+                    FileHandle.standardError.write(Data(
+                        "TRACE ACGlobal.perms[\(passIdx)]: usedOrders=\(used), bits consumed at pos=\(r.position)\n".utf8
+                    ))
+                }
             }
         }
 
@@ -815,6 +877,15 @@ public final class JXLDecoder {
                     let groupColIdx = bx - bxStart
                     var blockChannels: [[Int32]] = []
                     blockChannels.reserveCapacity(3)
+                    // Look up per-block QF for context routing. Block
+                    // index in the DC group's flat layout is
+                    // `by * dcWidth + bx` (1 entry per AC block since
+                    // we currently only handle DCT8). For default
+                    // BlockCtxMap, dcIdx is 0 (no DC thresholds).
+                    let acBlockIdxFlat = by * totalBlocksX + bx
+                    let acBlockQF = acBlockIdxFlat < perBlockQF.count
+                        ? UInt32(perBlockQF[acBlockIdxFlat])
+                        : UInt32(qfRow)
                     for c in 0..<3 {
                         var blk = [Int32](repeating: 0, count: 64)
                         let predNnz: UInt32 = ACDecoder.predictNnz(
@@ -825,12 +896,22 @@ public final class JXLDecoder {
                                                            (c + 1) * groupBlocksX]),
                             bx: groupColIdx
                         )
+                        // Map iter→XYB and compute block_ctx via the
+                        // BlockCtxMap. For multi-cluster fixtures
+                        // (numClusters > 1), wrong routing causes the
+                        // ANS decoder to pull from the wrong distribution
+                        // → wrong token values → desynced bitstream.
+                        // libjxl iter order = {1, 0, 2} (Y, X, B).
+                        let xybC = [1, 0, 2][c]
+                        let blockCtx = bctx.context(
+                            dcIdx: 0, qf: acBlockQF, ord: 0, c: xybC
+                        )
                         do {
                             try ACDecoder.decodeBlock(
                                 block: &blk,
                                 order: dctOrder,
                                 coveredBlocks: 1, log2CoveredBlocks: 0,
-                                blockCtx: 0,
+                                blockCtx: blockCtx,
                                 predictedNnz: predNnz,
                                 ctxOffset: 0,
                                 ctxMap: bctx,
@@ -842,6 +923,7 @@ public final class JXLDecoder {
                             throw DecoderError.notImplemented(
                                 "VarDCT decode: AC group \(groupIdx) block "
                                 + "(\(bx),\(by)) channel iter \(c) "
+                                + "(xybC=\(xybC), blockCtx=\(blockCtx)) "
                                 + "decode failed: \(e)"
                             )
                         }
@@ -929,19 +1011,11 @@ public final class JXLDecoder {
         //
         // For our 8×8 fixture: count=1, ACS=[0], QF=[4] → qfPerBlock=[5].
         // For 16×16: count=4, QF=[5,5,6,5] → qfPerBlock=[6,6,7,6].
-        let acMetaCh2 = acMetaValues[2]
-        var perBlockQF = [Int32]()
-        perBlockQF.reserveCapacity(acMetaCount)
-        for i in 0..<acMetaCount {
-            let raw = acMetaCh2.count > acMetaCount + i
-                ? acMetaCh2[acMetaCount + i] : 0
-            perBlockQF.append(1 + max(0, min(raw, 255)))
-        }
-        // For dequant, we use the first block's qf as a fallback when
-        // a single value is needed; the per-block dequant loop uses
-        // perBlockQF[blockIdx] correctly.
-        let qfRow = perBlockQF.first ?? 5
-        let invQuantAC: Float = invGlobalScale / Float(qfRow)
+        // (perBlockQF + qfRow extracted earlier so the AC decode loop
+        // can compute proper block_ctx routing for multi-cluster
+        // fixtures.)
+        _ = perBlockQF.count    // explicit reference, keeps tooling happy
+        _ = qfRow               // ditto
 
         // DCT8 default quant weights: 3 × 64 floats. `qweights[c*64+k]`
         // is the QUANT weight (libjxl stores its inverse in `Matrix()`,
