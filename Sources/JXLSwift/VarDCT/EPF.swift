@@ -126,22 +126,23 @@ public enum EPF {
         return invSigma < kMinSigma
     }
 
-    /// Apply EPF to three XYB plane buffers in place. Each plane is
-    /// `width × height` row-major Float. The implementation walks
-    /// blocks of `kBlockDim = 8` pixels, computes per-block
-    /// `inv_sigma`, and either passes through (no-op fast path) or
-    /// throws `unsupportedNonZeroSharpness` (kernel not yet wired).
+    /// Apply all enabled EPF stages to three XYB plane buffers in
+    /// place, gated by `params.epfIters`:
     ///
-    /// libjxl applies up to three stages (EPF0 → EPF1 → EPF2)
-    /// gated by `epf_iters`; we currently only structure-out the
-    /// "is the kernel needed?" decision so the v0.5.0 pipeline can
-    /// route through EPF without changing pixels for sharpness=0
-    /// fixtures.
+    ///     epf_iters >= 1 → EPF1 (5×5 plus, 4 neighbours)
+    ///     epf_iters >= 2 → EPF2 (3×3 plus, 4 neighbours)
+    ///     epf_iters >= 3 → EPF0 (7×7 plus-with-diagonals, 12 neighbours)
+    ///
+    /// Per libjxl `dec_cache.cc::PreparePipeline`. Each stage is its own
+    /// pass over the planes; intermediate results are written to scratch
+    /// buffers and ping-pong'd. Per-block `inv_sigma` is recomputed
+    /// from `sharpnessField`, `perBlockQF`, and `quantScale`.
     public static func applyAllStages(
         planeX: inout [Float], planeY: inout [Float], planeB: inout [Float],
         width: Int, height: Int,
         sharpnessField: [UInt8],
-        rowQuant: Int32, quantScale: Float,
+        perBlockQF: [Int32],
+        quantScale: Float,
         params: EPFParams
     ) throws {
         guard params.epfIters > 0 else { return }
@@ -150,33 +151,251 @@ public enum EPF {
                      && planeB.count == width * height,
                      "plane buffers must be exactly width*height")
 
-        // Block grid is `ceil(width/8) × ceil(height/8)`.
         let blocksX = (width + 7) / 8
         let blocksY = (height + 7) / 8
         precondition(sharpnessField.count >= blocksX * blocksY,
                      "sharpness field must cover the block grid")
+        precondition(perBlockQF.count >= blocksX * blocksY,
+                     "perBlockQF must cover the block grid")
 
+        // Build the per-block inv_sigma table.
+        var invSigmaPerBlock = [Float](repeating: 0,
+                                        count: blocksX * blocksY)
         for by in 0..<blocksY {
             for bx in 0..<blocksX {
-                let sharpness = sharpnessField[by * blocksX + bx]
-                let invSigma = computeInvSigma(
-                    sharpness: sharpness,
-                    rowQuant: rowQuant,
+                let bi = by * blocksX + bx
+                invSigmaPerBlock[bi] = computeInvSigma(
+                    sharpness: sharpnessField[bi],
+                    rowQuant: perBlockQF[bi],
                     quantScale: quantScale,
                     params: params
                 )
-                if isNoOp(invSigma: invSigma) {
-                    // Block passes through unchanged. Continue to next.
-                    continue
-                }
-                // Non-trivial filter required — full bilateral kernel
-                // (12-neighbour SAD-weighted average for EPF0, etc.) is
-                // not yet implemented. The first fixture that triggers
-                // this branch is what we'll use to drive the implementation.
-                throw EPFError.unsupportedNonZeroSharpness(
-                    blockX: bx, blockY: by, invSigma: invSigma
-                )
             }
         }
+
+        // Stage application order per libjxl. Run EPF1 first (always
+        // applied), then EPF2 (iters >= 2), then EPF0 (iters >= 3).
+        if params.epfIters >= 1 {
+            applyEPF1(planeX: &planeX, planeY: &planeY, planeB: &planeB,
+                      width: width, height: height,
+                      blocksX: blocksX, invSigmaPerBlock: invSigmaPerBlock,
+                      params: params)
+        }
+        if params.epfIters >= 2 {
+            applyEPF2(planeX: &planeX, planeY: &planeY, planeB: &planeB,
+                      width: width, height: height,
+                      blocksX: blocksX, invSigmaPerBlock: invSigmaPerBlock,
+                      params: params)
+        }
+        if params.epfIters >= 3 {
+            // EPF0 (7×7 plus-with-diagonals, 12 neighbours) — defer
+            // until a fixture forces it. epf_iters=3 is uncommon.
+            throw EPFError.unsupportedNonZeroSharpness(
+                blockX: 0, blockY: 0,
+                invSigma: invSigmaPerBlock.first ?? 0
+            )
+        }
+    }
+
+    // MARK: - EPF1 (5×5 plus, 4 neighbours, 3×3-plus SAD per neighbour)
+
+    /// EPF1 stage. For each pixel: compute 4 SADs (one per cardinal
+    /// neighbour, summed over 3 channels weighted by
+    /// `epf_channel_scale`), use them as bilateral weights to
+    /// produce a weighted average of the centre + 4 neighbours.
+    /// Border pixels mirror.
+    static func applyEPF1(
+        planeX: inout [Float], planeY: inout [Float], planeB: inout [Float],
+        width: Int, height: Int,
+        blocksX: Int, invSigmaPerBlock: [Float],
+        params: EPFParams
+    ) {
+        let inX = planeX, inY = planeY, inB = planeB
+        var outX = inX
+        var outY = inY
+        var outB = inB
+        let sm: Float = 1.65
+        let bsm: Float = sm * params.borderSadMul
+        // sad_mul at position (ix, iy) within the 8×8 block — borders
+        // get the smaller multiplier (border_sad_mul).
+        @inline(__always)
+        func sadMul(ix: Int, iy: Int) -> Float {
+            if iy == 0 || iy == 7 { return bsm }
+            return (ix == 0 || ix == 7) ? bsm : sm
+        }
+        @inline(__always)
+        func clamp(_ v: Int, _ lo: Int, _ hi: Int) -> Int {
+            return v < lo ? lo : (v > hi ? hi : v)
+        }
+        let scaleX = params.channelScale.0
+        let scaleY = params.channelScale.1
+        let scaleB = params.channelScale.2
+        let zeroFlush = params.pass1ZeroFlush
+        _ = zeroFlush  // libjxl's `Weight` ignores `thres`; kept for symmetry
+
+        for y in 0..<height {
+            for x in 0..<width {
+                let bx = x / 8, by = y / 8
+                let invSigmaBase = invSigmaPerBlock[by * blocksX + bx]
+                if invSigmaBase < kMinSigma {
+                    outX[y * width + x] = inX[y * width + x]
+                    outY[y * width + x] = inY[y * width + x]
+                    outB[y * width + x] = inB[y * width + x]
+                    continue
+                }
+                let invSigma = invSigmaBase * sadMul(ix: x % 8, iy: y % 8)
+
+                // Mirror-clamped pixel fetch.
+                @inline(__always)
+                func get(_ p: [Float], _ xx: Int, _ yy: Int) -> Float {
+                    let cx = clamp(xx, 0, width - 1)
+                    let cy = clamp(yy, 0, height - 1)
+                    return p[cy * width + cx]
+                }
+                // Compute 4 SADs for top, left, right, bottom neighbours.
+                // Each SAD sums |a - b| over a small set of pixel pairs
+                // that form a 3×3-plus shape between centre and neighbour.
+                @inline(__always)
+                func sadFor(dx: Int, dy: Int) -> Float {
+                    let nx = x + dx, ny = y + dy
+                    var sX: Float = 0, sY: Float = 0, sB: Float = 0
+                    // 5 pixel pairs (mirroring libjxl's per-direction
+                    // SAD layout): pair the 3×3-plus around centre with
+                    // the matching 3×3-plus around the neighbour.
+                    for (dxC, dyC) in [(0, 0), (-1, 0), (1, 0), (0, -1), (0, 1)] {
+                        let ax = x + dxC, ay = y + dyC
+                        let bx2 = nx + dxC, by2 = ny + dyC
+                        sX += abs(get(inX, ax, ay) - get(inX, bx2, by2))
+                        sY += abs(get(inY, ax, ay) - get(inY, bx2, by2))
+                        sB += abs(get(inB, ax, ay) - get(inB, bx2, by2))
+                    }
+                    return sX * scaleX + sY * scaleY + sB * scaleB
+                }
+                let sadTop = sadFor(dx: 0, dy: -1)
+                let sadLeft = sadFor(dx: -1, dy: 0)
+                let sadRight = sadFor(dx: 1, dy: 0)
+                let sadBot = sadFor(dx: 0, dy: 1)
+                @inline(__always)
+                func weight(_ sad: Float) -> Float {
+                    return max(0, sad * invSigma + 1)
+                }
+                let wT = weight(sadTop)
+                let wL = weight(sadLeft)
+                let wR = weight(sadRight)
+                let wBo = weight(sadBot)
+                var wSum: Float = 1
+                var aX: Float = inX[y * width + x]
+                var aY: Float = inY[y * width + x]
+                var aB: Float = inB[y * width + x]
+                // top
+                wSum += wT
+                aX += wT * get(inX, x, y - 1)
+                aY += wT * get(inY, x, y - 1)
+                aB += wT * get(inB, x, y - 1)
+                // left
+                wSum += wL
+                aX += wL * get(inX, x - 1, y)
+                aY += wL * get(inY, x - 1, y)
+                aB += wL * get(inB, x - 1, y)
+                // right
+                wSum += wR
+                aX += wR * get(inX, x + 1, y)
+                aY += wR * get(inY, x + 1, y)
+                aB += wR * get(inB, x + 1, y)
+                // bottom
+                wSum += wBo
+                aX += wBo * get(inX, x, y + 1)
+                aY += wBo * get(inY, x, y + 1)
+                aB += wBo * get(inB, x, y + 1)
+                let invW = 1.0 / wSum
+                outX[y * width + x] = aX * invW
+                outY[y * width + x] = aY * invW
+                outB[y * width + x] = aB * invW
+            }
+        }
+        planeX = outX
+        planeY = outY
+        planeB = outB
+    }
+
+    // MARK: - EPF2 (3×3 plus, 4 neighbours, single-pixel diff per neighbour)
+
+    /// EPF2 stage. Same structure as EPF1 but the per-neighbour SAD
+    /// is just the absolute difference of centre vs neighbour (1 pair
+    /// per neighbour, summed over 3 channels). Border-mirror.
+    static func applyEPF2(
+        planeX: inout [Float], planeY: inout [Float], planeB: inout [Float],
+        width: Int, height: Int,
+        blocksX: Int, invSigmaPerBlock: [Float],
+        params: EPFParams
+    ) {
+        let inX = planeX, inY = planeY, inB = planeB
+        var outX = inX
+        var outY = inY
+        var outB = inB
+        let sm: Float = params.pass2SigmaScale
+        let bsm: Float = sm * params.borderSadMul
+        @inline(__always)
+        func sadMul(ix: Int, iy: Int) -> Float {
+            if iy == 0 || iy == 7 { return bsm }
+            return (ix == 0 || ix == 7) ? bsm : sm
+        }
+        @inline(__always)
+        func clamp(_ v: Int, _ lo: Int, _ hi: Int) -> Int {
+            return v < lo ? lo : (v > hi ? hi : v)
+        }
+        let scaleX = params.channelScale.0
+        let scaleY = params.channelScale.1
+        let scaleB = params.channelScale.2
+
+        for y in 0..<height {
+            for x in 0..<width {
+                let bx = x / 8, by = y / 8
+                let invSigmaBase = invSigmaPerBlock[by * blocksX + bx]
+                if invSigmaBase < kMinSigma {
+                    outX[y * width + x] = inX[y * width + x]
+                    outY[y * width + x] = inY[y * width + x]
+                    outB[y * width + x] = inB[y * width + x]
+                    continue
+                }
+                let invSigma = invSigmaBase * sadMul(ix: x % 8, iy: y % 8)
+                @inline(__always)
+                func get(_ p: [Float], _ xx: Int, _ yy: Int) -> Float {
+                    let cx = clamp(xx, 0, width - 1)
+                    let cy = clamp(yy, 0, height - 1)
+                    return p[cy * width + cx]
+                }
+                let cX = inX[y * width + x]
+                let cY = inY[y * width + x]
+                let cB = inB[y * width + x]
+                @inline(__always)
+                func sadFor(_ nX: Float, _ nY: Float, _ nB: Float) -> Float {
+                    return abs(cX - nX) * scaleX
+                         + abs(cY - nY) * scaleY
+                         + abs(cB - nB) * scaleB
+                }
+                @inline(__always)
+                func weight(_ sad: Float) -> Float {
+                    return max(0, sad * invSigma + 1)
+                }
+                // 4 cardinal neighbours.
+                let txN = get(inX, x, y - 1), tyN = get(inY, x, y - 1), tbN = get(inB, x, y - 1)
+                let lxN = get(inX, x - 1, y), lyN = get(inY, x - 1, y), lbN = get(inB, x - 1, y)
+                let rxN = get(inX, x + 1, y), ryN = get(inY, x + 1, y), rbN = get(inB, x + 1, y)
+                let bxN = get(inX, x, y + 1), byN = get(inY, x, y + 1), bbN = get(inB, x, y + 1)
+                let wT = weight(sadFor(txN, tyN, tbN))
+                let wL = weight(sadFor(lxN, lyN, lbN))
+                let wR = weight(sadFor(rxN, ryN, rbN))
+                let wBo = weight(sadFor(bxN, byN, bbN))
+                let wSum = 1 + wT + wL + wR + wBo
+                let invW = 1.0 / wSum
+                outX[y * width + x] = (cX + wT * txN + wL * lxN + wR * rxN + wBo * bxN) * invW
+                outY[y * width + x] = (cY + wT * tyN + wL * lyN + wR * ryN + wBo * byN) * invW
+                outB[y * width + x] = (cB + wT * tbN + wL * lbN + wR * rbN + wBo * bbN) * invW
+            }
+        }
+        planeX = outX
+        planeY = outY
+        planeB = outB
     }
 }

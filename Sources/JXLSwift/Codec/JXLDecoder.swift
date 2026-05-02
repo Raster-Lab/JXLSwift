@@ -1089,28 +1089,47 @@ public final class JXLDecoder {
         // `lf.epfIters`. For our cjxl-d=1 fixture the EPF sharpness
         // field (ACMeta channel 3) is all zeros → no-op fast path.
         if fh.loopFilter.epfIters > 0 {
+            // Sharpness field per block (ACMeta channel 3).
+            let totalBlocks = numBlocksXAC * numBlocksYAC
             let sharpField: [UInt8] = (acMetaValues.count > 3
-                ? acMetaValues[3].map { UInt8(clamping: $0) }
-                : [UInt8](repeating: 0, count: numBlocksXAC * numBlocksYAC))
+                && acMetaValues[3].count >= totalBlocks)
+                ? acMetaValues[3].prefix(totalBlocks).map { UInt8(clamping: $0) }
+                : [UInt8](repeating: 0, count: totalBlocks)
+            // Wire the per-block QF (already extracted above).
+            let perBlockQFForEPF: [Int32] = (perBlockQF.count >= totalBlocks)
+                ? Array(perBlockQF.prefix(totalBlocks))
+                : [Int32](repeating: qfRow, count: totalBlocks)
+            // Override params.epfIters with the loopFilter's value
+            // since the default EPFParams uses 2.
+            let epfParams = EPFParams(
+                epfIters: Int(fh.loopFilter.epfIters),
+                quantMul: EPFParams.default.quantMul,
+                sharpLut: EPFParams.default.sharpLut,
+                channelScale: EPFParams.default.channelScale,
+                pass1ZeroFlush: EPFParams.default.pass1ZeroFlush,
+                pass2ZeroFlush: EPFParams.default.pass2ZeroFlush,
+                pass0SigmaScale: EPFParams.default.pass0SigmaScale,
+                pass2SigmaScale: EPFParams.default.pass2SigmaScale,
+                borderSadMul: EPFParams.default.borderSadMul
+            )
             do {
                 try EPF.applyAllStages(
                     planeX: &planeX, planeY: &planeY, planeB: &planeB,
                     width: planeWidth, height: planeHeight,
                     sharpnessField: sharpField,
-                    rowQuant: Int32(qfRow),
+                    perBlockQF: perBlockQFForEPF,
                     quantScale: Float(qp.globalScale)
                         / Float(1 << 16),
-                    params: EPFParams.default
+                    params: epfParams
                 )
                 if trace {
                     FileHandle.standardError.write(Data(
-                        "TRACE EPF: \(fh.loopFilter.epfIters) iter(s); sharpness=\(sharpField); no-op fast path\n".utf8
+                        "TRACE EPF: \(fh.loopFilter.epfIters) iter(s); sharpness=\(sharpField); per-block QF=\(perBlockQFForEPF)\n".utf8
                     ))
                 }
             } catch let e as EPFError {
                 throw DecoderError.notImplemented(
-                    "VarDCT decode: EPF bilateral kernel not yet "
-                    + "implemented for non-zero sharpness: \(e)"
+                    "VarDCT decode: EPF stage failed: \(e)"
                 )
             }
         }

@@ -6884,6 +6884,60 @@ extension FoundationTests {
         print("[v0.7.0 16×16] our RGB means: \(oursMean) vs djxl ≈ (121, 120, 121)")
     }
 
+    /// **v0.7.0 EPF milestone**: 32×32 fixture with non-zero sharpness
+    /// trips the EPF1 bilateral kernel (cjxl-d=1 emits `epf_iters=1`
+    /// and per-block sharpness > 0 for textured content). This proves
+    /// the bilateral kernel produces sensible output rather than
+    /// throwing the deferred-implementation marker.
+    func testVarDCT_32x32Fixture_PixelsMatchDjxlMean() throws {
+        let cjxl = "/opt/homebrew/bin/cjxl"
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: cjxl),
+              FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("cjxl/djxl not available")
+        }
+        let tmp = NSTemporaryDirectory()
+        let pnmPath = tmp + "vdt32.ppm"
+        let jxlPath = tmp + "vdt32.jxl"
+        var ppm = Data("P6\n32 32\n255\n".utf8)
+        for y in 0..<32 {
+            for x in 0..<32 {
+                ppm.append(contentsOf: [
+                    UInt8(x * 8 & 0xff),
+                    UInt8(y * 8 & 0xff),
+                    UInt8((x ^ y) * 8 & 0xff),
+                ])
+            }
+        }
+        try ppm.write(to: URL(fileURLWithPath: pnmPath))
+        let p1 = Process()
+        p1.launchPath = cjxl
+        p1.arguments = [pnmPath, jxlPath, "-d", "1"]
+        p1.standardOutput = Pipe(); p1.standardError = Pipe()
+        try p1.run(); p1.waitUntilExit()
+        XCTAssertEqual(p1.terminationStatus, 0)
+
+        let bytes = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
+        let frame = try JXLDecoder().decode(bytes)
+        XCTAssertEqual(frame.width, 32)
+        XCTAssertEqual(frame.height, 32)
+        XCTAssertEqual(frame.channels, 3)
+
+        var oursR = 0, oursG = 0, oursB = 0
+        for i in 0..<(32 * 32) {
+            oursR += Int(frame.data[i*3+0])
+            oursG += Int(frame.data[i*3+1])
+            oursB += Int(frame.data[i*3+2])
+        }
+        let n = Double(32 * 32)
+        let oursMean = (Double(oursR)/n, Double(oursG)/n, Double(oursB)/n)
+        // djxl reference mean ≈ (124, 124, 124).
+        XCTAssertEqual(oursMean.0, 124, accuracy: 20)
+        XCTAssertEqual(oursMean.1, 124, accuracy: 20)
+        XCTAssertEqual(oursMean.2, 124, accuracy: 20)
+        print("[v0.7.0 32×32] our RGB means: \(oursMean) vs djxl ≈ (124, 124, 124)")
+    }
+
     /// EPF sigma calculation early-exits for sharpness=0 with the
     /// default LUT — `inv_sigma` falls below `kMinSigma`, signalling
     /// pass-through. Cross-validated against libjxl's epf.cc:
@@ -6931,18 +6985,64 @@ extension FoundationTests {
         var px = [Float](repeating: 0.5, count: 64)
         var py = [Float](repeating: 0.5, count: 64)
         var pb = [Float](repeating: 0.5, count: 64)
+        // With epfIters=3 the kernel hits the deferred EPF0 path —
+        // EPF1+EPF2 now run, then we throw on EPF0.
+        let pathologicalIters3 = EPFParams(
+            epfIters: 3,
+            quantMul: pathological.quantMul,
+            sharpLut: pathological.sharpLut,
+            channelScale: pathological.channelScale,
+            pass1ZeroFlush: pathological.pass1ZeroFlush,
+            pass2ZeroFlush: pathological.pass2ZeroFlush,
+            pass0SigmaScale: pathological.pass0SigmaScale,
+            pass2SigmaScale: pathological.pass2SigmaScale,
+            borderSadMul: pathological.borderSadMul
+        )
         XCTAssertThrowsError(try EPF.applyAllStages(
             planeX: &px, planeY: &py, planeB: &pb,
             width: 8, height: 8,
             sharpnessField: [7],
-            rowQuant: 1, quantScale: 1.0,
-            params: pathological
+            perBlockQF: [1], quantScale: 1.0,
+            params: pathologicalIters3
         )) { err in
             guard case EPFError.unsupportedNonZeroSharpness(_, _, _) = err else {
                 XCTFail("expected unsupportedNonZeroSharpness, got \(err)")
                 return
             }
         }
+    }
+
+    /// EPF1 (4-neighbour bilateral) on a constant-value plane should
+    /// produce identical output (no edges, no smoothing needed
+    /// changes).
+    func testVarDCT_EPF1_ConstantPlanePreserved() throws {
+        var px = [Float](repeating: 0.5, count: 64)
+        var py = [Float](repeating: 0.3, count: 64)
+        var pb = [Float](repeating: 0.7, count: 64)
+        // sharpness=4 + small qf gives an inv_sigma above kMinSigma so
+        // the kernel actually runs. On constant input all weights are
+        // max and the weighted average is the same constant.
+        let params = EPFParams(
+            epfIters: 1,
+            quantMul: 0.46,
+            sharpLut: (0..<8).map { Float($0) / 7.0 },
+            channelScale: (40, 5, 3.5),
+            pass1ZeroFlush: 0.45,
+            pass2ZeroFlush: 0.6,
+            pass0SigmaScale: 0.9,
+            pass2SigmaScale: 6.5,
+            borderSadMul: 2.0 / 3.0
+        )
+        try EPF.applyAllStages(
+            planeX: &px, planeY: &py, planeB: &pb,
+            width: 8, height: 8,
+            sharpnessField: [4],
+            perBlockQF: [10], quantScale: 0.078,
+            params: params
+        )
+        for v in px { XCTAssertEqual(v, 0.5, accuracy: 1e-5) }
+        for v in py { XCTAssertEqual(v, 0.3, accuracy: 1e-5) }
+        for v in pb { XCTAssertEqual(v, 0.7, accuracy: 1e-5) }
     }
 
     /// `QuantEncoding.read` — Library mode (3-bit selector,

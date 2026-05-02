@@ -291,8 +291,10 @@ Frontier-marker test: [`testVarDCT_RealCjxlFixture_ProgressMarker`](Tests/JXLSwi
 | Section | Spec ref | Status |
 |---|---|---|
 | Gaborish (3×3 separable smoothing) | §C.9.1 | ✅ — `Gaborish.apply` wired into `decodeVarDCTPartial` after color correlation, before `OpsinXYB.inverse`. Default weights match libjxl: `1.1 × 0.104699568` / `1.1 × 0.055680538`. Per-channel application gated by `fh.loopFilter.gab`. |
-| EPF (loop filter — sigma calc + no-op fast path) | §C.9.2 | ✅ — `EPF.computeInvSigma` mirrors libjxl's `epf.cc::ComputeSigma` (`sigma_quant = epf_quant_mul / (quant_scale × row_quant × kInvSigmaNum)`, multiply by `epf_sharp_lut[s]`, clamp, invert). `EPF.isNoOp` checks `invSigma < kMinSigma` (`-3.905...`). Wired into the decode pipeline after Gaborish. **For cjxl-d=1 fixtures** the default LUT collapses sharpness=0 → sigma=-1e-4 → inv_sigma=-10000 → no-op fast path; the bilateral kernel itself throws `unsupportedNonZeroSharpness` until a fixture forces it. Two unit tests pin both branches. |
-| EPF — full bilateral kernel (EPF0/EPF1/EPF2 stages) | §C.9.2 | ⏳ — defer until a fixture with non-zero sharpness lands; current cjxl-d=1 fixture takes the no-op path. |
+| EPF (loop filter — sigma calc + no-op fast path) | §C.9.2 | ✅ — `EPF.computeInvSigma` mirrors libjxl's `epf.cc::ComputeSigma` (`sigma_quant = epf_quant_mul / (quant_scale × row_quant × kInvSigmaNum)`, multiply by `epf_sharp_lut[s]`, clamp, invert). `EPF.isNoOp` checks `invSigma < kMinSigma` (`-3.905...`). Wired into the decode pipeline after Gaborish. |
+| EPF1 — 5×5 plus-shaped bilateral kernel | §C.9.2 | ✅ — 4-neighbour bilateral with 3×3-plus SAD per neighbour (5 pixel-diff pairs summed over 3 channels weighted by `epf_channel_scale = (40, 5, 3.5)`). Border-mirror; per-pixel `inv_sigma = inv_sigma_block × sad_mul[ix, iy]` where `sad_mul` distinguishes block-edge vs interior. Drives non-zero-sharpness fixtures (e.g., 32×32 cjxl-d=1). |
+| EPF2 — 3×3 plus-shaped bilateral kernel | §C.9.2 | ✅ — same structure as EPF1 but per-neighbour SAD is just the centre-vs-neighbour absolute diff (1 pair per neighbour). Runs when `epf_iters >= 2`. |
+| EPF0 — 7×7 plus-with-diagonals (12-neighbour) kernel | §C.9.2 | ⏳ — only triggers when `epf_iters >= 3` (uncommon). Throws deferred-implementation until a real fixture forces it. |
 
 ### Phase J — Reversible JPEG transcoding
 
