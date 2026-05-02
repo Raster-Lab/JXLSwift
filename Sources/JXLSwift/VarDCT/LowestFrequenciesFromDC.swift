@@ -104,7 +104,7 @@ public enum LowestFrequenciesFromDC {
     }
 
     /// libjxl `dct_scales.h::DCTResampleScales<4, 32>::kScales`.
-    private static let kScales4to32: [Float] = [
+    static let kScales4to32: [Float] = [
         1.0,
         0.974886821136879522,
         0.901764195028874394,
@@ -122,7 +122,7 @@ public enum LowestFrequenciesFromDC {
     /// DCT-II of length 4. Matches libjxl's
     /// `CoeffBundle::StoreToBlockAndScale` post-pass scaling.
     @inline(__always)
-    private static func scaledDCT4(_ x: [Float]) -> [Float] {
+    static func scaledDCT4(_ x: [Float]) -> [Float] {
         precondition(x.count == 4)
         // cos(π/8), cos(3π/8) — the standard DCT-4 angle constants.
         let c1: Float = 0.9238795325112867   // cos(π/8)
@@ -214,6 +214,47 @@ public enum LowestFrequenciesFromDC {
             for x in 0..<4 {
                 result[y * 4 + x] = out[y * 4 + x]
                     * kScales4to32[x] * kScales2to32[y]
+            }
+        }
+        return result
+    }
+
+    /// DCT32x32 (libjxl ord 3) path: 16 DC values from the 4×4
+    /// covered cells reinterpret to 16 LLF coefficients at the
+    /// top-left 4×4 corner of the 32×32 coef block.
+    ///
+    /// `dc` is in row-major coef-layout order (4 cols × 4 rows).
+    /// Per libjxl `LowestFrequenciesFromDC<DCT32X32>`: ROWS=4,
+    /// COLS=4 → `ComputeScaledDCT<4, 4>` (separable 4-point DCT-2)
+    /// then per-axis `DCTTotalResampleScale<4, 32>` resample.
+    public static func dct32x32(dc: [Float]) -> [Float] {
+        precondition(dc.count == 16, "DCT32x32 LLF needs 16 DC values")
+        // 1-D scaled DCT-4 along COLUMNS (process each col across 4 rows).
+        var tmp = [Float](repeating: 0, count: 16)
+        for x in 0..<4 {
+            let col = [dc[0 * 4 + x], dc[1 * 4 + x],
+                       dc[2 * 4 + x], dc[3 * 4 + x]]
+            let dctCol = scaledDCT4(col)
+            for y in 0..<4 {
+                tmp[y * 4 + x] = dctCol[y]
+            }
+        }
+        // 1-D scaled DCT-4 along ROWS (process each row across 4 cols).
+        var dct = [Float](repeating: 0, count: 16)
+        for y in 0..<4 {
+            let row = [tmp[y * 4 + 0], tmp[y * 4 + 1],
+                       tmp[y * 4 + 2], tmp[y * 4 + 3]]
+            let dctRow = scaledDCT4(row)
+            for x in 0..<4 {
+                dct[y * 4 + x] = dctRow[x]
+            }
+        }
+        // Per-axis resample with kScales<4, 32>.
+        var result = [Float](repeating: 0, count: 16)
+        for y in 0..<4 {
+            for x in 0..<4 {
+                result[y * 4 + x] = dct[y * 4 + x]
+                    * kScales4to32[x] * kScales4to32[y]
             }
         }
         return result

@@ -1081,6 +1081,7 @@ public final class JXLDecoder {
                         || strategy == .dct16x8
                         || strategy == .dct32x16
                         || strategy == .dct16x32
+                        || strategy == .dct32x32
                     if !strategyIDCTSupported {
                         let nzAny = blockChannels.contains {
                             $0.contains { $0 != 0 }
@@ -1750,6 +1751,120 @@ public final class JXLDecoder {
                             planeXYB[1][dstRow + px] = coef[1][srcRow + px]
                             planeXYB[2][dstRow + px] = coef[2][srcRow + px]
                         }
+                    }
+                }
+            }
+        }
+
+        // DCT32x32 IDCT overlay (libjxl ord 3). Square 32×32 strategy
+        // with cellsX = cellsY = 4. LLF region is the 4×4 corner of
+        // the 32×32 coef block (16 LLF positions). Bridge factor is
+        // the square root of the area = √(32×32) = 32 (uniform).
+        let dct32Bands = DefaultQuantBands.scaledForBitstream(
+            DefaultQuantBands.dct32x32
+        )
+        let qweights32: [Float]
+        do {
+            qweights32 = try QuantWeights.getQuantWeights(
+                rows: 32, cols: 32, bands: dct32Bands
+            )
+        } catch {
+            throw DecoderError.notImplemented(
+                "VarDCT decode: DCT32x32 quant weights computation failed: \(error)"
+            )
+        }
+        // 16 LLF natural-order positions in a 32-wide grid (top-left
+        // 4 cols × 4 rows): (0..3, 0..3) → flat 0..3, 32..35, 64..67,
+        // 96..99.
+        let llfSet32x32: Set<Int> = {
+            var s: Set<Int> = []
+            for r in 0..<4 { for c in 0..<4 { s.insert(r * 32 + c) } }
+            return s
+        }()
+        for by in 0..<numBlocksYAC {
+            for bx in 0..<numBlocksXAC {
+                let entry = acsImage.at(x: bx, y: by)
+                if !entry.isFirstBlock { continue }
+                if entry.strategy != .dct32x32 { continue }
+                guard bx + 4 <= numBlocksXAC,
+                      by + 4 <= numBlocksYAC
+                else { continue }
+                let blockIdxFirst = by * totalBlocksX + bx
+                let blockQF = blockIdxFirst < perBlockQF.count
+                    ? perBlockQF[blockIdxFirst] : qfRow
+                let blockInvQuantAC = invGlobalScale / Float(blockQF)
+                // Per-channel coef block (32 cols × 32 rows = 1024).
+                var coef = [[Float]](
+                    repeating: [Float](repeating: 0, count: 1024),
+                    count: 3
+                )
+                // 16 cell DC values + DC-CFL.
+                var dcXYB: [[Float]] = (0..<3).map { _ in
+                    [Float](repeating: 0, count: 16)
+                }
+                for r in 0..<4 {
+                    for c in 0..<4 {
+                        let cellBX = bx + c
+                        let cellBY = by + r
+                        var cellDC = [Float](repeating: 0, count: 3)
+                        for storageSlot in 0..<3 {
+                            let xybC = storageToXYB[storageSlot]
+                            let dcQuant = Float(
+                                dcValues[storageSlot][cellBY * dcWidth + cellBX]
+                            )
+                            cellDC[xybC] = dcQuant * mulDC[xybC] * dcExtraFactor
+                        }
+                        let dcY = cellDC[1]
+                        let idx = r * 4 + c
+                        dcXYB[0][idx] = cellDC[0] + dcCflX * dcY
+                        dcXYB[1][idx] = dcY
+                        dcXYB[2][idx] = cellDC[2] + dcCflB * dcY
+                    }
+                }
+                let llfX = LowestFrequenciesFromDC.dct32x32(dc: dcXYB[0])
+                let llfY = LowestFrequenciesFromDC.dct32x32(dc: dcXYB[1])
+                let llfB = LowestFrequenciesFromDC.dct32x32(dc: dcXYB[2])
+                for r in 0..<4 {
+                    for c in 0..<4 {
+                        let pos = r * 32 + c
+                        coef[0][pos] = llfX[r * 4 + c]
+                        coef[1][pos] = llfY[r * 4 + c]
+                        coef[2][pos] = llfB[r * 4 + c]
+                    }
+                }
+                // AC coefficients (skip 16 LLF positions).
+                let acYBlock = acBlocks[blockIdxFirst][1]
+                let acXBlock = acBlocks[blockIdxFirst][0]
+                let acBBlock = acBlocks[blockIdxFirst][2]
+                for np in 0..<1024 where !llfSet32x32.contains(np) {
+                    let acYDeq = Float(acYBlock[np])
+                        / qweights32[1 * 1024 + np] * blockInvQuantAC
+                    let acXDeq = Float(acXBlock[np])
+                        / qweights32[0 * 1024 + np] * blockInvQuantAC
+                    let acBDeq = Float(acBBlock[np])
+                        / qweights32[2 * 1024 + np] * blockInvQuantAC
+                    coef[1][np] = acYDeq
+                    coef[0][np] = acXDeq + xCCMul * acYDeq
+                    coef[2][np] = acBDeq + bCCMul * acYDeq
+                }
+                // Bridge ×32.
+                for c in 0..<3 {
+                    for k in 0..<1024 { coef[c][k] *= 32 }
+                }
+                // 32×32 IDCT per channel.
+                DCT2D.inverse(&coef[0], size: 32)
+                DCT2D.inverse(&coef[1], size: 32)
+                DCT2D.inverse(&coef[2], size: 32)
+                // Place 32×32 patch at (bx*8, by*8).
+                let xOrigin = bx * 8
+                let yOrigin = by * 8
+                for py in 0..<32 {
+                    let srcRow = py * 32
+                    let dstRow = (yOrigin + py) * planeWidth + xOrigin
+                    for px in 0..<32 {
+                        planeXYB[0][dstRow + px] = coef[0][srcRow + px]
+                        planeXYB[1][dstRow + px] = coef[1][srcRow + px]
+                        planeXYB[2][dstRow + px] = coef[2][srcRow + px]
                     }
                 }
             }
