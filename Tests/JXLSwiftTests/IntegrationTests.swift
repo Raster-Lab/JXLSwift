@@ -6469,6 +6469,50 @@ extension FoundationTests {
         }
     }
 
+    /// Confirm `DCT2D.inverse(_:size:8)` is orthonormal — i.e., for
+    /// `F[0,0] = c*N` and all other coefficients zero, every pixel
+    /// equals `c`. Pin-down for the bridge factor analysis: any
+    /// future tweak to per-coefficient scaling must keep this
+    /// invariant intact (DC bridge ×N is the libjxl→orthonormal
+    /// conversion for the DC slot specifically).
+    func testVarDCT_DCT2DInverse_DCBridgeIsN() throws {
+        var coefs = [Float](repeating: 0, count: 64)
+        coefs[0] = 8.0  // c=1, N=8 → F_orth[0,0] = c*N = 8
+        DCT2D.inverse(&coefs, size: 8)
+        for v in coefs {
+            XCTAssertEqual(v, 1.0, accuracy: 1e-5,
+                "orthonormal IDCT of [c*N, 0, ...] should give constant c")
+        }
+        // Same check for N=16.
+        var coefs16 = [Float](repeating: 0, count: 256)
+        coefs16[0] = 16.0
+        DCT2D.inverse(&coefs16, size: 16)
+        for v in coefs16 {
+            XCTAssertEqual(v, 1.0, accuracy: 1e-5,
+                "16x16: orthonormal IDCT of [c*N, 0, ...] should give c")
+        }
+    }
+
+    /// Confirm `DCT2D.inverse(_:size:8)` for a single non-DC coef
+    /// produces the orthonormal AC basis pattern. For F[0,1] = 1
+    /// (in orthonormal scale), pixels = α(0) · α(1) · cos((2c+1)π/16)
+    /// = √(1/8) · √(2/8) · cos = (√2/8) · cos. Pin-down for the
+    /// orthonormal basis identity — guards against any IDCT
+    /// normalisation drift.
+    func testVarDCT_DCT2DInverse_AC01OrthonormalBasis() throws {
+        var coefs = [Float](repeating: 0, count: 64)
+        coefs[1] = 1.0  // F_orth[0, 1] = 1
+        DCT2D.inverse(&coefs, size: 8)
+        let scale = Float(2.0).squareRoot() / 8.0  // (√2/8) ≈ 0.1768
+        for r in 0..<8 {
+            for c in 0..<8 {
+                let expected = scale * Foundation.cos(Float(2*c+1) * .pi / 16)
+                XCTAssertEqual(coefs[r * 8 + c], expected, accuracy: 1e-5,
+                    "row \(r) col \(c): orthonormal AC basis pattern")
+            }
+        }
+    }
+
     /// `CoeffOrders.decodeLehmerCode` — port of libjxl
     /// `lehmer_code.h::DecodeLehmerCode`. Verifies the round-trip:
     /// build a permutation, derive its Lehmer code by hand, decode
