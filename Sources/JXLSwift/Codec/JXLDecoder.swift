@@ -1146,6 +1146,22 @@ public final class JXLDecoder {
         let mulDC: [Float] = (0..<3).map { invQuantDC / kInvDCQuant[$0] }
         let dcExtraFactor: Float = 1.0 / Float(1 << dcExtraPrecision)
 
+        // libjxl `dec_cache.h:161-162` — per-channel AC-dequant
+        // multiplier driven by frame-header qm_scale. Y is unscaled;
+        // X and B get `pow(1/1.25, qm_scale - 2.0)`. Default
+        // qm_scale=3 → multiplier = 0.8.
+        let xDmMultiplier: Float = powf(
+            1.0 / 1.25, Float(fh.xQmScale) - 2.0
+        )
+        let bDmMultiplier: Float = powf(
+            1.0 / 1.25, Float(fh.bQmScale) - 2.0
+        )
+        if trace {
+            FileHandle.standardError.write(Data(
+                "TRACE qm_scale: x=\(fh.xQmScale) (mul=\(xDmMultiplier)) b=\(fh.bQmScale) (mul=\(bDmMultiplier))\n".utf8
+            ))
+        }
+
         // Channel layout — libjxl swaps storage:
         //
         //   image.channel[c < 2 ? c ^ 1 : c]  for XYB c ∈ {0=X, 1=Y, 2=B}
@@ -1279,8 +1295,10 @@ public final class JXLDecoder {
                         / qweights[1 * 64 + np] * blockInvQuantAC
                     let acXDequant = Float(acXBlock[np])
                         / qweights[0 * 64 + np] * blockInvQuantAC
+                        * xDmMultiplier
                     let acBDequant = Float(acBBlock[np])
                         / qweights[2 * 64 + np] * blockInvQuantAC
+                        * bDmMultiplier
                     coefY[np] = acYDequant
                     coefX[np] = acXDequant + xCCMul * acYDequant
                     coefB[np] = acBDequant + bCCMul * acYDequant
@@ -1416,8 +1434,10 @@ public final class JXLDecoder {
                         / qweights16[1 * 256 + np] * blockInvQuantAC
                     let acXDeq = Float(acXBlock[np])
                         / qweights16[0 * 256 + np] * blockInvQuantAC
+                        * xDmMultiplier
                     let acBDeq = Float(acBBlock[np])
                         / qweights16[2 * 256 + np] * blockInvQuantAC
+                        * bDmMultiplier
                     coef[1][np] = acYDeq
                     coef[0][np] = acXDeq + xCCMul * acYDeq
                     coef[2][np] = acBDeq + bCCMul * acYDeq
@@ -1533,8 +1553,10 @@ public final class JXLDecoder {
                         / qweights8x16[1 * 128 + np] * blockInvQuantAC
                     let acXDeq = Float(acXBlock[np])
                         / qweights8x16[0 * 128 + np] * blockInvQuantAC
+                        * xDmMultiplier
                     let acBDeq = Float(acBBlock[np])
                         / qweights8x16[2 * 128 + np] * blockInvQuantAC
+                        * bDmMultiplier
                     coef[1][np] = acYDeq
                     coef[0][np] = acXDeq + xCCMul * acYDeq
                     coef[2][np] = acBDeq + bCCMul * acYDeq
@@ -1714,8 +1736,10 @@ public final class JXLDecoder {
                         / qweights16x32[1 * 512 + np] * blockInvQuantAC
                     let acXDeq = Float(acXBlock[np])
                         / qweights16x32[0 * 512 + np] * blockInvQuantAC
+                        * xDmMultiplier
                     let acBDeq = Float(acBBlock[np])
                         / qweights16x32[2 * 512 + np] * blockInvQuantAC
+                        * bDmMultiplier
                     coef[1][np] = acYDeq
                     coef[0][np] = acXDeq + xCCMul * acYDeq
                     coef[2][np] = acBDeq + bCCMul * acYDeq
@@ -1841,8 +1865,10 @@ public final class JXLDecoder {
                         / qweights32[1 * 1024 + np] * blockInvQuantAC
                     let acXDeq = Float(acXBlock[np])
                         / qweights32[0 * 1024 + np] * blockInvQuantAC
+                        * xDmMultiplier
                     let acBDeq = Float(acBBlock[np])
                         / qweights32[2 * 1024 + np] * blockInvQuantAC
+                        * bDmMultiplier
                     coef[1][np] = acYDeq
                     coef[0][np] = acXDeq + xCCMul * acYDeq
                     coef[2][np] = acBDeq + bCCMul * acYDeq
