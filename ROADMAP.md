@@ -288,8 +288,8 @@ Frontier-marker test: [`testVarDCT_RealCjxlFixture_ProgressMarker`](Tests/JXLSwi
 
 | Section | Spec ref | Status |
 |---|---|---|
-| Edge-preserving filter (Gabor) | §C.9.1 | ⏳ |
-| EPF (loop filter) | §C.9.2 | ⏳ |
+| Gaborish (3×3 separable smoothing) | §C.9.1 | ✅ — `Gaborish.apply` wired into `decodeVarDCTPartial` after color correlation, before `OpsinXYB.inverse`. Default weights match libjxl: `1.1 × 0.104699568` / `1.1 × 0.055680538`. Per-channel application gated by `fh.loopFilter.gab`. |
+| EPF (loop filter — 3-stage edge-preserving filter) | §C.9.2 | ⏳ — current frontier. 7×7 plus-kernel, per-pixel sigma from EPF sharpness field (read from ACMeta channel 3), `epf_iters` ∈ {0,1,2,3} (default 2). Substantial: each stage does SAD-based bilateral filtering with threshold-weighted neighbour contributions. |
 
 ### Phase J — Reversible JPEG transcoding
 

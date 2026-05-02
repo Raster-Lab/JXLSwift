@@ -946,15 +946,52 @@ public final class JXLDecoder {
             ))
         }
 
-        // Per-pixel XYB → linear RGB → sRGB → 8-bit.
-        var rgb8 = [UInt8](repeating: 0, count: 8 * 8 * 3)
+        // Apply color correlation per-pixel (mathematically the same
+        // as libjxl's per-coefficient `MulAdd(x_cc_mul, dequant_y, ...)`
+        // since IDCT is linear and CC weights are per-tile constants).
+        var planeX = [Float](repeating: 0, count: 64)
+        var planeY = [Float](repeating: 0, count: 64)
+        var planeB = [Float](repeating: 0, count: 64)
         for i in 0..<64 {
             let xRaw = pixelBlocksXYB[0][i]
             let yRaw = pixelBlocksXYB[1][i]
             let bRaw = pixelBlocksXYB[2][i]
-            let xCorr = xRaw + xCCMul * yRaw
-            let bCorr = bRaw + bCCMul * yRaw
-            let lin = OpsinXYB.inverse((X: xCorr, Y: yRaw, B: bCorr))
+            planeX[i] = xRaw + xCCMul * yRaw
+            planeY[i] = yRaw
+            planeB[i] = bRaw + bCCMul * yRaw
+        }
+
+        // Phase R restoration filters. libjxl pipeline order
+        // (`dec_cache.cc::PreparePipeline`):
+        //
+        //     ChromaUpsampling → Gaborish (if lf.gab) → EPF (epf_iters
+        //     stages) → ... → XYB (inverse OpsinXYB) → sRGB OETF
+        //
+        // Gaborish is a 3×3 separable-style smoothing convolution
+        // applied per-channel. Default weights from libjxl
+        // `loop_filter.cc::LoopFilter::SetDefault`:
+        //   gab_x_weight1 = 0.115169424
+        //   gab_x_weight2 = 0.061248592
+        //   (same for Y and B; identical to our `Gaborish.defaultWeight*`)
+        //
+        // EPF is deferred until later in v0.6.0.
+        if fh.loopFilter.gab {
+            Gaborish.apply(to: &planeX, width: 8, height: 8)
+            Gaborish.apply(to: &planeY, width: 8, height: 8)
+            Gaborish.apply(to: &planeB, width: 8, height: 8)
+            if trace {
+                FileHandle.standardError.write(Data(
+                    "TRACE Gaborish applied to all 3 channels\n".utf8
+                ))
+            }
+        }
+
+        // Per-pixel XYB → linear RGB → sRGB → 8-bit.
+        var rgb8 = [UInt8](repeating: 0, count: 8 * 8 * 3)
+        for i in 0..<64 {
+            let lin = OpsinXYB.inverse(
+                (X: planeX[i], Y: planeY[i], B: planeB[i])
+            )
             rgb8[i * 3 + 0] = linearToSRGB8(lin.R)
             rgb8[i * 3 + 1] = linearToSRGB8(lin.G)
             rgb8[i * 3 + 2] = linearToSRGB8(lin.B)
