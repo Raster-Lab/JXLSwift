@@ -6686,6 +6686,99 @@ extension FoundationTests {
         }
     }
 
+    /// SWEEP-fixture byte-equality measurement vs djxl. For each cjxl
+    /// distance, encodes a fixed 64×64 textured PPM, decodes via
+    /// `djxl` (reference) and `JXLDecoder()` (ours), then reports
+    /// max + mean per-channel pixel diffs. Currently informational —
+    /// no XCTAssert pin-downs since per-strategy IDCT scaling drifts
+    /// require deeper calibration vs libjxl's IDCT convention.
+    /// Helps keep pixel quality tracked as more strategies / fixes
+    /// land.
+    func testVarDCT_SWEEP_DjxlByteDiffReport() throws {
+        let cjxl = "/opt/homebrew/bin/cjxl"
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: cjxl),
+              FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("cjxl/djxl not available")
+        }
+        let tmp = NSTemporaryDirectory()
+        let pnmPath = tmp + "vdt_sweep_be.ppm"
+        var ppm = Data("P6\n64 64\n255\n".utf8)
+        for y in 0..<64 {
+            for x in 0..<64 {
+                ppm.append(contentsOf: [
+                    UInt8((x * 4) & 0xff),
+                    UInt8((y * 4) & 0xff),
+                    UInt8(((x ^ y) * 4) & 0xff),
+                ])
+            }
+        }
+        try ppm.write(to: URL(fileURLWithPath: pnmPath))
+
+        for d in ["0.5", "1.0", "2.0", "5.0", "10"] {
+            let jxlPath = tmp + "vdt_sweep_be_d\(d).jxl"
+            let ppmRefPath = tmp + "vdt_sweep_be_d\(d)_ref.ppm"
+            // cjxl encode
+            let p1 = Process()
+            p1.launchPath = cjxl
+            p1.arguments = [pnmPath, jxlPath, "-d", d]
+            p1.standardOutput = Pipe(); p1.standardError = Pipe()
+            try p1.run(); p1.waitUntilExit()
+            guard p1.terminationStatus == 0 else { continue }
+            // djxl reference decode (PNM output preserves raw bytes).
+            let p2 = Process()
+            p2.launchPath = djxl
+            p2.arguments = [jxlPath, ppmRefPath]
+            p2.standardOutput = Pipe(); p2.standardError = Pipe()
+            try p2.run(); p2.waitUntilExit()
+            guard p2.terminationStatus == 0 else { continue }
+            // Load reference PPM and skip the ASCII header.
+            let refData = try Data(contentsOf: URL(fileURLWithPath: ppmRefPath))
+            // PPM header: "P6\n<w> <h>\n255\n" — find start of binary.
+            var binStart = 0
+            var newlines = 0
+            for (i, b) in refData.enumerated() {
+                if b == 0x0A { newlines += 1; if newlines == 3 {
+                    binStart = i + 1; break
+                } }
+            }
+            guard refData.count - binStart == 64 * 64 * 3 else {
+                print("[BYTE-DIFF d=\(d)] djxl PPM size mismatch, skipping")
+                continue
+            }
+            let ref = refData.subdata(in: binStart..<refData.count)
+            // Our decode
+            let bytes = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
+            let frame: ImageFrame
+            do { frame = try JXLDecoder().decode(bytes) }
+            catch {
+                print("[BYTE-DIFF d=\(d)] decode failed: \(error)")
+                continue
+            }
+            guard frame.width == 64, frame.height == 64,
+                  frame.channels == 3, frame.data.count == 64 * 64 * 3
+            else {
+                print("[BYTE-DIFF d=\(d)] frame shape mismatch")
+                continue
+            }
+            // Per-channel max + mean pixel diff.
+            var sumR = 0, sumG = 0, sumB = 0
+            var maxR = 0, maxG = 0, maxB = 0
+            for i in 0..<(64 * 64) {
+                let dR = abs(Int(frame.data[i*3+0]) - Int(ref[i*3+0]))
+                let dG = abs(Int(frame.data[i*3+1]) - Int(ref[i*3+1]))
+                let dB = abs(Int(frame.data[i*3+2]) - Int(ref[i*3+2]))
+                sumR += dR; sumG += dG; sumB += dB
+                maxR = max(maxR, dR); maxG = max(maxG, dG); maxB = max(maxB, dB)
+            }
+            let n = Float(64 * 64)
+            print(String(format:
+                "[BYTE-DIFF d=%@] max=(R=%d,G=%d,B=%d) mean=(%.2f,%.2f,%.2f)",
+                d, maxR, maxG, maxB,
+                Float(sumR)/n, Float(sumG)/n, Float(sumB)/n))
+        }
+    }
+
     /// Probe a sweep of cjxl distances to see which quant modes
     /// each emits — informs which `QuantEncoding` modes are
     /// load-bearing for real-world cjxl output. Reports the
