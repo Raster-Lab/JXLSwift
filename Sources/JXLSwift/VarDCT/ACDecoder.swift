@@ -150,7 +150,14 @@ public enum ACDecoder {
             let scaled = Int32(truncatingIfNeeded:
                 Int64(coeff) << Int64(shift))
             block[order[k]] &+= scaled
-            prev = (u == 0) ? 1 : 0
+            // libjxl: `prev = (u != 0); nzeros -= prev;`
+            // `prev` flags whether the LAST coefficient was non-zero
+            // — the next coefficient's context flips on this bit.
+            // (Earlier this was inverted as `(u == 0)`, which masked
+            //  itself for single-cluster fixtures because all routes
+            //  share an ANS distribution but breaks textured/multi-
+            //  cluster fixtures via wrong-context divergence.)
+            prev = (u != 0) ? 1 : 0
             if u != 0 { nzeros -= 1 }
             k += 1
         }
@@ -246,7 +253,8 @@ public enum ACEncoder {
             let raw = block[order[k]] >> Int32(shift)
             let u = ZigZag.pack(raw)
             try writer.writeToken(context: ctx, value: u, to: &w)
-            prev = (u == 0) ? 1 : 0
+            // libjxl convention (mirrors decoder): prev = u != 0.
+            prev = (u != 0) ? 1 : 0
             if u != 0 { remaining -= 1 }
             k += 1
         }
