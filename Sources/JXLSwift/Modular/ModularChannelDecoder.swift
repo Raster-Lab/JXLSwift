@@ -58,85 +58,137 @@ public func decodeModularChannel(
 ) throws {
     precondition(out.count == width * height,
                  "out must be sized width*height")
-    @inline(__always) func at(_ x: Int, _ y: Int) -> Int32 {
-        out[y * width + x]
-    }
     var wp = WeightedPredictor(header: wpHeader, xsize: width)
-    for y in 0..<height {
-        for x in 0..<width {
-            // libjxl edge fall-backs (per `lib/jxl/modular/encoding/
-            // context_predict.h::Predict`):
-            //   left:     x>0 ? pp[-1] : (y>0 ? pp[-onerow] : 0)
-            //   top:      y>0 ? pp[-onerow] : left
-            //   topleft:  (x && y) ? pp[-1-onerow] : left
-            //   topright: (x+1<w && y) ? pp[1-onerow] : top
-            //   leftleft: x>1 ? pp[-2] : left
-            //   toptop:   y>1 ? pp[-2*onerow] : top
-            let left: Int32
-            if x > 0 {
-                left = at(x - 1, y)
-            } else if y > 0 {
-                left = at(x, y - 1)
-            } else {
-                left = 0
-            }
-            let top: Int32 = (y > 0) ? at(x, y - 1) : left
-            let topLeft: Int32 = (x > 0 && y > 0) ? at(x - 1, y - 1) : left
-            let topRight: Int32 = (x + 1 < width && y > 0) ? at(x + 1, y - 1) : top
-            let leftLeft: Int32 = (x > 1) ? at(x - 2, y) : left
-            let topTop: Int32 = (y > 1) ? at(x, y - 2) : top
-            // Compute property 15 (WP property) BEFORE running predict
-            // — libjxl `FillProperties` reads `WeightedPredictor::
-            // PropertyValue` first, *then* invokes Predict if the leaf's
-            // predictor is Weighted.
-            let wpProp = wp.propertyValue(x: x, y: y, xsize: width)
-            let props = computeModularProperties(
-                staticChannel: staticChannel, groupId: groupId,
-                x: Int32(x), y: Int32(y),
-                top: top, left: left,
-                topLeft: topLeft, topRight: topRight,
-                leftLeft: leftLeft, topTop: topTop,
-                wpProperty: wpProp
-            )
-            let leaf: ModularTreeNode
-            do { leaf = try tree.walk(properties: props) }
-            catch let e as ModularTreeError {
-                throw ModularChannelDecoderError.treeWalk(e)
-            }
-            let token: UInt32
-            do { token = try stream.readToken(context: leaf.leafId, from: &r) }
-            catch let e as TokenStreamReaderError {
-                throw ModularChannelDecoderError.tokenAtPosition(
-                    x: x, y: y, channel: staticChannel, inner: e
+    // Hoist the env-var check out of the per-pixel loop — looking it
+    // up via `ProcessInfo.processInfo.environment` 16M times in a
+    // 4096² decode dominated runtime.
+    let traceEnabled = ProcessInfo.processInfo.environment["JXL_TRACE"] != nil
+    // Reused 16-element properties array — allocating a fresh
+    // `[Int32]` per pixel was a measurable hot spot.
+    var props = [Int32](repeating: 0, count: 16)
+    // Tree-walk fast path: when there's exactly one leaf, every
+    // pixel routes to that leaf with no property lookup needed.
+    let isSingleLeafTree = (tree.nodes.count == 1 && tree.nodes[0].isLeaf)
+    let singleLeaf = tree.nodes[0]
+    // WP fast-path: if no leaf uses predictor 6 (Weighted) AND no
+    // decision node branches on property 15 (the WP property), we
+    // can skip both `wp.propertyValue` and the heavyweight
+    // `wp.predict`/`wp.update` entirely. libjxl makes the same
+    // decision via its `is_wp_only` / `tree_has_wp_prop_or_pred`
+    // flags in `DecodeModularChannelMAANS`.
+    var treeUsesWP = false
+    for node in tree.nodes {
+        if node.isLeaf {
+            if node.rawPredictor == 6 { treeUsesWP = true; break }
+        } else if node.property == 15 {
+            treeUsesWP = true; break
+        }
+    }
+    try out.withUnsafeMutableBufferPointer { outBuf in
+        for y in 0..<height {
+            for x in 0..<width {
+                // libjxl edge fall-backs (per `lib/jxl/modular/encoding/
+                // context_predict.h::Predict`):
+                //   left:     x>0 ? pp[-1] : (y>0 ? pp[-onerow] : 0)
+                //   top:      y>0 ? pp[-onerow] : left
+                //   topleft:  (x && y) ? pp[-1-onerow] : left
+                //   topright: (x+1<w && y) ? pp[1-onerow] : top
+                //   leftleft: x>1 ? pp[-2] : left
+                //   toptop:   y>1 ? pp[-2*onerow] : top
+                let rowBase = y * width
+                let prevRow = (y - 1) * width
+                let prev2Row = (y - 2) * width
+                let left: Int32
+                if x > 0 {
+                    left = outBuf[rowBase + x - 1]
+                } else if y > 0 {
+                    left = outBuf[prevRow + x]
+                } else {
+                    left = 0
+                }
+                let top: Int32 = y > 0 ? outBuf[prevRow + x] : left
+                let topLeft: Int32 = (x > 0 && y > 0)
+                    ? outBuf[prevRow + x - 1] : left
+                let topRight: Int32 = (x + 1 < width && y > 0)
+                    ? outBuf[prevRow + x + 1] : top
+                let leftLeft: Int32 = x > 1 ? outBuf[rowBase + x - 2] : left
+                let topTop: Int32 = y > 1 ? outBuf[prev2Row + x] : top
+                // Property 15 (WP property) only needed when the tree
+                // branches on it OR uses predictor 6 — `treeUsesWP`
+                // captures both. Skipping `wp.propertyValue` for
+                // non-WP trees saves a per-pixel function call.
+                let wpProp: Int32 = treeUsesWP
+                    ? wp.propertyValue(x: x, y: y, xsize: width)
+                    : 0
+                let leaf: ModularTreeNode
+                if isSingleLeafTree {
+                    // Skip the property fill + tree walk entirely.
+                    leaf = singleLeaf
+                } else {
+                    fillModularProperties(
+                        into: &props,
+                        staticChannel: staticChannel, groupId: groupId,
+                        x: Int32(x), y: Int32(y),
+                        top: top, left: left,
+                        topLeft: topLeft, topRight: topRight,
+                        leftLeft: leftLeft, topTop: topTop,
+                        wpProperty: wpProp
+                    )
+                    do { leaf = try tree.walk(properties: props) }
+                    catch let e as ModularTreeError {
+                        throw ModularChannelDecoderError.treeWalk(e)
+                    }
+                }
+                let token: UInt32
+                do {
+                    token = try stream.readToken(
+                        context: leaf.leafId, from: &r
+                    )
+                } catch let e as TokenStreamReaderError {
+                    throw ModularChannelDecoderError.tokenAtPosition(
+                        x: x, y: y, channel: staticChannel, inner: e
+                    )
+                }
+                // Predictor neighbourhood — substitute available
+                // neighbours at edges (different rules from properties).
+                let nbh = Neighbourhood(
+                    w: left, n: top, nw: topLeft, ne: topRight,
+                    ww: leftLeft, nn: topTop
                 )
+                // Run WP only when the tree might consult it. For the
+                // common default-tree case (single leaf, predictor 5
+                // = Gradient) WP is dead work and skipping it gives a
+                // significant per-pixel speedup.
+                let wpPred: Int32
+                if treeUsesWP {
+                    wpPred = wp.predict(
+                        x: x, y: y, xsize: width,
+                        n: top, w: left,
+                        ne: topRight, nw: topLeft, nn: topTop
+                    )
+                } else {
+                    wpPred = 0
+                }
+                let predicted = applyLibjxlPredictor(
+                    raw: leaf.rawPredictor, neighbourhood: nbh,
+                    wpResult: wpPred
+                )
+                let signedRes = ZigZag.unpack(token)
+                let scaled = Int32(truncatingIfNeeded:
+                    Int64(signedRes) &* Int64(leaf.multiplier))
+                let value = Int32(truncatingIfNeeded:
+                    Int64(predicted)
+                    &+ Int64(leaf.predictorOffset)
+                    &+ Int64(scaled))
+                outBuf[rowBase + x] = value
+                if traceEnabled, x < 4, y == 0 {
+                    let msg = "TRACE pixel ch=\(staticChannel) (\(x),\(y)) leaf=\(leaf.leafId) rawPred=\(leaf.rawPredictor) wpPred=\(wpPred) predicted=\(predicted) token=\(token) residual=\(signedRes) value=\(value)\n"
+                    FileHandle.standardError.write(Data(msg.utf8))
+                }
+                if treeUsesWP {
+                    wp.update(actual: value, x: x, y: y, xsize: width)
+                }
             }
-            // Predictor neighbourhood — substitute available
-            // neighbours at edges (different rules from properties).
-            let nbh = Neighbourhood(at: x, y, in: out, width: width)
-            // Always run WP.predict so the state stays in sync, even
-            // if the leaf doesn't use predictor 6. (libjxl drives WP
-            // unconditionally for any tree that *might* use it; we
-            // mirror that by always running predict + update.)
-            let wpPred = wp.predict(
-                x: x, y: y, xsize: width,
-                n: top, w: left, ne: topRight, nw: topLeft, nn: topTop
-            )
-            let predicted = applyLibjxlPredictor(
-                raw: leaf.rawPredictor, neighbourhood: nbh, wpResult: wpPred
-            )
-            let signedRes = ZigZag.unpack(token)
-            let scaled = Int32(truncatingIfNeeded:
-                Int64(signedRes) &* Int64(leaf.multiplier))
-            let value = Int32(truncatingIfNeeded:
-                Int64(predicted)
-                &+ Int64(leaf.predictorOffset)
-                &+ Int64(scaled))
-            out[y * width + x] = value
-            if ProcessInfo.processInfo.environment["JXL_TRACE"] != nil, x < 4, y == 0 {
-                let msg = "TRACE pixel ch=\(staticChannel) (\(x),\(y)) leaf=\(leaf.leafId) rawPred=\(leaf.rawPredictor) wpPred=\(wpPred) predicted=\(predicted) token=\(token) residual=\(signedRes) value=\(value)\n"
-                FileHandle.standardError.write(Data(msg.utf8))
-            }
-            wp.update(actual: value, x: x, y: y, xsize: width)
         }
     }
 }

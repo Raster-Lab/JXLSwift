@@ -76,6 +76,25 @@ public struct WeightedPredictorHeader: Sendable, Equatable {
             && lhs.weights.3 == rhs.weights.3
     }
 
+    /// Inverse of `read`. The all-default form is a single `1` bit;
+    /// a custom form emits the seven `u(5)` parameters and four
+    /// `u(4)` weights.
+    public func write(to w: inout BitWriter) throws {
+        w.writeBit(allDefault)
+        if allDefault { return }
+        w.write(bits: 5, value: p1C)
+        w.write(bits: 5, value: p2C)
+        w.write(bits: 5, value: p3Ca)
+        w.write(bits: 5, value: p3Cb)
+        w.write(bits: 5, value: p3Cc)
+        w.write(bits: 5, value: p3Cd)
+        w.write(bits: 5, value: p3Ce)
+        w.write(bits: 4, value: weights.0)
+        w.write(bits: 4, value: weights.1)
+        w.write(bits: 4, value: weights.2)
+        w.write(bits: 4, value: weights.3)
+    }
+
     public static func read(from r: inout BitReader) throws -> WeightedPredictorHeader {
         let isDefault: Bool
         do { isDefault = try r.readBit() }
@@ -188,6 +207,77 @@ public struct ModularTransform: Sendable, Equatable {
                 )
             } catch let e as BitstreamError {
                 throw GroupHeaderError.bitstream(e)
+            }
+        }
+    }
+
+    /// Inverse of `read`. Mirrors libjxl `Transform::VisitFields`.
+    public func write(to w: inout BitWriter) throws {
+        try w.writeU32(id.rawValue, distributions: (
+            .literal(0), .literal(1), .literal(2), .literal(3)
+        ))
+        switch id {
+        case .rct:
+            try w.writeU32(beginC, distributions: (
+                .bits(3),
+                .offset(constant: 8, extraBits: 6),
+                .offset(constant: 72, extraBits: 10),
+                .offset(constant: 1096, extraBits: 13)
+            ))
+            try w.writeU32(rctType, distributions: (
+                .literal(6), .bits(2),
+                .offset(constant: 2, extraBits: 4),
+                .offset(constant: 10, extraBits: 6)
+            ))
+        case .palette:
+            try w.writeU32(beginC, distributions: (
+                .bits(3),
+                .offset(constant: 8, extraBits: 6),
+                .offset(constant: 72, extraBits: 10),
+                .offset(constant: 1096, extraBits: 13)
+            ))
+            try w.writeU32(numC, distributions: (
+                .literal(1), .literal(3), .literal(4),
+                .offset(constant: 1, extraBits: 13)
+            ))
+            try w.writeU32(nbColors, distributions: (
+                .offset(constant: 0, extraBits: 8),
+                .offset(constant: 256, extraBits: 10),
+                .offset(constant: 1280, extraBits: 12),
+                .offset(constant: 5376, extraBits: 16)
+            ))
+            try w.writeU32(nbDeltas, distributions: (
+                .literal(0),
+                .offset(constant: 1, extraBits: 8),
+                .offset(constant: 257, extraBits: 10),
+                .offset(constant: 1281, extraBits: 16)
+            ))
+            w.write(bits: 4, value: palettePredictor)
+        case .squeeze:
+            // u(1) "isDefault" flag; emit `1` for the empty-params
+            // (default-squeeze) form. Custom params not yet emitted.
+            if squeezes.isEmpty {
+                w.writeBit(true)
+            } else {
+                w.writeBit(false)
+                try w.writeU32(UInt32(squeezes.count), distributions: (
+                    .literal(0), .literal(1), .literal(2),
+                    .offset(constant: 1, extraBits: 4)
+                ))
+                for sp in squeezes {
+                    w.writeBit(sp.horizontal)
+                    w.writeBit(sp.inPlace)
+                    try w.writeU32(sp.beginC, distributions: (
+                        .bits(3),
+                        .offset(constant: 8, extraBits: 6),
+                        .offset(constant: 72, extraBits: 10),
+                        .offset(constant: 1096, extraBits: 13)
+                    ))
+                    try w.writeU32(sp.numC, distributions: (
+                        .literal(1), .literal(2), .literal(3),
+                        .offset(constant: 4, extraBits: 4)
+                    ))
+                }
             }
         }
     }
@@ -342,5 +432,21 @@ public struct GroupHeader: Sendable, Equatable {
             wpHeader: wp,
             transforms: transforms
         )
+    }
+
+    /// Spec-compliant write of a GroupHeader. Inverse of `read`.
+    /// Writing the WP header's custom form and complex transforms
+    /// (Palette, Squeeze with custom params) is a placeholder for
+    /// future encoder work — the all-default branches that lossless
+    /// cjxl typically emits are fully supported.
+    public func write(to w: inout BitWriter) throws {
+        w.writeBit(useGlobalTree)
+        try wpHeader.write(to: &w)
+        try w.writeU32(UInt32(transforms.count), distributions: (
+            .literal(0), .literal(1),
+            .offset(constant: 2, extraBits: 4),
+            .offset(constant: 18, extraBits: 8)
+        ))
+        for t in transforms { try t.write(to: &w) }
     }
 }

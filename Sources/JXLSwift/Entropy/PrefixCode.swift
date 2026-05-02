@@ -167,31 +167,29 @@ public struct PrefixCodeTable: Sendable {
     }
 
     /// Decode a single symbol from `r`. Reads up to `usedMaxLength` bits
-    /// (lookahead-style — peeks, then consumes only the codeword length).
+    /// (peek N, look up symbol, consume only the codeword length).
     public func decode(from r: inout BitReader) throws -> Int {
         if usedMaxLength == 0 {
             // Single-symbol degenerate code.
             return lengths.firstIndex(where: { $0 > 0 })
                 ?? lengths.firstIndex(where: { _ in true }) ?? 0
         }
-        // Peek `usedMaxLength` bits without consuming them. The simplest
-        // way is to read them, then rewind to the symbol's actual length.
         let need = usedMaxLength
         guard r.bitsRemaining >= 1 else {
             throw PrefixCodeError.bitstream(.outOfBounds(needed: 1, remaining: 0))
         }
         let take = min(need, r.bitsRemaining)
-        // Read `take` bits LSB-first, then mirror to MSB-first for LUT.
-        let raw = try r.read(bits: take)
+        let raw: UInt32
+        do { raw = try r.peek(bits: take) }
+        catch let e as BitstreamError {
+            throw PrefixCodeError.bitstream(e)
+        }
         let mirrored = reverseBits(raw, count: take) << UInt32(need - take)
         let entry = decodeLUT[Int(mirrored)]
-        // Rewind unused bits.
         let consumed = Int(entry.length)
-        let toRewind = take - consumed
-        if toRewind > 0 {
-            // BitReader doesn't support seeking backwards directly;
-            // rebuild it from data + adjusted position.
-            r = BitReader(r.data, startingAt: r.position - toRewind)
+        do { try r.skip(bits: consumed) }
+        catch let e as BitstreamError {
+            throw PrefixCodeError.bitstream(e)
         }
         return Int(entry.symbol)
     }

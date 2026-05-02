@@ -69,6 +69,8 @@ public struct ModularImage: Sendable, Equatable {
 public enum MetaApplyError: Error, Sendable {
     case unsupportedRCTType(UInt32)
     case paletteUnsupported
+    case paletteRangeInvalid(begin: UInt32, numC: UInt32, channels: Int)
+    case paletteUnequalChannels(begin: UInt32, numC: UInt32)
     case squeezeMetaMix
     case squeezeMetaInPlace
     case squeezeRangeInvalid(begin: UInt32, num: UInt32, channels: Int)
@@ -94,11 +96,70 @@ public func metaApplyTransforms(
             // Geometry is unchanged.
             continue
         case .palette:
-            throw MetaApplyError.paletteUnsupported
+            try metaApplyPalette(image: &image, transform: t)
         case .squeeze:
             try metaApplySqueeze(image: &image, params: t.squeezes)
         }
     }
+}
+
+/// Apply `MetaPalette` to `image.channels`. Mirrors libjxl
+/// `lib/jxl/modular/transform/palette.cc::MetaPalette`. The forward
+/// Palette transform replaces channels `[begin_c, begin_c+numC-1]`
+/// with a single index channel at position `begin_c`; a meta channel
+/// holding the palette table (size `(nb_colors + nb_deltas) × numC`,
+/// hshift=-1, vshift=-1) is inserted at position 0.
+///
+/// **Pre-condition:** the channels in the range must all have the
+/// same `(w, h, hshift, vshift)`. We mirror libjxl's
+/// `CheckEqualChannels`.
+private func metaApplyPalette(
+    image: inout ModularImage, transform t: ModularTransform
+) throws {
+    let beginC = Int(t.beginC)
+    let nb = Int(t.numC)
+    let endC = beginC + nb - 1
+    guard nb >= 1, beginC >= 0, endC < image.channels.count else {
+        throw MetaApplyError.paletteRangeInvalid(
+            begin: t.beginC, numC: t.numC,
+            channels: image.channels.count
+        )
+    }
+    // Check equal dims across the palette range.
+    let ref = image.channels[beginC]
+    for c in (beginC + 1)...endC {
+        let ch = image.channels[c]
+        if ch.width != ref.width || ch.height != ref.height
+            || ch.hshift != ref.hshift || ch.vshift != ref.vshift {
+            throw MetaApplyError.paletteUnequalChannels(
+                begin: t.beginC, numC: t.numC
+            )
+        }
+    }
+    // Update meta-channel count (libjxl branches on whether the
+    // palette range overlaps the existing meta range).
+    if beginC >= image.nbMetaChannels {
+        // Palette is on normal channels: gain one meta channel
+        // (the palette table).
+        image.nbMetaChannels &+= 1
+    } else {
+        // Palette is on meta channels: lose nb-1 meta channels
+        // and gain one (palette table).
+        image.nbMetaChannels &+= 2 - nb
+    }
+    // Drop channels [beginC+1, endC] (keep beginC; it becomes the
+    // index channel).
+    if nb > 1 {
+        image.channels.removeSubrange((beginC + 1)...endC)
+    }
+    // Insert the palette table channel at position 0.
+    let paletteW = Int(t.nbColors) + Int(t.nbDeltas)
+    let paletteH = nb
+    image.channels.insert(
+        ModularChannel(width: paletteW, height: paletteH,
+                       hshift: -1, vshift: -1),
+        at: 0
+    )
 }
 
 /// Default-squeeze-parameter generator — mirror of libjxl

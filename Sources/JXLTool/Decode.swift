@@ -1,5 +1,12 @@
 // `jxl-tool decode` — pure-Swift JPEG XL decoder front-end.
-// STATUS: not yet implemented (see ROADMAP.md).
+//
+// Routes through `JXLDecoder.decode(_:)`, which dispatches into
+// the Modular pixel pipeline for spec-compliant Modular frames.
+// Output is a binary PNM (PGM/PPM/PAM) chosen by the input's
+// channel count and bit depth.
+//
+// VarDCT (lossy) input still throws `.notImplemented` until that
+// codec lands.
 
 import ArgumentParser
 import Foundation
@@ -7,29 +14,51 @@ import JXLSwift
 
 struct Decode: ParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "Decode a JPEG XL file (NOT YET IMPLEMENTED in pure Swift)."
+        abstract: "Decode a JPEG XL file to PNM (lossless Modular frames only)."
     )
 
     @Option(name: .shortAndLong, help: "Input .jxl path")
     var input: String
 
-    @Option(name: .shortAndLong, help: "Output .png path")
+    @Option(name: .shortAndLong, help: "Output PNM path (.pgm / .ppm / .pam)")
     var output: String
 
     func run() throws {
-        print("""
-            jxl-tool decode is not yet implemented in the pure-Swift
-            JXLSwift. The codec layer is in active development — see
-            ROADMAP.md.
+        let inputURL = URL(fileURLWithPath: input)
+        let outputURL = URL(fileURLWithPath: output)
 
-            Switch to the libjxl-backend branch for a working decoder:
-                git checkout libjxl-backend
-                swift build -c release
+        let jxlData: Data
+        do { jxlData = try Data(contentsOf: inputURL) }
+        catch {
+            print("error reading \(input): \(error)", to: &standardError)
+            throw JXLExitCode.generalError
+        }
 
-            Foundation-only `info` works now and may help diagnose
-            container/header issues:
-                jxl-tool info \(input)
-            """, to: &standardError)
-        throw JXLExitCode.notImplemented
+        let frame: ImageFrame
+        do { frame = try JXLDecoder().decode(jxlData) }
+        catch let e as DecoderError {
+            print("decode error: \(e.localizedDescription)", to: &standardError)
+            throw JXLExitCode.generalError
+        }
+
+        let pnm: Data
+        do { pnm = try PNM.write(frame) }
+        catch let e as PNMError {
+            print("PNM write error: \(e)", to: &standardError)
+            throw JXLExitCode.generalError
+        }
+
+        do { try pnm.write(to: outputURL) }
+        catch {
+            print("error writing \(output): \(error)", to: &standardError)
+            throw JXLExitCode.generalError
+        }
+
+        print(
+            "decoded \(frame.width)×\(frame.height) "
+            + "\(channelDescription(frame.channels))"
+            + " \(frame.pixelType.bitsPerSample)-bit: "
+            + "\(formatBytes(jxlData.count)) → \(formatBytes(pnm.count))"
+        )
     }
 }

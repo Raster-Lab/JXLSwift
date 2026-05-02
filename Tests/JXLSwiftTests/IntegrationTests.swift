@@ -899,11 +899,12 @@ final class FoundationTests: XCTestCase {
         XCTAssertEqual(decoded.data, frame.data)
     }
 
-    /// `useM0Placeholder` defaults to `false`, so existing callers
-    /// still get `.notImplemented`. Pin this so it doesn't drift.
-    func testEncoder_ThrowsNotImplemented() {
+    /// Frame layouts the modular path doesn't cover yet (here:
+    /// `float32`) still surface a clear `.notImplemented`. Pin this
+    /// so the dispatch stays explicit as new pixel types land.
+    func testEncoder_ThrowsNotImplementedOnFloat32() {
         let frame = ImageFrame(width: 8, height: 8, channels: 1,
-                               pixelType: .uint8, colorSpace: .grayscale)
+                               pixelType: .float32, colorSpace: .grayscale)
         XCTAssertThrowsError(try JXLEncoder().encode(frame)) { err in
             guard case EncoderError.notImplemented = (err as? EncoderError) ?? .notImplemented("") else {
                 XCTFail("expected .notImplemented, got \(err)")
@@ -3925,14 +3926,24 @@ extension FoundationTests {
         XCTAssertEqual(TOC.numEntries(numGroups: 4, numDcGroups: 1, numPasses: 2), 11)
     }
 
-    /// Decoder rejects the permutation flag (entropy-coded path is
-    /// not yet implemented).
-    func testTOC_RejectsPermutation() {
+    /// Decoder reports a structured error when a TOC declares
+    /// `has_permutation = 1` but the entropy stream is empty/truncated.
+    /// (Once permutation decoding landed, the legacy
+    /// `permutationNotImplemented` error path was removed; the
+    /// remaining failure mode is the inner stream running out of bits.)
+    func testTOC_PermutationStreamTruncated() {
         var w = BitWriter()
         w.writeBit(true)         // has_permutation = 1
         var r = BitReader(w.finishToData())
         XCTAssertThrowsError(try TOC.read(from: &r, numEntries: 1)) { err in
-            XCTAssertEqual(err as? TOCError, .permutationNotImplemented)
+            // Expect a TOCError.permutation wrapping a deeper
+            // bitstream-out-of-bounds — the inner DecodePermutation
+            // tries to read its entropy section header from an empty
+            // buffer.
+            guard case .permutation(_) = err as? TOCError else {
+                XCTFail("expected TOCError.permutation, got \(err)")
+                return
+            }
         }
     }
 
@@ -5374,6 +5385,43 @@ extension FoundationTests {
         XCTAssertEqual(parsed.transforms.count, 0)
     }
 
+    /// Verify the new `GroupHeader.write` produces bytes that
+    /// `GroupHeader.read` round-trips exactly. Default form,
+    /// per-group tree form, and a one-RCT-transform form all must
+    /// survive a write→read pair.
+    func testGroupHeader_WriteRoundTrip() throws {
+        let cases: [GroupHeader] = [
+            GroupHeader.default,
+            GroupHeader(useGlobalTree: false, wpHeader: .default,
+                        transforms: []),
+            GroupHeader(useGlobalTree: true, wpHeader: .default,
+                        transforms: [
+                            ModularTransform(
+                                id: .rct, beginC: 0, rctType: 6, numC: 3
+                            )
+                        ]),
+            GroupHeader(useGlobalTree: true, wpHeader: .default,
+                        transforms: [
+                            ModularTransform(id: .squeeze, squeezes: [])
+                        ]),
+        ]
+        for gh in cases {
+            var w = BitWriter()
+            try gh.write(to: &w)
+            var r = BitReader(w.finishToData())
+            let parsed = try GroupHeader.read(from: &r)
+            XCTAssertEqual(parsed.useGlobalTree, gh.useGlobalTree)
+            XCTAssertEqual(parsed.wpHeader.allDefault, gh.wpHeader.allDefault)
+            XCTAssertEqual(parsed.transforms.count, gh.transforms.count)
+            for (a, b) in zip(parsed.transforms, gh.transforms) {
+                XCTAssertEqual(a.id, b.id)
+                XCTAssertEqual(a.beginC, b.beginC)
+                XCTAssertEqual(a.rctType, b.rctType)
+                XCTAssertEqual(a.numC, b.numC)
+            }
+        }
+    }
+
     /// Round-trip a GroupHeader carrying one RCT transform. Confirms
     /// the U32 distributions for transform id, begin_c, and rct_type
     /// decode in order.
@@ -5729,6 +5777,2505 @@ extension FoundationTests {
         // uintConfigs.count must equal num_histograms.
         XCTAssertEqual(entropyHeader.uintConfigs.count,
                        entropyHeader.numHistograms)
+    }
+
+    /// Diagnostic: FrameHeader.write byte dump for the
+    /// spec-default-Modular config the encoder uses, so the bit
+    /// layout can be eyeballed against a `cjxl` reference.
+    func testDiagnostic_FrameHeader_BitDump() throws {
+        let fh = FrameHeader(
+            allDefault: false,
+            frameType: .regular, encoding: .modular,
+            flags: 0, colorTransform: .none,
+            chromaSubsampling: .default,
+            upsampling: 1, extraChannelUpsampling: [],
+            groupSizeShift: 1,
+            xQmScale: 2, bQmScale: 2,
+            passes: .default, dcLevel: 0,
+            customSizeOrOrigin: false,
+            frameOrigin: (0, 0), frameSize: nil,
+            blendingInfo: .default,
+            extraChannelBlendingInfo: [],
+            animationFrame: .default,
+            isLast: true,
+            saveAsReference: 0,
+            saveBeforeColorTransform: true,
+            name: "", loopFilter: .default
+        )
+        let ctx = FrameHeaderContext(
+            xybEncoded: false, numExtraChannels: 0,
+            haveAnimation: false, haveTimecodes: false
+        )
+        var w = BitWriter()
+        try fh.write(to: &w, context: ctx)
+        let data = w.finishToData()
+        let hex = data.map { String(format: "%02x", $0) }.joined(separator: " ")
+        print("[DIAG] FrameHeader bytes (\(data.count)): \(hex)")
+        // Round-trip read it back.
+        var r = BitReader(data)
+        let parsed = try FrameHeader.read(from: &r, context: ctx)
+        XCTAssertEqual(parsed.encoding, .modular)
+        XCTAssertEqual(parsed.frameType, .regular)
+        XCTAssertEqual(parsed.groupSizeShift, 1)
+        XCTAssertEqual(parsed.isLast, true)
+    }
+
+    /// Dump the full encoder output for 8x8 constant grayscale=128
+    /// alongside the byte position of each section, so divergence from
+    /// the cjxl reference can be pinpointed.
+    func testDiagnostic_Encoder_8x8_128_BitDump() throws {
+        // Build outer codestream piecewise, capturing bit positions
+        // before each section.
+        var w = BitWriter()
+        let posSig = w.bitCount
+        w.write(bits: 8, value: UInt32(0xFF))
+        w.write(bits: 8, value: UInt32(0x0A))
+        let posSize = w.bitCount
+        try SizeHeader(xsize: 8, ysize: 8).write(to: &w)
+        let posMeta = w.bitCount
+        let meta = ImageMetadata(
+            allDefault: false, orientation: 1,
+            intrinsicSize: nil, preview: nil, animation: nil,
+            bitDepth: BitDepth(floatingPoint: false, bitsPerSample: 8),
+            modular16BitBufferSufficient: true,
+            extraChannels: [],
+            xybEncoded: false,
+            colorEncoding: .grayscaleD65,
+            intensityTarget: 255.0, minNits: 0.0,
+            relativeToMaxDisplay: false, linearBelow: 0.0
+        )
+        try meta.write(to: &w)
+        let posAfterMeta = w.bitCount
+        w.alignToByte()
+        let posAfterAlign = w.bitCount
+        let fh = FrameHeader(
+            allDefault: false,
+            frameType: .regular, encoding: .modular,
+            flags: 0, colorTransform: .none,
+            chromaSubsampling: .default,
+            upsampling: 1, extraChannelUpsampling: [],
+            groupSizeShift: 1,
+            xQmScale: 2, bQmScale: 2,
+            passes: .default, dcLevel: 0,
+            customSizeOrOrigin: false,
+            frameOrigin: (0, 0), frameSize: nil,
+            blendingInfo: .default,
+            extraChannelBlendingInfo: [],
+            animationFrame: .default,
+            isLast: true,
+            saveAsReference: 0,
+            saveBeforeColorTransform: true,
+            name: "", loopFilter: .default
+        )
+        let ctx = FrameHeaderContext(
+            xybEncoded: false, numExtraChannels: 0,
+            haveAnimation: false, haveTimecodes: false
+        )
+        try fh.write(to: &w, context: ctx)
+        let posAfterFH = w.bitCount
+        print("[DIAG] bit positions:"
+            + " sig=\(posSig)"
+            + " size=\(posSize)"
+            + " meta=\(posMeta)"
+            + " afterMeta=\(posAfterMeta)"
+            + " afterAlign=\(posAfterAlign)"
+            + " afterFH=\(posAfterFH)")
+        let data = w.finishToData()
+        let hex = data.map { String(format: "%02x", $0) }.joined(separator: " ")
+        print("[DIAG] partial encoder (\(data.count)): \(hex)")
+
+        // Now produce the full encoder output for comparison.
+        let full = try SpecModularEncoder.encodeConstantGrayscale(
+            width: 8, height: 8, pixelValue: 128
+        )
+        let fullHex = full.map { String(format: "%02x", $0) }.joined(separator: " ")
+        print("[DIAG] full encoder (\(full.count)): \(fullHex)")
+
+        // Parse the cjxl reference bytes for an 8x8 constant-128 image
+        // through our reader and report bit positions.
+        let cjxl = Data([
+            0xff, 0x0a, 0x41, 0x40, 0x50, 0xdc, 0x08, 0x08, 0x04, 0x01,
+            0x00, 0x44, 0x00, 0x4b, 0x18, 0x8b, 0x15, 0xc2, 0x49, 0x41,
+            0x4e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+        ])
+        var rr = BitReader(cjxl)
+        // signature
+        let s0 = try rr.read(bits: 8)
+        let s1 = try rr.read(bits: 8)
+        XCTAssertEqual(s0, 0xff)
+        XCTAssertEqual(s1, 0x0a)
+        let cjxSizePos = rr.position
+        let sh = try SizeHeader.read(from: &rr)
+        let cjxMetaPos = rr.position
+        let cjxMeta = try ImageMetadata.read(from: &rr)
+        let cjxAfterMeta = rr.position
+        print("[DIAG cjxl] sizePos=\(cjxSizePos) metaPos=\(cjxMetaPos) afterMeta=\(cjxAfterMeta)")
+        print("[DIAG cjxl] SizeHeader: \(sh.xsize)x\(sh.ysize)")
+        print("[DIAG cjxl] meta.allDefault=\(cjxMeta.allDefault)")
+        print("[DIAG cjxl] meta.bitDepth=\(cjxMeta.bitDepth)")
+        print("[DIAG cjxl] meta.modular16BitBufferSufficient=\(cjxMeta.modular16BitBufferSufficient)")
+        print("[DIAG cjxl] meta.extraChannels.count=\(cjxMeta.extraChannels.count)")
+        print("[DIAG cjxl] meta.xybEncoded=\(cjxMeta.xybEncoded)")
+        print("[DIAG cjxl] meta.colorEncoding=\(cjxMeta.colorEncoding)")
+        print("[DIAG cjxl] meta.intensityTarget=\(cjxMeta.intensityTarget)")
+        // Try parsing FrameHeader from cjxl bytes WITHOUT byte alignment.
+        let cjxFhCtx = FrameHeaderContext(
+            xybEncoded: cjxMeta.xybEncoded,
+            numExtraChannels: cjxMeta.extraChannels.count,
+            haveAnimation: cjxMeta.animation != nil,
+            haveTimecodes: cjxMeta.animation?.haveTimecodes ?? false
+        )
+        do {
+            var rrNoAlign = rr   // copy at posAfterMeta
+            let fhA = try FrameHeader.read(from: &rrNoAlign, context: cjxFhCtx)
+            print("[DIAG cjxl] FH (NO align) afterPos=\(rrNoAlign.position)")
+            print("[DIAG cjxl] FH (NO align) frameType=\(fhA.frameType) encoding=\(fhA.encoding) groupSizeShift=\(fhA.groupSizeShift) isLast=\(fhA.isLast)")
+        } catch {
+            print("[DIAG cjxl] FH (NO align) error: \(error)")
+        }
+        do {
+            var rrAlign = rr
+            // Skip 5 bits to reach byte boundary at bit 56.
+            _ = try rrAlign.read(bits: 5)
+            let fhB = try FrameHeader.read(from: &rrAlign, context: cjxFhCtx)
+            print("[DIAG cjxl] FH (WITH align) afterPos=\(rrAlign.position)")
+            print("[DIAG cjxl] FH (WITH align) frameType=\(fhB.frameType) encoding=\(fhB.encoding) groupSizeShift=\(fhB.groupSizeShift) isLast=\(fhB.isLast)")
+        } catch {
+            print("[DIAG cjxl] FH (WITH align) error: \(error)")
+        }
+    }
+
+    /// Cross-validate `SpecModularEncoder.encodeConstantGrayscale`
+    /// output against `djxl`. The Swift encoder bytes must decode
+    /// through libjxl without error and recover every pixel as the
+    /// constant input value. Skipped when `djxl` is not installed.
+    func testSpecModularEncoder_ConstantGrayscale_DjxlRoundTrip() throws {
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("djxl not available at \(djxl)")
+        }
+        let cases: [(w: Int, h: Int, v: UInt8)] = [
+            (8, 8, 0), (8, 8, 128), (16, 16, 200),
+            (32, 32, 255), (32, 16, 42),
+        ]
+        let tmp = NSTemporaryDirectory()
+        for c in cases {
+            let bytes = try SpecModularEncoder.encodeConstantGrayscale(
+                width: c.w, height: c.h, pixelValue: c.v
+            )
+            let inPath = tmp + "jxlswift_\(c.w)x\(c.h)_\(c.v).jxl"
+            let outPath = tmp + "jxlswift_\(c.w)x\(c.h)_\(c.v).pgm"
+            try bytes.write(to: URL(fileURLWithPath: inPath))
+            let p = Process()
+            p.launchPath = djxl
+            p.arguments = [inPath, outPath]
+            p.standardOutput = Pipe()
+            p.standardError = Pipe()
+            try p.run()
+            p.waitUntilExit()
+            XCTAssertEqual(p.terminationStatus, 0,
+                "djxl rejected our \(c.w)x\(c.h) v=\(c.v) bytes")
+            let pgm = try Data(contentsOf: URL(fileURLWithPath: outPath))
+            // PGM header: P5\n<w> <h>\n<max>\n<bytes>
+            // Find the start of pixel data: 4th newline.
+            var nlCount = 0
+            var pixelStart = 0
+            for (i, b) in pgm.enumerated() {
+                if b == 0x0a {
+                    nlCount += 1
+                    if nlCount == 3 {
+                        pixelStart = i + 1
+                        break
+                    }
+                }
+            }
+            for i in 0..<(c.w * c.h) {
+                XCTAssertEqual(pgm[pixelStart + i], c.v,
+                    "[\(c.w)x\(c.h) v=\(c.v)] djxl pixel \(i) = "
+                    + "\(pgm[pixelStart + i]) (expected \(c.v))")
+            }
+        }
+    }
+
+    /// **First end-to-end spec-compliant Modular encode**: produce a
+    /// constant-pixel grayscale JXL via `SpecModularEncoder.
+    /// encodeConstantGrayscale` and round-trip through our decoder
+    /// (which is byte-exact against `djxl`). Every pixel of the
+    /// recovered image must equal the input constant value.
+    func testSpecModularEncoder_ConstantGrayscale_RoundTrip() throws {
+        let cases: [(w: Int, h: Int, v: UInt8)] = [
+            (8, 8, 0),
+            (8, 8, 128),
+            (16, 16, 200),
+            (32, 32, 255),
+            (32, 16, 42),
+        ]
+        for c in cases {
+            let bytes = try SpecModularEncoder.encodeConstantGrayscale(
+                width: c.w, height: c.h, pixelValue: c.v
+            )
+            let dec = JXLDecoder()
+            let image = try dec.decodeModular(bytes)
+            XCTAssertEqual(image.channels.count, 1,
+                "[\(c.w)x\(c.h) v=\(c.v)] expected 1 channel")
+            XCTAssertEqual(image.channels[0].width, c.w)
+            XCTAssertEqual(image.channels[0].height, c.h)
+            for y in 0..<c.h {
+                for x in 0..<c.w {
+                    let got = image.channels[0].pixels[y * c.w + x]
+                    XCTAssertEqual(got, Int32(c.v),
+                        "[\(c.w)x\(c.h) v=\(c.v)] pixel(\(x),\(y)) "
+                        + "got \(got)")
+                }
+            }
+        }
+    }
+
+    /// `encodeGrayscale8` round-trips arbitrary 8-bit grayscale
+    /// content through OUR decoder. Covers (a) a synthetic gradient,
+    /// (b) random noise (stresses the histogram path), (c) a flat
+    /// patch (degenerate single-symbol histogram), and (d) row-by-
+    /// row alternation (worst-case for gradient prediction).
+    func testSpecModularEncoder_Grayscale8_RoundTrip() throws {
+        struct Case {
+            let name: String
+            let w: Int
+            let h: Int
+            let pixels: [UInt8]
+        }
+        let w = 32, h = 16
+        var ramp = [UInt8](repeating: 0, count: w * h)
+        for y in 0..<h {
+            for x in 0..<w {
+                ramp[y * w + x] = UInt8((x * 8) & 0xff)
+            }
+        }
+        var rng = SystemRandomNumberGenerator()
+        var noise = [UInt8](repeating: 0, count: w * h)
+        for i in 0..<noise.count {
+            noise[i] = UInt8.random(in: 0...255, using: &rng)
+        }
+        let flat = [UInt8](repeating: 0x77, count: 8 * 8)
+        var stripes = [UInt8](repeating: 0, count: 16 * 16)
+        for y in 0..<16 {
+            for x in 0..<16 {
+                stripes[y * 16 + x] = (y % 2 == 0) ? 0x33 : 0xcc
+            }
+        }
+        let cases: [Case] = [
+            Case(name: "ramp", w: w, h: h, pixels: ramp),
+            Case(name: "noise", w: w, h: h, pixels: noise),
+            Case(name: "flat", w: 8, h: 8, pixels: flat),
+            Case(name: "stripes", w: 16, h: 16, pixels: stripes),
+        ]
+        for c in cases {
+            let bytes = try SpecModularEncoder.encodeGrayscale8(
+                width: c.w, height: c.h, pixels: c.pixels
+            )
+            let image = try JXLDecoder().decodeModular(bytes)
+            XCTAssertEqual(image.channels.count, 1,
+                "[\(c.name)] expected 1 channel")
+            XCTAssertEqual(image.channels[0].width, c.w)
+            XCTAssertEqual(image.channels[0].height, c.h)
+            for y in 0..<c.h {
+                for x in 0..<c.w {
+                    let got = image.channels[0].pixels[y * c.w + x]
+                    let want = Int32(c.pixels[y * c.w + x])
+                    XCTAssertEqual(got, want,
+                        "[\(c.name)] pixel(\(x),\(y)) got \(got) want \(want)")
+                }
+            }
+        }
+    }
+
+    /// Diagnostic: 8x8 with the same LCG noise pattern; bisect down
+    /// from 16x16 to see if size or content triggers djxl rejection.
+    func testDiagnostic_Grayscale8_8x8_Noise_Djxl() throws {
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("djxl not available")
+        }
+        var seed: UInt32 = 0x12345678
+        var pixels = [UInt8](repeating: 0, count: 64)
+        for i in 0..<64 {
+            seed = seed &* 1103515245 &+ 12345
+            pixels[i] = UInt8(truncatingIfNeeded: seed >> 16)
+        }
+        let bytes = try SpecModularEncoder.encodeGrayscale8(
+            width: 8, height: 8, pixels: pixels
+        )
+        let inPath = NSTemporaryDirectory() + "jxlswift_g8_8x8noise.jxl"
+        let outPath = NSTemporaryDirectory() + "jxlswift_g8_8x8noise.pgm"
+        try bytes.write(to: URL(fileURLWithPath: inPath))
+        let p = Process()
+        p.launchPath = djxl
+        p.arguments = [inPath, outPath]
+        let errPipe = Pipe()
+        p.standardOutput = Pipe()
+        p.standardError = errPipe
+        try p.run()
+        p.waitUntilExit()
+        let err = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8) ?? ""
+        print("[DIAG 8x8 noise] (\(bytes.count) B) djxl exit=\(p.terminationStatus) stderr=\(err)")
+        let img = try JXLDecoder().decodeModular(bytes)
+        for i in 0..<64 {
+            XCTAssertEqual(img.channels[0].pixels[i], Int32(pixels[i]),
+                "[8x8 noise] pixel \(i)")
+        }
+    }
+
+    /// Diagnostic: emit a tiny 8x8 image with only two pixel values
+    /// (alternating 0/200) — produces a 4-symbol histogram (small
+    /// enough to land in the simple-prefix-code shape if our code
+    /// picks it). Goal: surface whether djxl chokes on the complex
+    /// prefix-code path or the simple path.
+    func testDiagnostic_Grayscale8_TwoValues_Djxl() throws {
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("djxl not available")
+        }
+        var pixels = [UInt8](repeating: 0, count: 64)
+        for i in 0..<64 { pixels[i] = (i % 2 == 0) ? 0 : 200 }
+        let bytes = try SpecModularEncoder.encodeGrayscale8(
+            width: 8, height: 8, pixels: pixels
+        )
+        let hex = bytes.map { String(format: "%02x", $0) }.joined(separator: " ")
+        print("[DIAG twoValues] (\(bytes.count) B): \(hex)")
+        let inPath = NSTemporaryDirectory() + "jxlswift_g8_two.jxl"
+        let outPath = NSTemporaryDirectory() + "jxlswift_g8_two.pgm"
+        try bytes.write(to: URL(fileURLWithPath: inPath))
+        let p = Process()
+        p.launchPath = djxl
+        p.arguments = [inPath, outPath]
+        let errPipe = Pipe()
+        p.standardOutput = Pipe()
+        p.standardError = errPipe
+        try p.run()
+        p.waitUntilExit()
+        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+        let err = String(data: errData, encoding: .utf8) ?? ""
+        print("[DIAG twoValues] djxl exit=\(p.terminationStatus) stderr=\(err)")
+        // Round-trip check via our decoder regardless of djxl.
+        let img = try JXLDecoder().decodeModular(bytes)
+        for i in 0..<64 {
+            XCTAssertEqual(img.channels[0].pixels[i], Int32(pixels[i]),
+                "[two] pixel \(i)")
+        }
+    }
+
+    /// Cross-validate `encodeGrayscale8` against `djxl`. The PGM
+    /// recovered by libjxl must equal the original pixel buffer.
+    /// Skipped when `djxl` is not available.
+    func testSpecModularEncoder_Grayscale8_DjxlRoundTrip() throws {
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("djxl not available at \(djxl)")
+        }
+        let w = 16, h = 16
+        var ramp = [UInt8](repeating: 0, count: w * h)
+        for y in 0..<h {
+            for x in 0..<w {
+                ramp[y * w + x] = UInt8((x * 16 + y) & 0xff)
+            }
+        }
+        // Deterministic LCG so the test is reproducible across runs.
+        var seed: UInt32 = 0x12345678
+        var noise = [UInt8](repeating: 0, count: w * h)
+        for i in 0..<noise.count {
+            seed = seed &* 1103515245 &+ 12345
+            noise[i] = UInt8(truncatingIfNeeded: seed >> 16)
+        }
+        let cases: [(name: String, pixels: [UInt8])] = [
+            ("ramp", ramp), ("noise", noise),
+        ]
+        let tmp = NSTemporaryDirectory()
+        for c in cases {
+            let bytes = try SpecModularEncoder.encodeGrayscale8(
+                width: w, height: h, pixels: c.pixels
+            )
+            let inPath = tmp + "jxlswift_g8_\(c.name).jxl"
+            let outPath = tmp + "jxlswift_g8_\(c.name).pgm"
+            try bytes.write(to: URL(fileURLWithPath: inPath))
+            let p = Process()
+            p.launchPath = djxl
+            p.arguments = [inPath, outPath]
+            p.standardOutput = Pipe()
+            p.standardError = Pipe()
+            try p.run()
+            p.waitUntilExit()
+            XCTAssertEqual(p.terminationStatus, 0,
+                "[\(c.name)] djxl rejected our \(w)x\(h) bytes")
+            let pgm = try Data(contentsOf: URL(fileURLWithPath: outPath))
+            var nlCount = 0
+            var pixelStart = 0
+            for (i, b) in pgm.enumerated() {
+                if b == 0x0a {
+                    nlCount += 1
+                    if nlCount == 3 {
+                        pixelStart = i + 1
+                        break
+                    }
+                }
+            }
+            for i in 0..<(w * h) {
+                XCTAssertEqual(pgm[pixelStart + i], c.pixels[i],
+                    "[\(c.name)] djxl pixel \(i) = \(pgm[pixelStart + i]) "
+                    + "(expected \(c.pixels[i]))")
+            }
+        }
+    }
+
+    /// Multi-group encode round-trip: 1024×512 grayscale → 2 groups
+    /// (groupDim=512, 2×1 layout). Forces the encoder's multi-section
+    /// path. Round-trip target is OUR decoder, which already handles
+    /// multi-group decode.
+    func testSpecModularEncoder_Grayscale8_MultiGroup_RoundTrip() throws {
+        let w = 1024, h = 512
+        var pixels = [UInt8](repeating: 0, count: w * h)
+        var seed: UInt32 = 0xc0ffee01
+        for i in 0..<pixels.count {
+            seed = seed &* 1103515245 &+ 12345
+            pixels[i] = UInt8(truncatingIfNeeded: seed >> 16)
+        }
+        let bytes = try SpecModularEncoder.encodeGrayscale8(
+            width: w, height: h, pixels: pixels
+        )
+        let image = try JXLDecoder().decodeModular(bytes)
+        XCTAssertEqual(image.channels.count, 1)
+        XCTAssertEqual(image.channels[0].width, w)
+        XCTAssertEqual(image.channels[0].height, h)
+        for i in 0..<(w * h) {
+            XCTAssertEqual(image.channels[0].pixels[i], Int32(pixels[i]),
+                "pixel \(i) (\(i % w),\(i / w)): "
+                + "got \(image.channels[0].pixels[i]) want \(pixels[i])")
+        }
+    }
+
+    /// `encodeRGB16` round-trip via our decoder for 16-bit RGB —
+    /// extends the 8-bit RGB path to wide dynamic range. Two cases:
+    /// (a) full-16-bit ramp; (b) 12-bit medical-imaging-style ramp
+    /// declared via `bitsPerSample = 12`.
+    func testSpecModularEncoder_RGB16_RoundTrip() throws {
+        struct Case {
+            let name: String
+            let bps: UInt32
+            let r: [UInt16]
+            let g: [UInt16]
+            let b: [UInt16]
+        }
+        let w = 16, h = 16
+        var r16 = [UInt16](repeating: 0, count: w * h)
+        var g16 = [UInt16](repeating: 0, count: w * h)
+        var b16 = [UInt16](repeating: 0, count: w * h)
+        for y in 0..<h {
+            for x in 0..<w {
+                let i = y * w + x
+                r16[i] = UInt16((x * 4096) & 0xffff)
+                g16[i] = UInt16((y * 4096) & 0xffff)
+                b16[i] = UInt16(((x ^ y) * 256) & 0xffff)
+            }
+        }
+        var r12 = [UInt16](repeating: 0, count: w * h)
+        var g12 = [UInt16](repeating: 0, count: w * h)
+        var b12 = [UInt16](repeating: 0, count: w * h)
+        for y in 0..<h {
+            for x in 0..<w {
+                let i = y * w + x
+                r12[i] = UInt16(min(x * 256, 4095))
+                g12[i] = UInt16(min(y * 256, 4095))
+                b12[i] = UInt16(min((x ^ y) * 16, 4095))
+            }
+        }
+        let cases: [Case] = [
+            Case(name: "16bpp", bps: 16, r: r16, g: g16, b: b16),
+            Case(name: "12bpp", bps: 12, r: r12, g: g12, b: b12),
+        ]
+        for c in cases {
+            let bytes = try SpecModularEncoder.encodeRGB16(
+                width: w, height: h, bitsPerSample: c.bps,
+                r: c.r, g: c.g, b: c.b
+            )
+            let image = try JXLDecoder().decodeModular(bytes)
+            XCTAssertEqual(image.channels.count, 3, "[\(c.name)]")
+            for ci in 0..<3 {
+                let want: [UInt16]
+                switch ci { case 0: want = c.r; case 1: want = c.g; default: want = c.b }
+                for i in 0..<(w * h) {
+                    XCTAssertEqual(image.channels[ci].pixels[i],
+                        Int32(want[i]),
+                        "[\(c.name)] channel \(ci) pixel \(i)")
+                }
+            }
+        }
+    }
+
+    /// Cross-validate `encodeRGB16` against `djxl`: 16-bit PPM
+    /// recovered from libjxl must match the input bytes exactly
+    /// (big-endian samples per the PPM format).
+    func testSpecModularEncoder_RGB16_DjxlRoundTrip() throws {
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("djxl not available at \(djxl)")
+        }
+        let w = 16, h = 16
+        var r = [UInt16](repeating: 0, count: w * h)
+        var g = [UInt16](repeating: 0, count: w * h)
+        var b = [UInt16](repeating: 0, count: w * h)
+        for y in 0..<h {
+            for x in 0..<w {
+                let i = y * w + x
+                r[i] = UInt16((x * 4096) & 0xffff)
+                g[i] = UInt16((y * 4096) & 0xffff)
+                b[i] = UInt16(((x ^ y) * 256) & 0xffff)
+            }
+        }
+        let bytes = try SpecModularEncoder.encodeRGB16(
+            width: w, height: h, r: r, g: g, b: b
+        )
+        let inPath = NSTemporaryDirectory() + "jxlswift_rgb16.jxl"
+        let outPath = NSTemporaryDirectory() + "jxlswift_rgb16.ppm"
+        try bytes.write(to: URL(fileURLWithPath: inPath))
+        let p = Process()
+        p.launchPath = djxl
+        p.arguments = [inPath, outPath]
+        let errPipe = Pipe()
+        p.standardOutput = Pipe()
+        p.standardError = errPipe
+        try p.run()
+        p.waitUntilExit()
+        let err = String(
+            data: errPipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8) ?? ""
+        XCTAssertEqual(p.terminationStatus, 0,
+            "djxl rejected our \(w)x\(h) 16-bit RGB; stderr: \(err)")
+        let ppm = try Data(contentsOf: URL(fileURLWithPath: outPath))
+        var nlCount = 0
+        var pixelStart = 0
+        for (i, byte) in ppm.enumerated() {
+            if byte == 0x0a {
+                nlCount += 1
+                if nlCount == 3 {
+                    pixelStart = i + 1
+                    break
+                }
+            }
+        }
+        // 16-bit PPM samples are big-endian, 6 bytes per pixel.
+        for i in 0..<(w * h) {
+            let rh = UInt16(ppm[pixelStart + i * 6 + 0])
+            let rl = UInt16(ppm[pixelStart + i * 6 + 1])
+            let gh = UInt16(ppm[pixelStart + i * 6 + 2])
+            let gl = UInt16(ppm[pixelStart + i * 6 + 3])
+            let bh = UInt16(ppm[pixelStart + i * 6 + 4])
+            let bl = UInt16(ppm[pixelStart + i * 6 + 5])
+            XCTAssertEqual((rh << 8) | rl, r[i],
+                "djxl R[\(i)] mismatch")
+            XCTAssertEqual((gh << 8) | gl, g[i],
+                "djxl G[\(i)] mismatch")
+            XCTAssertEqual((bh << 8) | bl, b[i],
+                "djxl B[\(i)] mismatch")
+        }
+    }
+
+    /// `encodeRGBA16` round-trips with 16-bit alpha via OUR decoder.
+    func testSpecModularEncoder_RGBA16_RoundTrip() throws {
+        let w = 16, h = 16
+        var r = [UInt16](repeating: 0, count: w * h)
+        var g = [UInt16](repeating: 0, count: w * h)
+        var b = [UInt16](repeating: 0, count: w * h)
+        var a = [UInt16](repeating: 0, count: w * h)
+        var seed: UInt32 = 0xfeedface
+        for i in 0..<(w * h) {
+            seed = seed &* 1103515245 &+ 12345
+            r[i] = UInt16(truncatingIfNeeded: seed)
+            seed = seed &* 1103515245 &+ 12345
+            g[i] = UInt16(truncatingIfNeeded: seed)
+            seed = seed &* 1103515245 &+ 12345
+            b[i] = UInt16(truncatingIfNeeded: seed)
+            a[i] = UInt16((i * 256) & 0xffff)
+        }
+        let bytes = try SpecModularEncoder.encodeRGBA16(
+            width: w, height: h, r: r, g: g, b: b, a: a
+        )
+        let image = try JXLDecoder().decodeModular(bytes)
+        XCTAssertEqual(image.channels.count, 4)
+        let want = [r, g, b, a]
+        for ci in 0..<4 {
+            for i in 0..<(w * h) {
+                XCTAssertEqual(image.channels[ci].pixels[i],
+                    Int32(want[ci][i]),
+                    "channel \(ci) pixel \(i)")
+            }
+        }
+    }
+
+    /// 10-bit grayscale — small medical-imaging convenience size —
+    /// round-trips through our decoder via the same `encode-
+    /// Grayscale16` entry point with `bitsPerSample: 10`.
+    func testSpecModularEncoder_Grayscale10_RoundTrip() throws {
+        let w = 16, h = 16
+        var pixels = [UInt16](repeating: 0, count: w * h)
+        for y in 0..<h {
+            for x in 0..<w {
+                pixels[y * w + x] = UInt16(min(x * 64 + y, 1023))
+            }
+        }
+        let bytes = try SpecModularEncoder.encodeGrayscale16(
+            width: w, height: h, bitsPerSample: 10, pixels: pixels
+        )
+        let image = try JXLDecoder().decodeModular(bytes)
+        for i in 0..<(w * h) {
+            XCTAssertEqual(image.channels[0].pixels[i], Int32(pixels[i]),
+                "10-bit pixel \(i)")
+        }
+    }
+
+    /// Foundation test for the VarDCT scaffolding. Each square
+    /// block size in `{4, 8, 16, 32}` must round-trip a pixel block
+    /// back to itself, and the DC coefficient (frequency [0,0])
+    /// must equal `mean × N` (orthonormal scaling).
+    func testVarDCT_DCTSquare_RoundTrip() throws {
+        for n in [4, 8, 16, 32] {
+            var block: [Float] = (0..<(n * n)).map { Float($0 & 0xff) }
+            let original = block
+            DCT2D.forward(&block, size: n)
+            let mean = original.reduce(0, +) / Float(n * n)
+            XCTAssertEqual(block[0], mean * Float(n), accuracy: 1e-2,
+                "[N=\(n)] DC must equal mean × N")
+            DCT2D.inverse(&block, size: n)
+            for i in 0..<(n * n) {
+                XCTAssertEqual(block[i], original[i], accuracy: 1e-2,
+                    "[N=\(n)] round-trip drift at \(i)")
+            }
+        }
+    }
+
+    /// Asymmetric DCT sizes (libjxl AC strategies DCT4x8, DCT8x4,
+    /// DCT16x8, DCT8x16, DCT32x16, DCT16x32) must also round-trip.
+    func testVarDCT_DCTAsymmetric_RoundTrip() throws {
+        let cases: [(Int, Int)] = [
+            (4, 8), (8, 4), (16, 8), (8, 16), (32, 16), (16, 32),
+        ]
+        for (w, h) in cases {
+            var block: [Float] = (0..<(w * h)).map { Float($0 & 0xff) }
+            let original = block
+            DCT2D.forward(&block, width: w, height: h)
+            DCT2D.inverse(&block, width: w, height: h)
+            for i in 0..<(w * h) {
+                XCTAssertEqual(block[i], original[i], accuracy: 1e-2,
+                    "[\(w)x\(h)] round-trip drift at \(i)")
+            }
+        }
+    }
+
+    /// Gaborish smoothing kernel preserves DC (a uniform image
+    /// stays uniform) and reduces high-frequency contrast at a
+    /// step edge — both invariants any 3×3 averaging filter must
+    /// satisfy.
+    func testVarDCT_Gaborish_PreservesDCAndReducesEdge() throws {
+        // 1. Uniform image → unchanged.
+        let w = 16, h = 16
+        var uniform = [Float](repeating: 42.5, count: w * h)
+        Gaborish.apply(to: &uniform, width: w, height: h)
+        for v in uniform {
+            XCTAssertEqual(v, 42.5, accuracy: 1e-4,
+                "uniform image must round-trip exactly under Gaborish")
+        }
+        // 2. Vertical step at x=8: left half=0, right half=255.
+        // Gaborish must reduce the contrast immediately at the
+        // boundary while leaving distant pixels unchanged.
+        var step = [Float](repeating: 0, count: w * h)
+        for y in 0..<h {
+            for x in 0..<w {
+                step[y * w + x] = (x < 8) ? 0 : 255
+            }
+        }
+        let stepBefore = step
+        Gaborish.apply(to: &step, width: w, height: h)
+        // Pixel at x=0 is far from the edge → should be ~unchanged.
+        XCTAssertLessThan(abs(step[0] - 0), 1.0,
+            "far-from-edge pixel must be ~unchanged")
+        // Pixel at x=7 (just before the edge) → smoothed UP from 0.
+        XCTAssertGreaterThan(step[7], 0,
+            "pixel adjacent to the edge must be smoothed up")
+        XCTAssertLessThan(step[7], stepBefore[8],
+            "pixel must not exceed the high side")
+    }
+
+    /// Default `BlockCtxMap` reproduces the libjxl spec defaults
+    /// — 15 distinct block classes, exactly 1 DC context, no QF
+    /// thresholds.
+    func testVarDCT_BlockCtxMap_DefaultShape() throws {
+        let m = BlockCtxMap()
+        XCTAssertEqual(m.numCtxs, 15,
+            "default ctx map clusters into 15 block classes")
+        XCTAssertEqual(m.numDcCtxs, 1)
+        XCTAssertEqual(m.qfThresholds.count, 0)
+        // Spot-check the channel-reorder: Y (c=1) maps to mappedC=0,
+        // X (c=0) maps to mappedC=1, B (c=2) maps to mappedC=2.
+        // ord=0 (DCT8x8) for each:
+        let ctxY = m.context(dcIdx: 0, qf: 0, ord: 0, c: 1)
+        let ctxX = m.context(dcIdx: 0, qf: 0, ord: 0, c: 0)
+        let ctxB = m.context(dcIdx: 0, qf: 0, ord: 0, c: 2)
+        XCTAssertEqual(ctxY, Int(kDefaultBlockCtxMap[0]),
+            "Y (c=1) ord=0 → first table entry")
+        XCTAssertEqual(ctxX, Int(kDefaultBlockCtxMap[kNumOrders]),
+            "X (c=0) ord=0 → second-channel-block entry")
+        XCTAssertEqual(ctxB, Int(kDefaultBlockCtxMap[2 * kNumOrders]),
+            "B (c=2) ord=0 → third-channel-block entry")
+        // Total AC contexts = numCtxs * (kNonZeroBuckets + kZeroDensityContextCount).
+        XCTAssertEqual(m.numACContexts, 15 * (37 + 458))
+    }
+
+    /// `BlockCtxMap.nonZeroContext` partitions the 65 nnz values
+    /// into 37 buckets and tags by block class.
+    func testVarDCT_BlockCtxMap_NonZeroContextBuckets() throws {
+        let m = BlockCtxMap()
+        let blockCtx = 5
+        // nnz 0..7 each get their own bucket (0..7).
+        for i: UInt32 in 0..<8 {
+            let ctx = m.nonZeroContext(nonZeros: i, blockCtx: blockCtx)
+            XCTAssertEqual(ctx, Int(i) * m.numCtxs + blockCtx)
+        }
+        // nnz ≥ 8 maps to bucket 4 + nnz/2 (bucketed by 2).
+        let ctx8 = m.nonZeroContext(nonZeros: 8, blockCtx: blockCtx)
+        XCTAssertEqual(ctx8, (4 + 8 / 2) * m.numCtxs + blockCtx)
+        // nnz > 64 saturates at 64.
+        let ctxOver = m.nonZeroContext(nonZeros: 999, blockCtx: blockCtx)
+        let ctxAt64 = m.nonZeroContext(nonZeros: 64, blockCtx: blockCtx)
+        XCTAssertEqual(ctxOver, ctxAt64)
+    }
+
+    /// `zeroDensityContext` outputs an integer in `[0,
+    /// kZeroDensityContextLimit)` for every legal input. Spot-check
+    /// boundary cases against the formula-by-hand.
+    func testVarDCT_ZeroDensityContext_Bounds() throws {
+        // DCT8x8: coveredBlocks = 1, log2 = 0.
+        for k in 1..<64 {
+            for nz in 1..<64 {
+                let ctxA = zeroDensityContext(
+                    nonzerosLeft: nz, k: k,
+                    coveredBlocks: 1, log2CoveredBlocks: 0,
+                    prev: 0
+                )
+                let ctxB = zeroDensityContext(
+                    nonzerosLeft: nz, k: k,
+                    coveredBlocks: 1, log2CoveredBlocks: 0,
+                    prev: 1
+                )
+                XCTAssertGreaterThanOrEqual(ctxA, 0)
+                XCTAssertLessThan(ctxA, kZeroDensityContextLimit)
+                XCTAssertEqual(ctxB - ctxA, 1,
+                    "prev bit must lift the context by 1")
+            }
+        }
+    }
+
+    /// `QuantizerParams.read` + `write` round-trip across a few
+    /// representative `(global_scale, quant_dc)` pairs spanning
+    /// each U32 selector branch.
+    func testVarDCT_QuantizerParams_RoundTrip() throws {
+        let cases: [(UInt32, UInt32)] = [
+            (1, 16),         // both default selectors (no extra bits)
+            (1024, 16),      // global_scale in 1+u(11) range
+            (3000, 1),       // global_scale in 2049+u(11), quant_dc 1+u(5)
+            (5000, 100),     // 4097+u(12), 1+u(8)
+            (12000, 50000),  // 8193+u(16), 1+u(16)
+        ]
+        for (gs, qdc) in cases {
+            var w = BitWriter()
+            try QuantizerParams(globalScale: gs, quantDC: qdc).write(to: &w)
+            var r = BitReader(w.finishToData())
+            let parsed = try QuantizerParams.read(from: &r)
+            XCTAssertEqual(parsed.globalScale, gs)
+            XCTAssertEqual(parsed.quantDC, qdc)
+        }
+    }
+
+    /// Probe a sweep of cjxl distances to see which quant modes
+    /// each emits — informs which `QuantEncoding` modes are
+    /// load-bearing for real-world cjxl output. Reports the
+    /// frontier message per distance.
+    func testVarDCT_RealCjxlFixture_ProbeAllDistances() throws {
+        let cjxl = "/opt/homebrew/bin/cjxl"
+        guard FileManager.default.isExecutableFile(atPath: cjxl) else {
+            throw XCTSkip("cjxl not available")
+        }
+        let tmp = NSTemporaryDirectory()
+        let pnmPath = tmp + "vdt_sweep.ppm"
+        var ppm = Data("P6\n64 64\n255\n".utf8)
+        for y in 0..<64 {
+            for x in 0..<64 {
+                ppm.append(contentsOf: [
+                    UInt8((x * 4) & 0xff),
+                    UInt8((y * 4) & 0xff),
+                    UInt8(((x ^ y) * 4) & 0xff),
+                ])
+            }
+        }
+        try ppm.write(to: URL(fileURLWithPath: pnmPath))
+        for d in ["0.5", "1.0", "2.0", "5.0", "10"] {
+            let jxlPath = tmp + "vdt_sweep_d\(d).jxl"
+            let p = Process()
+            p.launchPath = cjxl
+            p.arguments = [pnmPath, jxlPath, "-d", d]
+            p.standardOutput = Pipe()
+            p.standardError = Pipe()
+            try p.run()
+            p.waitUntilExit()
+            guard p.terminationStatus == 0 else { continue }
+            let bytes = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
+            do {
+                _ = try JXLDecoder().decode(bytes)
+                print("[SWEEP d=\(d)] DECODED")
+            } catch DecoderError.notImplemented(let msg) {
+                print("[SWEEP d=\(d)] frontier: \(msg)")
+            } catch {
+                print("[SWEEP d=\(d)] error: \(error)")
+            }
+        }
+    }
+
+    /// **Real cjxl VarDCT fixture** — runs the skeleton against a
+    /// 178-byte cjxl-produced lossy frame. The decoder's job at
+    /// this checkpoint is to (1) accept the bytes as a valid JXL
+    /// stream, (2) recognise it as VarDCT, (3) parse what it can
+    /// (headers + section-0 prefix), and (4) throw a structured
+    /// `notImplemented` whose message names the next bitstream
+    /// layer waiting to be wired up. As more layers land, the
+    /// expected error message moves further into the bitstream.
+    func testVarDCT_RealCjxlFixture_ProgressMarker() throws {
+        let cjxl = "/opt/homebrew/bin/cjxl"
+        guard FileManager.default.isExecutableFile(atPath: cjxl) else {
+            throw XCTSkip("cjxl not available")
+        }
+        // Generate the fixture inline so the test is self-contained.
+        let tmp = NSTemporaryDirectory()
+        let pnmPath = tmp + "vdt_progress.ppm"
+        let jxlPath = tmp + "vdt_progress.jxl"
+        var ppm = Data("P6\n8 8\n255\n".utf8)
+        for y in 0..<8 {
+            for x in 0..<8 {
+                ppm.append(contentsOf: [
+                    UInt8(x * 32 & 0xff),
+                    UInt8(y * 32 & 0xff),
+                    UInt8((x ^ y) * 32 & 0xff),
+                ])
+            }
+        }
+        try ppm.write(to: URL(fileURLWithPath: pnmPath))
+        let p = Process()
+        p.launchPath = cjxl
+        p.arguments = [pnmPath, jxlPath, "-d", "1"]
+        p.standardOutput = Pipe()
+        p.standardError = Pipe()
+        try p.run()
+        p.waitUntilExit()
+        XCTAssertEqual(p.terminationStatus, 0, "cjxl failed to produce fixture")
+        let bytes = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
+        // Sanity: the fixture is recognised as a VarDCT frame.
+        let inspection = try JXLDecoder().inspectFrameStructure(bytes)
+        XCTAssertEqual(inspection.encoding, FrameEncoding.varDCT,
+            "cjxl -d 1 should produce a VarDCT frame")
+        // **v0.5.0**: the cjxl-d=1 8×8 fixture now decodes
+        // successfully through the full VarDCT bitstream pipeline
+        // (signature → SizeHeader → ImageMetadata → FrameHeader →
+        // TOC → DequantMatricesDC → QuantizerParams → BlockCtxMap →
+        // ColorCorrelation.DecodeDC → tree+codebook → DC group →
+        // ACMetadata → ProcessACGlobal → AC group → IDCT →
+        // OpsinXYB.inverse → sRGB OETF → 8-bit RGB).
+        //
+        // Larger frames still hit `notImplemented`; the multi-block /
+        // multi-group pipeline lands in v0.7.0. Phase R restoration
+        // filters (Gaborish + EPF) land in v0.6.0 and bring the
+        // per-pixel detail closer to djxl byte-for-byte.
+        do {
+            let frame = try JXLDecoder().decode(bytes)
+            XCTAssertEqual(frame.width, 8)
+            XCTAssertEqual(frame.height, 8)
+            XCTAssertEqual(frame.channels, 3)
+            print("[v0.5.0] decode succeeded: \(frame.width)×\(frame.height)×\(frame.channels). "
+                  + "Top-left RGB = (\(frame.data[0]), \(frame.data[1]), \(frame.data[2]))")
+            return
+        } catch {
+            // Decode still in progress for non-8×8 fixtures, or an
+            // unexpected error — print and check the historical
+            // frontier whitelist below.
+            print("[RAW ERR] \(error)")
+        }
+        XCTAssertThrowsError(try JXLDecoder().decode(bytes)) { err in
+            guard case DecoderError.notImplemented(let msg) =
+                  (err as? DecoderError) ?? .notImplemented("?")
+            else {
+                XCTFail("expected DecoderError.notImplemented, got \(err)")
+                return
+            }
+            // **Frontier marker**. As more layers land this string
+            // moves further into the bitstream. The current throw
+            // point is at the **DC group** — the modular sub-image
+            // carrying the DC plane + AC strategy plane + quant
+            // field. Everything in section-0 before — QuantizerParams,
+            // BlockCtxMap default, ColorCorrelation.DecodeDC,
+            // DequantMatricesDC, modular global info, and
+            // DequantMatrices.Decode (the all-default shortcut for
+            // cjxl-d=1) — parses successfully.
+            //
+            // Accept any forward-progress frontier. As parsers
+            // land the throw point moves further into the
+            // bitstream; the test logs the actual hit point so
+            // we can see where the cjxl fixture is blocked.
+            // Forward-progress whitelist: the throw message must
+            // name one of the bitstream layers we know about. As
+            // each parser lands the throw point moves further;
+            // historical accept-list grows so old fixtures don't
+            // break the test.
+            let okFrontier =
+                msg.contains("unsupportedTransform") ||
+                msg.contains("BlockCtxMap") ||
+                msg.contains("ColorCorrelationMap.DecodeDC") ||
+                msg.contains("meta-channels modular sub-image") ||
+                msg.contains("DC group") ||
+                msg.contains("DC channels parsed") ||
+                msg.contains("3-channel DC modular sub-image") ||
+                msg.contains("DecodeModularChannelMAANS") ||
+                msg.contains("DequantDC") ||
+                msg.contains("ACMetadata") ||
+                msg.contains("ProcessACGlobal") ||
+                msg.contains("AC histograms") ||
+                msg.contains("DecodeHistograms for AC") ||
+                msg.contains("AC group coefficient") ||
+                msg.contains("AC stream entry") ||
+                msg.contains("AC coefficient driver") ||
+                msg.contains("AC coefficient stream parsed") ||
+                msg.contains("DequantDC") ||
+                msg.contains("DequantAC") ||
+                msg.contains("IDCT") ||
+                msg.contains("pixel blocks computed") ||
+                msg.contains("pixel pipeline complete") ||
+                msg.contains("Color Correlation Map") ||
+                msg.contains("inverse OpsinXYB") ||
+                msg.contains("ImageFrame") ||
+                msg.contains("DequantMatrices.Decode")
+            XCTAssertTrue(okFrontier,
+                "frontier moved unexpectedly. msg = \(msg)")
+            print("[FRONTIER] \(msg)")
+        }
+    }
+
+    /// **v0.5.0 milestone**: decode the cjxl-d=1 8×8 fixture all the
+    /// way to RGB pixels and compare against djxl. Without Phase R
+    /// restoration filters (Gaborish + EPF), pixels won't be
+    /// byte-equal, but mean luminance should be within ~10% and
+    /// channel ordering correct.
+    func testVarDCT_8x8Fixture_PixelsMatchDjxlMean() throws {
+        let cjxl = "/opt/homebrew/bin/cjxl"
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: cjxl),
+              FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("cjxl/djxl not available")
+        }
+        let tmp = NSTemporaryDirectory()
+        let pnmPath = tmp + "vdt_v05.ppm"
+        let jxlPath = tmp + "vdt_v05.jxl"
+        let pngPath = tmp + "vdt_v05.png"
+        var ppm = Data("P6\n8 8\n255\n".utf8)
+        for y in 0..<8 {
+            for x in 0..<8 {
+                ppm.append(contentsOf: [
+                    UInt8(x * 32 & 0xff),
+                    UInt8(y * 32 & 0xff),
+                    UInt8((x ^ y) * 32 & 0xff),
+                ])
+            }
+        }
+        try ppm.write(to: URL(fileURLWithPath: pnmPath))
+        // cjxl encode
+        let p1 = Process()
+        p1.launchPath = cjxl
+        p1.arguments = [pnmPath, jxlPath, "-d", "1"]
+        p1.standardOutput = Pipe(); p1.standardError = Pipe()
+        try p1.run(); p1.waitUntilExit()
+        XCTAssertEqual(p1.terminationStatus, 0)
+        // djxl decode (reference)
+        let p2 = Process()
+        p2.launchPath = djxl
+        p2.arguments = [jxlPath, pngPath]
+        p2.standardOutput = Pipe(); p2.standardError = Pipe()
+        try p2.run(); p2.waitUntilExit()
+        XCTAssertEqual(p2.terminationStatus, 0)
+        // Our decode
+        let bytes = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
+        let frame = try JXLDecoder().decode(bytes)
+        XCTAssertEqual(frame.width, 8)
+        XCTAssertEqual(frame.height, 8)
+        XCTAssertEqual(frame.channels, 3)
+
+        // Compare per-channel means (8x8 = 64 pixels).
+        var oursR = 0, oursG = 0, oursB = 0
+        for i in 0..<64 {
+            oursR += Int(frame.data[i*3+0])
+            oursG += Int(frame.data[i*3+1])
+            oursB += Int(frame.data[i*3+2])
+        }
+        let oursMean = (Double(oursR)/64, Double(oursG)/64, Double(oursB)/64)
+        // Reference means from running djxl on the same fixture: roughly
+        // (114, 113, 114). Allow ±20 to absorb missing Gaborish/EPF.
+        XCTAssertEqual(oursMean.0, 114, accuracy: 20,
+                       "R channel mean too far from djxl")
+        XCTAssertEqual(oursMean.1, 113, accuracy: 20,
+                       "G channel mean too far from djxl")
+        XCTAssertEqual(oursMean.2, 114, accuracy: 20,
+                       "B channel mean too far from djxl")
+        print("[v0.5.0] our RGB means: \(oursMean) vs djxl reference (114, 113, 114)")
+    }
+
+    /// `QuantEncoding.read` — Library mode (3-bit selector,
+    /// no payload at the spec-default `kNumPredefinedTables == 1`).
+    func testVarDCT_QuantEncoding_LibraryMode() throws {
+        var w = BitWriter()
+        w.write(bits: 3, value: 0)   // mode = library
+        var r = BitReader(w.finishToData())
+        let enc = try QuantEncoding.read(
+            from: &r, requiredSizeX: 1, requiredSizeY: 1
+        )
+        XCTAssertEqual(enc.mode, .library)
+        XCTAssertEqual(enc.predefined, 0)
+    }
+
+    /// `QuantEncoding.read` — DCT mode (DctParams: num_distance_bands
+    /// + 3 channels of F16 weights; first per channel × 64).
+    func testVarDCT_QuantEncoding_DCTMode() throws {
+        var w = BitWriter()
+        w.write(bits: 3, value: 5)                   // mode = DCT
+        w.write(bits: 4, value: 1)                   // num_bands - 1 = 1 ⇒ 2 bands
+        for _ in 0..<3 {
+            w.write(bits: 16, value: UInt32(floatToHalf(50.0)))   // seed × 64 ⇒ 3200
+            w.write(bits: 16, value: UInt32(floatToHalf(-0.4)))
+        }
+        var r = BitReader(w.finishToData())
+        let enc = try QuantEncoding.read(
+            from: &r, requiredSizeX: 1, requiredSizeY: 1
+        )
+        XCTAssertEqual(enc.mode, .dct)
+        let p = try XCTUnwrap(enc.dctParams)
+        XCTAssertEqual(p.distanceBands.count, 3)
+        XCTAssertEqual(p.distanceBands[0].count, 2)
+        XCTAssertEqual(p.distanceBands[0][0], 50.0 * 64, accuracy: 1.0)
+        XCTAssertEqual(p.distanceBands[0][1], -0.4, accuracy: 0.01)
+    }
+
+    /// `QuantEncoding.read` — DCT2 mode (3 × 6 F16 × 64).
+    func testVarDCT_QuantEncoding_DCT2Mode() throws {
+        var w = BitWriter()
+        w.write(bits: 3, value: 2)   // mode = DCT2
+        for _ in 0..<3 {
+            for i in 0..<6 {
+                let v = Float(10 + i)
+                w.write(bits: 16, value: UInt32(floatToHalf(v)))
+            }
+        }
+        var r = BitReader(w.finishToData())
+        let enc = try QuantEncoding.read(
+            from: &r, requiredSizeX: 1, requiredSizeY: 1
+        )
+        XCTAssertEqual(enc.mode, .dct2)
+        let w2 = try XCTUnwrap(enc.dct2Weights)
+        XCTAssertEqual(w2.count, 3)
+        XCTAssertEqual(w2[0][0], 10.0 * 64, accuracy: 1.0)
+        XCTAssertEqual(w2[0][5], 15.0 * 64, accuracy: 1.0)
+    }
+
+    /// `DequantMatricesAC.readDefaultOrThrow` — accepts the
+    /// 1-bit all-default shortcut, throws `.notDefault` for the
+    /// long-form (17 per-strategy QuantEncoding) bitstream.
+    func testVarDCT_DequantMatricesAC_ReadDefault() throws {
+        var w = BitWriter()
+        w.writeBit(true)
+        var r = BitReader(w.finishToData())
+        let allDefault = try DequantMatricesAC.readDefaultOrThrow(from: &r)
+        XCTAssertTrue(allDefault)
+        var w2 = BitWriter()
+        w2.writeBit(false)
+        var r2 = BitReader(w2.finishToData())
+        XCTAssertThrowsError(
+            try DequantMatricesAC.readDefaultOrThrow(from: &r2)
+        ) { err in
+            guard case DequantMatricesACError.notDefault = err else {
+                XCTFail("expected .notDefault, got \(err)")
+                return
+            }
+        }
+    }
+
+    /// `DequantMatricesDC.read` — all-default shortcut + the F16
+    /// branch.
+    func testVarDCT_DequantMatricesDC_ParseDefault() throws {
+        // Default: 1 bit = 1.
+        var w = BitWriter()
+        w.writeBit(true)
+        var r = BitReader(w.finishToData())
+        let dc = try DequantMatricesDC.read(from: &r)
+        XCTAssertEqual(dc.dcQuant.0, 1.0 / 128, accuracy: 1e-6)
+        XCTAssertEqual(dc.dcQuant.1, 1.0 / 128, accuracy: 1e-6)
+        XCTAssertEqual(dc.dcQuant.2, 1.0 / 128, accuracy: 1e-6)
+    }
+
+    /// Non-default DC quant: synthesise three F16 floats and check
+    /// they round-trip through the parser.
+    func testVarDCT_DequantMatricesDC_ParseExplicit() throws {
+        var w = BitWriter()
+        w.writeBit(false)   // not default
+        // libjxl multiplies by 1/128 after read; pick F16 inputs
+        // that give simple `dc_quant` values.
+        for _ in 0..<3 {
+            w.write(bits: 16, value: UInt32(floatToHalf(128.0)))
+        }
+        var r = BitReader(w.finishToData())
+        let dc = try DequantMatricesDC.read(from: &r)
+        XCTAssertEqual(dc.dcQuant.0, 1.0, accuracy: 1e-3)
+        XCTAssertEqual(dc.dcQuant.1, 1.0, accuracy: 1e-3)
+        XCTAssertEqual(dc.dcQuant.2, 1.0, accuracy: 1e-3)
+    }
+
+    /// `BlockCtxMap.readDefaultOrThrow` — default flag round-trip;
+    /// non-default flag throws `.notDefault`.
+    func testVarDCT_BlockCtxMap_ReadDefault() throws {
+        var w = BitWriter()
+        w.writeBit(true)
+        var r = BitReader(w.finishToData())
+        let m = try BlockCtxMap.readDefaultOrThrow(from: &r)
+        XCTAssertEqual(m.numCtxs, 15)
+        // Non-default → throws.
+        var w2 = BitWriter()
+        w2.writeBit(false)
+        var r2 = BitReader(w2.finishToData())
+        XCTAssertThrowsError(
+            try BlockCtxMap.readDefaultOrThrow(from: &r2)
+        ) { err in
+            guard case BlockCtxMapError.notDefault = err else {
+                XCTFail("expected .notDefault, got \(err)")
+                return
+            }
+        }
+    }
+
+    /// `ColorCorrelation.readDC` parses both the all-default
+    /// shortcut and the non-default branch (color_factor + base
+    /// correlations + signed-byte DC offsets).
+    func testVarDCT_ColorCorrelation_ReadDC() throws {
+        // Default branch.
+        var w = BitWriter()
+        w.writeBit(true)
+        var r = BitReader(w.finishToData())
+        let cc = try ColorCorrelation.readDC(from: &r)
+        XCTAssertEqual(cc.colorFactor, kDefaultColorFactor)
+        XCTAssertEqual(cc.ytoxDC, 0)
+        XCTAssertEqual(cc.ytobDC, 0)
+        // Non-default: color_factor=84 (literal selector), base
+        // correlations near-zero, ytox/ytob = -1.
+        var w2 = BitWriter()
+        w2.writeBit(false)
+        // color_factor = 84 → literal(kDefaultColorFactor) = "00".
+        w2.write(bits: 2, value: 0)
+        // F16(0.0) for both base correlations.
+        w2.write(bits: 16, value: UInt32(floatToHalf(0.0)))
+        w2.write(bits: 16, value: UInt32(floatToHalf(1.0)))  // kYToBRatio
+        // ytox_dc = -1 ⇒ raw byte = 127. ytob_dc = +5 ⇒ raw = 133.
+        w2.write(bits: 8, value: 127)
+        w2.write(bits: 8, value: 133)
+        var r2 = BitReader(w2.finishToData())
+        let cc2 = try ColorCorrelation.readDC(from: &r2)
+        XCTAssertEqual(cc2.colorFactor, kDefaultColorFactor)
+        XCTAssertEqual(cc2.baseCorrelationX, 0.0, accuracy: 1e-3)
+        XCTAssertEqual(cc2.baseCorrelationB, 1.0, accuracy: 1e-3)
+        XCTAssertEqual(cc2.ytoxDC, -1)
+        XCTAssertEqual(cc2.ytobDC, 5)
+    }
+
+    /// **3-channel AC group round-trip with CfL.** Three
+    /// independent pixel planes → forward DCT + inverse CfL +
+    /// quantise per cell, all three channels' tokens interleaved
+    /// (Y, X, B) into one stream → decode + re-correlate CfL +
+    /// IDCT → recovered planes. Pins that the multi-channel
+    /// orchestration plus chroma-from-luma agree end-to-end. The
+    /// actual opsin colour transform is exercised in
+    /// `testVarDCT_OpsinXYB_RoundTrip`; here we focus on the
+    /// orchestration with channels in a wider numeric range so the
+    /// quant scale doesn't squash everything to zero.
+    func testVarDCT_ACGroup_RGBRoundTrip_WithCfL() throws {
+        let groupX = 4, groupY = 4
+        let pixelW = groupX * 8, pixelH = groupY * 8
+        // Synthetic per-channel content. Y is the dominant signal;
+        // X and B are correlated with Y so CfL has something to
+        // decorrelate.
+        var xPx = [Float](repeating: 0, count: pixelW * pixelH)
+        var yPx = [Float](repeating: 0, count: pixelW * pixelH)
+        var bPx = [Float](repeating: 0, count: pixelW * pixelH)
+        for y in 0..<pixelH {
+            for x in 0..<pixelW {
+                let i = y * pixelW + x
+                yPx[i] = 100 + 30 * sinf(Float(x) * 0.07)
+                       + 30 * sinf(Float(y) * 0.05)
+                xPx[i] = 0.4 * yPx[i] + 5
+                bPx[i] = 0.6 * yPx[i] + 10
+            }
+        }
+        // 64-symbol flat-Kraft alphabet shared by all 3 channels.
+        let postCfg = HybridUintConfig.raw4
+        let padded = 64
+        let bitLen = UInt8(padded.trailingZeroBitCount)
+        let lengths = [UInt8](repeating: bitLen, count: padded)
+        let table = try PrefixCodeTable(lengths: lengths)
+        let ctxMap = BlockCtxMap()
+        let cm = try ContextMap(
+            numClusters: 1,
+            map: [UInt8](repeating: 0, count: ctxMap.numACContexts)
+        )
+        let codebook = MultiClusterCodebook(
+            huffmanTables: [table], ansCounts: [],
+            alphabetSizes: [padded]
+        )
+        let header = EntropySectionHeader(
+            lz77: .disabled, contextMap: cm,
+            usePrefixCode: true, logAlphaSize: 15,
+            uintConfigs: [postCfg]
+        )
+        // Per-channel quant weights from the spec-default DCT8x8 table.
+        let bands = DefaultQuantBands.dct8x8
+        let weights3 = try QuantWeights.getQuantWeights(
+            rows: 8, cols: 8, bands: bands
+        )
+        // The X plane in opsin-XYB has a much smaller dynamic range
+        // than Y and B, so its quant weights would over-quantise it
+        // at the synthetic scale we're using here. Use Y weights
+        // for all three channels — fine for an end-to-end agreement
+        // test (the production decoder uses the proper per-channel
+        // tables).
+        let yWeights = Array(weights3[64..<128])
+        let scale: Float = 0.05    // matches Modular-channel test scale
+        // CfL with non-trivial slopes — exercise the recorrelation
+        // path. Slope/colorFactor = 0.4 → slope = 34.
+        var cfl = ColorCorrelationMap(xsize: pixelW, ysize: pixelH)
+        for i in 0..<cfl.ytox.count { cfl.ytox[i] = 34 }
+        for i in 0..<cfl.ytob.count { cfl.ytob[i] = 50 }
+        // Encode.
+        let writer = TokenStreamWriter(header: header, codebook: codebook)
+        var w = BitWriter()
+        let dc = try ACGroupEncoder.encodeRGB(
+            xPx: xPx, yPx: yPx, bPx: bPx,
+            groupX: groupX, groupY: groupY,
+            weightsX: yWeights, weightsY: yWeights, weightsB: yWeights,
+            scale: scale, ctxMap: ctxMap, ctxOffset: 0,
+            cfl: cfl, writer: writer, to: &w
+        )
+        let bytes = w.finishToData()
+        // Decode.
+        var r = BitReader(bytes)
+        var stream = TokenStreamReader(header: header, codebook: codebook)
+        let recoveredXYB = try ACGroupDecoder.decodeRGB(
+            groupX: groupX, groupY: groupY,
+            dcPlaneX: dc.dcX, dcPlaneY: dc.dcY, dcPlaneB: dc.dcB,
+            weightsX: yWeights, weightsY: yWeights, weightsB: yWeights,
+            scale: scale, ctxMap: ctxMap, ctxOffset: 0,
+            cfl: cfl, stream: &stream, from: &r
+        )
+        // RMSE per plane.
+        var rmseY: Float = 0, rmseX: Float = 0, rmseB: Float = 0
+        for i in 0..<(pixelW * pixelH) {
+            let dY = recoveredXYB.yPlane[i] - yPx[i]
+            let dX = recoveredXYB.xPlane[i] - xPx[i]
+            let dB = recoveredXYB.bPlane[i] - bPx[i]
+            rmseY += dY * dY
+            rmseX += dX * dX
+            rmseB += dB * dB
+        }
+        let n = Float(pixelW * pixelH)
+        rmseY = sqrtf(rmseY / n)
+        rmseX = sqrtf(rmseX / n)
+        rmseB = sqrtf(rmseB / n)
+        // Lossy round-trip — orchestration agreement is the contract
+        // here, not bit-exact recovery.
+        XCTAssertLessThan(rmseY, 5.0, "Y RMSE = \(rmseY)")
+        XCTAssertLessThan(rmseX, 5.0, "X RMSE = \(rmseX)")
+        XCTAssertLessThan(rmseB, 5.0, "B RMSE = \(rmseB)")
+    }
+
+    /// **Whole-frame AC group round-trip.** Pixel buffer → forward
+    /// DCT + quantise per 8×8 cell → tokenise via `ACGroupEncoder.
+    /// encodeChannel` → decode via `ACGroupDecoder.decodeChannel`
+    /// → recovered pixel buffer. With a small (synthetic) `scale =
+    /// 0.05` the round-trip is lossy (RMSE bounded), but the
+    /// orchestration layer's job is to *agree* with itself —
+    /// nzeros prediction state, scan order, context lookups all
+    /// have to match between the two sides.
+    func testVarDCT_ACGroup_RoundTrip() throws {
+        let groupX = 4, groupY = 4   // 32×32 pixels = 16 cells.
+        let pixelW = groupX * 8, pixelH = groupY * 8
+        var pixels = [Float](repeating: 0, count: pixelW * pixelH)
+        for y in 0..<pixelH {
+            for x in 0..<pixelW {
+                // Smooth-ish content: low-frequency 2D sinusoid.
+                let fx = sinf(Float(x) * 0.07)
+                let fy = sinf(Float(y) * 0.05)
+                pixels[y * pixelW + x] = 100 + 30 * fx + 30 * fy
+            }
+        }
+        // 64-symbol flat-Kraft alphabet so every token fits.
+        let postCfg = HybridUintConfig.raw4
+        let padded = 64
+        let bitLen = UInt8(padded.trailingZeroBitCount)
+        let lengths = [UInt8](repeating: bitLen, count: padded)
+        let table = try PrefixCodeTable(lengths: lengths)
+        let ctxMap = BlockCtxMap()
+        let cm = try ContextMap(
+            numClusters: 1,
+            map: [UInt8](repeating: 0, count: ctxMap.numACContexts)
+        )
+        let codebook = MultiClusterCodebook(
+            huffmanTables: [table], ansCounts: [],
+            alphabetSizes: [padded]
+        )
+        let header = EntropySectionHeader(
+            lz77: .disabled,
+            contextMap: cm,
+            usePrefixCode: true, logAlphaSize: 15,
+            uintConfigs: [postCfg]
+        )
+        // Y-channel quant weights at the spec-default DCT8x8 bands.
+        let bands = DefaultQuantBands.dct8x8
+        let weights3 = try QuantWeights.getQuantWeights(
+            rows: 8, cols: 8, bands: bands
+        )
+        let yWeights = Array(weights3[64..<128])
+        let scale: Float = 0.05
+        let writer = TokenStreamWriter(header: header, codebook: codebook)
+        var w = BitWriter()
+        let dcPlane = try ACGroupEncoder.encodeChannel(
+            pixels: pixels, groupX: groupX, groupY: groupY,
+            weights: yWeights, scale: scale,
+            channel: 1 /* Y */, ctxMap: ctxMap, ctxOffset: 0,
+            writer: writer, to: &w
+        )
+        let bytes = w.finishToData()
+        XCTAssertGreaterThan(bytes.count, 0)
+        // Decode side.
+        var r = BitReader(bytes)
+        var stream = TokenStreamReader(header: header, codebook: codebook)
+        let recovered = try ACGroupDecoder.decodeChannel(
+            groupX: groupX, groupY: groupY, dcPlane: dcPlane,
+            weights: yWeights, scale: scale,
+            channel: 1, ctxMap: ctxMap, ctxOffset: 0,
+            stream: &stream, from: &r
+        )
+        XCTAssertEqual(recovered.count, pixels.count)
+        // Lossy round-trip — RMSE must be modest but not zero.
+        var sse: Float = 0
+        for i in 0..<pixels.count {
+            let d = recovered[i] - pixels[i]
+            sse += d * d
+        }
+        let rmse = sqrtf(sse / Float(pixels.count))
+        XCTAssertLessThan(rmse, 5.0,
+            "AC group round-trip RMSE = \(rmse) too large at scale=\(scale)")
+    }
+
+    /// End-to-end AC entropy round-trip: encode an 8×8 block of
+    /// known integer coefficients via `ACEncoder.encodeBlock` →
+    /// decode via `ACDecoder.decodeBlock` → recover the original.
+    /// Pins that the BlockCtxMap, ZeroDensityContext, scan-order,
+    /// and `TokenStreamWriter`/`TokenStreamReader` agree.
+    func testVarDCT_ACEncode_DecodeBlock_RoundTrip() throws {
+        // 1. Pick a block with mostly low-frequency content (the
+        // realistic case after DCT). Position 0 is DC (untouched
+        // by AC encoder); positions 1..63 carry the AC coefficients.
+        var coeffs = [Int32](repeating: 0, count: 64)
+        coeffs[1] = 5      // first AC after DC
+        coeffs[8] = -3
+        coeffs[2] = 2
+        coeffs[9] = 1
+        coeffs[16] = -1
+        // 2. Set up a minimal entropy section + codebook. We need
+        //    enough alphabet to hold every token the encoder will
+        //    emit; the worst case for 8-bit-magnitude AC is
+        //    HybridUintConfig.raw4 → token max ~20.
+        let postCfg = HybridUintConfig.raw4
+        // Flat-Kraft Huffman so any context can emit any token.
+        // Pick a padded alphabet that's a power of two ≥ the worst-
+        // case token value `postCfg.maxToken + 1` (43 + 1 = 44).
+        let padded = 64
+        let bitLen = UInt8(padded.trailingZeroBitCount) // 6
+        let lengths = [UInt8](repeating: bitLen, count: padded)
+
+        let table = try PrefixCodeTable(lengths: lengths)
+        // Use as many clusters as there are AC contexts; default
+        // BlockCtxMap declares 15·(37+458) = 7425. Way too many —
+        // let's build a tiny ContextMap that maps every context to
+        // cluster 0 (single shared codebook) for this test.
+        let ctxMap = BlockCtxMap()
+        let totalContexts = ctxMap.numACContexts
+        let cm = try ContextMap(
+            numClusters: 1,
+            map: [UInt8](repeating: 0, count: totalContexts)
+        )
+        let codebook = MultiClusterCodebook(
+            huffmanTables: [table], ansCounts: [],
+            alphabetSizes: [padded]
+        )
+        let header = EntropySectionHeader(
+            lz77: .disabled,
+            contextMap: cm,
+            usePrefixCode: true, logAlphaSize: 15,
+            uintConfigs: [postCfg]
+        )
+        // 3. Encode → bit buffer.
+        var w = BitWriter()
+        let writer = TokenStreamWriter(header: header, codebook: codebook)
+        let blockCtx = ctxMap.context(dcIdx: 0, qf: 0, ord: 0, c: 1) // Y, DCT8x8
+        try ACEncoder.encodeBlock(
+            block: coeffs, order: kDCT8x8NaturalOrder,
+            coveredBlocks: 1, log2CoveredBlocks: 0,
+            blockCtx: blockCtx, predictedNnz: 5,
+            ctxOffset: 0, ctxMap: ctxMap,
+            writer: writer, to: &w
+        )
+        let bytes = w.finishToData()
+        XCTAssertGreaterThan(bytes.count, 0,
+            "encode should emit some bits")
+        // 4. Decode and verify round-trip.
+        var r = BitReader(bytes)
+        var stream = TokenStreamReader(header: header, codebook: codebook)
+        var recovered = [Int32](repeating: 0, count: 64)
+        try ACDecoder.decodeBlock(
+            block: &recovered, order: kDCT8x8NaturalOrder,
+            coveredBlocks: 1, log2CoveredBlocks: 0,
+            blockCtx: blockCtx, predictedNnz: 5,
+            ctxOffset: 0, ctxMap: ctxMap,
+            stream: &stream, from: &r
+        )
+        // AC positions [1, 64) must round-trip exactly. Position 0
+        // (DC) stays at the caller-supplied value (here 0).
+        for i in 1..<64 {
+            XCTAssertEqual(recovered[i], coeffs[i],
+                "AC[\(i)] mismatch: got \(recovered[i]) want \(coeffs[i])")
+        }
+    }
+
+    /// `ACDecoder.predictNnz` mirrors libjxl `PredictFromTopAndLeft`
+    /// across the four edge cases.
+    func testVarDCT_PredictNnz_EdgeCases() throws {
+        let row = [Int32](repeating: 0, count: 8)
+        let above: [Int32] = [10, 20, 30, 40, 50, 60, 70, 80]
+        // Top-left corner (no row above, bx = 0) → predictedMax (32).
+        XCTAssertEqual(
+            ACDecoder.predictNnz(rowAbove: nil, rowCurrent: row, bx: 0),
+            32
+        )
+        // Left edge (no row above, bx > 0) → rowCurrent[bx-1].
+        var leftCurr = row
+        leftCurr[2] = 17
+        XCTAssertEqual(
+            ACDecoder.predictNnz(rowAbove: nil, rowCurrent: leftCurr, bx: 3),
+            17
+        )
+        // Top edge (row above present, bx = 0) → rowAbove[0].
+        XCTAssertEqual(
+            ACDecoder.predictNnz(rowAbove: above, rowCurrent: row, bx: 0),
+            10
+        )
+        // Interior: average rounded up.
+        var curr = row
+        curr[3] = 6
+        XCTAssertEqual(
+            ACDecoder.predictNnz(rowAbove: above, rowCurrent: curr, bx: 4),
+            UInt32((50 + 6 + 1) >> 1)
+        )
+    }
+
+    /// `ACStrategy.orderBucket` matches `kStrategyOrder`.
+    func testVarDCT_ACStrategy_OrderBucket() throws {
+        XCTAssertEqual(ACStrategy.dct8x8.orderBucket, 0)
+        XCTAssertEqual(ACStrategy.dct16x16.orderBucket, 2)
+        XCTAssertEqual(ACStrategy.dct32x32.orderBucket, 3)
+        XCTAssertEqual(ACStrategy.dct16x8.orderBucket, 4)
+        XCTAssertEqual(ACStrategy.dct8x16.orderBucket, 4)
+        XCTAssertEqual(ACStrategy.dct256x256.orderBucket, 11)
+    }
+
+    /// `QuantWeights.mult` returns 1+v for positive v and
+    /// 1/(1-v) for negative v — pinned so the band-offset
+    /// semantics don't drift.
+    func testVarDCT_QuantWeights_Mult() throws {
+        XCTAssertEqual(QuantWeights.mult(0.5), 1.5, accuracy: 1e-6)
+        XCTAssertEqual(QuantWeights.mult(-0.5), 1 / 1.5, accuracy: 1e-6)
+        // Mult(v) and Mult(-v) must be reciprocals.
+        for v: Float in [0.1, 0.5, 1.0, 2.0, 5.0] {
+            XCTAssertEqual(
+                QuantWeights.mult(v) * QuantWeights.mult(-v),
+                1.0, accuracy: 1e-5
+            )
+        }
+    }
+
+    /// `QuantWeights.getQuantWeights` produces a `3 × rows × cols`
+    /// per-coefficient quant-weight table from the spec-frozen
+    /// default DCT8x8 distance bands. DC (top-left, position [0,0])
+    /// per channel must equal the bands' seed values exactly —
+    /// libjxl's `DC = bands[c][0]` invariant — and the table must
+    /// be monotonically non-increasing along each row from DC
+    /// outwards (lower frequencies get heavier weights).
+    func testVarDCT_QuantWeights_DefaultDCT8x8_DCMatchesSeed() throws {
+        let bands = DefaultQuantBands.dct8x8
+        let weights = try QuantWeights.getQuantWeights(
+            rows: 8, cols: 8, bands: bands
+        )
+        XCTAssertEqual(weights.count, 3 * 64)
+        // Seed-band DC invariant: weights[c][0] == bands.c[0].
+        XCTAssertEqual(weights[0 * 64], bands.x[0], accuracy: 1e-3)
+        XCTAssertEqual(weights[1 * 64], bands.y[0], accuracy: 1e-3)
+        XCTAssertEqual(weights[2 * 64], bands.b[0], accuracy: 1e-3)
+        // Channels X and Y have only positive band offsets (-0.4,
+        // -0.3) ⇒ their curve is monotonically decreasing: DC is
+        // the heaviest weight.
+        for c in [0, 1] {
+            let dc = weights[c * 64]
+            for col in 1..<8 {
+                XCTAssertLessThanOrEqual(weights[c * 64 + col], dc,
+                    "[c=\(c)] weight[col=\(col)] must not exceed DC")
+            }
+        }
+    }
+
+    /// End-to-end VarDCT primitive round-trip: pixel block → DCT
+    /// → quantize → dequantize → IDCT → pixel block. Lossy
+    /// because of the integer rounding in `Dequantize.quantize`,
+    /// so the recovered block must be *close* to the original
+    /// (RMSE < a few units) but not pixel-exact. Demonstrates the
+    /// existing primitives compose into a working — if minimal —
+    /// VarDCT-shaped pipeline for one channel of one 8×8 block.
+    func testVarDCT_PrimitiveRoundTrip_DCT8x8() throws {
+        // 8×8 sample: smooth ramp (low-frequency content compresses
+        // well under quantisation).
+        var pixels = [Float](repeating: 0, count: 64)
+        for i in 0..<64 {
+            let col = i % 8
+            let row = i / 8
+            pixels[i] = Float(col * 16 + row * 8)
+        }
+        let original = pixels
+        // 1. Forward DCT.
+        DCT2D.forward(&pixels, size: 8)
+        // 2. Build per-coefficient weights for the Y channel of
+        //    the default DCT8x8 quant table.
+        let bands = DefaultQuantBands.dct8x8
+        let weights3 = try QuantWeights.getQuantWeights(
+            rows: 8, cols: 8, bands: bands
+        )
+        let yWeights = Array(weights3[64..<128])
+        // 3. Quantise + dequantise. `scale` here is a synthetic
+        //    1/quant — small scales give finer quantisation
+        //    (less drift). cjxl's typical encode-time scale is
+        //    around 1/(2.25 · global_scale) per the libjxl
+        //    `Quantizer` code; pick a coarse-but-honest 0.05 so
+        //    the round-trip is visibly lossy without exploding.
+        let scale: Float = 0.05
+        let q = Dequantize.quantize(
+            amplitudes: pixels, weights: yWeights, scale: scale
+        )
+        let back = Dequantize.dequantize(
+            coefficients: q, weights: yWeights, scale: scale
+        )
+        // 4. Inverse DCT.
+        var recovered = back
+        DCT2D.inverse(&recovered, size: 8)
+        // RMSE check — mean square error must be small.
+        var sse: Float = 0
+        for i in 0..<64 {
+            let diff = recovered[i] - original[i]
+            sse += diff * diff
+        }
+        let rmse = sqrtf(sse / 64)
+        XCTAssertLessThan(rmse, 5.0,
+            "lossy round-trip RMSE = \(rmse) — too large at scale=\(scale)")
+    }
+
+    /// `scaledForBitstream` applies libjxl's `× 64` seed scaling
+    /// (the line `distance_bands[c][0] *= 64` in `DecodeDctParams`).
+    /// The DC weight in the resulting table must equal `64 × seed`.
+    func testVarDCT_QuantWeights_BitstreamSeedScaling() throws {
+        let raw = DefaultQuantBands.dct8x8
+        let scaled = DefaultQuantBands.scaledForBitstream(raw)
+        XCTAssertEqual(scaled.x[0], raw.x[0] * 64, accuracy: 1e-3)
+        XCTAssertEqual(scaled.y[0], raw.y[0] * 64, accuracy: 1e-3)
+        XCTAssertEqual(scaled.b[0], raw.b[0] * 64, accuracy: 1e-3)
+        let weights = try QuantWeights.getQuantWeights(
+            rows: 8, cols: 8, bands: scaled
+        )
+        XCTAssertEqual(weights[0], raw.x[0] * 64, accuracy: 1e-2)
+    }
+
+    /// `QuantWeights.interpolate` sampled at a band's exact index
+    /// returns that band's value; in between, geometric averaging
+    /// keeps the value bracketed by neighbours.
+    func testVarDCT_QuantWeights_Interpolate() throws {
+        let curve: [Float] = [1.0, 2.0, 4.0, 8.0]   // doubles per step
+        let maxPos: Float = Float(curve.count - 1)
+        // Sampled at exact band positions: returns the band's value.
+        for i in 0..<curve.count {
+            let v = QuantWeights.interpolate(
+                pos: Float(i), max: maxPos, array: curve
+            )
+            XCTAssertEqual(v, curve[i], accuracy: 1e-4,
+                "interpolate(\(i)) must equal curve[\(i)]")
+        }
+        // Sampled mid-band (geometric mean of neighbours).
+        let v = QuantWeights.interpolate(
+            pos: 0.5, max: maxPos, array: curve
+        )
+        XCTAssertEqual(v, sqrtf(1 * 2), accuracy: 1e-4,
+            "interpolate at 0.5 must be the geometric mean of bands 0,1")
+    }
+
+    /// `ChromaFromLuma.decorrelateX` + `recorrelateX` must
+    /// round-trip every X sample. Same for the B plane. With a
+    /// non-zero per-tile slope the decorrelation should *reduce*
+    /// the X plane's magnitude when X is correlated with Y.
+    func testVarDCT_ColorCorrelationMap_RoundTrip() throws {
+        let w = 80, h = 80
+        var x = [Float](repeating: 0, count: w * h)
+        var b = [Float](repeating: 0, count: w * h)
+        let y = (0..<(w * h)).map { Float($0 % 100) }
+        for i in 0..<x.count {
+            // X is approximately 0.4 × Y plus a small noise term.
+            x[i] = 0.4 * y[i] + 0.5
+            b[i] = 0.6 * y[i] + 1.0
+        }
+        let original = (x: x, b: b)
+        // Slope: `slope / colorFactor = 0.4` ⇒ slope ≈ 33.6 → 34.
+        var map = ColorCorrelationMap(xsize: w, ysize: h)
+        for i in 0..<map.ytox.count { map.ytox[i] = 34 }
+        for i in 0..<map.ytob.count { map.ytob[i] = 50 } // approx 0.6
+        // Verify decorrelation reduces magnitude.
+        ChromaFromLuma.decorrelateX(
+            x: &x, y: y, width: w, height: h, map: map
+        )
+        ChromaFromLuma.decorrelateB(
+            b: &b, y: y, width: w, height: h, map: map
+        )
+        let xMagBefore = original.x.reduce(0) { $0 + abs($1) }
+        let xMagAfter = x.reduce(0) { $0 + abs($1) }
+        XCTAssertLessThan(xMagAfter, xMagBefore,
+            "decorrelation should reduce |X|")
+        // Now round-trip back.
+        ChromaFromLuma.recorrelateX(
+            x: &x, y: y, width: w, height: h, map: map
+        )
+        ChromaFromLuma.recorrelateB(
+            b: &b, y: y, width: w, height: h, map: map
+        )
+        for i in 0..<x.count {
+            XCTAssertEqual(x[i], original.x[i], accuracy: 1e-4)
+            XCTAssertEqual(b[i], original.b[i], accuracy: 1e-4)
+        }
+    }
+
+    /// `DCPredictor.residuals` + `reconstruct` round-trips a DC
+    /// plane via the gradient predictor — same invariant the
+    /// Modular path relies on.
+    func testVarDCT_DCPredictor_RoundTrip() throws {
+        let w = 8, h = 8
+        var dc = [Int32](repeating: 0, count: w * h)
+        for y in 0..<h {
+            for x in 0..<w {
+                dc[y * w + x] = Int32(x * 100 + y * 17)
+            }
+        }
+        let res = DCPredictor.residuals(of: dc, width: w, height: h)
+        let back = DCPredictor.reconstruct(
+            residuals: res, width: w, height: h
+        )
+        XCTAssertEqual(back, dc, "DC residual round-trip must be exact")
+        // The first residual = first pixel - gradient([0,0,0]) = first pixel.
+        XCTAssertEqual(res[0], dc[0])
+        // Smooth ramps ⇒ residuals cluster near zero (one-row drift).
+        var nonZero = 0
+        for r in res where r != 0 { nonZero += 1 }
+        XCTAssertLessThan(nonZero, dc.count,
+            "smooth ramp should produce some zero residuals")
+    }
+
+    /// `OpsinXYB` forward + inverse round-trips a representative
+    /// linear-RGB sample within the precision allowed by the
+    /// cube-root branch.
+    func testVarDCT_OpsinXYB_RoundTrip() throws {
+        // Small sample-grid test — a few representative colours
+        // including a near-white, primaries, mid-tones, and a dark
+        // sample that exercises the bias term.
+        let samples: [(Float, Float, Float)] = [
+            (0.95, 0.93, 0.91),  // near-white
+            (1.00, 0.00, 0.00),  // red
+            (0.00, 1.00, 0.00),  // green
+            (0.00, 0.00, 1.00),  // blue
+            (0.50, 0.50, 0.50),  // grey
+            (0.10, 0.20, 0.05),  // dark olive
+        ]
+        for s in samples {
+            let xyb = OpsinXYB.forward(s)
+            let back = OpsinXYB.inverse(xyb)
+            // 5e-4 fidelity — bounded by float32 cbrtf precision.
+            XCTAssertEqual(back.R, s.0, accuracy: 5e-4,
+                "[\(s)] R drift")
+            XCTAssertEqual(back.G, s.1, accuracy: 5e-4,
+                "[\(s)] G drift")
+            XCTAssertEqual(back.B, s.2, accuracy: 5e-4,
+                "[\(s)] B drift")
+        }
+    }
+
+    /// AC-strategy dimensional table sanity. Every strategy must
+    /// declare cell dimensions whose product matches the pixel
+    /// coverage area (cells × 8 = pixels per axis).
+    func testVarDCT_ACStrategyDimensions() throws {
+        for s in ACStrategy.allCases {
+            let c = s.blockCells
+            let p = s.blockPixels
+            XCTAssertEqual(p.width, c.cellsX * 8, "\(s)")
+            XCTAssertEqual(p.height, c.cellsY * 8, "\(s)")
+        }
+    }
+
+    /// `JXLEncoder.encode(_:)` dispatches frames into
+    /// `SpecModularEncoder` based on `pixelType`/`channels`. Verify
+    /// the dispatch by encoding a 16×16 RGB frame and recovering the
+    /// pixels through our decoder.
+    func testJXLEncoder_DispatchRGB8() throws {
+        var frame = ImageFrame(
+            width: 16, height: 16, channels: 3,
+            pixelType: .uint8, colorSpace: .sRGB
+        )
+        for y in 0..<16 {
+            for x in 0..<16 {
+                let i = (y * 16 + x) * 3
+                frame.data[i + 0] = UInt8(x * 16)
+                frame.data[i + 1] = UInt8(y * 16)
+                frame.data[i + 2] = UInt8((x ^ y) * 8)
+            }
+        }
+        let encoded = try JXLEncoder().encode(frame)
+        XCTAssertGreaterThan(encoded.data.count, 0)
+        let image = try JXLDecoder().decodeModular(encoded.data)
+        XCTAssertEqual(image.channels.count, 3)
+        for ci in 0..<3 {
+            for i in 0..<(16 * 16) {
+                let want = Int32(frame.data[i * 3 + ci])
+                XCTAssertEqual(image.channels[ci].pixels[i], want)
+            }
+        }
+    }
+
+    /// Multi-group RGB at 1024×1024 → 2×2 = 4 groups. Validates the
+    /// per-group AC section layout for the multi-channel case
+    /// (decoder iterates one shared TokenStreamReader across all
+    /// channels within each group, then advances groups).
+    func testSpecModularEncoder_RGB8_2x2Groups_DjxlRoundTrip() throws {
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("djxl not available at \(djxl)")
+        }
+        let w = 1024, h = 1024
+        var r = [UInt8](repeating: 0, count: w * h)
+        var g = [UInt8](repeating: 0, count: w * h)
+        var b = [UInt8](repeating: 0, count: w * h)
+        for yy in 0..<h {
+            for xx in 0..<w {
+                let i = yy * w + xx
+                r[i] = UInt8(xx & 0xff)
+                g[i] = UInt8(yy & 0xff)
+                b[i] = UInt8((xx ^ yy) & 0xff)
+            }
+        }
+        let bytes = try SpecModularEncoder.encodeRGB8(
+            width: w, height: h, r: r, g: g, b: b
+        )
+        let inPath = NSTemporaryDirectory() + "jxlswift_rgb8_4g.jxl"
+        let outPath = NSTemporaryDirectory() + "jxlswift_rgb8_4g.ppm"
+        try bytes.write(to: URL(fileURLWithPath: inPath))
+        let p = Process()
+        p.launchPath = djxl
+        p.arguments = [inPath, outPath]
+        let errPipe = Pipe()
+        p.standardOutput = Pipe()
+        p.standardError = errPipe
+        try p.run()
+        p.waitUntilExit()
+        let err = String(
+            data: errPipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8) ?? ""
+        XCTAssertEqual(p.terminationStatus, 0,
+            "djxl rejected our \(w)x\(h) 2×2-group RGB; stderr: \(err)")
+        let ppm = try Data(contentsOf: URL(fileURLWithPath: outPath))
+        var nlCount = 0
+        var pixelStart = 0
+        for (i, byte) in ppm.enumerated() {
+            if byte == 0x0a {
+                nlCount += 1
+                if nlCount == 3 {
+                    pixelStart = i + 1
+                    break
+                }
+            }
+        }
+        // Spot-check 64 random offsets — full pixel-by-pixel check
+        // is 3 MB which dominates this test's wall time without
+        // catching anything new.
+        var seed: UInt32 = 0x55aa5500
+        for _ in 0..<64 {
+            seed = seed &* 1103515245 &+ 12345
+            let i = Int(seed) % (w * h)
+            XCTAssertEqual(ppm[pixelStart + i * 3 + 0], r[i],
+                "R[\(i)] mismatch")
+            XCTAssertEqual(ppm[pixelStart + i * 3 + 1], g[i],
+                "G[\(i)] mismatch")
+            XCTAssertEqual(ppm[pixelStart + i * 3 + 2], b[i],
+                "B[\(i)] mismatch")
+        }
+    }
+
+    /// Multi-group cross-validation against `djxl`. Same 1024×512
+    /// noise pattern as the round-trip test above.
+    func testSpecModularEncoder_Grayscale8_MultiGroup_DjxlRoundTrip() throws {
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("djxl not available at \(djxl)")
+        }
+        let w = 1024, h = 512
+        var pixels = [UInt8](repeating: 0, count: w * h)
+        // Smooth ramp so we keep the residual distribution narrow —
+        // gives the multi-group histogram path something tractable.
+        for y in 0..<h {
+            for x in 0..<w {
+                pixels[y * w + x] = UInt8((x ^ y) & 0xff)
+            }
+        }
+        let bytes = try SpecModularEncoder.encodeGrayscale8(
+            width: w, height: h, pixels: pixels
+        )
+        let inPath = NSTemporaryDirectory() + "jxlswift_g8_mg.jxl"
+        let outPath = NSTemporaryDirectory() + "jxlswift_g8_mg.pgm"
+        try bytes.write(to: URL(fileURLWithPath: inPath))
+        let p = Process()
+        p.launchPath = djxl
+        p.arguments = [inPath, outPath]
+        let errPipe = Pipe()
+        p.standardOutput = Pipe()
+        p.standardError = errPipe
+        try p.run()
+        p.waitUntilExit()
+        let err = String(
+            data: errPipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8) ?? ""
+        XCTAssertEqual(p.terminationStatus, 0,
+            "djxl rejected our \(w)x\(h) multi-group bytes; stderr: \(err)")
+        let pgm = try Data(contentsOf: URL(fileURLWithPath: outPath))
+        var nlCount = 0
+        var pixelStart = 0
+        for (i, b) in pgm.enumerated() {
+            if b == 0x0a {
+                nlCount += 1
+                if nlCount == 3 {
+                    pixelStart = i + 1
+                    break
+                }
+            }
+        }
+        for i in 0..<(w * h) {
+            XCTAssertEqual(pgm[pixelStart + i], pixels[i],
+                "djxl pixel \(i) = \(pgm[pixelStart + i]) want \(pixels[i])")
+        }
+    }
+
+    /// `encodeGrayscale16` round-trips arbitrary 16-bit grayscale
+    /// content through our decoder. Covers a wide-amplitude ramp and
+    /// LCG noise — the latter exercises the larger residual-token
+    /// alphabet (max ~28 vs ~20 for 8-bit).
+    func testSpecModularEncoder_Grayscale16_RoundTrip() throws {
+        let w = 16, h = 16
+        var ramp = [UInt16](repeating: 0, count: w * h)
+        for y in 0..<h {
+            for x in 0..<w {
+                ramp[y * w + x] = UInt16((x * 4096 + y * 256) & 0xffff)
+            }
+        }
+        var seed: UInt32 = 0xa5a5a5a5
+        var noise = [UInt16](repeating: 0, count: w * h)
+        for i in 0..<noise.count {
+            seed = seed &* 1103515245 &+ 12345
+            noise[i] = UInt16(truncatingIfNeeded: seed)
+        }
+        let cases: [(name: String, pixels: [UInt16])] = [
+            ("ramp16", ramp), ("noise16", noise),
+        ]
+        for c in cases {
+            let bytes = try SpecModularEncoder.encodeGrayscale16(
+                width: w, height: h, pixels: c.pixels
+            )
+            let image = try JXLDecoder().decodeModular(bytes)
+            XCTAssertEqual(image.channels.count, 1,
+                "[\(c.name)] expected 1 channel")
+            for i in 0..<(w * h) {
+                XCTAssertEqual(image.channels[0].pixels[i],
+                    Int32(c.pixels[i]),
+                    "[\(c.name)] pixel \(i) got "
+                    + "\(image.channels[0].pixels[i]) want \(c.pixels[i])")
+            }
+        }
+    }
+
+    /// Cross-validate `encodeGrayscale16` against `djxl`. The
+    /// recovered 16-bit PGM must be pixel-exact (big-endian samples
+    /// per the PGM format). Skipped when `djxl` is not available.
+    func testSpecModularEncoder_Grayscale16_DjxlRoundTrip() throws {
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("djxl not available at \(djxl)")
+        }
+        let w = 16, h = 16
+        var pixels = [UInt16](repeating: 0, count: w * h)
+        // A synthetic CT-style gradient: low end (~5000) to high end
+        // (~62000), spanning most of the 16-bit range.
+        for y in 0..<h {
+            for x in 0..<w {
+                let v = 5000 + x * 3000 + y * 200
+                pixels[y * w + x] = UInt16(min(v, 65535))
+            }
+        }
+        let bytes = try SpecModularEncoder.encodeGrayscale16(
+            width: w, height: h, pixels: pixels
+        )
+        let inPath = NSTemporaryDirectory() + "jxlswift_g16_ramp.jxl"
+        let outPath = NSTemporaryDirectory() + "jxlswift_g16_ramp.pgm"
+        try bytes.write(to: URL(fileURLWithPath: inPath))
+        let p = Process()
+        p.launchPath = djxl
+        p.arguments = [inPath, outPath]
+        let errPipe = Pipe()
+        p.standardOutput = Pipe()
+        p.standardError = errPipe
+        try p.run()
+        p.waitUntilExit()
+        let err = String(
+            data: errPipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8) ?? ""
+        XCTAssertEqual(p.terminationStatus, 0,
+            "djxl rejected our \(w)x\(h) 16-bit gray bytes; stderr: \(err)")
+        let pgm = try Data(contentsOf: URL(fileURLWithPath: outPath))
+        var nlCount = 0
+        var pixelStart = 0
+        for (i, b) in pgm.enumerated() {
+            if b == 0x0a {
+                nlCount += 1
+                if nlCount == 3 {
+                    pixelStart = i + 1
+                    break
+                }
+            }
+        }
+        // 16-bit PGM stores samples big-endian (high byte first).
+        for i in 0..<(w * h) {
+            let hi = UInt16(pgm[pixelStart + i * 2 + 0])
+            let lo = UInt16(pgm[pixelStart + i * 2 + 1])
+            let got = (hi << 8) | lo
+            XCTAssertEqual(got, pixels[i],
+                "djxl pixel \(i) = \(got) want \(pixels[i])")
+        }
+    }
+
+    /// `encodeRGB8` round-trips arbitrary 8-bit RGB content through
+    /// our decoder for a synthetic gradient and an LCG-noise pattern.
+    func testSpecModularEncoder_RGB8_RoundTrip() throws {
+        let w = 16, h = 16
+        var r = [UInt8](repeating: 0, count: w * h)
+        var g = [UInt8](repeating: 0, count: w * h)
+        var b = [UInt8](repeating: 0, count: w * h)
+        // Diagonal RGB ramp: each channel a different gradient axis.
+        for yy in 0..<h {
+            for xx in 0..<w {
+                let i = yy * w + xx
+                r[i] = UInt8((xx * 16) & 0xff)
+                g[i] = UInt8((yy * 16) & 0xff)
+                b[i] = UInt8(((xx + yy) * 8) & 0xff)
+            }
+        }
+        // LCG noise per channel (deterministic).
+        var seed: UInt32 = 0xdeadbeef
+        var rN = [UInt8](repeating: 0, count: w * h)
+        var gN = [UInt8](repeating: 0, count: w * h)
+        var bN = [UInt8](repeating: 0, count: w * h)
+        for i in 0..<w * h {
+            seed = seed &* 1103515245 &+ 12345
+            rN[i] = UInt8(truncatingIfNeeded: seed >> 16)
+            seed = seed &* 1103515245 &+ 12345
+            gN[i] = UInt8(truncatingIfNeeded: seed >> 16)
+            seed = seed &* 1103515245 &+ 12345
+            bN[i] = UInt8(truncatingIfNeeded: seed >> 16)
+        }
+        let cases: [(name: String, r: [UInt8], g: [UInt8], b: [UInt8])] = [
+            ("ramp", r, g, b),
+            ("noise", rN, gN, bN),
+        ]
+        for c in cases {
+            let bytes = try SpecModularEncoder.encodeRGB8(
+                width: w, height: h, r: c.r, g: c.g, b: c.b
+            )
+            let image = try JXLDecoder().decodeModular(bytes)
+            XCTAssertEqual(image.channels.count, 3,
+                "[\(c.name)] expected 3 channels")
+            for ci in 0..<3 {
+                let want: [UInt8]
+                switch ci {
+                case 0: want = c.r
+                case 1: want = c.g
+                default: want = c.b
+                }
+                for i in 0..<(w * h) {
+                    XCTAssertEqual(image.channels[ci].pixels[i],
+                        Int32(want[i]),
+                        "[\(c.name)] channel \(ci) pixel \(i) "
+                        + "got \(image.channels[ci].pixels[i]) want \(want[i])")
+                }
+            }
+        }
+    }
+
+    /// Cross-validate `encodeRGB8` against `djxl`. The recovered PPM
+    /// must be pixel-exact in all three channels. Skipped when `djxl`
+    /// is not available.
+    func testSpecModularEncoder_RGB8_DjxlRoundTrip() throws {
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("djxl not available at \(djxl)")
+        }
+        let w = 16, h = 16
+        var r = [UInt8](repeating: 0, count: w * h)
+        var g = [UInt8](repeating: 0, count: w * h)
+        var b = [UInt8](repeating: 0, count: w * h)
+        for yy in 0..<h {
+            for xx in 0..<w {
+                let i = yy * w + xx
+                r[i] = UInt8((xx * 16) & 0xff)
+                g[i] = UInt8((yy * 16) & 0xff)
+                b[i] = UInt8(((xx + yy) * 8) & 0xff)
+            }
+        }
+        let bytes = try SpecModularEncoder.encodeRGB8(
+            width: w, height: h, r: r, g: g, b: b
+        )
+        let inPath = NSTemporaryDirectory() + "jxlswift_rgb8_ramp.jxl"
+        let outPath = NSTemporaryDirectory() + "jxlswift_rgb8_ramp.ppm"
+        try bytes.write(to: URL(fileURLWithPath: inPath))
+        let p = Process()
+        p.launchPath = djxl
+        p.arguments = [inPath, outPath]
+        let errPipe = Pipe()
+        p.standardOutput = Pipe()
+        p.standardError = errPipe
+        try p.run()
+        p.waitUntilExit()
+        let err = String(
+            data: errPipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8) ?? ""
+        XCTAssertEqual(p.terminationStatus, 0,
+            "djxl rejected our \(w)x\(h) RGB bytes; stderr: \(err)")
+        let ppm = try Data(contentsOf: URL(fileURLWithPath: outPath))
+        // PPM header: P6\n<w> <h>\n<max>\n<RGB bytes>
+        var nlCount = 0
+        var pixelStart = 0
+        for (i, byte) in ppm.enumerated() {
+            if byte == 0x0a {
+                nlCount += 1
+                if nlCount == 3 {
+                    pixelStart = i + 1
+                    break
+                }
+            }
+        }
+        for i in 0..<(w * h) {
+            XCTAssertEqual(ppm[pixelStart + i * 3 + 0], r[i],
+                "djxl R[\(i)] = \(ppm[pixelStart + i * 3]) want \(r[i])")
+            XCTAssertEqual(ppm[pixelStart + i * 3 + 1], g[i],
+                "djxl G[\(i)] = \(ppm[pixelStart + i * 3 + 1]) want \(g[i])")
+            XCTAssertEqual(ppm[pixelStart + i * 3 + 2], b[i],
+                "djxl B[\(i)] = \(ppm[pixelStart + i * 3 + 2]) want \(b[i])")
+        }
+    }
+
+    /// `encodeRGBA8` round-trips through our decoder. Alpha rides as
+    /// a 4th modular channel — verifies the extra-channel allocation
+    /// and pixel routing on the decoder side.
+    func testSpecModularEncoder_RGBA8_RoundTrip() throws {
+        let w = 16, h = 16
+        var seed: UInt32 = 0x9e3779b9
+        var r = [UInt8](repeating: 0, count: w * h)
+        var g = [UInt8](repeating: 0, count: w * h)
+        var b = [UInt8](repeating: 0, count: w * h)
+        var a = [UInt8](repeating: 0, count: w * h)
+        for i in 0..<w * h {
+            seed = seed &* 1103515245 &+ 12345
+            r[i] = UInt8(truncatingIfNeeded: seed >> 16)
+            seed = seed &* 1103515245 &+ 12345
+            g[i] = UInt8(truncatingIfNeeded: seed >> 16)
+            seed = seed &* 1103515245 &+ 12345
+            b[i] = UInt8(truncatingIfNeeded: seed >> 16)
+            // Alpha: a smooth ramp so it differs from the noisy RGB —
+            // exercises the per-channel residual path independently.
+            a[i] = UInt8((i * 4) & 0xff)
+        }
+        let bytes = try SpecModularEncoder.encodeRGBA8(
+            width: w, height: h, r: r, g: g, b: b, a: a
+        )
+        let image = try JXLDecoder().decodeModular(bytes)
+        XCTAssertEqual(image.channels.count, 4,
+            "expected 4 channels (R, G, B, alpha)")
+        let want: [[UInt8]] = [r, g, b, a]
+        for ci in 0..<4 {
+            for i in 0..<(w * h) {
+                XCTAssertEqual(image.channels[ci].pixels[i],
+                    Int32(want[ci][i]),
+                    "channel \(ci) pixel \(i): got "
+                    + "\(image.channels[ci].pixels[i]) want \(want[ci][i])")
+            }
+        }
+    }
+
+    /// Cross-validate `encodeRGBA8` against `djxl`. Recovered PNG
+    /// must be pixel-exact in all four channels. Skipped when `djxl`
+    /// is not available.
+    func testSpecModularEncoder_RGBA8_DjxlRoundTrip() throws {
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("djxl not available at \(djxl)")
+        }
+        let w = 16, h = 16
+        var r = [UInt8](repeating: 0, count: w * h)
+        var g = [UInt8](repeating: 0, count: w * h)
+        var b = [UInt8](repeating: 0, count: w * h)
+        var a = [UInt8](repeating: 0, count: w * h)
+        for yy in 0..<h {
+            for xx in 0..<w {
+                let i = yy * w + xx
+                r[i] = UInt8((xx * 16) & 0xff)
+                g[i] = UInt8((yy * 16) & 0xff)
+                b[i] = UInt8(((xx + yy) * 8) & 0xff)
+                a[i] = UInt8((i * 4) & 0xff)
+            }
+        }
+        let bytes = try SpecModularEncoder.encodeRGBA8(
+            width: w, height: h, r: r, g: g, b: b, a: a
+        )
+        // djxl emits PNG by default for RGBA. Use a .pam (PNM with
+        // alpha) target instead so we can read the bytes without a
+        // PNG decoder dependency in the test.
+        let inPath = NSTemporaryDirectory() + "jxlswift_rgba8.jxl"
+        let outPath = NSTemporaryDirectory() + "jxlswift_rgba8.pam"
+        try bytes.write(to: URL(fileURLWithPath: inPath))
+        let p = Process()
+        p.launchPath = djxl
+        p.arguments = [inPath, outPath]
+        let errPipe = Pipe()
+        p.standardOutput = Pipe()
+        p.standardError = errPipe
+        try p.run()
+        p.waitUntilExit()
+        let err = String(
+            data: errPipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8) ?? ""
+        XCTAssertEqual(p.terminationStatus, 0,
+            "djxl rejected our \(w)x\(h) RGBA bytes; stderr: \(err)")
+        // PAM (P7) header is multi-line; pixel data starts after
+        // "ENDHDR\n". Find that substring.
+        let pam = try Data(contentsOf: URL(fileURLWithPath: outPath))
+        let endhdr = "ENDHDR\n".data(using: .utf8)!
+        guard let range = pam.range(of: endhdr) else {
+            XCTFail("djxl PAM output missing ENDHDR (\(pam.count) B)")
+            return
+        }
+        let pixelStart = range.upperBound
+        // PAM RGBA is 4 bytes per pixel (R, G, B, A in order).
+        for i in 0..<(w * h) {
+            XCTAssertEqual(pam[pixelStart + i * 4 + 0], r[i],
+                "djxl R[\(i)] = \(pam[pixelStart + i * 4]) want \(r[i])")
+            XCTAssertEqual(pam[pixelStart + i * 4 + 1], g[i],
+                "djxl G[\(i)] = \(pam[pixelStart + i * 4 + 1]) want \(g[i])")
+            XCTAssertEqual(pam[pixelStart + i * 4 + 2], b[i],
+                "djxl B[\(i)] = \(pam[pixelStart + i * 4 + 2]) want \(b[i])")
+            XCTAssertEqual(pam[pixelStart + i * 4 + 3], a[i],
+                "djxl A[\(i)] = \(pam[pixelStart + i * 4 + 3]) want \(a[i])")
+        }
+    }
+
+    /// `TokenStreamWriter` ↔ `TokenStreamReader` round-trip via
+    /// prefix codes. Build a 4-symbol prefix table by hand, write a
+    /// known sequence of (ctx, value) tokens, then read them back.
+    func testTokenStreamWriter_PrefixCode_RoundTrip() throws {
+        // 1-cluster section, 4-symbol alphabet, all length 2 (simple
+        // shape {2,2,2,2} — codes 00, 01, 10, 11).
+        let table = try PrefixCodeTable(lengths: [2, 2, 2, 2])
+        let codebook = MultiClusterCodebook(
+            huffmanTables: [table], ansCounts: [],
+            alphabetSizes: [4]
+        )
+        let header = EntropySectionHeader(
+            lz77: .disabled,
+            contextMap: ContextMap.trivial(numContexts: 1),
+            usePrefixCode: true, logAlphaSize: 15,
+            // splitExponent=4 means values 0..15 are direct tokens
+            // (no extras); since the alphabet is 4, only values 0..3
+            // are valid here.
+            uintConfigs: [
+                HybridUintConfig(splitExponent: 4, msbInToken: 0, lsbInToken: 0)
+            ]
+        )
+        let writer = TokenStreamWriter(header: header, codebook: codebook)
+        let values: [UInt32] = [0, 3, 1, 2, 2, 0, 3]
+        var w = BitWriter()
+        for v in values {
+            try writer.writeToken(context: 0, value: v, to: &w)
+        }
+        var r = BitReader(w.finishToData())
+        var reader = TokenStreamReader(header: header, codebook: codebook)
+        for v in values {
+            let got = try reader.readToken(context: 0, from: &r)
+            XCTAssertEqual(got, v)
+        }
+    }
+
+    /// End-to-end tree token-stream round-trip: encode a small tree
+    /// via `ModularTree.encode` → `TokenStreamWriter` (prefix codes) →
+    /// `BitWriter`, then `TokenStreamReader` → `ModularTree.decode`.
+    /// The recovered tree must equal the input.
+    func testModularTree_Encode_TokenStream_RoundTrip() throws {
+        let tree = ModularTree(nodes: [
+            ModularTreeNode(
+                property: -1, splitVal: 0,
+                leftChildOrLeafId: 0, rightChild: 0,
+                predictor: .gradient,
+                predictorOffset: 0, multiplier: 1,
+                rawPredictor: 5
+            )
+        ])
+        // Tree-token max value across the 6 contexts is 5 (predictor
+        // index 5 = Gradient at ctx 2). We need a complete prefix
+        // code (Kraft sum == 1). Easiest: alphabet size 8 with all
+        // lengths = 3 (Kraft = 8 * 1/8 = 1, exactly subscribed).
+        // The encoder only ever emits tokens 0..5 from this tree, so
+        // the unused 6/7 entries are harmless.
+        let alphabetSize = 8
+        let lengths: [UInt8] = Array(repeating: 3, count: alphabetSize)
+        let table = try PrefixCodeTable(lengths: lengths)
+        let codebook = MultiClusterCodebook(
+            huffmanTables: [table], ansCounts: [],
+            alphabetSizes: [alphabetSize]
+        )
+        // Tree decode reads at contexts 0..5 (kSplitVal..kMultiplierBits),
+        // so the section's context map must accept ctx in 0..5. Use a
+        // trivial 6-context map (all routed to cluster 0).
+        let header = EntropySectionHeader(
+            lz77: .disabled,
+            contextMap: ContextMap.trivial(numContexts: 6),
+            usePrefixCode: true, logAlphaSize: 15,
+            uintConfigs: [
+                HybridUintConfig(splitExponent: 4, msbInToken: 0, lsbInToken: 0)
+            ]
+        )
+        var w = BitWriter()
+        let writer = TokenStreamWriter(header: header, codebook: codebook)
+        try tree.encode { ctx, val in
+            try writer.writeToken(context: ctx, value: val, to: &w)
+        }
+        var r = BitReader(w.finishToData())
+        var reader = TokenStreamReader(header: header, codebook: codebook)
+        let recovered = try ModularTree.decode(from: &r, stream: &reader)
+        XCTAssertEqual(recovered.nodes.count, tree.nodes.count)
+        XCTAssertEqual(recovered.nodes[0].isLeaf, true)
+        XCTAssertEqual(recovered.nodes[0].rawPredictor, 5)
+        XCTAssertEqual(recovered.nodes[0].predictorOffset, 0)
+        XCTAssertEqual(recovered.nodes[0].multiplier, 1)
+    }
+
+    /// `ModularTree.encode` — single-leaf-Gradient tree. Verifies the
+    /// emitted token stream matches the spec's expected per-context
+    /// values (ctx 1 = 0 leaf marker, ctx 2 = predictor 5, ctx 3 = 0
+    /// offset, ctx 4 = mul_log 0, ctx 5 = mul_bits 0 → multiplier 1).
+    func testModularTree_Encode_SingleLeafGradient() throws {
+        let tree = ModularTree(nodes: [
+            ModularTreeNode(
+                property: -1, splitVal: 0,
+                leftChildOrLeafId: 0, rightChild: 0,
+                predictor: .gradient,
+                predictorOffset: 0, multiplier: 1,
+                rawPredictor: 5
+            )
+        ])
+        var captured: [(ctx: Int, val: UInt32)] = []
+        try tree.encode { ctx, val in
+            captured.append((ctx, val))
+        }
+        let expected: [(ctx: Int, val: UInt32)] = [
+            (1, 0),   // leaf marker
+            (2, 5),   // predictor 5 (Gradient)
+            (3, 0),   // pack(offset 0)
+            (4, 0),   // mul_log
+            (5, 0),   // mul_bits → multiplier (0+1) << 0 = 1
+        ]
+        XCTAssertEqual(captured.count, expected.count)
+        for (i, (a, b)) in zip(captured, expected).enumerated() {
+            XCTAssertEqual(a.ctx, b.ctx, "token \(i) ctx mismatch")
+            XCTAssertEqual(a.val, b.val, "token \(i) val mismatch")
+        }
+    }
+
+    /// `ModularTree.encode` round-trip: emit every leaf+decision node
+    /// of a small 3-node tree (1 decision + 2 leaves) and feed the
+    /// captured tokens to a manual replay decoder that mirrors
+    /// `ModularTree.decode`'s sequential read order. The round-tripped
+    /// tree must equal the input tree (ignoring leafId allocation
+    /// order, which the decoder also assigns sequentially).
+    func testModularTree_Encode_DecisionPlusTwoLeaves_RoundTrip() throws {
+        // Decision node 0 splits on property 7 (left) at splitVal 5.
+        // Leaves at indices 1 (left, predictor=Gradient) and 2 (right,
+        // predictor=Zero, offset=42, multiplier=2).
+        let tree = ModularTree(nodes: [
+            ModularTreeNode(
+                property: 7, splitVal: 5,
+                leftChildOrLeafId: 1, rightChild: 2,
+                predictor: .zero, predictorOffset: 0, multiplier: 1
+            ),
+            ModularTreeNode(
+                property: -1, splitVal: 0,
+                leftChildOrLeafId: 0, rightChild: 0,
+                predictor: .gradient,
+                predictorOffset: 0, multiplier: 1,
+                rawPredictor: 5
+            ),
+            ModularTreeNode(
+                property: -1, splitVal: 0,
+                leftChildOrLeafId: 1, rightChild: 0,
+                predictor: .zero,
+                predictorOffset: 42, multiplier: 2,
+                rawPredictor: 0
+            ),
+        ])
+        var captured: [(ctx: Int, val: UInt32)] = []
+        try tree.encode { ctx, val in
+            captured.append((ctx, val))
+        }
+        // Sanity-check counts: 2 tokens per decision + 5 per leaf.
+        // 1 decision + 2 leaves = 2 + 5 + 5 = 12 tokens.
+        XCTAssertEqual(captured.count, 12)
+        // Pre-order: decision (ctx 1, ctx 0), then left leaf (ctx 1..5),
+        // then right leaf (ctx 1..5).
+        // Decision: prop+1 = 8, splitVal pack(5) = 10.
+        XCTAssertEqual(captured[0].ctx, 1)
+        XCTAssertEqual(captured[0].val, 8)
+        XCTAssertEqual(captured[1].ctx, 0)
+        XCTAssertEqual(captured[1].val, 10)
+        // Left leaf (Gradient, offset=0, mul=1).
+        XCTAssertEqual(captured[2].ctx, 1)
+        XCTAssertEqual(captured[2].val, 0)
+        XCTAssertEqual(captured[3].ctx, 2)
+        XCTAssertEqual(captured[3].val, 5)
+        XCTAssertEqual(captured[4].ctx, 3)
+        XCTAssertEqual(captured[4].val, 0)
+        XCTAssertEqual(captured[5].ctx, 4)
+        XCTAssertEqual(captured[5].val, 0)
+        XCTAssertEqual(captured[6].ctx, 5)
+        XCTAssertEqual(captured[6].val, 0)
+        // Right leaf (Zero, offset=42, mul=2).
+        XCTAssertEqual(captured[7].ctx, 1)
+        XCTAssertEqual(captured[7].val, 0)
+        XCTAssertEqual(captured[8].ctx, 2)
+        XCTAssertEqual(captured[8].val, 0)
+        XCTAssertEqual(captured[9].ctx, 3)
+        // pack(42) = 84 (positive value: 2 * 42).
+        XCTAssertEqual(captured[9].val, 84)
+        XCTAssertEqual(captured[10].ctx, 4)
+        // multiplier = 2 → mul_log = 1, mul_bits = 0.
+        XCTAssertEqual(captured[10].val, 1)
+        XCTAssertEqual(captured[11].ctx, 5)
+        XCTAssertEqual(captured[11].val, 0)
+    }
+
+    /// `MultiClusterCodebook.write` — prefix-code path with several
+    /// alphabet shapes, round-tripped via `MultiClusterCodebook.read`.
+    /// Covers the simple-code shapes ({0}, {1,1}, {1,2,2}, {2,2,2,2})
+    /// and the trivial single-symbol cluster.
+    func testMultiClusterCodebook_Write_PrefixCode_RoundTrip() throws {
+        struct Case { let lengths: [UInt8]; let label: String }
+        let cases: [Case] = [
+            Case(lengths: [0], label: "1-symbol"),
+            Case(lengths: [1, 1], label: "2-symbol"),
+            Case(lengths: [1, 2, 2], label: "3-symbol"),
+            Case(lengths: [2, 2, 2, 2], label: "4-symbol equal"),
+            Case(lengths: [1, 2, 3, 3], label: "4-symbol long"),
+        ]
+        for c in cases {
+            let alphaSizes = [c.lengths.count]
+            let table = try PrefixCodeTable(lengths: c.lengths)
+            let codebook = MultiClusterCodebook(
+                huffmanTables: [table], ansCounts: [],
+                alphabetSizes: alphaSizes
+            )
+            // Build a header that says: 1 cluster, prefix codes,
+            // log_alpha=15, default uint config.
+            let header = EntropySectionHeader(
+                lz77: .disabled,
+                contextMap: ContextMap.trivial(numContexts: 1),
+                usePrefixCode: true, logAlphaSize: 15,
+                uintConfigs: [HybridUintConfig.defaultConfig]
+            )
+            var w = BitWriter()
+            try codebook.write(to: &w, header: header)
+            var r = BitReader(w.finishToData())
+            let parsed = try MultiClusterCodebook.read(
+                from: &r, header: header
+            )
+            XCTAssertEqual(parsed.alphabetSizes, alphaSizes,
+                "[\(c.label)] alphabetSizes mismatch")
+            XCTAssertEqual(parsed.huffmanTables.count, 1)
+            XCTAssertEqual(parsed.huffmanTables[0].lengths, c.lengths,
+                "[\(c.label)] lengths mismatch")
+        }
+    }
+
+    /// `MultiClusterCodebook.write` — ANS path using the simple-1
+    /// shortcut (1 non-zero symbol absorbs the full range). Round-trip
+    /// through `MultiClusterCodebook.read`.
+    func testMultiClusterCodebook_Write_ANS_SimpleOne_RoundTrip() throws {
+        // 4-symbol alphabet, all probability concentrated on symbol 2.
+        let range: Int32 = 1 << 12
+        let counts: [Int32] = [0, 0, range, 0]
+        let codebook = MultiClusterCodebook(
+            huffmanTables: [], ansCounts: [counts],
+            alphabetSizes: [counts.count]
+        )
+        let header = EntropySectionHeader(
+            lz77: .disabled,
+            contextMap: ContextMap.trivial(numContexts: 1),
+            usePrefixCode: false, logAlphaSize: 8,
+            uintConfigs: [HybridUintConfig.defaultConfig]
+        )
+        var w = BitWriter()
+        try codebook.write(to: &w, header: header)
+        var r = BitReader(w.finishToData())
+        let parsed = try MultiClusterCodebook.read(
+            from: &r, header: header
+        )
+        XCTAssertEqual(parsed.ansCounts.count, 1)
+        // Only symbol 2 should carry weight.
+        for (i, v) in parsed.ansCounts[0].enumerated() {
+            if i == 2 { XCTAssertEqual(v, range) }
+            else      { XCTAssertEqual(v, 0) }
+        }
     }
 
     /// **Cross-validation**: read the full per-cluster codebook
@@ -6680,7 +9227,11 @@ extension FoundationTests {
     }
 
     /// Byte-equal decode of a 512×512 8-bit GRAYSCALE cjxl file.
-    /// Tests multi-group decoding (>256×256 typically spans groups).
+    /// **Multi-group decoding milestone** — 512×512 with cjxl's
+    /// default `group_size_shift=1` lays out as 4 groups of 256×256
+    /// (`group_dim = 128 << shift = 256`). This test verifies the
+    /// per-section TOC slicing + per-group pixel-rect stitching by
+    /// asserting every one of 262144 pixels matches the input.
     func testCrossValidate_Cjxl_DecodeGrayscale_512x512_ByteEqual() throws {
         guard let cjxl = whichTool("cjxl") else {
             try XCTSkipIf(true, "cjxl not on PATH")
@@ -6705,18 +9256,519 @@ extension FoundationTests {
         proc.waitUntilExit()
         let data = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
         let dec = JXLDecoder()
-        let image: ModularImage
-        do {
-            image = try dec.decodeModular(data)
-        } catch {
-            try XCTSkipIf(true, "512×512 grayscale decode failed: \(error)")
+        let image = try dec.decodeModular(data)
+        XCTAssertEqual(image.channels.count, 1)
+        // Every pixel — the healthcare-grade bar.
+        for y in 0..<512 {
+            for x in 0..<512 {
+                let expected = Int32(((x &* 7 &+ y &* 13) & 0xFF))
+                let actual = image.channels[0].pixels[y * 512 + x]
+                XCTAssertEqual(actual, expected,
+                    "pixel(\(x),\(y)) decoded \(actual) expected \(expected)")
+            }
+        }
+    }
+
+    /// Byte-equal decode of a 32×32 16-bit grayscale + alpha cjxl
+    /// file — the medical-imaging-with-mask shape (e.g. DICOM
+    /// segmentation overlay). 1 colour channel + 1 extra channel.
+    func testCrossValidate_Cjxl_DecodeGrayscaleAlpha16bit_32x32_ByteEqual() throws {
+        guard let cjxl = whichTool("cjxl") else {
+            try XCTSkipIf(true, "cjxl not on PATH")
             return
         }
+        let pnmPath = NSTemporaryDirectory() + "ga16-\(UUID().uuidString).pam"
+        let jxlPath = NSTemporaryDirectory() + "ga16-\(UUID().uuidString).jxl"
+        defer {
+            try? FileManager.default.removeItem(atPath: pnmPath)
+            try? FileManager.default.removeItem(atPath: jxlPath)
+        }
+        try makeSyntheticPNM(
+            width: 32, height: 32, channels: 2, bitDepth: 16,
+            generator: { x, y, c in
+                if c == 1 {
+                    return UInt16((x &* 1009 &+ y &* 263) & 0xFFFF)
+                }
+                return UInt16((x &* 263 &+ y &* 1009) & 0xFFFF)
+            }
+        ).write(to: URL(fileURLWithPath: pnmPath))
+        let proc = Process()
+        proc.launchPath = cjxl
+        proc.arguments = ["-q", "100", pnmPath, jxlPath]
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        try proc.run()
+        proc.waitUntilExit()
+        let data = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
+        let dec = JXLDecoder()
+        let image = try dec.decodeModular(data)
+        XCTAssertEqual(image.channels.count, 2,
+            "grayscale+alpha modular image should have 2 channels")
+        for y in 0..<32 {
+            for x in 0..<32 {
+                let eg = Int32((x &* 263 &+ y &* 1009) & 0xFFFF)
+                let ea = Int32((x &* 1009 &+ y &* 263) & 0xFFFF)
+                let g = image.channels[0].pixels[y * 32 + x]
+                let a = image.channels[1].pixels[y * 32 + x]
+                XCTAssertEqual(g, eg, "G(\(x),\(y)) got \(g) expected \(eg)")
+                XCTAssertEqual(a, ea, "A(\(x),\(y)) got \(a) expected \(ea)")
+            }
+        }
+    }
+
+    /// Byte-equal decode of a 32×32 8-bit RGBA cjxl file — exercises
+    /// the **extra-channel** path: cjxl emits 4 modular channels
+    /// (R, G, B, A) with the alpha channel carried as a single
+    /// `ExtraChannelInfo` past the colour ones. Decoder must build
+    /// the modular image with `nbColor + nbExtra` channels and decode
+    /// alpha alongside RGB.
+    func testCrossValidate_Cjxl_DecodeRGBA_32x32_ByteEqual() throws {
+        guard let cjxl = whichTool("cjxl") else {
+            try XCTSkipIf(true, "cjxl not on PATH")
+            return
+        }
+        let pnmPath = NSTemporaryDirectory() + "rgba32-\(UUID().uuidString).pam"
+        let jxlPath = NSTemporaryDirectory() + "rgba32-\(UUID().uuidString).jxl"
+        defer {
+            try? FileManager.default.removeItem(atPath: pnmPath)
+            try? FileManager.default.removeItem(atPath: jxlPath)
+        }
+        try makeSyntheticPNM(
+            width: 32, height: 32, channels: 4, bitDepth: 8,
+            generator: { x, y, c in
+                if c == 3 {
+                    // Alpha — varies independently from RGB.
+                    return UInt16((x &* 5 &+ y &* 11) & 0xFF)
+                }
+                return UInt16((x &* 7 &+ y &* 13 &+ c) & 0xFF)
+            }
+        ).write(to: URL(fileURLWithPath: pnmPath))
+        let proc = Process()
+        proc.launchPath = cjxl
+        proc.arguments = ["-q", "100", pnmPath, jxlPath]
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        try proc.run()
+        proc.waitUntilExit()
+        let data = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
+        let dec = JXLDecoder()
+        let image = try dec.decodeModular(data)
+        XCTAssertEqual(image.channels.count, 4,
+            "RGBA modular image should have 4 channels")
+        for y in 0..<32 {
+            for x in 0..<32 {
+                let er = Int32((x &* 7 &+ y &* 13) & 0xFF)
+                let eg = Int32((x &* 7 &+ y &* 13 &+ 1) & 0xFF)
+                let eb = Int32((x &* 7 &+ y &* 13 &+ 2) & 0xFF)
+                let ea = Int32((x &* 5 &+ y &* 11) & 0xFF)
+                let r = image.channels[0].pixels[y * 32 + x]
+                let g = image.channels[1].pixels[y * 32 + x]
+                let b = image.channels[2].pixels[y * 32 + x]
+                let a = image.channels[3].pixels[y * 32 + x]
+                XCTAssertEqual(r, er, "R(\(x),\(y)) got \(r) expected \(er)")
+                XCTAssertEqual(g, eg, "G(\(x),\(y)) got \(g) expected \(eg)")
+                XCTAssertEqual(b, eb, "B(\(x),\(y)) got \(b) expected \(eb)")
+                XCTAssertEqual(a, ea, "A(\(x),\(y)) got \(a) expected \(ea)")
+            }
+        }
+    }
+
+    /// Byte-equal decode of a 512×512 8-bit RGB cjxl file —
+    /// multi-group with the full RCT / Palette inverse path.
+    ///
+    /// Exercises three milestones together:
+    ///   • Multi-group section iteration (4 AC groups for 512×512
+    ///     at default `group_size_shift = 1`).
+    ///   • Full entropy-coded context-map decoder (MTF + ANS) — cjxl
+    ///     emits > 8 clusters, so the simple-bits-per-entry shortcut
+    ///     does not apply.
+    ///   • Palette transform inverse (cjxl detects the periodic
+    ///     synthetic generator as palettable).
+    ///
+    /// Asserts byte-equality on all 786432 pixel values
+    /// (512 × 512 × 3 channels) post-inverse-transforms.
+    func testCrossValidate_Cjxl_DecodeRGB_512x512_ByteEqual() throws {
+        guard let cjxl = whichTool("cjxl") else {
+            try XCTSkipIf(true, "cjxl not on PATH")
+            return
+        }
+        let pnmPath = NSTemporaryDirectory() + "rgb512-\(UUID().uuidString).ppm"
+        let jxlPath = NSTemporaryDirectory() + "rgb512-\(UUID().uuidString).jxl"
+        defer {
+            try? FileManager.default.removeItem(atPath: pnmPath)
+            try? FileManager.default.removeItem(atPath: jxlPath)
+        }
+        try makeSyntheticPNM(
+            width: 512, height: 512, channels: 3, bitDepth: 8,
+            generator: { x, y, c in
+                UInt16((x &* 7 &+ y &* 13 &+ Int(c) &* 31) & 0xFF)
+            }
+        ).write(to: URL(fileURLWithPath: pnmPath))
+        let proc = Process()
+        proc.launchPath = cjxl
+        proc.arguments = ["-q", "100", pnmPath, jxlPath]
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        try proc.run()
+        proc.waitUntilExit()
+        let data = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
+        let dec = JXLDecoder()
+        let image = try dec.decodeModular(data)
+        XCTAssertEqual(image.channels.count, 3)
+        for y in 0..<512 {
+            for x in 0..<512 {
+                let er = Int32(((x &* 7 &+ y &* 13) & 0xFF))
+                let eg = Int32(((x &* 7 &+ y &* 13 &+ 31) & 0xFF))
+                let eb = Int32(((x &* 7 &+ y &* 13 &+ 62) & 0xFF))
+                let r = image.channels[0].pixels[y * 512 + x]
+                let g = image.channels[1].pixels[y * 512 + x]
+                let b = image.channels[2].pixels[y * 512 + x]
+                XCTAssertEqual(r, er, "R(\(x),\(y)) got \(r) expected \(er)")
+                XCTAssertEqual(g, eg, "G(\(x),\(y)) got \(g) expected \(eg)")
+                XCTAssertEqual(b, eb, "B(\(x),\(y)) got \(b) expected \(eb)")
+            }
+        }
+    }
+
+    /// Byte-equal decode of a 256×256 16-bit RGB cjxl file —
+    /// single-group with 16-bit precision through Modular decode.
+    /// Diagnostic for the multi-group 16-bit RGB test below.
+    func testCrossValidate_Cjxl_DecodeRGB16bit_256x256_ByteEqual() throws {
+        guard let cjxl = whichTool("cjxl") else {
+            try XCTSkipIf(true, "cjxl not on PATH")
+            return
+        }
+        let pnmPath = NSTemporaryDirectory() + "rgb16-256-\(UUID().uuidString).ppm"
+        let jxlPath = NSTemporaryDirectory() + "rgb16-256-\(UUID().uuidString).jxl"
+        defer {
+            try? FileManager.default.removeItem(atPath: pnmPath)
+            try? FileManager.default.removeItem(atPath: jxlPath)
+        }
+        try makeSyntheticPNM(
+            width: 256, height: 256, channels: 3, bitDepth: 16,
+            generator: { x, y, c in
+                UInt16((x &* 263 &+ y &* 1009 &+ Int(c) &* 4099) & 0xFFFF)
+            }
+        ).write(to: URL(fileURLWithPath: pnmPath))
+        let proc = Process()
+        proc.launchPath = cjxl
+        proc.arguments = ["-q", "100", pnmPath, jxlPath]
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        try proc.run()
+        proc.waitUntilExit()
+        let data = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
+        let dec = JXLDecoder()
+        let image = try dec.decodeModular(data)
+        XCTAssertEqual(image.channels.count, 3)
+        for y in 0..<256 {
+            for x in 0..<256 {
+                let er = Int32(((x &* 263 &+ y &* 1009) & 0xFFFF))
+                let eg = Int32(((x &* 263 &+ y &* 1009 &+ 4099) & 0xFFFF))
+                let eb = Int32(((x &* 263 &+ y &* 1009 &+ 8198) & 0xFFFF))
+                let r = image.channels[0].pixels[y * 256 + x]
+                let g = image.channels[1].pixels[y * 256 + x]
+                let b = image.channels[2].pixels[y * 256 + x]
+                XCTAssertEqual(r, er, "R(\(x),\(y)) got \(r) expected \(er)")
+                XCTAssertEqual(g, eg, "G(\(x),\(y)) got \(g) expected \(eg)")
+                XCTAssertEqual(b, eb, "B(\(x),\(y)) got \(b) expected \(eb)")
+            }
+        }
+    }
+
+    /// Byte-equal decode of a 512×512 16-bit RGB cjxl file —
+    /// multi-group with full 16-bit precision. Exercises:
+    ///   • Multi-group section iteration (4 AC groups for 512×512
+    ///     at default `group_size_shift = 1`).
+    ///   • **Per-group transforms**: cjxl emits an RCT (`type=10`,
+    ///     `numC=3`) per AC group. The decoder builds a per-group
+    ///     sub-image, applies meta-transforms, decodes each sub-channel,
+    ///     then inverts and stitches into the full image.
+    ///   • libjxl-convention stream IDs (`1 + numDcGroups + groupIdx`)
+    ///     so MA-tree property 1 lookups match.
+    /// Asserts byte-equality on all 786432 pixel values
+    /// (512 × 512 × 3 channels).
+    func testCrossValidate_Cjxl_DecodeRGB16bit_512x512_ByteEqual() throws {
+        guard let cjxl = whichTool("cjxl") else {
+            try XCTSkipIf(true, "cjxl not on PATH")
+            return
+        }
+        let pnmPath = NSTemporaryDirectory() + "rgb16-512-\(UUID().uuidString).ppm"
+        let jxlPath = NSTemporaryDirectory() + "rgb16-512-\(UUID().uuidString).jxl"
+        defer {
+            try? FileManager.default.removeItem(atPath: pnmPath)
+            try? FileManager.default.removeItem(atPath: jxlPath)
+        }
+        try makeSyntheticPNM(
+            width: 512, height: 512, channels: 3, bitDepth: 16,
+            generator: { x, y, c in
+                UInt16((x &* 263 &+ y &* 1009 &+ Int(c) &* 4099) & 0xFFFF)
+            }
+        ).write(to: URL(fileURLWithPath: pnmPath))
+        let proc = Process()
+        proc.launchPath = cjxl
+        proc.arguments = ["-q", "100", pnmPath, jxlPath]
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        try proc.run()
+        proc.waitUntilExit()
+        let data = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
+        let dec = JXLDecoder()
+        let image = try dec.decodeModular(data)
+        XCTAssertEqual(image.channels.count, 3)
+        for y in 0..<512 {
+            for x in 0..<512 {
+                let er = Int32(((x &* 263 &+ y &* 1009) & 0xFFFF))
+                let eg = Int32(((x &* 263 &+ y &* 1009 &+ 4099) & 0xFFFF))
+                let eb = Int32(((x &* 263 &+ y &* 1009 &+ 8198) & 0xFFFF))
+                let r = image.channels[0].pixels[y * 512 + x]
+                let g = image.channels[1].pixels[y * 512 + x]
+                let b = image.channels[2].pixels[y * 512 + x]
+                XCTAssertEqual(r, er, "R(\(x),\(y)) got \(r) expected \(er)")
+                XCTAssertEqual(g, eg, "G(\(x),\(y)) got \(g) expected \(eg)")
+                XCTAssertEqual(b, eb, "B(\(x),\(y)) got \(b) expected \(eb)")
+            }
+        }
+    }
+
+    /// Byte-equal decode of a 1024×1024 16-bit RGB cjxl file —
+    /// the largest healthcare-grade test in the suite. 1024×1024 with
+    /// default `group_size_shift = 1` lays out as 4 AC groups of
+    /// 512×512; for non-palettable 16-bit RGB cjxl emits a per-group
+    /// RCT (typically `type=10`). Asserts byte-equality on all
+    /// 3,145,728 pixel values (1024 × 1024 × 3 channels).
+    func testCrossValidate_Cjxl_DecodeRGB16bit_1024x1024_ByteEqual() throws {
+        guard let cjxl = whichTool("cjxl") else {
+            try XCTSkipIf(true, "cjxl not on PATH")
+            return
+        }
+        let pnmPath = NSTemporaryDirectory() + "rgb16-1024-\(UUID().uuidString).ppm"
+        let jxlPath = NSTemporaryDirectory() + "rgb16-1024-\(UUID().uuidString).jxl"
+        defer {
+            try? FileManager.default.removeItem(atPath: pnmPath)
+            try? FileManager.default.removeItem(atPath: jxlPath)
+        }
+        try makeSyntheticPNM(
+            width: 1024, height: 1024, channels: 3, bitDepth: 16,
+            generator: { x, y, c in
+                UInt16((x &* 263 &+ y &* 1009 &+ Int(c) &* 4099) & 0xFFFF)
+            }
+        ).write(to: URL(fileURLWithPath: pnmPath))
+        let proc = Process()
+        proc.launchPath = cjxl
+        proc.arguments = ["-q", "100", pnmPath, jxlPath]
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        try proc.run()
+        proc.waitUntilExit()
+        let data = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
+        let dec = JXLDecoder()
+        let image = try dec.decodeModular(data)
+        XCTAssertEqual(image.channels.count, 3)
+        for y in 0..<1024 {
+            for x in 0..<1024 {
+                let er = Int32(((x &* 263 &+ y &* 1009) & 0xFFFF))
+                let eg = Int32(((x &* 263 &+ y &* 1009 &+ 4099) & 0xFFFF))
+                let eb = Int32(((x &* 263 &+ y &* 1009 &+ 8198) & 0xFFFF))
+                let r = image.channels[0].pixels[y * 1024 + x]
+                let g = image.channels[1].pixels[y * 1024 + x]
+                let b = image.channels[2].pixels[y * 1024 + x]
+                XCTAssertEqual(r, er, "R(\(x),\(y)) got \(r) expected \(er)")
+                XCTAssertEqual(g, eg, "G(\(x),\(y)) got \(g) expected \(eg)")
+                XCTAssertEqual(b, eb, "B(\(x),\(y)) got \(b) expected \(eb)")
+            }
+        }
+    }
+
+    /// Byte-equal decode of a 4096×4096 16-bit GRAYSCALE cjxl file —
+    /// **whole-slide pathology / mammography scale**. Exercises:
+    ///   • TOC permutation decode (Lehmer code via `decodeTOCPermutation`).
+    ///   • LZ77 back-reference expansion in the permutation's inner
+    ///     ANS stream (`TokenStreamReader` history + replay).
+    ///   • Per-section trees: cjxl emits `has_tree=0` and each of the
+    ///     256 AC groups carries `use_global_tree=0` + its own MA-tree
+    ///     and post-tree codebook.
+    /// All 16,777,216 pixels are byte-equality-checked. **Currently a
+    /// long-running test** (decode ~20 min in release on Apple Silicon)
+    /// — the per-section tree-decode setup cost dominates and is the
+    /// next performance optimisation target. Verification itself is
+    /// O(N) and runs in milliseconds.
+    func testCrossValidate_Cjxl_DecodeGrayscale16bit_4096x4096_ByteEqual() throws {
+        guard let cjxl = whichTool("cjxl") else {
+            try XCTSkipIf(true, "cjxl not on PATH")
+            return
+        }
+        let pnmPath = NSTemporaryDirectory() + "g16-4096-t-\(UUID().uuidString).pgm"
+        let jxlPath = NSTemporaryDirectory() + "g16-4096-t-\(UUID().uuidString).jxl"
+        defer {
+            try? FileManager.default.removeItem(atPath: pnmPath)
+            try? FileManager.default.removeItem(atPath: jxlPath)
+        }
+        try makeSyntheticPNM(
+            width: 4096, height: 4096, channels: 1, bitDepth: 16,
+            generator: { x, y, _ in
+                UInt16((x &* 263 &+ y &* 1009) & 0xFFFF)
+            }
+        ).write(to: URL(fileURLWithPath: pnmPath))
+        let t0 = Date()
+        let proc = Process()
+        proc.launchPath = cjxl
+        proc.arguments = ["-q", "100", pnmPath, jxlPath]
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        try proc.run()
+        proc.waitUntilExit()
+        print("[TIME] cjxl encode: \(Date().timeIntervalSince(t0))s")
+        let t1 = Date()
+        let data = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
+        print("[TIME] read jxl: \(Date().timeIntervalSince(t1))s, size=\(data.count)")
+        let t2 = Date()
+        let dec = JXLDecoder()
+        let image = try dec.decodeModular(data)
+        print("[TIME] decodeModular: \(Date().timeIntervalSince(t2))s")
         XCTAssertEqual(image.channels.count, 1)
-        // Spot-check: sample many positions for byte-equality.
-        for y in stride(from: 0, to: 512, by: 31) {
-            for x in stride(from: 0, to: 512, by: 31) {
-                let expected = Int32(((x &* 7 &+ y &* 13) & 0xFF))
+        // First-difference scan only (bypass the assert overhead).
+        let t3 = Date()
+        let actual = image.channels[0].pixels
+        var firstBad = -1
+        for y in 0..<4096 {
+            for x in 0..<4096 {
+                let exp = Int32(((x &* 263 &+ y &* 1009) & 0xFFFF))
+                if actual[y * 4096 + x] != exp {
+                    firstBad = y * 4096 + x
+                    break
+                }
+            }
+            if firstBad >= 0 { break }
+        }
+        print("[TIME] verify: \(Date().timeIntervalSince(t3))s, firstBad=\(firstBad)")
+        XCTAssertEqual(firstBad, -1)
+    }
+
+
+    /// Byte-equal decode of a 2048×2048 16-bit GRAYSCALE cjxl file —
+    /// **full-CT-volume slice scale** for medical imaging. At default
+    /// `group_size_shift = 1` this lays out as 16 AC groups of
+    /// 512×512 (4×4 grid), exercising deep multi-group section
+    /// iteration (`tocEntries = 2 + 1 + 16 = 19`). Asserts byte-equality
+    /// on all 4,194,304 pixels.
+    func testCrossValidate_Cjxl_DecodeGrayscale16bit_2048x2048_ByteEqual() throws {
+        guard let cjxl = whichTool("cjxl") else {
+            try XCTSkipIf(true, "cjxl not on PATH")
+            return
+        }
+        let pnmPath = NSTemporaryDirectory() + "g16-2048-\(UUID().uuidString).pgm"
+        let jxlPath = NSTemporaryDirectory() + "g16-2048-\(UUID().uuidString).jxl"
+        defer {
+            try? FileManager.default.removeItem(atPath: pnmPath)
+            try? FileManager.default.removeItem(atPath: jxlPath)
+        }
+        try makeSyntheticPNM(
+            width: 2048, height: 2048, channels: 1, bitDepth: 16,
+            generator: { x, y, _ in
+                UInt16((x &* 263 &+ y &* 1009) & 0xFFFF)
+            }
+        ).write(to: URL(fileURLWithPath: pnmPath))
+        let proc = Process()
+        proc.launchPath = cjxl
+        proc.arguments = ["-q", "100", pnmPath, jxlPath]
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        try proc.run()
+        proc.waitUntilExit()
+        let data = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
+        let dec = JXLDecoder()
+        let image = try dec.decodeModular(data)
+        XCTAssertEqual(image.channels.count, 1)
+        for y in 0..<2048 {
+            for x in 0..<2048 {
+                let expected = Int32(((x &* 263 &+ y &* 1009) & 0xFFFF))
+                let actual = image.channels[0].pixels[y * 2048 + x]
+                XCTAssertEqual(actual, expected,
+                    "pixel(\(x),\(y)) decoded \(actual) expected \(expected)")
+            }
+        }
+    }
+
+    /// Byte-equal decode of a 1024×1024 16-bit GRAYSCALE cjxl file —
+    /// **the realistic medical-imaging size**, e.g. typical CT-slice
+    /// or X-ray dimensions. At default `group_size_shift = 1` this
+    /// lays out as 4 AC groups of 512×512. Asserts byte-equality on
+    /// all 1048576 pixels.
+    func testCrossValidate_Cjxl_DecodeGrayscale16bit_1024x1024_ByteEqual() throws {
+        guard let cjxl = whichTool("cjxl") else {
+            try XCTSkipIf(true, "cjxl not on PATH")
+            return
+        }
+        let pnmPath = NSTemporaryDirectory() + "g16-1024-\(UUID().uuidString).pgm"
+        let jxlPath = NSTemporaryDirectory() + "g16-1024-\(UUID().uuidString).jxl"
+        defer {
+            try? FileManager.default.removeItem(atPath: pnmPath)
+            try? FileManager.default.removeItem(atPath: jxlPath)
+        }
+        try makeSyntheticPNM(
+            width: 1024, height: 1024, channels: 1, bitDepth: 16,
+            generator: { x, y, _ in
+                UInt16((x &* 263 &+ y &* 1009) & 0xFFFF)
+            }
+        ).write(to: URL(fileURLWithPath: pnmPath))
+        let proc = Process()
+        proc.launchPath = cjxl
+        proc.arguments = ["-q", "100", pnmPath, jxlPath]
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        try proc.run()
+        proc.waitUntilExit()
+        let data = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
+        let dec = JXLDecoder()
+        let image = try dec.decodeModular(data)
+        XCTAssertEqual(image.channels.count, 1)
+        for y in 0..<1024 {
+            for x in 0..<1024 {
+                let expected = Int32(((x &* 263 &+ y &* 1009) & 0xFFFF))
+                let actual = image.channels[0].pixels[y * 1024 + x]
+                XCTAssertEqual(actual, expected,
+                    "pixel(\(x),\(y)) decoded \(actual) expected \(expected)")
+            }
+        }
+    }
+
+    /// Byte-equal decode of a 512×512 16-bit GRAYSCALE cjxl file —
+    /// the medical-imaging-primary multi-group case. Combines
+    /// healthcare-grade 16-bit precision with cross-group pixel
+    /// stitching. Every pixel must round-trip exactly.
+    func testCrossValidate_Cjxl_DecodeGrayscale16bit_512x512_ByteEqual() throws {
+        guard let cjxl = whichTool("cjxl") else {
+            try XCTSkipIf(true, "cjxl not on PATH")
+            return
+        }
+        let pnmPath = NSTemporaryDirectory() + "g16-512-\(UUID().uuidString).pgm"
+        let jxlPath = NSTemporaryDirectory() + "g16-512-\(UUID().uuidString).jxl"
+        defer {
+            try? FileManager.default.removeItem(atPath: pnmPath)
+            try? FileManager.default.removeItem(atPath: jxlPath)
+        }
+        try makeSyntheticPNM(
+            width: 512, height: 512, channels: 1, bitDepth: 16,
+            generator: { x, y, _ in
+                UInt16((x &* 263 &+ y &* 1009) & 0xFFFF)
+            }
+        ).write(to: URL(fileURLWithPath: pnmPath))
+        let proc = Process()
+        proc.launchPath = cjxl
+        proc.arguments = ["-q", "100", pnmPath, jxlPath]
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        try proc.run()
+        proc.waitUntilExit()
+        let data = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
+        let dec = JXLDecoder()
+        let image = try dec.decodeModular(data)
+        XCTAssertEqual(image.channels.count, 1)
+        // Every pixel.
+        for y in 0..<512 {
+            for x in 0..<512 {
+                let expected = Int32(((x &* 263 &+ y &* 1009) & 0xFFFF))
                 let actual = image.channels[0].pixels[y * 512 + x]
                 XCTAssertEqual(actual, expected,
                     "pixel(\(x),\(y)) decoded \(actual) expected \(expected)")

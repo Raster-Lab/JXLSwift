@@ -1,0 +1,181 @@
+// QuantWeights — VarDCT quant-matrix synthesis primitives.
+//
+// JPEG XL's per-coefficient quant matrices are NOT shipped as flat
+// 64-float (or 256, 1024, …) tables. Instead each AC strategy
+// declares a small set of "distance bands" — typically 4 floats
+// per channel — that get expanded into the full matrix at decode/
+// encode time via a parametric interpolation. This file provides
+// just the primitive layer: the `Mult` helper that turns the
+// signed band offsets into multiplicative steps, and the
+// `interpolate` function that samples the resulting per-band
+// piecewise-geometric curve at any normalised distance.
+//
+// Spec: ISO/IEC 18181-1 §K.7. libjxl: `lib/jxl/quant_weights.cc`,
+// helpers `Mult`, `Interpolate`, `GetQuantWeights`.
+//
+// **Status**: math primitives only. The actual per-strategy table
+// generation (`GetQuantWeights(rows, cols, bands)`) layers on top
+// of these but lives with the rest of the dequantiser pipeline,
+// which has dependencies on the AC strategy bitstream we haven't
+// implemented yet.
+
+import Foundation
+
+public enum QuantWeights {
+
+    /// Convert a signed band offset into a positive multiplicative
+    /// step. Mirrors libjxl's `Mult`: positive offsets give
+    /// `1 + v` (linear), negative offsets give `1 / (1 - v)`
+    /// (reciprocal — keeps the curve monotonic across the band
+    /// boundaries).
+    @inline(__always)
+    public static func mult(_ v: Float) -> Float {
+        return v > 0 ? 1 + v : 1 / (1 - v)
+    }
+
+    /// Expand a `distance_bands` array (length `numBands`, encoded
+    /// as `[base, mult₁, mult₂, …]`) into an absolute-magnitude
+    /// curve. `out[0] = bands[0]`, `out[i] = out[i-1] · Mult(bands[i])`.
+    /// Returns the expanded curve so callers can feed it to
+    /// `interpolate`.
+    public static func expandBands(_ bands: [Float]) -> [Float] {
+        precondition(!bands.isEmpty)
+        var out = [Float](repeating: 0, count: bands.count)
+        out[0] = bands[0]
+        for i in 1..<bands.count {
+            out[i] = out[i - 1] * mult(bands[i])
+        }
+        return out
+    }
+
+    /// Sample the piecewise-geometric curve `array` (length `len`)
+    /// at fractional position `pos` in `[0, max]`. Mirrors libjxl's
+    /// `Interpolate(pos, max, array, len)`:
+    ///
+    ///     scaled_pos = pos · (len - 1) / max
+    ///     idx = floor(scaled_pos)
+    ///     weight = a · (b/a)^(scaled_pos - idx)     // geometric
+    ///
+    /// `pos == 0` returns `array[0]`; `pos == max` returns the
+    /// last entry. Caller's responsibility to keep `pos ≤ max`.
+    @inline(__always)
+    public static func interpolate(
+        pos: Float, max: Float, array: [Float]
+    ) -> Float {
+        let len = array.count
+        precondition(len >= 1, "array must be non-empty")
+        if len == 1 { return array[0] }
+        let scaled = pos * Float(len - 1) / max
+        let idx = Int(scaled)
+        let clamped = min(max == 0 ? 0 : idx, len - 2)
+        let a = array[clamped]
+        let b = array[clamped + 1]
+        let frac = scaled - Float(clamped)
+        // a · (b/a)^frac == exp(frac · log(b/a) + log(a))
+        return a * powf(b / a, frac)
+    }
+
+    /// Maximum normalised distance an `(x, y)` cell can be from the
+    /// DC corner: `√2` (for a square block, the bottom-right cell).
+    /// libjxl `quant_weights.cc` uses this as the curve's `max`.
+    public static let kSqrt2: Float = 1.4142135623730951
+
+    /// Synthesise a 3-plane per-coefficient quant-weight table for a
+    /// `rows × cols` rectangular DCT block from per-channel distance
+    /// bands. Mirrors libjxl `quant_weights.cc::GetQuantWeights`.
+    ///
+    /// `bands` is a 3-tuple of float arrays (one per channel); each
+    /// channel's array has the same length. Output is row-major
+    /// `out[c * rows * cols + y * cols + x]` and has length
+    /// `3 * rows * cols`.
+    ///
+    /// The first band entry per channel is the absolute seed
+    /// (already multiplied by 64 if the caller is reproducing
+    /// libjxl's bitstream behaviour — see `DecodeDctParams` line
+    /// `params->distance_bands[c][0] *= 64.0f`). Subsequent
+    /// entries are signed multiplicative offsets piped through
+    /// `mult(_:)`.
+    public static func getQuantWeights(
+        rows: Int, cols: Int,
+        bands: (x: [Float], y: [Float], b: [Float])
+    ) throws -> [Float] {
+        precondition(rows >= 1 && cols >= 1)
+        let perChannel: [[Float]] = [bands.x, bands.y, bands.b]
+        guard let firstLen = perChannel.first?.count,
+              perChannel.allSatisfy({ $0.count == firstLen }) else {
+            throw QuantWeightsError.misshapedBands(
+                "all three channels must declare the same number of bands"
+            )
+        }
+        guard firstLen >= 1 else {
+            throw QuantWeightsError.misshapedBands("bands must be non-empty")
+        }
+        var out = [Float](repeating: 0, count: 3 * rows * cols)
+        for c in 0..<3 {
+            let curve = expandBands(perChannel[c])
+            // libjxl's per-axis scale: `(num_bands - 1) / (√2 + ε)`.
+            // The +1e-6 guard mirrors libjxl exactly so byte-equal
+            // reproduction is possible. `rcpcol` and `rcprow`
+            // convert integer cell indices into the normalised
+            // [0, √2] coordinate the band curve is sampled at.
+            let scale = Float(firstLen - 1) / (kSqrt2 + 1e-6)
+            let rcpcol = (cols == 1) ? 0 : scale / Float(cols - 1)
+            let rcprow = (rows == 1) ? 0 : scale / Float(rows - 1)
+            for y in 0..<rows {
+                let dy = Float(y) * rcprow
+                let dy2 = dy * dy
+                for x in 0..<cols {
+                    let dx = Float(x) * rcpcol
+                    let dist = sqrtf(dx * dx + dy2)
+                    // libjxl's `InterpolateVec` takes the already-
+                    // scaled distance (in band-index units, ∈ [0,
+                    // num_bands-1]) and uses it directly as the
+                    // sample index. Our `dist` is in the same units
+                    // (because `rcpcol`/`rcprow` already bake in
+                    // `(num_bands-1)/√2`). Pass `max = curve.count - 1`
+                    // so `interpolate` skips its own re-scaling and
+                    // matches libjxl bit-for-bit.
+                    let w = (firstLen == 1)
+                        ? curve[0]
+                        : interpolate(pos: dist,
+                                      max: Float(curve.count - 1),
+                                      array: curve)
+                    out[c * rows * cols + y * cols + x] = w
+                }
+            }
+        }
+        return out
+    }
+}
+
+public enum QuantWeightsError: Error, Sendable {
+    case misshapedBands(String)
+}
+
+/// libjxl-frozen distance bands for the default AC strategies.
+/// Each tuple's first entry is *raw* (not yet ×64) — call
+/// `scaledForBitstream(_:)` to apply the libjxl scaling that the
+/// bitstream-decoded form carries.
+public enum DefaultQuantBands {
+
+    /// DCT8x8 bands per libjxl `quant_weights.cc` `DCT()`.
+    /// Channel order: X (red-green), Y (luma), B (yellow-blue).
+    public static let dct8x8: (x: [Float], y: [Float], b: [Float]) = (
+        x: [3150.0,    0.0, -0.4, -0.4, -0.4, -2.0],
+        y: [ 560.0,    0.0, -0.3, -0.3, -0.3, -0.3],
+        b: [ 512.0,   -2.0, -1.0,  0.0, -1.0, -2.0]
+    )
+
+    /// libjxl's bitstream multiplies the seed band by 64 after
+    /// reading (`DecodeDctParams` line
+    /// `params->distance_bands[c][0] *= 64.0f`). Apply here so the
+    /// resulting weights match what the decoder actually
+    /// dequantises with.
+    public static func scaledForBitstream(
+        _ bands: (x: [Float], y: [Float], b: [Float])
+    ) -> (x: [Float], y: [Float], b: [Float]) {
+        var x = bands.x, y = bands.y, b = bands.b
+        x[0] *= 64; y[0] *= 64; b[0] *= 64
+        return (x: x, y: y, b: b)
+    }
+}

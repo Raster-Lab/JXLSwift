@@ -55,6 +55,30 @@ public func computeModularProperties(
     wpProperty: Int32 = 0
 ) -> [Int32] {
     var p = [Int32](repeating: 0, count: 16)
+    fillModularProperties(
+        into: &p,
+        staticChannel: staticChannel, groupId: groupId,
+        x: x, y: y, top: top, left: left,
+        topLeft: topLeft, topRight: topRight,
+        leftLeft: leftLeft, topTop: topTop,
+        wpProperty: wpProperty
+    )
+    return p
+}
+
+/// In-place fill of a 16-element properties buffer. Used by the
+/// per-pixel decode loop to avoid re-allocating a fresh `[Int32]`
+/// 16M times for a 4096² image — a measurable hot spot.
+@inline(__always)
+public func fillModularProperties(
+    into p: inout [Int32],
+    staticChannel: Int32, groupId: Int32,
+    x: Int32, y: Int32,
+    top: Int32, left: Int32,
+    topLeft: Int32, topRight: Int32,
+    leftLeft: Int32, topTop: Int32,
+    wpProperty: Int32 = 0
+) {
     p[0] = staticChannel
     p[1] = groupId
     p[2] = y
@@ -63,21 +87,13 @@ public func computeModularProperties(
     p[5] = left < 0 ? (0 &- left) : left       // |left|
     p[6] = top
     p[7] = left
-    // Property 8 is computed *after* property 5 was set, then libjxl
-    // does `(*p)[offset] = left - (*p)[offset + 1]` and increments —
-    // i.e. property 8 = left - top (since property 9 below is
-    // overwritten on the same iteration). Our encoding mirrors that.
     p[8] = left &- top
     p[9] = left &+ top &- topLeft
-    // FFV1-style differential properties.
     p[10] = left &- topLeft
     p[11] = topLeft &- top
     p[12] = top &- topRight
     p[13] = top &- topTop
     p[14] = left &- leftLeft
-    // Property 15 (weighted predictor) — caller supplies via
-    // WeightedPredictor.propertyValue(...).
     p[15] = wpProperty
-    return p
 }
 

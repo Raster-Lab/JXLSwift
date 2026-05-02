@@ -378,10 +378,25 @@ public struct LoopFilter: Sendable, Equatable {
             w.writeU64(0)
             return
         }
-        // Non-default write not yet implemented — would need to
-        // mirror loop_filter.cc's full structure (gab_custom, EPF
-        // custom LUTs, sigma scales, etc.).
-        throw FrameHeaderError.unsupportedField("non-default LoopFilter writer")
+        // Non-default path. We support the configuration libjxl emits
+        // for Modular frames (`enc_frame.cc::LoopFilterFromParams`):
+        // `gab=false, epf_iters=0`. Custom Gaborish weights + EPF
+        // tables are not yet wired up — those would need the full
+        // F16 stream from loop_filter.cc.
+        guard !gab else {
+            throw FrameHeaderError.unsupportedField(
+                "non-default LoopFilter writer (gab=true with custom)"
+            )
+        }
+        guard epfIters == 0 else {
+            throw FrameHeaderError.unsupportedField(
+                "non-default LoopFilter writer (epfIters > 0)"
+            )
+        }
+        w.writeBit(false)            // all_default = 0
+        w.writeBit(false)            // gab = false (skips gab block)
+        w.write(bits: 2, value: epfIters) // epf_iters = 0 (skips EPF block)
+        w.writeU64(0)                // BeginExtensions U64
     }
 
     /// Read a LoopFilter. `isModular` gates a few EPF sub-blocks per

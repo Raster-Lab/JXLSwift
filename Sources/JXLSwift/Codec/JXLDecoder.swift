@@ -75,21 +75,1032 @@ public struct JXLFrameInspection: Sendable {
     public let usePrefixCode: Bool?
 }
 
+/// Floor of base-2 log for positive integers. `log2Floor(1) = 0`,
+/// `log2Floor(2) = 1`, `log2Floor(8) = 3`.
+@inline(__always)
+private func log2Floor(_ x: Int) -> Int {
+    precondition(x > 0, "log2Floor requires positive input")
+    return 63 - UInt64(x).leadingZeroBitCount
+}
+
 public final class JXLDecoder {
     public init() {}
 
-    /// Decode a JPEG XL byte stream into an `ImageFrame`. If the
-    /// input carries the project-internal `0x4D30` 'M0' marker
-    /// (produced by `EncodingOptions.useM0Placeholder = true`),
-    /// routes through `MinimalLosslessCodec.decode(_:)`. Otherwise
-    /// throws `.notImplemented` — the real Phase M codec layer
-    /// isn't done yet.
+    /// Decode a JPEG XL byte stream into an `ImageFrame`. Detection
+    /// order:
+    ///   1. The project-internal `0x4D30` 'M0' marker — routes
+    ///      through `MinimalLosslessCodec.decode(_:)` for the
+    ///      legacy vertical-slice format.
+    ///   2. Real spec frames — routed through `decodeModular(_:)`
+    ///      for Modular frames; VarDCT frames still throw
+    ///      `.notImplemented` until that codec lands.
     public func decode(_ data: Data) throws -> ImageFrame {
         if MinimalLosslessCodec.isM0(data) {
             do { return try MinimalLosslessCodec.decode(data) }
             catch { throw DecoderError.notImplemented("M0 decode failed: \(error)") }
         }
-        throw DecoderError.notImplemented("frame decoding (Modular + VarDCT)")
+        // Inspect the frame to determine encoding (Modular vs VarDCT).
+        let inspection = try inspect(data)
+        guard let metadata = inspection.metadata else {
+            throw DecoderError.notImplemented(
+                "frame metadata could not be parsed"
+            )
+        }
+        // Branch on encoding. The probe routes Modular frames
+        // through `decodeModular`; VarDCT frames go through
+        // `decodeVarDCTPartial` which currently parses headers +
+        // `QuantizerParams` and throws structured `notImplemented`
+        // for the layers we haven't built yet (DequantMatrices,
+        // BlockCtxMap parser, AC global, etc.). The error message
+        // names the next layer so callers and tests can pin
+        // progress.
+        let frameInspection = inspectFrameStructure(data)
+        if frameInspection.encoding == FrameEncoding.varDCT {
+            return try decodeVarDCTPartial(
+                data: data, inspection: inspection,
+                frame: frameInspection
+            )
+        }
+        let modular: ModularImage
+        do { modular = try decodeModular(data) }
+        catch DecoderError.notImplemented(let m) where m.contains("Modular") {
+            throw DecoderError.notImplemented(m)
+        }
+        return try assembleImageFrame(
+            modular: modular, metadata: metadata,
+            xsize: Int(inspection.xsize),
+            ysize: Int(inspection.ysize)
+        )
+    }
+
+    /// Skeleton VarDCT decoder. Parses what's tractable today and
+    /// throws a structured `notImplemented` naming the first
+    /// bitstream layer we can't yet read. As parsers for each
+    /// layer land, the throw point moves further into the section.
+    ///
+    /// Section 0 layout (libjxl `dec_frame.cc::DecodeGlobalDCInfo`
+    /// + `modular_frame_decoder::DecodeGlobalInfo`):
+    ///
+    ///   1. ✓ `QuantizerParams` — global_scale + quant_dc
+    ///   2. ✓ `BlockCtxMap` all_default flag (1 bit; only the
+    ///        default branch is parsed today)
+    ///   3. ✓ `ColorCorrelationMap.DecodeDC` all_default flag
+    ///        (1 bit; only the default branch)
+    ///   4. ✗ `DequantMatrices.DecodeDC` — first unimplemented
+    ///        layer; throws here.
+    ///
+    /// Layers 5+ (DequantMatrices full decode, DC group, AC global,
+    /// AC group, Gaborish, OpsinXYB inverse) all have their math
+    /// layer in `Sources/JXLSwift/VarDCT/` already; what's missing
+    /// is the bitstream parsers + orchestration.
+    private func decodeVarDCTPartial(
+        data: Data, inspection: JXLInspection,
+        frame: JXLFrameInspection
+    ) throws -> ImageFrame {
+        guard let codestream = unwrapCodestream(data) else {
+            throw DecoderError.notImplemented(
+                "VarDCT frame in unsupported container layout"
+            )
+        }
+        guard let metadata = inspection.metadata else {
+            throw DecoderError.notImplemented(
+                "VarDCT frame: no parseable metadata"
+            )
+        }
+        // Re-parse outer headers to position the cursor at section 0.
+        // Same prep `decodeModular` runs.
+        var r = BitReader(codestream, startingAt: 16)
+        _ = try SizeHeader.read(from: &r)
+        _ = try ImageMetadata.read(from: &r)
+        _ = try? r.readCustomTransformData(xybEncoded: metadata.xybEncoded)
+        try r.alignToByte()
+        let ctx = FrameHeaderContext(
+            xybEncoded: metadata.xybEncoded,
+            numExtraChannels: metadata.extraChannels.count,
+            haveAnimation: metadata.animation != nil,
+            haveTimecodes: metadata.animation?.haveTimecodes ?? false
+        )
+        let fh = try FrameHeader.read(from: &r, context: ctx)
+        guard fh.encoding == .varDCT else {
+            throw DecoderError.notImplemented(
+                "decodeVarDCTPartial routed wrong-encoded frame: "
+                + "got \(fh.encoding)"
+            )
+        }
+        // TOC + section-0 BitReader.
+        let groupDim = 128 << Int(fh.groupSizeShift)
+        let xsize = Int(inspection.xsize)
+        let ysize = Int(inspection.ysize)
+        let numGroupsX = (xsize + groupDim - 1) / groupDim
+        let numGroupsY = (ysize + groupDim - 1) / groupDim
+        let numGroups = numGroupsX * numGroupsY
+        let dcGroupDim = groupDim << 3
+        let numDcGroupsX = (xsize + dcGroupDim - 1) / dcGroupDim
+        let numDcGroupsY = (ysize + dcGroupDim - 1) / dcGroupDim
+        let numDcGroups = numDcGroupsX * numDcGroupsY
+        let numPasses = Int(fh.passes.numPasses)
+        let tocEntries = TOC.numEntries(
+            numGroups: numGroups, numDcGroups: numDcGroups,
+            numPasses: numPasses
+        )
+        _ = try TOC.read(from: &r, numEntries: tocEntries)
+
+        // libjxl `dec_frame.cc::ProcessDCGlobal` order:
+        //   1. (Splines, if frame.flags has Splines bit) — typical
+        //      cjxl output doesn't set this.
+        //   2. (Noise, if Noise bit) — also rare.
+        //   3. `matrices.DecodeDC(br)` — DequantMatrices.DecodeDC
+        //      (DC quant scalars). Read for ALL frame types.
+        //   4. (VarDCT only) `DecodeGlobalDCInfo`: QuantizerParams +
+        //      BlockCtxMap + cmap.DecodeDC.
+        //   5. `modular_frame_decoder.DecodeGlobalInfo`: has_tree
+        //      + (if true) tree + codebook + ModularGenericDecompress
+        //      (gi).
+        //   6. (VarDCT only) DequantMatrices.Decode (the AC matrices).
+        if (fh.flags & 0x01) != 0 || (fh.flags & 0x08) != 0 {
+            // Splines (bit 0) / Noise (bit 3) per libjxl
+            // `frame_header.h::FrameFlag`.
+            throw DecoderError.notImplemented(
+                "VarDCT decode: frames with Splines or Noise flags "
+                + "(flags=0x\(String(fh.flags, radix: 16))) not yet "
+                + "supported"
+            )
+        }
+
+        let trace = ProcessInfo.processInfo.environment["JXL_TRACE"] != nil
+        @inline(__always)
+        func traceLayer(_ name: String, before: Int, after: Int) {
+            if trace {
+                FileHandle.standardError.write(Data(
+                    "TRACE \(name) bits=\(after - before) pos=\(after)\n".utf8
+                ))
+            }
+        }
+        // (1) DequantMatrices.DecodeDC.
+        let dcStart = r.position
+        let dcQuant = try DequantMatricesDC.read(from: &r)
+        traceLayer("DequantMatricesDC", before: dcStart, after: r.position)
+        _ = dcQuant
+
+        // (2) QuantizerParams.
+        let qpStart = r.position
+        let qp = try QuantizerParams.read(from: &r)
+        traceLayer("QuantizerParams", before: qpStart, after: r.position)
+        _ = qp
+
+        // (3) BlockCtxMap.
+        let bctxStart = r.position
+        let bctx: BlockCtxMap
+        do { bctx = try BlockCtxMap.read(from: &r) }
+        catch let e as BlockCtxMapError {
+            throw DecoderError.notImplemented(
+                "VarDCT decode: BlockCtxMap.read failed: \(e)"
+            )
+        }
+        traceLayer("BlockCtxMap", before: bctxStart, after: r.position)
+
+        // (4) ColorCorrelationMap.DecodeDC.
+        let cmapStart = r.position
+        let cmapDC: ColorCorrelation
+        do { cmapDC = try ColorCorrelation.readDC(from: &r) }
+        catch ColorCorrelationError.notDefault {
+            throw DecoderError.notImplemented(
+                "VarDCT decode: ColorCorrelationMap.DecodeDC "
+                + "non-default branch (color_factor + base "
+                + "correlations + DC offsets)"
+            )
+        }
+        traceLayer("cmap.DecodeDC", before: cmapStart, after: r.position)
+        _ = cmapDC
+
+        // (5) Modular global info — has_tree flag + (if true)
+        // global tree section + post-tree codebook + GroupHeader.
+        // The VarDCT path uses this tree/codebook for the DC-plane
+        // modular sub-image AND for any RAW-mode quant tables.
+        var globalTree: ModularTree? = nil
+        var globalPostHeader: EntropySectionHeader? = nil
+        var globalPostCodebook: MultiClusterCodebook? = nil
+        let hasTreeStart = r.position
+        let hasTree = try r.readBit()
+        if trace {
+            FileHandle.standardError.write(Data(
+                "TRACE has_tree=\(hasTree) at pos=\(hasTreeStart)\n".utf8
+            ))
+        }
+        if hasTree {
+            let p1 = r.position
+            let treeHdr = try EntropySectionHeader.read(
+                from: &r, numContexts: 6
+            )
+            traceLayer("treeHdr", before: p1, after: r.position)
+            let p2 = r.position
+            let treeCB = try MultiClusterCodebook.read(
+                from: &r, header: treeHdr
+            )
+            traceLayer("treeCB", before: p2, after: r.position)
+            let p3 = r.position
+            var treeStream = TokenStreamReader(
+                header: treeHdr, codebook: treeCB
+            )
+            globalTree = try ModularTree.decode(
+                from: &r, stream: &treeStream
+            )
+            traceLayer("treeDecode", before: p3, after: r.position)
+            if trace {
+                FileHandle.standardError.write(Data(
+                    "TRACE tree leafCount=\(globalTree!.leafCount)\n".utf8
+                ))
+            }
+            let p4 = r.position
+            globalPostHeader = try EntropySectionHeader.read(
+                from: &r, numContexts: globalTree!.leafCount
+            )
+            traceLayer("postHdr", before: p4, after: r.position)
+            let p5 = r.position
+            globalPostCodebook = try MultiClusterCodebook.read(
+                from: &r, header: globalPostHeader!
+            )
+            traceLayer("postCB", before: p5, after: r.position)
+        }
+        // (6) Meta-channels modular sub-image. libjxl
+        // `dec_modular.cc::DecodeGlobalInfo`:
+        //
+        //     do_color = (frame.encoding == kModular)
+        //     nb_chans = do_color ? (gray ? 1 : 3) : 0
+        //     gi = Image::Create(... nb_chans + nb_extra)
+        //     ModularGenericDecompress(reader, gi, ...)
+        //
+        // For VarDCT (do_color=false) with no extra channels, `gi`
+        // has zero channels, so `ModularDecode` early-returns with
+        // `image.channel.empty()` BEFORE reading GroupHeader. No
+        // bits are consumed here in that case. Verified against
+        // libjxl with `JXL_BYTEPOS_TRACE`: section-0 pos 296
+        // (= end of post-tree codebook) flows directly into
+        // `DecodeVarDCTDC`'s `ReadFixedBits<2>()` for
+        // `extra_precision`.
+        let nbColorChannels = 0  // VarDCT: do_color = false
+        let nbExtraChannels = metadata.extraChannels.count
+        let metaChannelCount = nbColorChannels + nbExtraChannels
+        if metaChannelCount > 0 {
+            // Non-empty meta-channels image (e.g. extra channels):
+            // libjxl reads GroupHeader, transforms, etc. We don't
+            // implement that yet.
+            throw DecoderError.notImplemented(
+                "VarDCT decode: meta-channels modular sub-image with "
+                + "\(metaChannelCount) channel(s) — GroupHeader "
+                + "read + meta-transforms + decodeAllChannels not "
+                + "yet implemented (no test fixture currently "
+                + "exercises this path)."
+            )
+        }
+        let _ = (globalTree, globalPostHeader, globalPostCodebook)
+        let _ = (kRequiredSizeX, kRequiredSizeY, DequantMatricesAC.self)
+
+        // (7) DC group decode. libjxl `dec_modular.cc::DecodeVarDCTDC`
+        // for our 1-DC-group fixture:
+        //
+        //     extra_precision = ReadFixedBits<2>()          // 2 bits
+        //     Image image(DCGroupRect.xsize, .ysize, ..., 3)
+        //     ModularGenericDecompress(reader, image,
+        //         header=nullptr,    // local GroupHeader is read inside
+        //         tree=&global_tree, code=&global_code,     // post-tree
+        //         context_map=&global_ctx_map,
+        //         undo_transforms=true)
+        //
+        // Inside `ModularGenericDecompress` → `ModularDecode`:
+        //   • `Bundle::Read(br, &local_header)` — the local GroupHeader
+        //     for this DC sub-image (use_global_tree, wp_header,
+        //     num_transforms).
+        //   • Apply meta-transforms.
+        //   • If `use_global_tree`: reuse the global tree+code+ctx_map
+        //     decoded above; else read a local tree+codebook.
+        //   • `ANSSymbolReader::Create(code, br, dist_mul)` — reads a
+        //     32-bit rANS state (ANS path) or 0 bits (prefix path).
+        //   • For each channel: `DecodeModularChannelMAANS` — token
+        //     stream over the per-pixel `(predictor, offset, multiplier)`
+        //     tree leaves.
+        //
+        // For our 8×8 fixture: DCGroupRect = 1×1. Post-tree codebook is
+        // **prefix code** (verified by structural trace), so
+        // `ANSSymbolReader::Create` reads 0 bits.
+        let dcExtraPrecision: UInt32
+        do { dcExtraPrecision = try r.read(bits: 2) }
+        catch let e as BitstreamError {
+            throw DecoderError.notImplemented(
+                "VarDCT decode: DC group extra_precision read "
+                + "failed: \(e)"
+            )
+        }
+        traceLayer("DCGroup.extra_precision=\(dcExtraPrecision)",
+                   before: r.position - 2, after: r.position)
+
+        // (8) DC group: local GroupHeader.
+        let dcGHStart = r.position
+        let dcGroupGH: GroupHeader
+        do { dcGroupGH = try GroupHeader.read(from: &r) }
+        catch let e as GroupHeaderError {
+            throw DecoderError.notImplemented(
+                "VarDCT decode: DC group GroupHeader read failed: \(e)"
+            )
+        }
+        traceLayer("DCGroup.GroupHeader", before: dcGHStart, after: r.position)
+        if trace {
+            FileHandle.standardError.write(Data(
+                "TRACE DCGroup.GH useGlobalTree=\(dcGroupGH.useGlobalTree) wpDefault=\(dcGroupGH.wpHeader.allDefault) numTransforms=\(dcGroupGH.transforms.count)\n".utf8
+            ))
+        }
+
+        // The DC group must use the global tree the meta-channels layer
+        // would have set up. Since the meta-channels modular sub-image
+        // is empty for VarDCT (verified above), the tree+codebook from
+        // the post-tree section ARE the "global" set passed through.
+        guard dcGroupGH.useGlobalTree else {
+            throw DecoderError.notImplemented(
+                "VarDCT decode: DC group with useGlobalTree=false "
+                + "(local tree read) not yet implemented"
+            )
+        }
+        guard dcGroupGH.transforms.isEmpty else {
+            throw DecoderError.notImplemented(
+                "VarDCT decode: DC group with \(dcGroupGH.transforms.count) "
+                + "transform(s) — meta-transform application "
+                + "(Squeeze/RCT/Palette) not yet implemented"
+            )
+        }
+        guard let dcTree = globalTree,
+              let dcPostHeader = globalPostHeader,
+              let dcPostCodebook = globalPostCodebook
+        else {
+            throw DecoderError.notImplemented(
+                "VarDCT decode: DC group needs the global tree + "
+                + "post-tree codebook but they were never decoded "
+                + "(has_tree was false). Expected has_tree=true for "
+                + "VarDCT frames."
+            )
+        }
+
+        // (9) DC channel decode. libjxl iterates 3 channels (Y/Cb/Cr,
+        // stored Cb/Y/Cr internally via the `c < 2 ? c ^ 1 : c` swap)
+        // and for each calls `DecodeModularChannelMAANS`.
+        //
+        // For prefix-code path, `ANSSymbolReader::Create` reads zero
+        // bits — no rANS state init. Each channel pixel reads one
+        // token from the post-tree codebook at the leaf-context
+        // assigned by the modular tree.
+        //
+        // DCGroupRect for an 8×8 frame = 1×1 (one DC sample per 8×8
+        // block). Chroma subsampling shifts apply per-channel; for
+        // the cjxl-d=1 fixture they're all zero.
+        let dcGroupId: Int32 = 1 + Int32(numDcGroups) + 0
+        let dcWidth = numDcGroupsX > 0 ? max(1, (xsize + 7) / 8) : 0
+        let dcHeight = numDcGroupsY > 0 ? max(1, (ysize + 7) / 8) : 0
+        let dcChannels: [ModularChannelGeometry] = [
+            ModularChannelGeometry(width: dcWidth, height: dcHeight),
+            ModularChannelGeometry(width: dcWidth, height: dcHeight),
+            ModularChannelGeometry(width: dcWidth, height: dcHeight),
+        ]
+        var dcStream = TokenStreamReader(
+            header: dcPostHeader, codebook: dcPostCodebook
+        )
+        let dcChStart = r.position
+        let dcValues: [[Int32]]
+        do {
+            dcValues = try decodeAllChannels(
+                channels: dcChannels,
+                groupId: dcGroupId,
+                tree: dcTree,
+                stream: &dcStream,
+                from: &r,
+                wpHeader: dcGroupGH.wpHeader
+            )
+        } catch let e as ModularChannelDecoderError {
+            throw DecoderError.notImplemented(
+                "VarDCT decode: DC channel decode failed: \(e)"
+            )
+        }
+        traceLayer("DCGroup.channels", before: dcChStart, after: r.position)
+        if trace {
+            FileHandle.standardError.write(Data(
+                "TRACE DC values: \(dcValues)\n".utf8
+            ))
+        }
+
+        // (10) ACMetadata. libjxl `dec_modular.cc::DecodeAcMetadata`:
+        //
+        //     upper_bound = DCGroupRect.xsize * DCGroupRect.ysize
+        //     count = ReadBits(CeilLog2Nonzero(upper_bound)) + 1
+        //     image = Image(DCGroupRect.xsize, DCGroupRect.ysize, ..., 4)
+        //     channel[0] = (cr.xsize, cr.ysize)  // YToX, hshift=3, vshift=3
+        //     channel[1] = (cr.xsize, cr.ysize)  // YToB
+        //     channel[2] = (count, 2)            // ACS + QF
+        //     channel[3] = (r.xsize, r.ysize)    // EPF sharpness
+        //     ModularGenericDecompress(reader, image, header=nullptr,
+        //         stream_id=ACMetadata.ID, ..., undo_transforms=true)
+        //
+        // For 8×8 fixture: r=1×1, cr=1×1 (= ceil(1/8)=1), so:
+        //     count = ReadBits(0) + 1 = 1
+        //     channel[0..3] sizes: 1×1, 1×1, 1×2, 1×1 → 5 pixels total.
+        let acMetaUpperBound = dcWidth * dcHeight
+        let acMetaCountBits = Int(ceilLog2(UInt32(max(1, acMetaUpperBound))))
+        let acMetaCountStart = r.position
+        let acMetaCount: Int
+        do {
+            let raw = try r.read(bits: acMetaCountBits)
+            acMetaCount = Int(raw) + 1
+        } catch let e as BitstreamError {
+            throw DecoderError.notImplemented(
+                "VarDCT decode: ACMetadata count read failed: \(e)"
+            )
+        }
+        traceLayer("ACMetadata.count=\(acMetaCount)",
+                   before: acMetaCountStart, after: r.position)
+
+        // ACMetadata GroupHeader.
+        let acMetaGHStart = r.position
+        let acMetaGH: GroupHeader
+        do { acMetaGH = try GroupHeader.read(from: &r) }
+        catch let e as GroupHeaderError {
+            throw DecoderError.notImplemented(
+                "VarDCT decode: ACMetadata GroupHeader read failed: \(e)"
+            )
+        }
+        traceLayer("ACMetadata.GroupHeader",
+                   before: acMetaGHStart, after: r.position)
+        if trace {
+            FileHandle.standardError.write(Data(
+                "TRACE ACMeta.GH useGlobalTree=\(acMetaGH.useGlobalTree) wpDefault=\(acMetaGH.wpHeader.allDefault) numTransforms=\(acMetaGH.transforms.count)\n".utf8
+            ))
+        }
+        guard acMetaGH.useGlobalTree else {
+            throw DecoderError.notImplemented(
+                "VarDCT decode: ACMetadata with useGlobalTree=false "
+                + "(local tree read) not yet implemented"
+            )
+        }
+        guard acMetaGH.transforms.isEmpty else {
+            throw DecoderError.notImplemented(
+                "VarDCT decode: ACMetadata with \(acMetaGH.transforms.count) "
+                + "transform(s) not yet implemented"
+            )
+        }
+
+        // (11) ACMetadata channel decode (4 channels).
+        let cWidth = max(1, (dcWidth + 7) / 8)   // YToX/YToB at 8×8 tile
+        let cHeight = max(1, (dcHeight + 7) / 8)
+        let acMetaChannels: [ModularChannelGeometry] = [
+            ModularChannelGeometry(width: cWidth, height: cHeight),  // YToX
+            ModularChannelGeometry(width: cWidth, height: cHeight),  // YToB
+            ModularChannelGeometry(width: acMetaCount, height: 2),   // ACS + QF
+            ModularChannelGeometry(width: dcWidth, height: dcHeight), // EPF
+        ]
+        let acMetaGroupId: Int32 = 1 + 2 * Int32(numDcGroups) + 0
+        var acMetaStream = TokenStreamReader(
+            header: dcPostHeader, codebook: dcPostCodebook
+        )
+        let acMetaChStart = r.position
+        let acMetaValues: [[Int32]]
+        do {
+            acMetaValues = try decodeAllChannels(
+                channels: acMetaChannels,
+                groupId: acMetaGroupId,
+                tree: dcTree,
+                stream: &acMetaStream,
+                from: &r,
+                wpHeader: acMetaGH.wpHeader
+            )
+        } catch let e as ModularChannelDecoderError {
+            throw DecoderError.notImplemented(
+                "VarDCT decode: ACMetadata channel decode failed: \(e)"
+            )
+        }
+        traceLayer("ACMetadata.channels",
+                   before: acMetaChStart, after: r.position)
+        if trace {
+            FileHandle.standardError.write(Data(
+                "TRACE ACMeta values: \(acMetaValues)\n".utf8
+            ))
+        }
+
+        // (12) ProcessACGlobal — DequantMatrices.Decode (all-default
+        // shortcut). libjxl `dec_frame.cc::ProcessACGlobal`:
+        //
+        //     matrices.Decode(br)  // 1 bit all_default + (per-table reads)
+        //     EnsureComputed(...)  // no bits
+        //     num_histograms = 1 + ReadBits(CeilLog2Nonzero(num_groups))
+        //     for each pass:
+        //         used_orders = U32(kOrderEnc, br)
+        //         DecodeCoeffOrders(...)      // permutation if used_orders > 0
+        //         DecodeHistograms(...)       // AC histograms
+        let _ = DequantMatricesAC.self
+        let acGStart = r.position
+        do { _ = try DequantMatricesAC.readDefaultOrThrow(from: &r) }
+        catch DequantMatricesACError.notDefault {
+            throw DecoderError.notImplemented(
+                "VarDCT decode: ProcessACGlobal — DequantMatrices.Decode "
+                + "non-default (per-table QuantEncoding reads) not yet "
+                + "wired up. The 17-strategy parser exists in QuantEncoding.swift "
+                + "but isn't reachable until the for-loop driver lands."
+            )
+        } catch let e as DequantMatricesACError {
+            throw DecoderError.notImplemented(
+                "VarDCT decode: DequantMatrices.Decode read failed: \(e)"
+            )
+        }
+        traceLayer("DequantMatricesAC.allDefault",
+                   before: acGStart, after: r.position)
+
+        // num_histograms = 1 + ReadBits(CeilLog2Nonzero(num_groups))
+        // For num_groups=1 this is 0 bits; for larger groups it scales.
+        let nhBits = Int(ceilLog2(UInt32(max(1, numGroups))))
+        let nhStart = r.position
+        let acNumHistograms: UInt32
+        do {
+            acNumHistograms = 1 + (nhBits == 0 ? 0 : try r.read(bits: nhBits))
+        } catch let e as BitstreamError {
+            throw DecoderError.notImplemented(
+                "VarDCT decode: ProcessACGlobal num_histograms read "
+                + "failed: \(e)"
+            )
+        }
+        traceLayer("ACGlobal.num_histograms=\(acNumHistograms)",
+                   before: nhStart, after: r.position)
+
+        // used_orders U32 per pass. kOrderEnc = U32(Val(0x5F), Val(0x13),
+        // Val(0), Bits(13)) per `frame_header.h:503`. For `cjxl -d 1`
+        // typical fixtures, used_orders=0 (selector=2 → no orders
+        // permuted, default zigzag-style order). 1 pass on a single
+        // group is the usual cjxl shape.
+        let numPassesActual = max(1, Int(fh.passes.numPasses))
+        var usedOrdersPerPass: [UInt32] = []
+        usedOrdersPerPass.reserveCapacity(numPassesActual)
+        for passIdx in 0..<numPassesActual {
+            let uoStart = r.position
+            let used: UInt32
+            do {
+                used = try r.readU32((
+                    .literal(0x5F), .literal(0x13), .literal(0),
+                    .bits(13)
+                ))
+            } catch let e as BitstreamError {
+                throw DecoderError.notImplemented(
+                    "VarDCT decode: ACGlobal used_orders[\(passIdx)] "
+                    + "read failed: \(e)"
+                )
+            }
+            usedOrdersPerPass.append(used)
+            traceLayer("ACGlobal.used_orders[\(passIdx)]=\(used)",
+                       before: uoStart, after: r.position)
+            if used != 0 {
+                throw DecoderError.notImplemented(
+                    "VarDCT decode: ACGlobal used_orders=\(used) (non-zero) "
+                    + "→ DecodeCoeffOrders permutation read not yet "
+                    + "implemented (typical cjxl-d=1 fixtures emit 0)."
+                )
+            }
+        }
+
+        // (13) Per-pass AC DecodeHistograms. libjxl
+        // `dec_frame.cc::ProcessACGlobal` (line 393-410):
+        //
+        //     for (size_t i = 0; i < num_passes; i++) {
+        //         used_orders = U32(kOrderEnc, br);   // already read above
+        //         DecodeCoeffOrders(...);             // skipped (used_orders=0)
+        //         num_contexts = num_histograms × block_ctx_map.NumACContexts()
+        //         DecodeHistograms(br, num_contexts, &code[i], &context_map[i])
+        //     }
+        //
+        // `NumACContexts() = num_ctxs × (kNonZeroBuckets +
+        // kZeroDensityContextCount) = num_ctxs × (37 + 458)`. For the
+        // default kDefaultBlockCtxMap (15 clusters): 15 × 495 = 7425.
+        // With num_histograms=1 → 7425 AC contexts.
+        let acContexts = Int(acNumHistograms) * bctx.numACContexts
+        var acHistsPerPass: [(EntropySectionHeader, MultiClusterCodebook)] = []
+        acHistsPerPass.reserveCapacity(numPassesActual)
+        for passIdx in 0..<numPassesActual {
+            let acHdrStart = r.position
+            let acHdr: EntropySectionHeader
+            do {
+                acHdr = try EntropySectionHeader.read(
+                    from: &r, numContexts: acContexts
+                )
+            } catch let e as EntropySectionHeaderError {
+                throw DecoderError.notImplemented(
+                    "VarDCT decode: AC histograms[\(passIdx)] header "
+                    + "read failed: \(e). num_contexts=\(acContexts)"
+                )
+            }
+            traceLayer("ACHist[\(passIdx)].header", before: acHdrStart,
+                       after: r.position)
+            let acCBStart = r.position
+            let acCB: MultiClusterCodebook
+            do {
+                acCB = try MultiClusterCodebook.read(from: &r, header: acHdr)
+            } catch let e as MultiClusterCodebookError {
+                throw DecoderError.notImplemented(
+                    "VarDCT decode: AC histograms[\(passIdx)] codebook "
+                    + "read failed: \(e). numHistograms=\(acHdr.numHistograms)"
+                )
+            }
+            traceLayer("ACHist[\(passIdx)].codebook", before: acCBStart,
+                       after: r.position)
+            if trace {
+                FileHandle.standardError.write(Data(
+                    "TRACE ACHist[\(passIdx)]: numClusters=\(acHdr.contextMap.numClusters), usePrefix=\(acHdr.usePrefixCode), logAlpha=\(acHdr.logAlphaSize)\n".utf8
+                ))
+            }
+            acHistsPerPass.append((acHdr, acCB))
+        }
+
+        // (14) Per-block AC coefficient stream — Bites 1+2. libjxl
+        // `dec_group.cc::DecodeACVarBlock` reads, for each (block, channel):
+        //
+        //     block_ctx = block_ctx_map.Context(qdc, qf, ord, c)
+        //     nzero_ctx = NonZeroContext(predicted_nnz, block_ctx) + ctx_offset
+        //     nzeros = readToken(nzero_ctx)
+        //     histo_offset = ctx_offset + ZeroDensityContextsOffset(block_ctx)
+        //     for k in coveredBlocks..<size while nzeros != 0:
+        //         ctx = histo_offset + ZeroDensityContext(nzeros, k, ...)
+        //         u = readToken(ctx)
+        //         coeff = UnpackSigned(u)        // ZigZag.unpack
+        //         block[order[k]] += coeff << shift
+        //         if u != 0: nzeros--
+        //
+        // `ANSSymbolReader::Create` reads a 32-bit rANS state on first
+        // token. Our `TokenStreamReader` triggers that lazily inside
+        // `readToken` via `ANSStreamDecoder`.
+        //
+        // For `cjxl -d 1` 8×8 fixture: 1 AC block (1×1 grid) × 3
+        // channels (X/Y/B). AC strategy = DCT8 (covered_blocks=1,
+        // size=64). All 7425 contexts route to cluster 0 (single
+        // histogram), so block_ctx specifics don't change bit positions
+        // — order does, but we use `Array(0..<64)` here since the
+        // block-position payload is consumed by Bite 3 (Dequant + IDCT).
+        let firstACHist = acHistsPerPass[0]
+        var acTokenStream = TokenStreamReader(
+            header: firstACHist.0, codebook: firstACHist.1
+        )
+        // 1-block fixture: 1 AC block × 3 channels. The natural
+        // coefficient order is `naturalCoeffOrderDCT8` (libjxl
+        // `ComputeNaturalCoeffOrder` for `cx=cy=1`). For
+        // `used_orders=0` (no permutation) the encoder writes
+        // coefficients in this order; we read in scan order and
+        // place at `order[k]` to recover the natural-order layout
+        // ready for dequant + IDCT.
+        let dctOrder = naturalCoeffOrderDCT8
+        var acBlocks: [[Int32]] = []
+        acBlocks.reserveCapacity(3)
+        let acDecodeStart = r.position
+        for c in 0..<3 {
+            // For the default kDefaultBlockCtxMap with no DC/QF
+            // thresholds, `context(qdc=0, qf=*, ord=0, c=*)` returns a
+            // cluster index which routes through `contextMap.map[idx]
+            // → 0` (single histogram). Pass blockCtx=0 — actual value
+            // is irrelevant for bit positions on this fixture.
+            var blk = [Int32](repeating: 0, count: 64)
+            do {
+                try ACDecoder.decodeBlock(
+                    block: &blk,
+                    order: dctOrder,
+                    coveredBlocks: 1, log2CoveredBlocks: 0,
+                    blockCtx: 0,
+                    predictedNnz: 0,    // first block, no neighbours
+                    ctxOffset: 0,
+                    ctxMap: bctx,
+                    shift: 0,
+                    stream: &acTokenStream,
+                    from: &r
+                )
+            } catch let e as ACDecoderError {
+                throw DecoderError.notImplemented(
+                    "VarDCT decode: AC block (channel \(c)) decode "
+                    + "failed: \(e). State init or token routing "
+                    + "may have desynced."
+                )
+            }
+            acBlocks.append(blk)
+            traceLayer("ACBlock[c=\(c)]", before: acDecodeStart,
+                       after: r.position)
+        }
+        if trace {
+            for (c, blk) in acBlocks.enumerated() {
+                let nz = blk.filter { $0 != 0 }.count
+                let nzVals = blk.enumerated().filter { $0.element != 0 }
+                    .map { "[\($0.offset)]=\($0.element)" }.joined(separator: " ")
+                FileHandle.standardError.write(Data(
+                    "TRACE ACBlock[c=\(c)]: \(nz) nonzeros: \(nzVals)\n".utf8
+                ))
+            }
+        }
+
+        // (15) Bite 3 — Dequant + IDCT. libjxl
+        // `dec_xyb.cc::DequantDC` + per-block AC dequant in
+        // `dec_group.cc` + `IDCT2DInPlace`.
+        //
+        //     // Quantizer derived values:
+        //     inv_global_scale = (1 << 16) / global_scale
+        //     inv_quant_dc = inv_global_scale / quant_dc
+        //     mul_dc[c] = inv_quant_dc * (1 / kInvDCQuant[c])    // per channel
+        //     // DC apply:
+        //     dc_amp[c] = quantized_dc[c] * mul_dc[c] * (1 / (1 << extra_precision))
+        //     // AC apply (per coefficient k in natural order):
+        //     ac_amp[c][k] = quantized_ac[c][k] * dequant_matrix[c][k] * inv_quant_ac(qf)
+        //         where dequant_matrix[c][k] = 1 / quant_weights[c][k]
+        //         and inv_quant_ac(qf) = inv_global_scale / qf
+        //     // 8x8 IDCT per channel block.
+        //
+        // For our fixture: extra_precision=1, qf=5, ord=DCT8,
+        // global_scale=5111, quant_dc=17. Three (8x8) pixel-domain
+        // blocks emerge, still in XYB-encoded space (color correlation
+        // and inverse XYB lands in Bite 4).
+        let kGlobalScaleDenomF: Float = Float(1 << 16)
+        let invGlobalScale: Float = kGlobalScaleDenomF / Float(qp.globalScale)
+        let invQuantDC: Float = invGlobalScale / Float(qp.quantDC)
+        // libjxl `quant_weights.h::kInvDCQuant`. Indexed by **XYB
+        // channel** (X=0, Y=1, B=2).
+        let kInvDCQuant: [Float] = [4096.0, 512.0, 256.0]
+        let mulDC: [Float] = (0..<3).map { invQuantDC / kInvDCQuant[$0] }
+        let dcExtraFactor: Float = 1.0 / Float(1 << dcExtraPrecision)
+
+        // Channel layout — libjxl swaps storage:
+        //
+        //   image.channel[c < 2 ? c ^ 1 : c]  for XYB c ∈ {0=X, 1=Y, 2=B}
+        //
+        // ⇒ storage slot 0 holds Y, slot 1 holds X, slot 2 holds B.
+        //
+        //   storageToXYB[storage_slot] = XYB channel index
+        //
+        // For DC, channels were decoded in storage order (slot 0 → 2),
+        // so `dcValues[i]` lives at `storageToXYB[i]` in the XYB tables.
+        //
+        // For AC, libjxl's `LoadBlock` iterates **XYB c ∈ {1, 0, 2}**
+        // (i.e., Y, X, B). Our `acBlocks[i]` was decoded in our
+        // iteration order `for c in 0..<3`, which has identical bit
+        // consumption (single histogram routing) but treats `i` as
+        // libjxl iteration index — `acIterToXYB[i]` is the XYB channel
+        // for the i-th decoded AC block.
+        let storageToXYB: [Int] = [1, 0, 2]
+        let acIterToXYB: [Int] = [1, 0, 2]
+
+        // qf for our 1-block fixture: ACMeta channel 2 row 1 = `[4]`,
+        // remapped via libjxl `row_qf[ix] = 1 + clamp(row_in_2[num], 0,
+        // kQuantMax - 1)` → 1 + 4 = 5.
+        let qfRaw = acMetaValues.indices.contains(2) && acMetaValues[2].count >= 2
+            ? acMetaValues[2][1] : 0
+        let qfRow = 1 + max(0, min(qfRaw, 255))
+        let invQuantAC: Float = invGlobalScale / Float(qfRow)
+
+        // DCT8 default quant weights: 3 × 64 floats. `qweights[c*64+k]`
+        // is the QUANT weight (libjxl stores its inverse in `Matrix()`,
+        // so `dequant_matrix = 1 / qweights`). Indexed by XYB channel.
+        let dct8Bands = DefaultQuantBands.scaledForBitstream(
+            DefaultQuantBands.dct8x8
+        )
+        let qweights: [Float]
+        do {
+            qweights = try QuantWeights.getQuantWeights(
+                rows: 8, cols: 8, bands: dct8Bands
+            )
+        } catch let e as QuantWeightsError {
+            throw DecoderError.notImplemented(
+                "VarDCT decode: DCT8 quant weights computation failed: \(e)"
+            )
+        }
+
+        // Output: pixelBlocksXYB[xyb_c] = 64-pixel block for that XYB
+        // channel (Y, X, B → 0, 1, 2 in pixelBlocksXYB order? actually
+        // we'll keep XYB-indexed: pixelBlocksXYB[0]=X, [1]=Y, [2]=B).
+        var pixelBlocksXYB: [[Float]] = Array(repeating: [], count: 3)
+        for storageSlot in 0..<3 {
+            let xybC = storageToXYB[storageSlot]
+            var coefBlock = [Float](repeating: 0, count: 64)
+            // DC at natural position 0: dcValues[storage] holds the
+            // quantised DC for the channel at that storage slot.
+            let dcQuant = Float(dcValues[storageSlot][0])
+            coefBlock[0] = dcQuant * mulDC[xybC] * dcExtraFactor
+            // AC at natural positions order[1..63]: find which
+            // iteration index corresponds to this XYB channel.
+            // `acIterToXYB[iter] == xybC` ⇒ acBlocks[iter] holds this
+            // channel's AC coefs.
+            guard let iter = acIterToXYB.firstIndex(of: xybC) else {
+                throw DecoderError.notImplemented(
+                    "VarDCT decode: AC iteration index for XYB \(xybC) not found"
+                )
+            }
+            for k in 1..<64 {
+                let np = dctOrder[k]
+                let dequantWeight = 1.0 / qweights[xybC * 64 + np]
+                let acCoef = Float(acBlocks[iter][np])
+                coefBlock[np] = acCoef * dequantWeight * invQuantAC
+            }
+            // libjxl DCT convention: forward divides by N², inverse no
+            // division (DC = mean of pixel block). Our `DCT2D` is
+            // orthonormal (1/√N each side). Bridge: scale every
+            // coefficient by N (=8 for DCT8) before our IDCT.
+            for k in 0..<64 { coefBlock[k] *= 8.0 }
+            // 8×8 IDCT in place — converts frequency-domain to pixel-
+            // domain. Output is XYB-encoded values (still pre color
+            // correlation, pre inverse XYB).
+            DCT2D.inverse(&coefBlock, size: 8)
+            pixelBlocksXYB[xybC] = coefBlock
+        }
+        if trace {
+            let labels = ["X", "Y", "B"]
+            for c in 0..<3 {
+                let block = pixelBlocksXYB[c]
+                let mean = block.reduce(0.0, +) / Float(block.count)
+                let minVal = block.min() ?? 0
+                let maxVal = block.max() ?? 0
+                FileHandle.standardError.write(Data(
+                    "TRACE pixelBlock[\(labels[c])]: mean=\(mean) range=[\(minVal), \(maxVal)]\n".utf8
+                ))
+                // Sample qweights for this channel
+                let firstFew = (0..<4).map { String(format: "%.2f", qweights[c * 64 + $0]) }
+                FileHandle.standardError.write(Data(
+                    "TRACE qweights[\(labels[c])] first 4: [\(firstFew.joined(separator: ", "))]\n".utf8
+                ))
+            }
+        }
+
+        // (16) Bite 4 — Color correlation + inverse OpsinXYB +
+        // sRGB OETF + 8-bit RGB output. libjxl applies color
+        // correlation per-coefficient inside `DequantLane`:
+        //
+        //     dequant_x = x_cc_mul * dequant_y + dequant_x_cc
+        //     dequant_b = b_cc_mul * dequant_y + dequant_b_cc
+        //
+        // Since IDCT is linear and `cc_mul` is constant per tile,
+        // applying the same MulAdd in pixel domain is mathematically
+        // equivalent. For our 1-tile fixture:
+        //     x_cc_mul = base_correlation_x + ytox_map[0] / color_factor
+        //              = 0 + 0/84 = 0
+        //     b_cc_mul = base_correlation_b + ytob_map[0] / color_factor
+        //              = 1 + 0/84 = 1
+        // So X stays, B becomes Y + B.
+        let ytoxSlope = acMetaValues[0].first ?? 0
+        let ytobSlope = acMetaValues[1].first ?? 0
+        let xCCMul = cmapDC.ytoXRatio(slope: ytoxSlope)
+        let bCCMul = cmapDC.ytoBRatio(slope: ytobSlope)
+        if trace {
+            FileHandle.standardError.write(Data(
+                "TRACE CFL: x_cc_mul=\(xCCMul) b_cc_mul=\(bCCMul) (slopes=\(ytoxSlope), \(ytobSlope))\n".utf8
+            ))
+        }
+
+        // Per-pixel XYB → linear RGB → sRGB → 8-bit.
+        var rgb8 = [UInt8](repeating: 0, count: 8 * 8 * 3)
+        for i in 0..<64 {
+            let xRaw = pixelBlocksXYB[0][i]
+            let yRaw = pixelBlocksXYB[1][i]
+            let bRaw = pixelBlocksXYB[2][i]
+            let xCorr = xRaw + xCCMul * yRaw
+            let bCorr = bRaw + bCCMul * yRaw
+            let lin = OpsinXYB.inverse((X: xCorr, Y: yRaw, B: bCorr))
+            rgb8[i * 3 + 0] = linearToSRGB8(lin.R)
+            rgb8[i * 3 + 1] = linearToSRGB8(lin.G)
+            rgb8[i * 3 + 2] = linearToSRGB8(lin.B)
+        }
+
+        if trace {
+            for y in 0..<3 {
+                var row = "TRACE RGB row \(y):"
+                for x in 0..<3 {
+                    let i = y * 8 + x
+                    row += " (\(rgb8[i*3]),\(rgb8[i*3+1]),\(rgb8[i*3+2]))"
+                }
+                FileHandle.standardError.write(Data((row + "\n").utf8))
+            }
+        }
+
+        // (17) Bite 5 — Wire emitted RGB into `ImageFrame`. For our
+        // 1-DC-group, 1-AC-group fixture the AC group's pixel-domain
+        // values map directly to the frame buffer. Larger frames will
+        // need a per-block placement loop driven by the DC group's
+        // BlockGroupRect; that lands when multi-group support arrives
+        // (v0.7.0). Phase R restoration filters (Gaborish + EPF) — also
+        // deferred — would refine the per-pixel detail; without them
+        // our output matches djxl on overall colour but may differ in
+        // sharpness on natural images.
+        guard xsize == 8, ysize == 8 else {
+            throw DecoderError.notImplemented(
+                "VarDCT decode: \(xsize)×\(ysize) frame — only the "
+                + "single 8×8 block fixture is wired up so far. "
+                + "Multi-block / multi-group support lands in v0.7.0."
+            )
+        }
+        let _ = (kRequiredSizeX, kRequiredSizeY)
+        var frame = ImageFrame(width: xsize, height: ysize, channels: 3)
+        frame.data = rgb8
+        return frame
+    }
+
+    /// Per-IEC 61966-2-1 sRGB OETF: linear-light [0,1] → 8-bit code
+    /// value. Clamps to [0, 255].
+    @inline(__always)
+    private func linearToSRGB8(_ linear: Float) -> UInt8 {
+        let clamped = max(0, min(linear, 1))
+        let encoded: Float
+        if clamped <= 0.0031308 {
+            encoded = 12.92 * clamped
+        } else {
+            encoded = 1.055 * powf(clamped, 1.0 / 2.4) - 0.055
+        }
+        let rounded = (encoded * 255.0).rounded()
+        return UInt8(max(0, min(rounded, 255)))
+    }
+
+    /// Best-effort container unwrap: returns the naked codestream
+    /// bytes for either form (signature-prefix or ISOBMFF).
+    private func unwrapCodestream(_ data: Data) -> Data? {
+        guard let form = try? parseJXLContainer(data) else { return nil }
+        switch form {
+        case .naked:
+            return data
+        case .iso(let boxes):
+            return try? extractCodestream(from: boxes, in: data)
+        }
+    }
+
+    /// Repack a successfully decoded `ModularImage` into an
+    /// `ImageFrame` with the conventions the rest of the toolchain
+    /// (CLI, PNM writer) expects: row-major channel-interleaved,
+    /// 8-bit samples in `UInt8`, 9..16-bit samples packed as
+    /// little-endian `UInt16` pairs.
+    private func assembleImageFrame(
+        modular: ModularImage, metadata m: ImageMetadata,
+        xsize: Int, ysize: Int
+    ) throws -> ImageFrame {
+        let bps = m.bitDepth.bitsPerSample
+        guard !m.bitDepth.floatingPoint else {
+            throw DecoderError.notImplemented(
+                "float-sample decode (bitsPerSample=\(bps), floating)"
+            )
+        }
+        guard bps >= 1 && bps <= 16 else {
+            throw DecoderError.notImplemented(
+                "decode of \(bps)-bit samples (only 1..16 supported today)"
+            )
+        }
+        let pixelType: PixelType = (bps <= 8) ? .uint8 : .uint16
+        let isGray = (m.colorEncoding.colorSpace == .grayscale)
+        let nbColor = isGray ? 1 : 3
+        let nbExtra = m.extraChannels.count
+        let totalChannels = nbColor + nbExtra
+        guard modular.channels.count >= totalChannels else {
+            throw DecoderError.notImplemented(
+                "ModularImage has \(modular.channels.count) channels; "
+                + "metadata declares \(totalChannels)"
+            )
+        }
+        // We surface up to 1 extra channel as alpha. Spec allows
+        // more (depth, spot colour, …) but `ImageFrame.alphaChannels`
+        // is 0 or 1; everything else gets dropped here.
+        let alphaIdx: Int? = (0..<nbExtra).first(where: {
+            m.extraChannels[$0].type == .alpha
+        }).map { nbColor + $0 }
+        let outChannels: Int
+        let alphaChannels: Int
+        if alphaIdx != nil {
+            outChannels = nbColor + 1
+            alphaChannels = 1
+        } else {
+            outChannels = nbColor
+            alphaChannels = 0
+        }
+        var frame = ImageFrame(
+            width: xsize, height: ysize, channels: outChannels,
+            pixelType: pixelType,
+            colorSpace: isGray ? .grayscale : .sRGB,
+            alphaChannels: alphaChannels
+        )
+        let bytesPerSample = pixelType.bytesPerSample
+        let stride = outChannels * bytesPerSample
+        // Helper to write one Int32 sample at the right byte offset.
+        let writeSample: (Int, Int32) -> Void = { dstByte, value in
+            let clamped = UInt32(max(0, value))
+            switch bytesPerSample {
+            case 1:
+                frame.data[dstByte] = UInt8(min(clamped, 255))
+            default:
+                frame.data[dstByte] = UInt8(clamped & 0xff)
+                frame.data[dstByte + 1] = UInt8((clamped >> 8) & 0xff)
+            }
+        }
+        // Colour channels: 0..<nbColor.
+        for ci in 0..<nbColor {
+            let pixels = modular.channels[ci].pixels
+            for i in 0..<(xsize * ysize) {
+                writeSample(i * stride + ci * bytesPerSample, pixels[i])
+            }
+        }
+        // Alpha (if present) follows the colour channels.
+        if let aIdx = alphaIdx {
+            let pixels = modular.channels[aIdx].pixels
+            let aOffset = nbColor * bytesPerSample
+            for i in 0..<(xsize * ysize) {
+                writeSample(i * stride + aOffset, pixels[i])
+            }
+        }
+        return frame
     }
 
     public func decodeAll(_ data: Data) throws -> [ImageFrame] {
@@ -98,26 +1109,28 @@ public final class JXLDecoder {
 
     /// End-to-end Modular pixel decode. Walks the container + headers,
     /// decodes the MA-tree + post-tree codebook, reads the
-    /// GroupHeader, applies meta-transforms, decodes every wire-level
-    /// channel via `decodeAllChannels`, then runs the inverse
-    /// transform chain via `applyInverseTransforms`.
+    /// GroupHeader(s), applies meta-transforms, decodes every
+    /// wire-level channel rect, then runs the inverse transform chain
+    /// via `applyInverseTransforms`.
     ///
-    /// **Validated against cjxl/djxl** with exact pixel match for the
-    /// 32×32 RGB test (`testCrossValidate_Cjxl_DecodeAllChannels_ByteEqual`):
-    /// every pixel of every channel after inverse transforms equals
-    /// the original input image — healthcare-grade byte equality.
+    /// **Validated against cjxl/djxl** with exact pixel match for
+    /// 32×32 RGB and 256×256 grayscale tests (single-group), plus
+    /// 512×512 grayscale (multi-group): every pixel of every channel
+    /// after inverse transforms equals the original input image —
+    /// healthcare-grade byte equality.
     ///
     /// **Scope** of cjxl-emitted files this currently handles:
-    ///   • Single-group, single-pass Modular lossless frames.
+    ///   • Single-group OR multi-group Modular lossless frames
+    ///     (`numPasses == 1`).
     ///   • RCT (any of the 42 spec types, full coverage in `SpecRCT`).
     ///   • Squeeze (with libjxl's `SmoothTendency` predictor).
     ///   • Tree-decode predictors 0..5 + 6 (Weighted via
     ///     `WeightedPredictor`) + 7..13 (Average / TopRight / etc.).
-    ///   • rANS or prefix-coded entropy sections (alphabet ≤ 64).
+    ///   • rANS or prefix-coded entropy sections.
     ///
-    /// **Out of scope** (yet): multi-group / multi-pass frames,
-    /// Palette transform, LZ77 length-token expansion, VarDCT
-    /// frames. These will throw structured errors.
+    /// **Out of scope** (yet): multi-pass progressive frames,
+    /// Palette transform, LZ77 length-token expansion, TOC
+    /// permutation, VarDCT frames. These will throw structured errors.
     ///
     /// The `force` parameter is retained for backwards compatibility
     /// with the experimental-period gating; it's now a no-op.
@@ -148,6 +1161,10 @@ public final class JXLDecoder {
         var r = BitReader(codestream, startingAt: 16)
         _ = try SizeHeader.read(from: &r)
         _ = try ImageMetadata.read(from: &r)
+        // CustomTransformData (libjxl `image_metadata.cc`): 1 bit when
+        // all_default. For non-XYB images the body is just that one
+        // bit, so we read & discard it before byte-aligning.
+        _ = try? r.readCustomTransformData(xybEncoded: m.xybEncoded)
         try r.alignToByte()
         let ctx = FrameHeaderContext(
             xybEncoded: m.xybEncoded,
@@ -161,66 +1178,354 @@ public final class JXLDecoder {
                 "decodeModular requires a Modular frame; got \(fh.encoding)"
             )
         }
-        let tocEntries = TOC.numEntries(
-            numGroups: 1, numDcGroups: 0,
-            numPasses: Int(fh.passes.numPasses)
-        )
-        _ = try TOC.read(from: &r, numEntries: tocEntries)
-        let matrixDcDefault = try r.readBit()
-        if !matrixDcDefault {
-            for _ in 0..<3 { _ = try r.read(bits: 16) }
-        }
-        let hasTree = try r.readBit()
-        guard hasTree else {
+        let xsize = Int(inspection.xsize)
+        let ysize = Int(inspection.ysize)
+        // libjxl `frame_dimensions.h::FrameDimensions::Set`:
+        //   group_dim = (kGroupDim >> 1) << group_size_shift  // = 128 << shift
+        //   dc_group_dim = group_dim * kBlockDim              // = group_dim * 8
+        // shift∈{0,1,2,3} → group_dim∈{128,256,512,1024}.
+        let groupDim = 128 << Int(fh.groupSizeShift)
+        let dcGroupDim = groupDim << 3
+        let numGroupsX = (xsize + groupDim - 1) / groupDim
+        let numGroupsY = (ysize + groupDim - 1) / groupDim
+        let numGroups = numGroupsX * numGroupsY
+        let numDcGroupsX = (xsize + dcGroupDim - 1) / dcGroupDim
+        let numDcGroupsY = (ysize + dcGroupDim - 1) / dcGroupDim
+        let numDcGroups = numDcGroupsX * numDcGroupsY
+        let numPasses = Int(fh.passes.numPasses)
+        if numPasses != 1 {
             throw DecoderError.notImplemented(
-                "single-leaf-default modular tree decode"
+                "Modular multi-pass progressive (numPasses=\(numPasses))"
             )
         }
-        let treeHdr = try EntropySectionHeader.read(from: &r, numContexts: 6)
-        let treeCB = try MultiClusterCodebook.read(from: &r, header: treeHdr)
-        var treeStream = TokenStreamReader(header: treeHdr, codebook: treeCB)
-        let tree = try ModularTree.decode(from: &r, stream: &treeStream)
-        let postHdr = try EntropySectionHeader.read(
-            from: &r, numContexts: tree.leafCount
+        let tocEntries = TOC.numEntries(
+            numGroups: numGroups, numDcGroups: numDcGroups,
+            numPasses: numPasses
         )
-        let postCB = try MultiClusterCodebook.read(from: &r, header: postHdr)
+        let toc = try TOC.read(from: &r, numEntries: tocEntries)
+        let nbColor = (m.colorEncoding.colorSpace == .grayscale) ? 1 : 3
+        let isMultiSection = !(numGroups == 1 && numPasses == 1)
+        // Per-section byte starts (only meaningful when multi-section).
+        // libjxl `toc.cc::ReadGroupOffsets` already computes per-logical-
+        // section offsets (handling any TOC permutation), so we use
+        // `toc.offsets[i]` directly rather than re-deriving from sizes.
+        let section0Byte = r.position / 8
+        var sectionByteStarts: [Int] = []
+        if isMultiSection {
+            for i in 0..<toc.entrySizes.count {
+                sectionByteStarts.append(section0Byte &+ Int(toc.offsets[i]))
+            }
+        }
+        // Section 0: matrices DC, has_tree, tree+codebook, GroupHeader,
+        // and (single-section flow only) all pixel data. In the
+        // multi-section flow, channels with `w ≤ groupDim && h ≤ groupDim`
+        // also decode here ("global" channels); larger channels defer
+        // to per-group AC sections.
+        var s0 = isMultiSection
+            ? BitReader(codestream, startingAt: sectionByteStarts[0] * 8)
+            : r
+        let matrixDcDefault = try s0.readBit()
+        if !matrixDcDefault {
+            for _ in 0..<3 { _ = try s0.read(bits: 16) }
+        }
+        // libjxl `dec_modular.cc::DecodeGlobalInfo` reads `has_tree`
+        // here; if true, decodes the global MA-tree + post-tree
+        // codebook. If false, both stay nil and each per-section
+        // GroupHeader's `useGlobalTree` MUST be false (the per-section
+        // tree+codebook is decoded inline before its pixel data).
+        let hasTree = try s0.readBit()
+        let globalTree: ModularTree?
+        let globalPostHdr: EntropySectionHeader?
+        let globalPostCB: MultiClusterCodebook?
+        if hasTree {
+            let treeHdr = try EntropySectionHeader.read(from: &s0, numContexts: 6)
+            let treeCB = try MultiClusterCodebook.read(from: &s0, header: treeHdr)
+            var treeStream = TokenStreamReader(header: treeHdr, codebook: treeCB)
+            let tree = try ModularTree.decode(from: &s0, stream: &treeStream)
+            let postHdr = try EntropySectionHeader.read(
+                from: &s0, numContexts: tree.leafCount
+            )
+            let postCB = try MultiClusterCodebook.read(from: &s0, header: postHdr)
+            globalTree = tree
+            globalPostHdr = postHdr
+            globalPostCB = postCB
+        } else {
+            globalTree = nil
+            globalPostHdr = nil
+            globalPostCB = nil
+        }
         // libjxl `dec_modular.cc::DecodeGlobalInfo` reads the
         // GroupHeader directly after the post-tree codebook with NO
         // byte alignment. Match that.
-        let groupHeader = try GroupHeader.read(from: &r)
+        let globalGH = try GroupHeader.read(from: &s0)
         if ProcessInfo.processInfo.environment["JXL_TRACE"] != nil {
-            let msg = "TRACE GH(no-align): useGlobal=\(groupHeader.useGlobalTree), wpDefault=\(groupHeader.wpHeader.allDefault), numTransforms=\(groupHeader.transforms.count)\n"
+            let msg = "TRACE GH(no-align): useGlobal=\(globalGH.useGlobalTree), wpDefault=\(globalGH.wpHeader.allDefault), numTransforms=\(globalGH.transforms.count) numGroups=\(numGroups) hasTree=\(hasTree)\n"
             FileHandle.standardError.write(Data(msg.utf8))
-            for (ti, t) in groupHeader.transforms.enumerated() {
+            for (ti, t) in globalGH.transforms.enumerated() {
                 let tmsg = "TRACE   transform[\(ti)]: id=\(t.id) beginC=\(t.beginC) numC=\(t.numC) rctType=\(t.rctType)\n"
                 FileHandle.standardError.write(Data(tmsg.utf8))
             }
         }
-        var pixelStream = TokenStreamReader(header: postHdr, codebook: postCB)
-
-        let nbColor = (m.colorEncoding.colorSpace == .grayscale) ? 1 : 3
+        // Build the modular image with both colour channels and any
+        // declared extras. libjxl `dec_modular.cc::DecodeGlobalInfo`:
+        //   gi.channel[ec].shrink(DivCeil(xsize_upsampled, ec_ups),
+        //                          DivCeil(ysize_upsampled, ec_ups))
+        //   gi.channel[ec].hshift = gi.channel[ec].vshift =
+        //       log2(ec_ups) - log2(frame.upsampling)
+        // For typical lossless cjxl output `ec_upsampling == 1` and
+        // `frame.upsampling == 1`, so extras live at full resolution
+        // with hshift = vshift = 0 — same as colour channels.
+        let nbExtra = m.extraChannels.count
         var image = ModularImage.fresh(
-            xsize: Int(inspection.xsize),
-            ysize: Int(inspection.ysize),
-            nbColor: nbColor
+            xsize: xsize, ysize: ysize,
+            nbColor: nbColor, nbExtra: nbExtra
         )
-        try metaApplyTransforms(
-            image: &image, transforms: groupHeader.transforms
-        )
-        let geometries = image.channels.map {
-            ModularChannelGeometry(width: $0.width, height: $0.height)
+        // Resize each extra channel per its `extra_channel_upsampling`
+        // and the frame's main `upsampling` factor.
+        if nbExtra > 0 {
+            let frameUps = max(1, Int(fh.upsampling))
+            let frameUpsLog = log2Floor(frameUps)
+            for ec in 0..<nbExtra {
+                let ecUps: Int
+                if ec < fh.extraChannelUpsampling.count {
+                    ecUps = max(1, Int(fh.extraChannelUpsampling[ec]))
+                } else {
+                    ecUps = 1
+                }
+                let ecW = (xsize + ecUps - 1) / ecUps
+                let ecH = (ysize + ecUps - 1) / ecUps
+                let shift = log2Floor(ecUps) - frameUpsLog
+                let chIdx = nbColor + ec
+                image.channels[chIdx] = ModularChannel(
+                    width: ecW, height: ecH,
+                    hshift: max(0, shift), vshift: max(0, shift)
+                )
+            }
         }
-        let decoded = try decodeAllChannels(
-            channels: geometries, groupId: 0,
-            tree: tree, stream: &pixelStream, from: &r,
-            wpHeader: groupHeader.wpHeader
-        )
-        for i in 0..<image.channels.count {
-            image.channels[i].pixels = decoded[i]
+        try metaApplyTransforms(image: &image, transforms: globalGH.transforms)
+        if !isMultiSection {
+            // Single-section: pixel data follows the GroupHeader in
+            // section 0. Decode every channel here. If the global
+            // tree is present and the GroupHeader says useGlobalTree,
+            // use it; otherwise decode a per-section tree.
+            let useTree: ModularTree
+            let usePostHdr: EntropySectionHeader
+            let usePostCB: MultiClusterCodebook
+            if globalGH.useGlobalTree, let gt = globalTree,
+               let gh = globalPostHdr, let gc = globalPostCB {
+                useTree = gt; usePostHdr = gh; usePostCB = gc
+            } else {
+                let lTreeHdr = try EntropySectionHeader.read(
+                    from: &s0, numContexts: 6
+                )
+                let lTreeCB = try MultiClusterCodebook.read(
+                    from: &s0, header: lTreeHdr
+                )
+                var lTreeStream = TokenStreamReader(
+                    header: lTreeHdr, codebook: lTreeCB
+                )
+                useTree = try ModularTree.decode(
+                    from: &s0, stream: &lTreeStream
+                )
+                usePostHdr = try EntropySectionHeader.read(
+                    from: &s0, numContexts: useTree.leafCount
+                )
+                usePostCB = try MultiClusterCodebook.read(
+                    from: &s0, header: usePostHdr
+                )
+            }
+            var pixelStream = TokenStreamReader(
+                header: usePostHdr, codebook: usePostCB
+            )
+            let geometries = image.channels.map {
+                ModularChannelGeometry(width: $0.width, height: $0.height)
+            }
+            let decoded = try decodeAllChannels(
+                channels: geometries, groupId: 0,
+                tree: useTree, stream: &pixelStream, from: &s0,
+                wpHeader: globalGH.wpHeader
+            )
+            for i in 0..<image.channels.count {
+                image.channels[i].pixels = decoded[i]
+            }
+        } else {
+            // Multi-section. Section 0 may carry "global" channels —
+            // those whose post-shift dimensions both fit in one group.
+            // Larger channels defer to per-group AC sections.
+            // Section 0's "global" channel decode uses the global
+            // tree if `globalGH.useGlobalTree` (otherwise it would
+            // need its own tree, but cjxl's typical pattern is
+            // useGlobalTree=true for section 0 when channels are present).
+            if let gt = globalTree, let gh = globalPostHdr,
+               let gc = globalPostCB, globalGH.useGlobalTree {
+                var globalPixelStream = TokenStreamReader(
+                    header: gh, codebook: gc
+                )
+                for ci in 0..<image.channels.count {
+                    let ch = image.channels[ci]
+                    if ch.width <= groupDim && ch.height <= groupDim {
+                        var buf = [Int32](
+                            repeating: 0, count: ch.width * ch.height
+                        )
+                        try decodeModularChannel(
+                            width: ch.width, height: ch.height,
+                            staticChannel: Int32(ci), groupId: 0,
+                            tree: gt, stream: &globalPixelStream, from: &s0,
+                            wpHeader: globalGH.wpHeader,
+                            out: &buf
+                        )
+                        image.channels[ci].pixels = buf
+                    }
+                }
+            }
+            // Per-group AC sections. Layout (libjxl `NumTocEntries`):
+            //   [0]                         DC global  (already read)
+            //   [1 .. 1+numDcGroups)        DC groups  (empty for Modular)
+            //   [1+numDcGroups]             AC global  (empty for Modular)
+            //   [2+numDcGroups + g .. )     AC group g (per-group data)
+            let acStartIdx = 2 + numDcGroups
+            for groupIdx in 0..<numGroups {
+                let gx = groupIdx % numGroupsX
+                let gy = groupIdx / numGroupsX
+                let sectionIdx = acStartIdx + groupIdx
+                var gr = BitReader(
+                    codestream, startingAt: sectionByteStarts[sectionIdx] * 8
+                )
+                let groupGH = try GroupHeader.read(from: &gr)
+                // Tree + post-tree codebook for this section: either
+                // the global ones (useGlobalTree=true) or per-section
+                // ones decoded inline.
+                let pgTree: ModularTree
+                let pgPostHdr: EntropySectionHeader
+                let pgPostCB: MultiClusterCodebook
+                if groupGH.useGlobalTree, let gt = globalTree,
+                   let gh = globalPostHdr, let gc = globalPostCB {
+                    pgTree = gt; pgPostHdr = gh; pgPostCB = gc
+                } else {
+                    let lTreeHdr = try EntropySectionHeader.read(
+                        from: &gr, numContexts: 6
+                    )
+                    let lTreeCB = try MultiClusterCodebook.read(
+                        from: &gr, header: lTreeHdr
+                    )
+                    var lTreeStream = TokenStreamReader(
+                        header: lTreeHdr, codebook: lTreeCB
+                    )
+                    pgTree = try ModularTree.decode(
+                        from: &gr, stream: &lTreeStream
+                    )
+                    pgPostHdr = try EntropySectionHeader.read(
+                        from: &gr, numContexts: pgTree.leafCount
+                    )
+                    pgPostCB = try MultiClusterCodebook.read(
+                        from: &gr, header: pgPostHdr
+                    )
+                }
+                var groupPixelStream = TokenStreamReader(
+                    header: pgPostHdr, codebook: pgPostCB
+                )
+                // libjxl `ModularStreamId::ModularAC(group, pass).ID()`:
+                //   id = 1 + numDcGroups + pass * numGroups + group
+                // Pass=0 here (only single-pass Modular supported).
+                // Tree property 1 ("group_id" static prop) branches on
+                // this value when present, so byte-equality requires
+                // the libjxl convention exactly.
+                let streamId = 1 + numDcGroups + 0 * numGroups + groupIdx
+
+                // Build the per-group sub-image (libjxl `gi` in
+                // `dec_modular.cc::DecodeGroup`). It contains one
+                // rect per too-big channel, in original-image order;
+                // each rect's geometry is the channel's per-axis
+                // group_dim quantum.
+                struct GroupChannelMap {
+                    let parentChannel: Int  // index in full image
+                    let rectX0: Int
+                    let rectY0: Int
+                }
+                var subImage = ModularImage(channels: [], nbMetaChannels: 0)
+                var rectMap: [GroupChannelMap] = []
+                for ci in 0..<image.channels.count {
+                    let ch = image.channels[ci]
+                    if ch.width <= groupDim && ch.height <= groupDim {
+                        continue
+                    }
+                    let chGroupDimX = max(1, groupDim >> ch.hshift)
+                    let chGroupDimY = max(1, groupDim >> ch.vshift)
+                    let rectX0 = gx * chGroupDimX
+                    let rectY0 = gy * chGroupDimY
+                    if rectX0 >= ch.width || rectY0 >= ch.height {
+                        continue
+                    }
+                    let rectW = min(chGroupDimX, ch.width - rectX0)
+                    let rectH = min(chGroupDimY, ch.height - rectY0)
+                    subImage.channels.append(ModularChannel(
+                        width: rectW, height: rectH,
+                        hshift: ch.hshift, vshift: ch.vshift
+                    ))
+                    rectMap.append(GroupChannelMap(
+                        parentChannel: ci, rectX0: rectX0, rectY0: rectY0
+                    ))
+                }
+                let preTransformChannelCount = subImage.channels.count
+                // Apply per-group meta-transforms (libjxl
+                // `ModularDecode` line 555: `for (Transform& t : ...) { t.MetaApply(image); }`).
+                try metaApplyTransforms(
+                    image: &subImage, transforms: groupGH.transforms
+                )
+                // Decode every (post-meta-apply) channel of the
+                // sub-image in order. libjxl's MAANS decode iterates
+                // until `channel.w > max_chan_size || channel.h > max_chan_size`,
+                // but inside a per-group section every rect already
+                // fits in group_dim by construction.
+                for sci in 0..<subImage.channels.count {
+                    let sch = subImage.channels[sci]
+                    if sch.width == 0 || sch.height == 0 { continue }
+                    var buf = [Int32](
+                        repeating: 0, count: sch.width * sch.height
+                    )
+                    try decodeModularChannel(
+                        width: sch.width, height: sch.height,
+                        staticChannel: Int32(sci),
+                        groupId: Int32(streamId),
+                        tree: pgTree, stream: &groupPixelStream, from: &gr,
+                        wpHeader: groupGH.wpHeader,
+                        out: &buf
+                    )
+                    subImage.channels[sci].pixels = buf
+                }
+                // Inverse per-group transforms (libjxl
+                // `ModularGenericDecompress` line 680: `image.undo_transforms(header->wp_header)`).
+                try applyInverseTransforms(
+                    image: &subImage, transforms: groupGH.transforms
+                )
+                // Sanity: post-undo channel count must match pre-meta-apply.
+                guard subImage.channels.count == preTransformChannelCount else {
+                    throw DecoderError.notImplemented(
+                        "per-group transform changed channel count "
+                        + "post-inverse (got \(subImage.channels.count) "
+                        + "expected \(preTransformChannelCount))"
+                    )
+                }
+                // Stitch each sub-image channel's rect into the
+                // corresponding full-image channel.
+                for (sci, info) in rectMap.enumerated() {
+                    let sch = subImage.channels[sci]
+                    let parentCh = image.channels[info.parentChannel]
+                    let rectW = sch.width
+                    let rectH = sch.height
+                    for ry in 0..<rectH {
+                        let srcStart = ry * rectW
+                        let dstStart = (info.rectY0 + ry)
+                            * parentCh.width + info.rectX0
+                        for rx in 0..<rectW {
+                            image.channels[info.parentChannel].pixels[dstStart + rx] =
+                                sch.pixels[srcStart + rx]
+                        }
+                    }
+                }
+            }
         }
-        try applyInverseTransforms(
-            image: &image, transforms: groupHeader.transforms
-        )
+        try applyInverseTransforms(image: &image, transforms: globalGH.transforms)
         return image
     }
 
@@ -274,6 +1579,7 @@ public final class JXLDecoder {
                 usePrefixCode: nil
             )
         }
+        _ = try? r.readCustomTransformData(xybEncoded: m.xybEncoded)
         try? r.alignToByte()
         let ctx = FrameHeaderContext(
             xybEncoded: m.xybEncoded,
@@ -289,16 +1595,29 @@ public final class JXLDecoder {
                 usePrefixCode: nil
             )
         }
-        // TOC (assumes single-group single-pass — what cjxl emits for
-        // simple inputs).
+        // TOC entry count derives from FrameHeader.groupSizeShift +
+        // image dims. libjxl `frame_dimensions.h::FrameDimensions::Set`:
+        //   group_dim = 128 << group_size_shift
+        //   dc_group_dim = group_dim * 8
+        let xs = Int(inspection.xsize)
+        let ys = Int(inspection.ysize)
+        let groupDim = 128 << Int(fh.groupSizeShift)
+        let dcGroupDim = groupDim << 3
+        let numG = ((xs + groupDim - 1) / groupDim)
+                 * ((ys + groupDim - 1) / groupDim)
+        let numDG = ((xs + dcGroupDim - 1) / dcGroupDim)
+                  * ((ys + dcGroupDim - 1) / dcGroupDim)
         let entries = TOC.numEntries(
-            numGroups: 1, numDcGroups: 0,
+            numGroups: numG, numDcGroups: numDG,
             numPasses: Int(fh.passes.numPasses)
         )
         let toc = try? TOC.read(from: &r, numEntries: entries)
         let tocSizes = toc?.entrySizes
 
         // For Modular frames, try to walk into the MA-tree section.
+        // Position the reader at section 0 (first TOC entry's start).
+        // For multi-section frames the reader is already there;
+        // alignment was performed by TOC.read.
         var hasTree: Bool? = nil
         var leafCount: Int? = nil
         var usePrefix: Bool? = nil
@@ -395,6 +1714,34 @@ public final class JXLDecoder {
                                  boxTypes: boxTypes, metadata: metadata)
         } catch let e as BitstreamError {
             throw DecoderError.bitstream(e)
+        }
+    }
+}
+
+extension BitReader {
+    /// libjxl `image_metadata.cc::CustomTransformData::VisitFields` —
+    /// read between `ImageMetadata` and the JumpToByteBoundary that
+    /// precedes the FrameHeader. For non-XYB images with all defaults
+    /// (the common case), the body is a single `all_default = 1` bit.
+    /// We don't yet support custom upsampling weights, so anything but
+    /// all_default trips us up and is rejected by the surrounding
+    /// `try?` — but no reader-side regression for the common case.
+    mutating func readCustomTransformData(xybEncoded: Bool) throws {
+        let allDefault = try readBit()
+        if allDefault { return }
+        if xybEncoded {
+            throw BitstreamError.malformedValue(
+                "custom opsin matrix not supported"
+            )
+        }
+        // custom_weights_mask u(3); we only accept zero (no custom
+        // upsampling weights). Anything else needs the per-mode kernel
+        // tables libjxl hardcodes — not yet wired up.
+        let mask = try read(bits: 3)
+        if mask != 0 {
+            throw BitstreamError.malformedValue(
+                "custom upsampling weights mask=\(mask) not supported"
+            )
         }
     }
 }

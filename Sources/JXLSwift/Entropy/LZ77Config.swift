@@ -105,12 +105,19 @@ extension LZ77Config {
 
     /// Deserialise.
     public static func read(from r: inout BitReader) throws -> LZ77Config {
+        let trace = ProcessInfo.processInfo.environment["JXL_TRACE"] != nil
+        let pStart = r.position
         let enabled: Bool
         do { enabled = try r.readBit() }
         catch let e as BitstreamError { throw LZ77ConfigError.bitstream(e) }
+        if trace {
+            FileHandle.standardError.write(Data(
+                "TRACE LZ77 enabled=\(enabled) at pos=\(pStart)\n".utf8))
+        }
         if !enabled {
             return LZ77Config.disabled
         }
+        let pSym = r.position
         let minSymbol: UInt32
         let minLength: UInt32
         do {
@@ -118,18 +125,32 @@ extension LZ77Config {
                 .literal(224), .literal(512), .literal(4096),
                 .offset(constant: 8, extraBits: 15)
             ))
+            if trace {
+                FileHandle.standardError.write(Data(
+                    "TRACE LZ77 min_symbol=\(minSymbol) bits=\(r.position-pSym) at pos=\(pSym)\n".utf8))
+            }
+            let pLen = r.position
             minLength = try r.readU32((
                 .literal(3), .literal(4),
                 .offset(constant: 5, extraBits: 2),
                 .offset(constant: 9, extraBits: 8)
             ))
+            if trace {
+                FileHandle.standardError.write(Data(
+                    "TRACE LZ77 min_length=\(minLength) bits=\(r.position-pLen) at pos=\(pLen)\n".utf8))
+            }
         } catch let e as BitstreamError {
             throw LZ77ConfigError.bitstream(e)
         }
+        let pCfg = r.position
         let lengthCfg: HybridUintConfig
         do { lengthCfg = try HybridUintConfig.read(from: &r, logAlpha: lengthUintConfigLogAlpha) }
         catch let e as HybridUintConfigError {
             throw LZ77ConfigError.hybridConfig(e)
+        }
+        if trace {
+            FileHandle.standardError.write(Data(
+                "TRACE LZ77 length_uint_config bits=\(r.position-pCfg) at pos=\(pCfg)\n".utf8))
         }
         return LZ77Config(
             enabled: true,

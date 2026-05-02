@@ -38,6 +38,25 @@ public struct BitReader: Sendable {
         self.position = position
     }
 
+    @inline(__always)
+    private static var bitTrace: Int32 {
+        // Read once on first access, cached process-wide. 0 = off,
+        // 1 = absolute bitstream position, otherwise = subtract this
+        // offset before emitting (so we can align with libjxl's
+        // section-relative BitReader positions).
+        BitReaderTraceCache.mode
+    }
+
+    @inline(__always)
+    private func emitTrace(start: Int, count: Int, value: UInt64) {
+        let mode = BitReader.bitTrace
+        if mode == 0 || count == 0 { return }
+        let p = mode == 1 ? start : start - Int(mode)
+        if p < 0 { return }
+        let line = "TRACE pos=\(p) read \(count) bits = 0x\(String(value, radix: 16))\n"
+        FileHandle.standardError.write(Data(line.utf8))
+    }
+
     /// Total bits available in the underlying buffer.
     public var totalBits: Int { data.count * 8 }
     public var bitsRemaining: Int { totalBits - position }
@@ -52,6 +71,7 @@ public struct BitReader: Sendable {
         guard position + count <= totalBits else {
             throw BitstreamError.outOfBounds(needed: count, remaining: bitsRemaining)
         }
+        let startPos = position
         var value: UInt32 = 0
         var shift = 0
         var pos = position
@@ -69,6 +89,7 @@ public struct BitReader: Sendable {
             remaining -= take
         }
         position += count
+        emitTrace(start: startPos, count: count, value: UInt64(value))
         return value
     }
 
@@ -130,7 +151,19 @@ public struct BitReader: Sendable {
         guard position + count <= totalBits else {
             throw BitstreamError.outOfBounds(needed: count, remaining: bitsRemaining)
         }
+        let startPos = position
         position += count
+        // Trace as a normal "read" of unknown value so the cumulative
+        // bit position lines up with libjxl's trace; we don't have the
+        // value here (skip is value-blind) so emit `0x?` as a sentinel.
+        let mode = BitReader.bitTrace
+        if mode != 0 && count > 0 {
+            let p = mode == 1 ? startPos : startPos - Int(mode)
+            if p >= 0 {
+                let line = "TRACE pos=\(p) skip \(count) bits\n"
+                FileHandle.standardError.write(Data(line.utf8))
+            }
+        }
     }
 
     /// Align forward to the next byte boundary by consuming up to 7
@@ -151,4 +184,18 @@ public struct BitReader: Sendable {
             throw BitstreamError.malformedValue("non-zero padding bits before byte alignment")
         }
     }
+}
+
+/// Process-wide cache for the `JXL_BIT_TRACE` env var. Set to "1" to
+/// emit each `BitReader.read(bits:)` call as a libjxl-style trace
+/// line (`TRACE pos=N read C bits = 0xV`) using absolute bitstream
+/// positions. Set to a positive integer N to subtract N from each
+/// position before emitting (so reads can be aligned with libjxl
+/// section-relative BitReader positions for diffing).
+enum BitReaderTraceCache {
+    static let mode: Int32 = {
+        guard let raw = ProcessInfo.processInfo.environment["JXL_BIT_TRACE"],
+              let v = Int32(raw) else { return 0 }
+        return v
+    }()
 }

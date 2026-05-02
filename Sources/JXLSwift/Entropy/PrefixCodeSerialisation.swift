@@ -230,6 +230,98 @@ public enum PrefixCodeFormat {
             throw PrefixCodeFormatError.complex(.prefixCode(e))
         }
     }
+
+    /// Encode a prefix-code table from its `lengths` array. Inverse
+    /// of `decode`. Picks `SimplePrefixCodeFormat.encode` when the
+    /// alphabet has 1–4 non-zero-length symbols and the implied
+    /// length pattern matches one of the simple shapes
+    /// ({0}, {1,1}, {1,2,2}, {2,2,2,2}, {1,2,3,3}); otherwise falls
+    /// back to `ComplexPrefixCodeFormat.encode`. Single-symbol
+    /// alphabets emit zero bits — they're a degenerate case
+    /// declared by `alphabet_size == 1` in the surrounding codebook.
+    public static func encode(
+        to w: inout BitWriter,
+        lengths: [UInt8],
+        alphabetSize: Int
+    ) throws {
+        guard alphabetSize >= 1 else {
+            throw PrefixCodeFormatError.zeroAlphabet
+        }
+        if alphabetSize == 1 {
+            // Trivial single-symbol code emits no bits — the surrounding
+            // codebook already declared `alphabet_size == 1`, which the
+            // decoder uses to skip table reading entirely.
+            return
+        }
+        // Try the simple shapes. Collect non-zero-length symbols in
+        // ascending length order.
+        let nonzero = lengths.enumerated()
+            .filter { $0.element > 0 }
+            .map { (symbol: $0.offset, length: $0.element) }
+            .sorted { $0.length < $1.length }
+        if let symbols = simpleShapeMatch(
+            nonzero: nonzero, alphabetSize: alphabetSize
+        ) {
+            do {
+                try SimplePrefixCodeFormat.encode(
+                    to: &w, symbols: symbols.symbols,
+                    alphabetSize: alphabetSize,
+                    useLongCodewords: symbols.useLongCodewords
+                )
+                return
+            } catch let e as SimplePrefixCodeError {
+                throw PrefixCodeFormatError.simple(e)
+            }
+        }
+        // Fall back to the complex format.
+        do {
+            try ComplexPrefixCodeFormat.encode(to: &w, lengths: lengths)
+        } catch let e as ComplexPrefixCodeError {
+            throw PrefixCodeFormatError.complex(e)
+        }
+    }
+
+    /// Decide whether `nonzero` (sorted by ascending code length)
+    /// matches one of the simple-code shapes. Returns the symbol list
+    /// in canonical order (length-1, length-2, length-3...) plus the
+    /// `useLongCodewords` bit for the 4-symbol case, or nil if a
+    /// complex code is needed.
+    private static func simpleShapeMatch(
+        nonzero: [(symbol: Int, length: UInt8)],
+        alphabetSize: Int
+    ) -> (symbols: [Int], useLongCodewords: Bool)? {
+        switch nonzero.count {
+        case 1 where nonzero[0].length == 0:
+            // Degenerate. We already returned for alphabetSize == 1
+            // above, so this case shouldn't reach here in practice;
+            // fall through to "no simple match".
+            return nil
+        case 2 where nonzero[0].length == 1 && nonzero[1].length == 1:
+            return (symbols: [nonzero[0].symbol, nonzero[1].symbol],
+                    useLongCodewords: false)
+        case 3 where nonzero[0].length == 1
+                  && nonzero[1].length == 2 && nonzero[2].length == 2:
+            return (symbols: [nonzero[0].symbol,
+                              nonzero[1].symbol, nonzero[2].symbol],
+                    useLongCodewords: false)
+        case 4:
+            // {2,2,2,2} → useLongCodewords=false.
+            if nonzero[0].length == 2 && nonzero[1].length == 2
+                && nonzero[2].length == 2 && nonzero[3].length == 2 {
+                return (symbols: nonzero.map { $0.symbol },
+                        useLongCodewords: false)
+            }
+            // {1,2,3,3} → useLongCodewords=true.
+            if nonzero[0].length == 1 && nonzero[1].length == 2
+                && nonzero[2].length == 3 && nonzero[3].length == 3 {
+                return (symbols: nonzero.map { $0.symbol },
+                        useLongCodewords: true)
+            }
+            return nil
+        default:
+            return nil
+        }
+    }
 }
 
 // MARK: - Complex prefix-code-table format (§C.6.2.1, complex branch)

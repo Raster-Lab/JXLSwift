@@ -66,6 +66,11 @@ public struct MultiClusterCodebook: Sendable {
         header: EntropySectionHeader
     ) throws -> MultiClusterCodebook {
         let n = header.numHistograms
+        let traceMC = ProcessInfo.processInfo.environment["JXL_TRACE"] != nil
+        if traceMC {
+            FileHandle.standardError.write(Data(
+                "TRACE MultiClusterCodebook.read n=\(n) usePrefix=\(header.usePrefixCode) at pos=\(r.position)\n".utf8))
+        }
         if header.usePrefixCode {
             // 1. Per-cluster alphabet sizes.
             var alphabetSizes = [Int]()
@@ -77,6 +82,10 @@ public struct MultiClusterCodebook: Sendable {
                     throw MultiClusterCodebookError.bitstream(e)
                 }
                 alphabetSizes.append(Int(raw) + 1)
+            }
+            if traceMC {
+                FileHandle.standardError.write(Data(
+                    "TRACE MultiClusterCodebook alphabetSizes=\(alphabetSizes) at pos=\(r.position)\n".utf8))
             }
             // 2. Per-cluster Huffman tables. Single-symbol alphabets
             // emit zero bits and decode to the trivial table.
@@ -127,5 +136,109 @@ public struct MultiClusterCodebook: Sendable {
             huffmanTables: [], ansCounts: counts,
             alphabetSizes: alphabetSizes
         )
+    }
+
+    /// Write the codebook for the prefix-code path with **all
+    /// single-symbol clusters** — the simplest case useful for
+    /// stub encoders. Emits one `VarLenUint16(0)` per cluster
+    /// (declares alphabet size 1), with no Huffman table bits per
+    /// cluster (single-symbol alphabets carry zero header bits).
+    /// Throws if any cluster's alphabet size is not 1; for the
+    /// general case use `write(to:header:)`.
+    public func writeSingleSymbolPrefix(
+        to w: inout BitWriter, header: EntropySectionHeader
+    ) throws {
+        guard header.usePrefixCode else {
+            throw MultiClusterCodebookError.bitstream(
+                .malformedValue("writeSingleSymbolPrefix requires "
+                              + "use_prefix_code=true")
+            )
+        }
+        for size in alphabetSizes {
+            guard size == 1 else {
+                throw MultiClusterCodebookError.bitstream(
+                    .malformedValue("writeSingleSymbolPrefix: cluster "
+                                  + "alphabet size \(size) ≠ 1; "
+                                  + "use write(to:header:) for the "
+                                  + "general path")
+                )
+            }
+            do { try w.writeVarLenUint16(0) }
+            catch let e as BitstreamError {
+                throw MultiClusterCodebookError.bitstream(e)
+            }
+        }
+    }
+
+    /// Write the per-cluster codebook tables that follow an
+    /// `EntropySectionHeader`. Picks the prefix-code path or the
+    /// rANS-distribution path based on `header.usePrefixCode`.
+    ///
+    /// **Prefix-code path** (per cluster, in order):
+    ///   • `VarLenUint16(alphabet_size - 1)`
+    ///   • If `alphabet_size > 1`: `PrefixCodeFormat.encode` over
+    ///     the cluster's `lengths` array (recovered from the
+    ///     `PrefixCodeTable` stored on this codebook).
+    ///   • If `alphabet_size == 1`: zero bits — the surrounding
+    ///     codebook header alone tells the decoder.
+    ///
+    /// **rANS-distribution path** (per cluster, in order):
+    ///   • `SpecANSDistribution.writeHistogram(counts)` — the
+    ///     simple-1, simple-2, and flat shortcuts are supported
+    ///     today; full custom histograms throw
+    ///     `complexPathNotImplemented`.
+    public func write(
+        to w: inout BitWriter, header: EntropySectionHeader
+    ) throws {
+        let n = header.numHistograms
+        if header.usePrefixCode {
+            guard huffmanTables.count == n,
+                  alphabetSizes.count == n else {
+                throw MultiClusterCodebookError.bitstream(
+                    .malformedValue("prefix codebook has wrong "
+                                  + "cluster count (huffman \(huffmanTables.count) "
+                                  + "alphabetSizes \(alphabetSizes.count) "
+                                  + "expected \(n))")
+                )
+            }
+            for c in 0..<n {
+                let size = alphabetSizes[c]
+                guard size >= 1 && size <= (1 << 16) else {
+                    throw MultiClusterCodebookError.bitstream(
+                        .malformedValue("alphabet size out of range: \(size)")
+                    )
+                }
+                do { try w.writeVarLenUint16(UInt32(size - 1)) }
+                catch let e as BitstreamError {
+                    throw MultiClusterCodebookError.bitstream(e)
+                }
+                if size > 1 {
+                    let lengths = huffmanTables[c].lengths
+                    do {
+                        try PrefixCodeFormat.encode(
+                            to: &w, lengths: lengths, alphabetSize: size
+                        )
+                    } catch let e as PrefixCodeFormatError {
+                        throw MultiClusterCodebookError.prefix(e)
+                    }
+                }
+                // size == 1 → no bits.
+            }
+            return
+        }
+        // ANS distribution path.
+        guard ansCounts.count == n else {
+            throw MultiClusterCodebookError.bitstream(
+                .malformedValue("ANS codebook has wrong cluster count "
+                              + "(\(ansCounts.count) expected \(n))")
+            )
+        }
+        for c in 0..<n {
+            do {
+                try SpecANSDistribution.writeHistogram(ansCounts[c], to: &w)
+            } catch let e as SpecANSDistributionError {
+                throw MultiClusterCodebookError.ans(e)
+            }
+        }
     }
 }

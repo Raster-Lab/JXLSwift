@@ -40,11 +40,46 @@
 
 import Foundation
 
-public enum ContextMapError: Error, Sendable, Equatable {
+public indirect enum ContextMapError: Error, Sendable, Equatable {
     case clusterIndexOutOfRange(index: Int, max: Int)
     case bitsPerEntryTooSmall(needed: Int, encoded: Int)
     case fullPathNotImplemented
     case bitstream(BitstreamError)
+    /// Inner entropy section header for the full path failed to parse.
+    case innerHeader(EntropySectionHeaderError)
+    /// Inner per-cluster codebook for the full path failed to parse.
+    case innerCodebook(MultiClusterCodebookError)
+    /// Reading a context-map symbol from the inner ANS / prefix
+    /// stream failed.
+    case innerToken(TokenStreamReaderError)
+    /// VerifyContextMap: not every cluster index in [0, numClusters)
+    /// appears in the decoded map. libjxl rejects this as malformed.
+    case incompleteMap
+
+    public static func == (lhs: ContextMapError, rhs: ContextMapError) -> Bool {
+        switch (lhs, rhs) {
+        case (.clusterIndexOutOfRange(let a, let am),
+              .clusterIndexOutOfRange(let b, let bm)):
+            return a == b && am == bm
+        case (.bitsPerEntryTooSmall(let a, let ae),
+              .bitsPerEntryTooSmall(let b, let be)):
+            return a == b && ae == be
+        case (.fullPathNotImplemented, .fullPathNotImplemented):
+            return true
+        case (.bitstream(let a), .bitstream(let b)):
+            return a == b
+        case (.incompleteMap, .incompleteMap):
+            return true
+        case (.innerHeader, .innerHeader),
+             (.innerCodebook, .innerCodebook),
+             (.innerToken, .innerToken):
+            // Inner cases compare type-only — the wrapped errors don't
+            // all carry Equatable conformance.
+            return true
+        default:
+            return false
+        }
+    }
 }
 
 public struct ContextMap: Sendable, Equatable {
@@ -128,19 +163,51 @@ extension ContextMap {
     /// downstream consumer expects). When `numContexts <= 1` the
     /// caller should skip calling `read` and use the implicit `[0]`
     /// map directly.
+    ///
+    /// Two paths (libjxl `dec_context_map.cc::DecodeContextMap`):
+    ///
+    ///   • **Simple path** (`is_simple == 1`): a 2-bit `bits_per_entry`
+    ///     field selects 0 / 1 / 2 / 3 bits per entry, then each
+    ///     entry is read as `u(bits_per_entry)`. Caps cluster count at
+    ///     2^bits_per_entry (≤ 8).
+    ///
+    ///   • **Full path** (`is_simple == 0`): a `use_mtf` flag + a full
+    ///     entropy section (1 cluster, `disallow_lz77=numContexts<=2`)
+    ///     + ANS-coded entries. After decoding, the inverse
+    ///     move-to-front transform may be applied. This is the path
+    ///     cjxl picks for streams with > 8 clusters (typical of
+    ///     larger RGB images).
     public static func read(numContexts: Int, from r: inout BitReader) throws -> ContextMap {
+        let trace = ProcessInfo.processInfo.environment["JXL_TRACE"] != nil
+        let pStart = r.position
         if numContexts <= 1 {
+            if trace {
+                FileHandle.standardError.write(Data(
+                    "TRACE ContextMap.read trivial numContexts=\(numContexts) at pos=\(pStart)\n".utf8))
+            }
             return ContextMap.trivial(numContexts: max(0, numContexts))
         }
         let isSimple: Bool
         do { isSimple = try r.readBit() }
         catch let e as BitstreamError { throw ContextMapError.bitstream(e) }
-        guard isSimple else {
-            // The full path needs `use_mtf` + DecodeHistograms + ANS
-            // and the inverse move-to-front transform. Not yet
-            // implemented — see libjxl dec_context_map.cc.
-            throw ContextMapError.fullPathNotImplemented
+        let cm: ContextMap
+        if isSimple {
+            cm = try readSimplePath(numContexts: numContexts, from: &r)
+        } else {
+            cm = try readFullPath(numContexts: numContexts, from: &r)
         }
+        if trace {
+            FileHandle.standardError.write(Data(
+                "TRACE ContextMap.read numContexts=\(numContexts) numClusters=\(cm.numClusters) isSimple=\(isSimple) bits=\(r.position-pStart) at pos=\(pStart) map=\(cm.map)\n".utf8))
+        }
+        return cm
+    }
+
+    /// Simple-bits-per-entry context map. Encodes up to 8 clusters
+    /// (3 bits per entry).
+    private static func readSimplePath(
+        numContexts: Int, from r: inout BitReader
+    ) throws -> ContextMap {
         let bitsPerEntry: UInt32
         do { bitsPerEntry = try r.read(bits: 2) }
         catch let e as BitstreamError { throw ContextMapError.bitstream(e) }
@@ -160,5 +227,124 @@ extension ContextMap {
         }
         let numClusters = Int(maxSym) + 1
         return ContextMap(numClusters: numClusters, useMTF: false, mapAsserted: map)
+    }
+
+    /// Full entropy-coded context map. libjxl
+    /// `dec_context_map.cc::DecodeContextMap`:
+    ///
+    ///     use_mtf = u(1)
+    ///     // Inner entropy section with 1 sink cluster.
+    ///     // libjxl disallows LZ77 here when context_map.size() <= 2.
+    ///     inner_header  = DecodeHistograms(num_histograms = 1)
+    ///     inner_codebook = read per-cluster ANS / prefix codebook
+    ///     for i in 0..<context_map.size():
+    ///         map[i] = inner.readToken(context = 0) (with LZ77 enabled)
+    ///     if use_mtf:
+    ///         InverseMoveToFrontTransform(map)
+    ///     num_clusters = max(map) + 1
+    ///     verify every cluster 0..num_clusters-1 appears at least once
+    private static func readFullPath(
+        numContexts: Int, from r: inout BitReader
+    ) throws -> ContextMap {
+        let trace = ProcessInfo.processInfo.environment["JXL_TRACE"] != nil
+        let useMTFStart = r.position
+        let useMTF: Bool
+        do { useMTF = try r.readBit() }
+        catch let e as BitstreamError { throw ContextMapError.bitstream(e) }
+        // Inner entropy section: one cluster, one context.
+        let innerHdrStart = r.position
+        let innerHdr: EntropySectionHeader
+        do {
+            innerHdr = try EntropySectionHeader.read(from: &r, numContexts: 1)
+        } catch let e as EntropySectionHeaderError {
+            throw ContextMapError.innerHeader(e)
+        }
+        let innerHdrBits = r.position - innerHdrStart
+        let innerCBStart = r.position
+        let innerCB: MultiClusterCodebook
+        do {
+            innerCB = try MultiClusterCodebook.read(from: &r, header: innerHdr)
+        } catch let e as MultiClusterCodebookError {
+            throw ContextMapError.innerCodebook(e)
+        }
+        let innerCBBits = r.position - innerCBStart
+        let symbolsStart = r.position
+        if trace {
+            let prefix = innerHdr.usePrefixCode ? "prefix" : "rANS"
+            let logAlpha = innerHdr.logAlphaSize
+            // The cjxl-d=1 fixture's inner ContextMap section uses
+            // a prefix-coded path with logAlpha=15. Our reader
+            // produces the right *symbols* (verified by ctxMap
+            // dump matching kDefaultBlockCtxMap byte-exact), but
+            // the cumulative bit position after reading them
+            // currently differs from libjxl's by some N bits we
+            // can't pin without instrumented libjxl. The next
+            // bite is to build libjxl with `JXL_BYTEPOS_TRACE`
+            // and diff our trace against it line-by-line.
+            let line = "TRACE ContextMap.readFullPath useMTF=\(useMTF) at \(useMTFStart) | innerHdr \(innerHdrBits)b (mode=\(prefix), logAlpha=\(logAlpha)) | innerCB \(innerCBBits)b | symbols start at \(symbolsStart)\n"
+            FileHandle.standardError.write(Data(line.utf8))
+        }
+        var stream = TokenStreamReader(header: innerHdr, codebook: innerCB)
+        var map = [UInt8](repeating: 0, count: numContexts)
+        var maxSym: UInt32 = 0
+        for i in 0..<numContexts {
+            let sym: UInt32
+            do { sym = try stream.readToken(context: 0, from: &r) }
+            catch let e as TokenStreamReaderError {
+                throw ContextMapError.innerToken(e)
+            }
+            if sym >= 256 {
+                throw ContextMapError.clusterIndexOutOfRange(
+                    index: Int(sym), max: 255
+                )
+            }
+            map[i] = UInt8(sym)
+            if sym > maxSym { maxSym = sym }
+        }
+        if useMTF {
+            inverseMoveToFrontTransform(&map)
+            // After MTF the new max may differ; recompute.
+            maxSym = 0
+            for v in map {
+                if UInt32(v) > maxSym { maxSym = UInt32(v) }
+            }
+        }
+        let numClusters = Int(maxSym) + 1
+        // Verify every cluster index 0..<numClusters appears (libjxl
+        // `VerifyContextMap`).
+        var seen = [Bool](repeating: false, count: numClusters)
+        for v in map { seen[Int(v)] = true }
+        if seen.contains(false) {
+            throw ContextMapError.incompleteMap
+        }
+        return ContextMap(
+            numClusters: numClusters, useMTF: useMTF, mapAsserted: map
+        )
+    }
+}
+
+/// Inverse Move-to-Front transform — libjxl
+/// `inverse_mtf-inl.h::InverseMoveToFrontTransform`. Mutates `v` in
+/// place. Maintains a 256-entry alphabet permutation (`mtf`); for each
+/// input symbol `index`, the output is `mtf[index]` and (if `index !=
+/// 0`) the entry at `index` is moved to the front of `mtf`.
+public func inverseMoveToFrontTransform(_ v: inout [UInt8]) {
+    var mtf = [UInt8](repeating: 0, count: 256)
+    for i in 0..<256 { mtf[i] = UInt8(i) }
+    for i in 0..<v.count {
+        let index = Int(v[i])
+        v[i] = mtf[index]
+        if index != 0 {
+            // Shift mtf[0..<index] right by one, then mtf[0] = moved.
+            let value = mtf[index]
+            // Move-to-front: rotate mtf[0..<=index] so the entry at
+            // `index` lands at position 0.
+            var j = index
+            while j > 0 {
+                mtf[j] = mtf[j - 1]
+                j -= 1
+            }
+            mtf[0] = value
+        }
     }
 }

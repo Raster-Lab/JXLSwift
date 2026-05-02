@@ -51,6 +51,13 @@ public struct EncodingOptions: Sendable {
     /// (`.balanced` tries every predictor + RCT variant; `.fast`
     /// skips the search for ~3× faster encode). Ignored otherwise.
     public var m0Effort: M0Effort
+    /// Wrap the codestream in an ISOBMFF (`.jxl`) container instead
+    /// of emitting it naked. Real-world tooling (browsers, OS image
+    /// loaders, `djxl`) accepts both, but the wrapped form is the
+    /// canonical on-disk representation and the only one that can
+    /// later carry sidecar data (EXIF, JUMBF, JPEG-reconstruct
+    /// boxes). Defaults to true to match cjxl's behaviour.
+    public var containerWrap: Bool
 
     public init(
         mode: CompressionMode = .lossy(quality: 90),
@@ -58,7 +65,8 @@ public struct EncodingOptions: Sendable {
         progressive: Bool = false,
         numThreads: Int = 0,
         useM0Placeholder: Bool = false,
-        m0Effort: M0Effort = .balanced
+        m0Effort: M0Effort = .balanced,
+        containerWrap: Bool = true
     ) {
         self.mode = mode
         self.effort = effort
@@ -66,6 +74,7 @@ public struct EncodingOptions: Sendable {
         self.numThreads = numThreads
         self.useM0Placeholder = useM0Placeholder
         self.m0Effort = m0Effort
+        self.containerWrap = containerWrap
     }
 
     /// The libjxl distance value that this configuration maps to. Used

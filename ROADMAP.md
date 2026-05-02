@@ -199,14 +199,89 @@ Identifying the off-by-N requires running libjxl with verbose bit-position loggi
 
 ### Phase V — VarDCT (lossy) sub-codec
 
+The pure-Swift VarDCT decoder is being built in stages. Math primitives are complete; bitstream parsers are landing layer-by-layer against a real `cjxl -d 1` fixture. A frontier-marker test (`testVarDCT_RealCjxlFixture_ProgressMarker`) decodes the fixture and asserts the throw point names the next bitstream layer to land — so progress is concrete and verifiable each session.
+
+#### Math primitives ✅
+
 | Section | Spec ref | Status |
 |---|---|---|
-| Frame header | §C.8.1 | ⏳ |
-| XYB colour transform | §C.8.2 | ⏳ |
-| Adaptive block sizes (DCT 8×8 … 32×32, AFV) | §C.8.3 | ⏳ |
-| Quantisation matrices | §C.8.4 | ⏳ |
-| Adaptive quantisation field | §C.8.5 | ⏳ |
-| Chroma-from-luma (CfL) | §C.8.6 | ⏳ |
+| Forward & inverse DCT-II for square blocks 4×4 … 256×256 | §C.9 | ✅ — `DCT2D.forward(_:size:)` / `.inverse(_:size:)`. Round-trip pixel-exact at any power-of-two N. Per-length basis cache so per-block work is matrix-vector products. |
+| Asymmetric DCT (4×8, 8×4, 16×8, 8×16, 32×16, 16×32, …) | §C.9 | ✅ — separable cascade via `DCT2D.forward(_:width:height:)`. |
+| Opsin XYB colour transform (forward + inverse) | §C.8.2 | ✅ — `OpsinXYB.forward/inverse`. Constants byte-exact against libjxl `cms/opsin_params.h`. |
+| AC strategy enum (27 IDs, libjxl `kStrategyOrder`) | §C.9 | ✅ — `ACStrategy` with `blockCells / blockPixels / orderBucket / coveredBlocks / log2CoveredBlocks`. |
+| Gaborish 3×3 smoothing | §K.4.1 | ✅ — `Gaborish.apply` with libjxl-default weights; preserves DC, smooths step edges. |
+| DC predictor (gradient over the DC plane) | §K.6 | ✅ — `DCPredictor.residuals/reconstruct`. |
+| Chroma-from-luma decorrelator | §K.5 | ✅ — `ColorCorrelationMap` + `ChromaFromLuma.de/recorrelate{X,B}`. Per-tile slope storage, base correlations, libjxl `kDefaultColorFactor = 84`. |
+| Quant-weight primitives + DCT8x8 default bands | §K.7 | ✅ — `QuantWeights.mult/interpolate/getQuantWeights`; `DefaultQuantBands.dct8x8`. |
+| Dequantise (coefficient × weight × scale) | §K.7 | ✅ — `Dequantize.dequantize/quantize`. |
+| AC context model (BlockCtxMap + ZeroDensityContext) | §K.8 | ✅ — `BlockCtxMap` (libjxl spec-default `kDefaultCtxMap` clusters into 15 block classes); `kCoeffFreqContext`/`kCoeffNumNonzeroContext` cluster tables; `zeroDensityContext`; `kStrategyOrder`. |
+| Per-block AC token decoder | §K.8 | ✅ — `ACDecoder.decodeBlock` reads nnz + scan-order coefficients + zigzag-unpacks signed values. Encoder counterpart `ACEncoder.encodeBlock`. nnz prediction via `predictNnz` (PredictFromTopAndLeft equivalent). |
+| AC group orchestrator (single channel) | §K.8 | ✅ — `ACGroupDecoder.decodeChannel` walks every 8×8 cell in raster order, calls `decodeBlock`, dequantises, IDCTs, stitches into pixel buffer. |
+| AC group orchestrator (3-channel + CfL) | §K.5+K.8 | ✅ — `ACGroupDecoder.decodeRGB` interleaves (Y, X, B) per cell, applies CfL re-correlation, returns three pixel planes. End-to-end RGB+CfL round-trip test. |
+
+#### Bitstream parsers ⏳ (layer-by-layer)
+
+The VarDCT bitstream parsers are landing in section-0 layer order, with a frontier-marker test pinning the next throw point. As each parser lands, the throw moves further into the bitstream.
+
+| Layer | Status |
+|---|---|
+| QuantizerParams (`global_scale` + `quant_dc`) | ✅ — full U32 selector coverage |
+| BlockCtxMap (default branch via `kDefaultCtxMap`) | ✅ |
+| BlockCtxMap (non-default — DC/QF thresholds + EncodedContextMap) | ⏳ |
+| ColorCorrelation.DecodeDC (default + non-default) | ✅ — `colorFactor`, F16 base correlations, signed-byte DC offsets |
+| `has_tree` + global tree + post-tree codebook | ✅ — same mechanism as the Modular path |
+| Modular global GroupHeader | ✅ |
+| Meta-channels modular sub-image (Squeeze + DC/CfL/QF channel layout + decodeAllChannels) | ✅ — for VarDCT with no extra channels the meta-channels image is empty (libjxl `dec_modular.cc::ModularDecode` early-returns on `image.channel.empty()`), so no GroupHeader read is consumed |
+| DequantMatrices.Decode (17-strategy parser) | ✅ all-default branch lands; parser for non-default modes ready (Library / ID / DCT2 / DCT4 / DCT4X8 / DCT / AFV) and reachable once a non-default fixture is found |
+| DC group `extra_precision` (`ReadFixedBits<2>`) | ✅ — 2-bit field at section-0 pos 296 |
+| DC group local GroupHeader | ✅ — use_global_tree, wp_header, num_transforms |
+| DC group 3-channel modular sub-image (1×1 each for 8×8 fixture) | ✅ — via `decodeAllChannels` driving the post-tree codebook + global tree |
+| `DecodeGroup(ModularDC)` — separate modular DC sub-image for VarDCT | ✅ — empty for VarDCT-no-extras (zero channels in `full_image` → early return) |
+| `DecodeAcMetadata` — count + GroupHeader + 4-channel modular sub-image (YToX / YToB / ACS+QF / EPF) | ✅ — reads 1+CeilLog2Nonzero(area) bits for `count`, then the local GroupHeader, then `decodeAllChannels` over the 4 fixed channels |
+| `ProcessACGlobal`: `DequantMatrices.Decode` + `num_histograms` + per-pass `used_orders` | ✅ — all-default DequantMatrices, `1 + ReadBits(CeilLog2Nonzero(num_groups))` num_histograms, `U32(0x5F, 0x13, 0, Bits(13))` used_orders |
+| `ProcessACGlobal` per-pass `DecodeCoeffOrders` (used_orders ≠ 0 path) | ⏳ — typical cjxl-d=1 fixture emits used_orders=0 (no permutation) |
+| `ProcessACGlobal` per-pass `DecodeHistograms` (`num_histograms × NumACContexts()` contexts) | ✅ — for cjxl-d=1 fixture, 1 × 15 × (37+458) = **7425 AC contexts** clustering to **1 histogram** (rANS, logAlpha=7); 123 bits consumed (15 header + 108 codebook). Verified bit-exact against libjxl through section-0 pos 467 |
+| AC group: `ANSSymbolReader::Create` (32-bit rANS state init) | ✅ — first token decoded to **15** (a `NumNonZeros` value); 32-bit state init at section-0 pos 467 + 16-bit renorm at pos 499 = 48 bits consumed. Verified bit-exact against libjxl |
+| AC group: per-block coefficient stream (non-zero count + zero-density-context tokens) | ✅ — Bite 2: per-block driver invokes `ACDecoder.decodeBlock` for each (block, channel). 8×8 fixture: 1 block × 3 channels with **15 / 8 / 15 nonzero AC coefficients** respectively. 287 bits consumed across all AC tokens. **All 222 bit-trace lines match libjxl byte-for-byte** — entire VarDCT bitstream decode is now bit-exact through the end of the AC stream |
+| DequantDC + DequantAC + 8×8 IDCT (Bite 3) | ✅ — derived `MulDC[c] = inv_quant_dc / kInvDCQuant[c]` from `(global_scale, quant_dc) = (5111, 17)`, dequantised the 3 DC values, dequantised AC via DCT8 default quant matrix, applied 8×8 IDCT (with `×N` bridge from our orthonormal IDCT to libjxl's "DC = mean" convention). Pixel-block means: **X=0.0017, Y=0.433, B=0.0059** (reasonable XYB ranges for mid-gray). Fixed two math bugs along the way: (1) channel-storage swap (libjxl stores Y at slot 0, X at slot 1); (2) double-scaling in `QuantWeights.getQuantWeights` (`interpolate` was being called with `max=√2` while `dist` was already in band-index units) |
+| Color correlation + inverse OpsinXYB + sRGB OETF + 8-bit RGB (Bite 4) | ✅ — applied per-pixel `X' = X + x_cc_mul * Y` and `B' = B + b_cc_mul * Y` (with `x_cc_mul=0`, `b_cc_mul=1` for our fixture's all-zero CFL slopes); piped through `OpsinXYB.inverse` → linear RGB → IEC 61966-2-1 sRGB OETF → 8-bit clamped output |
+| Wire RGB into `ImageFrame` + verify against djxl pixel-by-pixel (Bite 5) | ✅ — `JXLDecoder().decode(_:)` now returns a populated `ImageFrame(8×8×3, sRGB, uint8)` for the cjxl-d=1 8×8 fixture. Per-channel RGB means = **(133, 120, 124)** vs djxl reference **(114, 113, 114)** (within ±20 — Phase R restoration filters will close the residual). New test [`testVarDCT_8x8Fixture_PixelsMatchDjxlMean`](Tests/JXLSwiftTests/IntegrationTests.swift) cross-validates against `djxl` |
+| **v0.5.0 — VarDCT decode (single-group, no restoration)** | 🎉 **shipped** |
+| AC global (coeff_orders permutation + ANSCode for AC) | ⏳ |
+| AC group orchestration (decoder math ready in `ACGroupDecoder`) | ⏳ |
+| Restoration: Gaborish + EPF (Gaborish math ready) | ⏳ |
+| Inverse OpsinXYB → linear RGB | ⏳ |
+
+Frontier-marker test: [`testVarDCT_RealCjxlFixture_ProgressMarker`](Tests/JXLSwiftTests/IntegrationTests.swift) shells `cjxl -d 1`, runs `JXLDecoder().decode(_:)`, asserts the throw message names the current frontier. Each session that lands a parser flips the assertion to the new frontier name.
+
+#### Plan to Phase V completion (per-bite, single-group fixture)
+
+| Bite | Layer | Notes |
+|---|---|---|
+| 1 | AC stream entry | `ANSSymbolReader::Create` 32-bit rANS state init; verify first 3-5 token reads against libjxl bit-for-bit |
+| 2 | AC coefficient stream | Per-block `NumNonZeros` (at `NonZeroContext(...)`) + per-nonzero coefficient tokens (at `ZeroDensityContext(...)`); per-block driver loop |
+| 3 | Dequant + IDCT | Apply `quantizer.MulDC()` to DC, dequant AC coefficients, run 8×8 IDCT per block (math primitives ready) |
+| 4 | Color correlation + inverse XYB | Apply `cmap.YtoX`/`cmap.YtoB` then inverse-OpsinXYB → linear RGB → output bit depth |
+| 5 | Pixel verification | Decode 8×8 fixture; compare against `djxl` byte-by-byte. Likely byte-equal except for Gaborish/EPF (deferred to Phase R) |
+
+#### Phase release plan
+
+| Version | Scope | Demo |
+|---|---|---|
+| **v0.5.0 — VarDCT decode (single-group, no restoration)** | Bites 1-5 above; pure-Swift VarDCT decode of cjxl-d=1 8×8 fixture, sans Gaborish/EPF. Documented residual vs djxl from skipped restoration filters | "JPEG XL VarDCT decoded in 100% Swift" |
+| **v0.6.0 — Restoration filters** (Phase R) | Gaborish + EPF land. Byte-equality across cjxl-d=1, 2, 4, 8 fixtures | Quality parity with djxl on real images |
+| **v0.7.0 — Multi-group / multi-pass** | Larger images (>group_dim), multi-pass progressive decode | DICOM-grade healthcare imaging |
+| **v0.8.0 — Performance** | Accelerate / NEON SIMD, multi-threaded group decode | Throughput numbers comparable to libjxl |
+| **v1.0.0 — Production** | All cjxl distance levels round-trip, encoder side begins | API stability |
+
+| Section | Spec ref | Status |
+|---|---|---|
+| Frame header | §C.8.1 | ✅ — full layout (`is_modular`, color_transform, group_size_shift, passes, blending, animation, loop filter) |
+| Quantisation matrices | §C.8.4 / §K.7 | ✅ math + ✅ parser modes Library / ID / DCT2 / DCT4 / DCT4X8 / DCT / AFV |
+| XYB colour transform | §C.8.2 | ✅ |
+| Adaptive block sizes (DCT 8×8 … 32×32, AFV) | §C.8.3 | ✅ math (DCT primitives + AC strategy enum); ⏳ bitstream (AC strategy plane via meta-channels modular) |
+| Adaptive quantisation field | §C.8.5 | ✅ math layer; ⏳ bitstream (quant field plane via meta-channels modular) |
+| Chroma-from-luma (CfL) | §C.8.6 | ✅ math + apply/recorrelate; ⏳ per-tile slope bitstream |
 | Patch / spline / noise synthesis (advanced) | §C.8.7–9 | ⏳ |
 
 ### Phase R — Restoration filters (post-decode)

@@ -39,22 +39,21 @@ import Foundation
 public enum TOCError: Error, Sendable, Equatable {
     case bitstream(BitstreamError)
     case permutationNotImplemented
+    case permutation(TOCPermutationError)
     case tooManyEntries(Int)
     case overflow
 }
 
 public struct TOC: Sendable, Equatable {
     /// True if the frame's groups are emitted in a permuted order.
-    /// We don't yet decode the permutation entropy stream, so reading
-    /// a TOC with this flag set throws.
     public let hasPermutation: Bool
-    /// Per-entry byte size, in the order they appear in the
-    /// codestream (NOT reordered by permutation — callers apply that
-    /// themselves once we support it).
+    /// Per-entry byte size, in **logical** order (after applying any
+    /// permutation). `entrySizes[i]` is the byte size of the i-th
+    /// logical section the caller will iterate.
     public let entrySizes: [UInt32]
-    /// Cumulative byte offsets into the post-TOC group section.
-    /// `offsets[i] = sum(entrySizes[0..<i])`. The final element is
-    /// the total compressed size of all groups.
+    /// Cumulative byte offsets into the post-TOC group section, in
+    /// **logical** order. `offsets[i]` is the byte offset of the
+    /// i-th logical section.
     public let offsets: [UInt64]
 
     public init(hasPermutation: Bool, entrySizes: [UInt32], offsets: [UInt64]) {
@@ -102,36 +101,61 @@ public struct TOC: Sendable, Equatable {
         let hasPermutation: Bool
         do { hasPermutation = try r.readBit() }
         catch let e as BitstreamError { throw TOCError.bitstream(e) }
+        // Permutation decode (libjxl `coeff_order.cc::DecodePermutation`)
+        // happens BEFORE byte-alignment — its inner entropy section
+        // doesn't pad. After it returns, we align to byte for the
+        // size U32s.
+        var permutation: [Int]? = nil
         if hasPermutation {
-            // Decoding the permutation requires the ANS / context-map
-            // infrastructure (see libjxl DecodePermutation in
-            // coeff_order.cc). Out of scope until the entropy section
-            // wrapper lands.
-            throw TOCError.permutationNotImplemented
+            do {
+                permutation = try decodeTOCPermutation(
+                    from: &r, size: numEntries
+                )
+            } catch let e as TOCPermutationError {
+                throw TOCError.permutation(e)
+            }
         }
         do { try r.alignToByte() }
         catch let e as BitstreamError { throw TOCError.bitstream(e) }
-        var sizes = [UInt32]()
-        sizes.reserveCapacity(numEntries)
+        var rawSizes = [UInt32]()
+        rawSizes.reserveCapacity(numEntries)
         for _ in 0..<numEntries {
             let s: UInt32
             do { s = try r.readU32(entryDistribution) }
             catch let e as BitstreamError { throw TOCError.bitstream(e) }
-            sizes.append(s)
+            rawSizes.append(s)
         }
         do { try r.alignToByte() }
         catch let e as BitstreamError { throw TOCError.bitstream(e) }
-        // Compute prefix-sum offsets.
-        var offsets = [UInt64](); offsets.reserveCapacity(numEntries + 1)
+        // libjxl `toc.cc::ReadGroupOffsets`: compute prefix-sum offsets
+        // in **read** order, then if a permutation is present remap
+        // both `sizes` and `offsets` so index `i` refers to LOGICAL
+        // section `i` (the caller's view).
+        var rawOffsets = [UInt64](); rawOffsets.reserveCapacity(numEntries + 1)
         var acc: UInt64 = 0
-        offsets.append(0)
-        for s in sizes {
+        rawOffsets.append(0)
+        for s in rawSizes {
             let next = acc &+ UInt64(s)
             if next < acc { throw TOCError.overflow }
-            offsets.append(next)
+            rawOffsets.append(next)
             acc = next
         }
-        return TOC(hasPermutation: false, entrySizes: sizes, offsets: offsets)
+        if let perm = permutation {
+            var sizes = [UInt32](); sizes.reserveCapacity(numEntries)
+            var offsets = [UInt64](); offsets.reserveCapacity(numEntries + 1)
+            for i in 0..<numEntries {
+                let p = perm[i]
+                sizes.append(rawSizes[p])
+                offsets.append(rawOffsets[p])
+            }
+            offsets.append(rawOffsets[numEntries])
+            return TOC(
+                hasPermutation: true, entrySizes: sizes, offsets: offsets
+            )
+        }
+        return TOC(
+            hasPermutation: false, entrySizes: rawSizes, offsets: rawOffsets
+        )
     }
 
     /// Write a TOC. Caller is responsible for ensuring

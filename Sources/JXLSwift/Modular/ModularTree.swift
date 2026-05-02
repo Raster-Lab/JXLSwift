@@ -236,6 +236,86 @@ public struct ModularTree: Sendable, Equatable {
         }
         return ModularTree(nodes: nodes)
     }
+
+    /// Inverse of `decode`. Walks the tree pre-order and emits each
+    /// node's tokens via `emit(ctx, value)`. The caller wires the
+    /// closure to the actual entropy stream — typically a
+    /// `TokenStreamWriter` over the tree section's `EntropySectionHeader`
+    /// + `MultiClusterCodebook` (libjxl `enc_ma.cc::TokenizeTree`).
+    ///
+    /// Per-node emission (mirrors `decode` exactly):
+    ///
+    ///   • **Decision node** (`property >= 0`):
+    ///       ctx 1 ← `UInt32(property + 1)`
+    ///       ctx 0 ← `pack(splitVal)`
+    ///     Then recurse on `leftChild` and `rightChild`.
+    ///
+    ///   • **Leaf** (`property == -1`):
+    ///       ctx 1 ← `0` (leaf marker)
+    ///       ctx 2 ← `rawPredictor`
+    ///       ctx 3 ← `pack(predictorOffset)` (bounded to Int32 range)
+    ///       ctx 4 ← mul_log = `log2(multiplier)` low bits
+    ///       ctx 5 ← mul_bits = `(multiplier >> mul_log) - 1` (= 0
+    ///               whenever `multiplier` is a power of 2, which it
+    ///               always is per the spec).
+    ///
+    /// The pre-order traversal matches `decode`'s queue: the root is
+    /// emitted first; each decision node's `leftChild` index in our
+    /// `nodes` array equals `nodes.count + toDecode + 1` at decode
+    /// time, which we verify here by walking the tree depth-first
+    /// from the root.
+    public func encode(
+        emit: (_ ctx: Int, _ value: UInt32) throws -> Void
+    ) throws {
+        // libjxl context indices (must match `decode`).
+        let kSplitValContext = 0
+        let kPropertyContext = 1
+        let kPredictorContext = 2
+        let kOffsetContext = 3
+        let kMultiplierLogContext = 4
+        let kMultiplierBitsContext = 5
+
+        precondition(!nodes.isEmpty, "cannot encode empty tree")
+        // Pre-order DFS.
+        var stack: [Int] = [0]
+        while let idx = stack.popLast() {
+            guard idx >= 0 && idx < nodes.count else {
+                throw ModularTreeError.tokenReader(
+                    .clusterOutOfRange(idx, max: nodes.count - 1)
+                )
+            }
+            let node = nodes[idx]
+            if node.isLeaf {
+                try emit(kPropertyContext, 0)
+                try emit(kPredictorContext, node.rawPredictor)
+                let off32 = Int32(truncatingIfNeeded: node.predictorOffset)
+                try emit(kOffsetContext, ZigZag.pack(off32))
+                // Multiplier is always a power of two: (mul_bits + 1) << mul_log.
+                // For multiplier == (1 << k): mul_log = k, mul_bits = 0.
+                // For non-power-of-two multipliers (which the spec allows
+                // via mul_bits > 0 — pattern (b+1) << k for any b ≥ 0
+                // such that the result fits in 31 bits), we extract
+                // mul_log as the trailing zero count and mul_bits =
+                // (multiplier >> mul_log) - 1.
+                let mul = node.multiplier
+                guard mul > 0 else {
+                    throw ModularTreeError.invalidMultiplier(log: 0, bits: 0)
+                }
+                let mulLog = UInt32(mul.trailingZeroBitCount)
+                let mulBits = (mul >> mulLog) &- 1
+                try emit(kMultiplierLogContext, mulLog)
+                try emit(kMultiplierBitsContext, mulBits)
+                continue
+            }
+            // Decision node.
+            let prop = UInt32(node.property &+ 1)
+            try emit(kPropertyContext, prop)
+            try emit(kSplitValContext, ZigZag.pack(node.splitVal))
+            // Push right first so left is popped (and emitted) first.
+            stack.append(node.rightChild)
+            stack.append(node.leftChild)
+        }
+    }
 }
 
 // MARK: - Helpers

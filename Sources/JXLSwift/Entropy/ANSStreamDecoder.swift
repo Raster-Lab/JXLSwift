@@ -97,6 +97,14 @@ public struct ANSStreamDecoder: Sendable {
         return ANSStreamDecoder(distributions: dists)
     }
 
+    /// Cached `JXL_TRACE` env-var check. Looking it up via
+    /// `ProcessInfo.processInfo.environment` for every symbol read is
+    /// a measurable hot spot (`[String:String]` hash lookup × 16M+
+    /// reads dominated 4096² decode runtime). Resolved once at
+    /// process start.
+    @usableFromInline static let traceEnabled: Bool =
+        ProcessInfo.processInfo.environment["JXL_TRACE"] != nil
+
     /// Read one symbol from cluster `cluster`. The first call also
     /// consumes the 32-bit rANS state init from the bitstream.
     public mutating func readSymbol(
@@ -106,7 +114,7 @@ public struct ANSStreamDecoder: Sendable {
             let posBefore = r.position
             state = try r.read(bits: 32)
             initialised = true
-            if ProcessInfo.processInfo.environment["JXL_TRACE"] != nil {
+            if Self.traceEnabled {
                 let slot = state & (ANSConstants.tabSize - 1)
                 FileHandle.standardError.write(Data(
                     "TRACE ANS init: posBefore=\(posBefore) state=0x\(String(state, radix: 16)) slot=\(slot)\n".utf8
@@ -135,7 +143,7 @@ public struct ANSStreamDecoder: Sendable {
             freq = dist.frequencies[Int(symbol)]
             offset = slot &- dist.cumulative[Int(symbol)]
         }
-        if ProcessInfo.processInfo.environment["JXL_TRACE"] != nil {
+        if Self.traceEnabled {
             let msg = "TRACE swift-ANS: cluster=\(cluster) state=0x\(String(state, radix: 16)) slot=\(slot) symbol=\(symbol) offset=\(offset) freq=\(freq)\n"
             FileHandle.standardError.write(Data(msg.utf8))
         }
