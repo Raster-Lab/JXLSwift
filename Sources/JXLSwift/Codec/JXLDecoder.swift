@@ -203,7 +203,16 @@ public final class JXLDecoder {
             numGroups: numGroups, numDcGroups: numDcGroups,
             numPasses: numPasses
         )
-        _ = try TOC.read(from: &r, numEntries: tocEntries)
+        let toc = try TOC.read(from: &r, numEntries: tocEntries)
+        // After TOC, the codestream is byte-aligned. Capture this byte
+        // position — every TOC entry's offset is relative to it.
+        let postTocBytePos = r.position / 8
+        // Helper: section i starts at this bit position in the file.
+        @inline(__always)
+        func sectionBitStart(_ i: Int) -> Int {
+            return postTocBytePos * 8 + Int(toc.offsets[i]) * 8
+        }
+        _ = sectionBitStart  // silence unused-warning when single-section
 
         // libjxl `dec_frame.cc::ProcessDCGlobal` order:
         //   1. (Splines, if frame.flags has Splines bit) — typical
@@ -355,6 +364,16 @@ public final class JXLDecoder {
         }
         let _ = (globalTree, globalPostHeader, globalPostCodebook)
         let _ = (kRequiredSizeX, kRequiredSizeY, DequantMatricesAC.self)
+
+        // For multi-section frames, DC global ends at the boundary of
+        // section 0 and DC group 0 lives at section 1. Seek the
+        // BitReader to the section-1 byte boundary. Single-entry TOC
+        // (1 group, 1 pass) skips this — all sections share the same
+        // BitReader cursor.
+        if tocEntries > 1 {
+            let dcGroup0SecIdx = 1   // section index for DC group 0
+            r = BitReader(r.data, startingAt: sectionBitStart(dcGroup0SecIdx))
+        }
 
         // (7) DC group decode. libjxl `dec_modular.cc::DecodeVarDCTDC`
         // for our 1-DC-group fixture:
@@ -581,6 +600,13 @@ public final class JXLDecoder {
             ))
         }
 
+        // For multi-section frames, AC global lives at section
+        // `1 + num_dc_groups` (= 2 for our 1-DC-group fixtures).
+        if tocEntries > 1 {
+            let acGlobalSecIdx = 1 + numDcGroups
+            r = BitReader(r.data, startingAt: sectionBitStart(acGlobalSecIdx))
+        }
+
         // (12) ProcessACGlobal — DequantMatrices.Decode (all-default
         // shortcut). libjxl `dec_frame.cc::ProcessACGlobal`:
         //
@@ -735,84 +761,104 @@ public final class JXLDecoder {
         // histogram), so block_ctx specifics don't change bit positions
         // — order does, but we use `Array(0..<64)` here since the
         // block-position payload is consumed by Bite 3 (Dequant + IDCT).
+        // Multi-AC-group AC token decode. For multi-section frames,
+        // each AC group lives at its own TOC entry — we seek the
+        // BitReader to that section's byte boundary, create a fresh
+        // `TokenStreamReader` (the rANS state initialises lazily on
+        // first read), and decode the per-block AC tokens for that
+        // group's block grid. Each AC group covers a `groupDim` x
+        // `groupDim` pixel region (cropped at frame edges).
         let firstACHist = acHistsPerPass[0]
-        var acTokenStream = TokenStreamReader(
-            header: firstACHist.0, codebook: firstACHist.1
-        )
-        // 1-block fixture: 1 AC block × 3 channels. The natural
-        // coefficient order is `naturalCoeffOrderDCT8` (libjxl
-        // `ComputeNaturalCoeffOrder` for `cx=cy=1`). For
-        // `used_orders=0` (no permutation) the encoder writes
-        // coefficients in this order; we read in scan order and
-        // place at `order[k]` to recover the natural-order layout
-        // ready for dequant + IDCT.
         let dctOrder = naturalCoeffOrderDCT8
-        // Multi-block AC group decode. For an N×M block grid, libjxl
-        // iterates `for (by, bx)` outer, then `for c in {1, 0, 2}`
-        // inner (Y, X, B). For single-cluster routing the order is
-        // bit-equivalent to any consistent order; we keep libjxl's
-        // {1, 0, 2} ordering for safety.
-        let numBlocksXAC = (xsize + 7) / 8
-        let numBlocksYAC = (ysize + 7) / 8
-        let totalACBlocks = numBlocksXAC * numBlocksYAC
-        // acBlocks[blockIdx][iterC] is the 64-coef block for the
-        // i-th decoded (block, channel) pair. iterC ∈ {0=Y, 1=X, 2=B}
-        // matching `acIterToXYB = [1, 0, 2]`.
-        var acBlocks: [[[Int32]]] = []
-        acBlocks.reserveCapacity(totalACBlocks)
+        let totalBlocksX = (xsize + 7) / 8
+        let totalBlocksY = (ysize + 7) / 8
+        // acBlocks[totalBlockIdx][iterC] is the 64-coef block for the
+        // i-th decoded (block, channel) pair, indexed by GLOBAL block
+        // position (totalBlocksX × totalBlocksY).
+        var acBlocks: [[[Int32]]] = Array(
+            repeating: Array(repeating: [Int32](repeating: 0, count: 64),
+                             count: 3),
+            count: totalBlocksX * totalBlocksY
+        )
+        let blocksPerGroup = groupDim / 8
         let acDecodeStart = r.position
-        // Track row_nzeros across blocks for `predictNnz` (libjxl
-        // `PredictFromTopAndLeft`). For single-cluster routing this
-        // doesn't change bit consumption but keeps the decoder ready
-        // for multi-cluster fixtures.
-        var rowNZAbove = [Int32](repeating: 0, count: numBlocksXAC * 3)
-        var rowNZCurrent = [Int32](repeating: 0, count: numBlocksXAC * 3)
-        for by in 0..<numBlocksYAC {
-            for bx in 0..<numBlocksXAC {
-                var blockChannels: [[Int32]] = []
-                blockChannels.reserveCapacity(3)
-                for c in 0..<3 {
-                    var blk = [Int32](repeating: 0, count: 64)
-                    let predNnz: UInt32 = ACDecoder.predictNnz(
-                        rowAbove: by == 0 ? nil
-                            : Array(rowNZAbove[c * numBlocksXAC ..<
-                                              (c + 1) * numBlocksXAC]),
-                        rowCurrent: Array(rowNZCurrent[c * numBlocksXAC ..<
-                                                       (c + 1) * numBlocksXAC]),
-                        bx: bx
-                    )
-                    do {
-                        try ACDecoder.decodeBlock(
-                            block: &blk,
-                            order: dctOrder,
-                            coveredBlocks: 1, log2CoveredBlocks: 0,
-                            blockCtx: 0,
-                            predictedNnz: predNnz,
-                            ctxOffset: 0,
-                            ctxMap: bctx,
-                            shift: 0,
-                            stream: &acTokenStream,
-                            from: &r
-                        )
-                    } catch let e as ACDecoderError {
-                        throw DecoderError.notImplemented(
-                            "VarDCT decode: AC block (\(bx),\(by)) "
-                            + "channel iter \(c) decode failed: \(e)"
-                        )
-                    }
-                    let nz = Int32(blk.lazy.filter { $0 != 0 }.count)
-                    rowNZCurrent[c * numBlocksXAC + bx] = nz
-                    blockChannels.append(blk)
-                }
-                acBlocks.append(blockChannels)
+        for groupIdx in 0..<numGroups {
+            // Per-group block range (cropped at frame edges).
+            let gx = groupIdx % numGroupsX
+            let gy = groupIdx / numGroupsX
+            let bxStart = gx * blocksPerGroup
+            let byStart = gy * blocksPerGroup
+            let bxEnd = min(bxStart + blocksPerGroup, totalBlocksX)
+            let byEnd = min(byStart + blocksPerGroup, totalBlocksY)
+            let groupBlocksX = bxEnd - bxStart
+            // Seek to this group's section. AC group g (pass 0) lives
+            // at TOC entry `2 + numDcGroups + g` for multi-section
+            // frames; single-section reuses the cursor.
+            if tocEntries > 1 {
+                let acGroupSecIdx = 2 + numDcGroups + groupIdx
+                r = BitReader(
+                    r.data, startingAt: sectionBitStart(acGroupSecIdx)
+                )
             }
-            // After finishing this row, swap into rowNZAbove for the
-            // next row's prediction. (For single-cluster fixtures,
-            // this is bookkeeping that doesn't change bit consumption.)
-            swap(&rowNZAbove, &rowNZCurrent)
-            for i in 0..<rowNZCurrent.count { rowNZCurrent[i] = 0 }
+            // Fresh ANS state per AC group (lazy init on first read).
+            var acTokenStream = TokenStreamReader(
+                header: firstACHist.0, codebook: firstACHist.1
+            )
+            // Per-group row_nzeros tracking (used by `predictNnz`).
+            var rowNZAbove = [Int32](repeating: 0,
+                                     count: groupBlocksX * 3)
+            var rowNZCurrent = [Int32](repeating: 0,
+                                       count: groupBlocksX * 3)
+            for by in byStart..<byEnd {
+                let groupRowIdx = by - byStart
+                for bx in bxStart..<bxEnd {
+                    let groupColIdx = bx - bxStart
+                    var blockChannels: [[Int32]] = []
+                    blockChannels.reserveCapacity(3)
+                    for c in 0..<3 {
+                        var blk = [Int32](repeating: 0, count: 64)
+                        let predNnz: UInt32 = ACDecoder.predictNnz(
+                            rowAbove: groupRowIdx == 0 ? nil
+                                : Array(rowNZAbove[c * groupBlocksX ..<
+                                                  (c + 1) * groupBlocksX]),
+                            rowCurrent: Array(rowNZCurrent[c * groupBlocksX ..<
+                                                           (c + 1) * groupBlocksX]),
+                            bx: groupColIdx
+                        )
+                        do {
+                            try ACDecoder.decodeBlock(
+                                block: &blk,
+                                order: dctOrder,
+                                coveredBlocks: 1, log2CoveredBlocks: 0,
+                                blockCtx: 0,
+                                predictedNnz: predNnz,
+                                ctxOffset: 0,
+                                ctxMap: bctx,
+                                shift: 0,
+                                stream: &acTokenStream,
+                                from: &r
+                            )
+                        } catch let e as ACDecoderError {
+                            throw DecoderError.notImplemented(
+                                "VarDCT decode: AC group \(groupIdx) block "
+                                + "(\(bx),\(by)) channel iter \(c) "
+                                + "decode failed: \(e)"
+                            )
+                        }
+                        let nz = Int32(blk.lazy.filter { $0 != 0 }.count)
+                        rowNZCurrent[c * groupBlocksX + groupColIdx] = nz
+                        blockChannels.append(blk)
+                    }
+                    acBlocks[by * totalBlocksX + bx] = blockChannels
+                }
+                swap(&rowNZAbove, &rowNZCurrent)
+                for i in 0..<rowNZCurrent.count { rowNZCurrent[i] = 0 }
+            }
         }
-        traceLayer("AC group (\(numBlocksXAC)×\(numBlocksYAC) blocks)",
+        let numBlocksXAC = totalBlocksX
+        let numBlocksYAC = totalBlocksY
+        traceLayer("AC \(numGroups) group(s) "
+                   + "(\(numBlocksXAC)×\(numBlocksYAC) blocks total)",
                    before: acDecodeStart, after: r.position)
         if trace {
             for (bIdx, blockChannels) in acBlocks.enumerated() {
@@ -1167,11 +1213,13 @@ public final class JXLDecoder {
         // state; that's the v0.7.0+ multi-group milestone. For
         // single-AC-group frames (xsize, ysize ≤ group_dim, default
         // 256), the current pipeline is sufficient.
-        guard xsize <= groupDim, ysize <= groupDim else {
+        // Multi-AC-group is now wired up. DC group support (frames
+        // wider than ~2048 px) still needs additional plumbing.
+        guard numDcGroups == 1 else {
             throw DecoderError.notImplemented(
                 "VarDCT decode: \(xsize)×\(ysize) frame spans multiple "
-                + "AC groups (group_dim=\(groupDim)). Multi-group "
-                + "support is the next bite for v0.7.0."
+                + "DC groups (numDcGroups=\(numDcGroups)). Multi-DC-group "
+                + "support is a follow-on bite."
             )
         }
         let _ = (kRequiredSizeX, kRequiredSizeY)

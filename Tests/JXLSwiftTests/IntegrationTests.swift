@@ -6884,6 +6884,56 @@ extension FoundationTests {
         print("[v0.7.0 16×16] our RGB means: \(oursMean) vs djxl ≈ (121, 120, 121)")
     }
 
+    /// **v0.7.0 multi-group milestone**: 300×300 solid-gray fixture
+    /// crosses the 256-pixel group_dim threshold, forcing the TOC to
+    /// have 7 entries (DC global + 1 DC group + AC global + 4 AC
+    /// groups) and the decoder to seek between sections + spin up a
+    /// fresh rANS state per AC group. Solid-gray means AC groups have
+    /// 0 bytes of payload — confirms the empty-section handling.
+    func testVarDCT_300x300SolidGray_MultiGroupRoundTrip() throws {
+        let cjxl = "/opt/homebrew/bin/cjxl"
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: cjxl),
+              FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("cjxl/djxl not available")
+        }
+        let tmp = NSTemporaryDirectory()
+        let pnmPath = tmp + "vdtsolid300.ppm"
+        let jxlPath = tmp + "vdtsolid300.jxl"
+        var ppm = Data("P6\n300 300\n255\n".utf8)
+        for _ in 0..<(300 * 300) {
+            ppm.append(contentsOf: [128, 128, 128])
+        }
+        try ppm.write(to: URL(fileURLWithPath: pnmPath))
+        let p1 = Process()
+        p1.launchPath = cjxl
+        p1.arguments = [pnmPath, jxlPath, "-d", "1"]
+        p1.standardOutput = Pipe(); p1.standardError = Pipe()
+        try p1.run(); p1.waitUntilExit()
+        XCTAssertEqual(p1.terminationStatus, 0)
+
+        let bytes = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
+        let frame = try JXLDecoder().decode(bytes)
+        XCTAssertEqual(frame.width, 300)
+        XCTAssertEqual(frame.height, 300)
+        XCTAssertEqual(frame.channels, 3)
+
+        // Solid gray: every output pixel should be near (128, 128, 128).
+        var oursR = 0, oursG = 0, oursB = 0
+        for i in 0..<(300 * 300) {
+            oursR += Int(frame.data[i*3+0])
+            oursG += Int(frame.data[i*3+1])
+            oursB += Int(frame.data[i*3+2])
+        }
+        let n = Double(300 * 300)
+        let oursMean = (Double(oursR)/n, Double(oursG)/n, Double(oursB)/n)
+        XCTAssertEqual(oursMean.0, 128, accuracy: 2,
+                       "R mean too far from 128 — solid-gray multi-group decode")
+        XCTAssertEqual(oursMean.1, 128, accuracy: 2)
+        XCTAssertEqual(oursMean.2, 128, accuracy: 2)
+        print("[v0.7.0 300×300 multi-group] our RGB means: \(oursMean) vs target 128")
+    }
+
     /// **v0.7.0 EPF milestone**: 32×32 fixture with non-zero sharpness
     /// trips the EPF1 bilateral kernel (cjxl-d=1 emits `epf_iters=1`
     /// and per-block sharpness > 0 for textured content). This proves
