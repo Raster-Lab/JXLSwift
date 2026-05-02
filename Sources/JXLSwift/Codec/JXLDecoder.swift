@@ -1046,7 +1046,12 @@ public final class JXLDecoder {
                     // content). Throw early when the bitstream needs
                     // a path we don't ship yet.
                     let strategyIDCTSupported =
-                        (strategy == .dct8x8 || strategy == .dct16x16)
+                        strategy == .dct8x8
+                        || strategy == .dct16x16
+                        || strategy == .dct8x16
+                        || strategy == .dct16x8
+                        || strategy == .dct32x16
+                        || strategy == .dct16x32
                     if !strategyIDCTSupported {
                         let nzAny = blockChannels.contains {
                             $0.contains { $0 != 0 }
@@ -1405,6 +1410,317 @@ public final class JXLDecoder {
                         planeXYB[0][dstRow + px] = coef[0][srcRow + px]
                         planeXYB[1][dstRow + px] = coef[1][srcRow + px]
                         planeXYB[2][dstRow + px] = coef[2][srcRow + px]
+                    }
+                }
+            }
+        }
+
+        // DCT16x8 / DCT8x16 IDCT overlay (libjxl ord 4). Both share
+        // the same 16×8 coefficient layout (after `CoefficientLayout`
+        // swap), the same `dct8x16` quant matrix, the same √128
+        // bridge factor, and the same 2-coef LLF region. The only
+        // difference is pixel placement: DCT8x16 outputs 16w × 8h
+        // pixels (matches coef layout), DCT16x8 outputs 8w × 16h
+        // pixels (transposed from coef layout).
+        let dct8x16Bands = DefaultQuantBands.scaledForBitstream(
+            DefaultQuantBands.dct8x16
+        )
+        let qweights8x16: [Float]
+        do {
+            qweights8x16 = try QuantWeights.getQuantWeights(
+                rows: 8, cols: 16, bands: dct8x16Bands
+            )
+        } catch {
+            throw DecoderError.notImplemented(
+                "VarDCT decode: DCT8x16 quant weights computation failed: \(error)"
+            )
+        }
+        // ×N bridge for asymmetric 16×8 = √(16*8) = √128.
+        let bridge8x16: Float = (16.0 * 8.0).squareRoot()
+        for by in 0..<numBlocksYAC {
+            for bx in 0..<numBlocksXAC {
+                let entry = acsImage.at(x: bx, y: by)
+                if !entry.isFirstBlock { continue }
+                if entry.strategy != .dct8x16 && entry.strategy != .dct16x8 {
+                    continue
+                }
+                let isVerticalStack = entry.strategy == .dct16x8  // 8w×16h
+                let cellsX = isVerticalStack ? 1 : 2
+                let cellsY = isVerticalStack ? 2 : 1
+                guard bx + cellsX <= numBlocksXAC,
+                      by + cellsY <= numBlocksYAC
+                else { continue }
+                let blockIdxFirst = by * totalBlocksX + bx
+                let blockQF = blockIdxFirst < perBlockQF.count
+                    ? perBlockQF[blockIdxFirst] : qfRow
+                let blockInvQuantAC = invGlobalScale / Float(blockQF)
+                // Per-channel coef block (128 entries in 8-row × 16-col
+                // layout).
+                var coef = [[Float]](
+                    repeating: [Float](repeating: 0, count: 128),
+                    count: 3
+                )
+                // Cell DC values + DC-CFL.
+                let cellOffsets: [(Int, Int)] = isVerticalStack
+                    ? [(0, 0), (0, 1)]   // DCT16x8: cells (bx,by), (bx,by+1)
+                    : [(0, 0), (1, 0)]   // DCT8x16: cells (bx,by), (bx+1,by)
+                var dcXYB: [[Float]] = (0..<3).map { _ in
+                    [Float](repeating: 0, count: 2)
+                }
+                for (i, off) in cellOffsets.enumerated() {
+                    let (dx, dy) = off
+                    let cellBX = bx + dx
+                    let cellBY = by + dy
+                    var cellDC = [Float](repeating: 0, count: 3)
+                    for storageSlot in 0..<3 {
+                        let xybC = storageToXYB[storageSlot]
+                        let dcQuant = Float(
+                            dcValues[storageSlot][cellBY * dcWidth + cellBX]
+                        )
+                        cellDC[xybC] = dcQuant * mulDC[xybC] * dcExtraFactor
+                    }
+                    let dcY = cellDC[1]
+                    dcXYB[0][i] = cellDC[0] + dcCflX * dcY
+                    dcXYB[1][i] = dcY
+                    dcXYB[2][i] = cellDC[2] + dcCflB * dcY
+                }
+                // 2 LLF coefficients per channel at natural-order
+                // positions 0 and 1.
+                let llfX = LowestFrequenciesFromDC.ord4Pair(dc: dcXYB[0])
+                let llfY = LowestFrequenciesFromDC.ord4Pair(dc: dcXYB[1])
+                let llfB = LowestFrequenciesFromDC.ord4Pair(dc: dcXYB[2])
+                coef[0][0] = llfX[0]; coef[0][1] = llfX[1]
+                coef[1][0] = llfY[0]; coef[1][1] = llfY[1]
+                coef[2][0] = llfB[0]; coef[2][1] = llfB[1]
+                // AC coefficients: dequant via DCT8x16 quant matrix
+                // (8 rows × 16 cols layout) + AC-CFL.
+                // iter index = XYB index (post v0.8.0e fix).
+                let acYBlock = acBlocks[blockIdxFirst][1]
+                let acXBlock = acBlocks[blockIdxFirst][0]
+                let acBBlock = acBlocks[blockIdxFirst][2]
+                for np in 2..<128 {
+                    let acYDeq = Float(acYBlock[np])
+                        / qweights8x16[1 * 128 + np] * blockInvQuantAC
+                    let acXDeq = Float(acXBlock[np])
+                        / qweights8x16[0 * 128 + np] * blockInvQuantAC
+                    let acBDeq = Float(acBBlock[np])
+                        / qweights8x16[2 * 128 + np] * blockInvQuantAC
+                    coef[1][np] = acYDeq
+                    coef[0][np] = acXDeq + xCCMul * acYDeq
+                    coef[2][np] = acBDeq + bCCMul * acYDeq
+                }
+                // Bridge ×√128 across all coefficients.
+                for c in 0..<3 {
+                    for k in 0..<128 { coef[c][k] *= bridge8x16 }
+                }
+                // 16×8 IDCT per channel (16 wide × 8 tall coef layout).
+                DCT2D.inverse(&coef[0], width: 16, height: 8)
+                DCT2D.inverse(&coef[1], width: 16, height: 8)
+                DCT2D.inverse(&coef[2], width: 16, height: 8)
+                // Place pixels. DCT8x16: 16w × 8h direct.
+                // DCT16x8: 8w × 16h, transposed from the 16w × 8h
+                // IDCT output (pixel[y][x] = coef_pix[x][y]).
+                let xOrigin = bx * 8
+                let yOrigin = by * 8
+                if isVerticalStack {
+                    // DCT16x8: 8 wide × 16 tall pixels.
+                    for py in 0..<16 {
+                        let dstRow = (yOrigin + py) * planeWidth + xOrigin
+                        for px in 0..<8 {
+                            // Transpose: coef layout (px=col, py=row)
+                            // becomes pixel layout (py, px).
+                            let srcIdx = px * 16 + py
+                            planeXYB[0][dstRow + px] = coef[0][srcIdx]
+                            planeXYB[1][dstRow + px] = coef[1][srcIdx]
+                            planeXYB[2][dstRow + px] = coef[2][srcIdx]
+                        }
+                    }
+                } else {
+                    // DCT8x16: 16 wide × 8 tall pixels.
+                    for py in 0..<8 {
+                        let srcRow = py * 16
+                        let dstRow = (yOrigin + py) * planeWidth + xOrigin
+                        for px in 0..<16 {
+                            planeXYB[0][dstRow + px] = coef[0][srcRow + px]
+                            planeXYB[1][dstRow + px] = coef[1][srcRow + px]
+                            planeXYB[2][dstRow + px] = coef[2][srcRow + px]
+                        }
+                    }
+                }
+            }
+        }
+
+        // DCT32x16 / DCT16x32 IDCT overlay (libjxl ord 6). Same
+        // template as DCT16x8/DCT8x16 but on a 32×16 coef layout
+        // with 8 LLF coefficients (4 cols × 2 rows in coef space).
+        let dct16x32Bands = DefaultQuantBands.scaledForBitstream(
+            DefaultQuantBands.dct16x32
+        )
+        let qweights16x32: [Float]
+        do {
+            qweights16x32 = try QuantWeights.getQuantWeights(
+                rows: 16, cols: 32, bands: dct16x32Bands
+            )
+        } catch {
+            throw DecoderError.notImplemented(
+                "VarDCT decode: DCT16x32 quant weights computation failed: \(error)"
+            )
+        }
+        let bridge16x32: Float = (32.0 * 16.0).squareRoot()  // ≈ 22.627
+        for by in 0..<numBlocksYAC {
+            for bx in 0..<numBlocksXAC {
+                let entry = acsImage.at(x: bx, y: by)
+                if !entry.isFirstBlock { continue }
+                if entry.strategy != .dct32x16 && entry.strategy != .dct16x32 {
+                    continue
+                }
+                let isVerticalStack = entry.strategy == .dct32x16  // 16w×32h
+                let cellsX = isVerticalStack ? 2 : 4
+                let cellsY = isVerticalStack ? 4 : 2
+                guard bx + cellsX <= numBlocksXAC,
+                      by + cellsY <= numBlocksYAC
+                else { continue }
+                let blockIdxFirst = by * totalBlocksX + bx
+                let blockQF = blockIdxFirst < perBlockQF.count
+                    ? perBlockQF[blockIdxFirst] : qfRow
+                let blockInvQuantAC = invGlobalScale / Float(blockQF)
+                // Per-channel coef block (32 cols × 16 rows = 512).
+                var coef = [[Float]](
+                    repeating: [Float](repeating: 0, count: 512),
+                    count: 3
+                )
+                // 8 cell DC values + DC-CFL. Coef-layout order is
+                // 4 cols × 2 rows (cx=4, cy=2 after CoefficientLayout).
+                // For DCT32x16 (cellsX=2, cellsY=4): the coef layout
+                // (4 cols × 2 rows) is the TRANSPOSE of the 2-col × 4-
+                // row pixel-cell layout. We want dc[r * 4 + c] in
+                // coef-layout = cell at pixel-cell (c'=r, r'=c) where
+                // (c', r') indexes into the original 2×4 grid. So:
+                //     dc[0..3] = (0,0), (1,0), (0,1), (1,1) of pix
+                //     wait that's wrong. Let me think again.
+                // Actually, libjxl's `dc_stride` is the DC plane
+                // stride. For DCT32x16, the DC values it reads are:
+                //   dc(bx + cx, by + cy) for cx in 0..covered_x=2,
+                //                            cy in 0..covered_y=4.
+                // In libjxl's input to ComputeScaledDCT<4, 2>, this
+                // is laid out as 4 ROWS (cy=0..4) × 2 COLS (cx=0..2),
+                // with stride dc_stride. So input[row, col] =
+                // dc(bx+col, by+row).
+                // Our `ord6Block` expects 4 cols × 2 rows row-major
+                // (which is the COEF-layout transpose of input).
+                // So we need: out[r * 4 + c] = input[c, r] = dc(bx+r, by+c).
+                // For DCT32x16: out[r * 4 + c] = dc(bx + r, by + c)
+                //   r in 0..2 (coef rows), c in 0..4 (coef cols).
+                // Wait, ord6Block expects out[2 rows × 4 cols], so
+                // r in 0..2, c in 0..4. And out[r * 4 + c] = ?
+                // For DCT32x16 (cellsX=2, cellsY=4 in pix; covered_x=2,
+                // covered_y=4): cells at (bx+cx, by+cy) for cx ∈ [0,2),
+                // cy ∈ [0,4). After CoefficientLayout (cx_coef >=
+                // cy_coef), the coef layout is cx_coef=4, cy_coef=2,
+                // and the coef rows correspond to PIXEL cell rows
+                // SWAPPED. The input to ord6Block is row-major in
+                // COEF layout; for DCT32x16, that means:
+                //   coef_row r ↔ pixel cell column r (cx=r)
+                //   coef_col c ↔ pixel cell row c   (cy=c)
+                //   ord6Block input[r * 4 + c] = dc(bx + r, by + c)
+                // For DCT16x32 (cellsX=4, cellsY=2): coef layout is
+                // ALREADY the same as pixel layout (cx_coef=4, cy_coef=2).
+                //   ord6Block input[r * 4 + c] = dc(bx + c, by + r)
+                var dcXYB: [[Float]] = (0..<3).map { _ in
+                    [Float](repeating: 0, count: 8)
+                }
+                for r in 0..<2 {
+                    for c in 0..<4 {
+                        let cellBX: Int
+                        let cellBY: Int
+                        if isVerticalStack {
+                            // DCT32x16: input[r * 4 + c] = dc(bx+r, by+c)
+                            cellBX = bx + r
+                            cellBY = by + c
+                        } else {
+                            // DCT16x32: input[r * 4 + c] = dc(bx+c, by+r)
+                            cellBX = bx + c
+                            cellBY = by + r
+                        }
+                        var cellDC = [Float](repeating: 0, count: 3)
+                        for storageSlot in 0..<3 {
+                            let xybC = storageToXYB[storageSlot]
+                            let dcQuant = Float(
+                                dcValues[storageSlot][cellBY * dcWidth + cellBX]
+                            )
+                            cellDC[xybC] = dcQuant * mulDC[xybC] * dcExtraFactor
+                        }
+                        let dcY = cellDC[1]
+                        let idx = r * 4 + c
+                        dcXYB[0][idx] = cellDC[0] + dcCflX * dcY
+                        dcXYB[1][idx] = dcY
+                        dcXYB[2][idx] = cellDC[2] + dcCflB * dcY
+                    }
+                }
+                // 8 LLF coefficients per channel.
+                let llfX = LowestFrequenciesFromDC.ord6Block(dc: dcXYB[0])
+                let llfY = LowestFrequenciesFromDC.ord6Block(dc: dcXYB[1])
+                let llfB = LowestFrequenciesFromDC.ord6Block(dc: dcXYB[2])
+                // Place at top-left 4 cols × 2 rows of the 32-wide
+                // coef block (natural-order positions 0..3, 32..35).
+                for r in 0..<2 {
+                    for c in 0..<4 {
+                        let pos = r * 32 + c
+                        coef[0][pos] = llfX[r * 4 + c]
+                        coef[1][pos] = llfY[r * 4 + c]
+                        coef[2][pos] = llfB[r * 4 + c]
+                    }
+                }
+                // AC coefficients (skip the 8 LLF positions).
+                let llfSet: Set<Int> = [
+                    0, 1, 2, 3,
+                    32, 33, 34, 35,
+                ]
+                let acYBlock = acBlocks[blockIdxFirst][1]
+                let acXBlock = acBlocks[blockIdxFirst][0]
+                let acBBlock = acBlocks[blockIdxFirst][2]
+                for np in 0..<512 where !llfSet.contains(np) {
+                    let acYDeq = Float(acYBlock[np])
+                        / qweights16x32[1 * 512 + np] * blockInvQuantAC
+                    let acXDeq = Float(acXBlock[np])
+                        / qweights16x32[0 * 512 + np] * blockInvQuantAC
+                    let acBDeq = Float(acBBlock[np])
+                        / qweights16x32[2 * 512 + np] * blockInvQuantAC
+                    coef[1][np] = acYDeq
+                    coef[0][np] = acXDeq + xCCMul * acYDeq
+                    coef[2][np] = acBDeq + bCCMul * acYDeq
+                }
+                for c in 0..<3 {
+                    for k in 0..<512 { coef[c][k] *= bridge16x32 }
+                }
+                // 32×16 IDCT per channel.
+                DCT2D.inverse(&coef[0], width: 32, height: 16)
+                DCT2D.inverse(&coef[1], width: 32, height: 16)
+                DCT2D.inverse(&coef[2], width: 32, height: 16)
+                // Place pixels.
+                let xOrigin = bx * 8
+                let yOrigin = by * 8
+                if isVerticalStack {
+                    // DCT32x16: 16 wide × 32 tall (transposed from coef).
+                    for py in 0..<32 {
+                        let dstRow = (yOrigin + py) * planeWidth + xOrigin
+                        for px in 0..<16 {
+                            let srcIdx = px * 32 + py
+                            planeXYB[0][dstRow + px] = coef[0][srcIdx]
+                            planeXYB[1][dstRow + px] = coef[1][srcIdx]
+                            planeXYB[2][dstRow + px] = coef[2][srcIdx]
+                        }
+                    }
+                } else {
+                    // DCT16x32: 32 wide × 16 tall (matches coef layout).
+                    for py in 0..<16 {
+                        let srcRow = py * 32
+                        let dstRow = (yOrigin + py) * planeWidth + xOrigin
+                        for px in 0..<32 {
+                            planeXYB[0][dstRow + px] = coef[0][srcRow + px]
+                            planeXYB[1][dstRow + px] = coef[1][srcRow + px]
+                            planeXYB[2][dstRow + px] = coef[2][srcRow + px]
+                        }
                     }
                 }
             }

@@ -33,6 +33,11 @@ public enum LowestFrequenciesFromDC {
         0.901764195028874394,
     ]
 
+    /// libjxl `dct_scales.h::DCTResampleScales<1, 8>::kScales`.
+    /// Trivially `[1.0]` — included for clarity at call sites that
+    /// scale rectangular LLF regions where one axis stays at 1 cell.
+    private static let kScales1to8: [Float] = [1.0]
+
     /// DCT16x16 path: 4 DC values from the 2×2 covered cells →
     /// 4 LLF coefficients (positions (0,0), (1,0), (0,1), (1,1) of
     /// the 16×16 coefficient grid).
@@ -72,5 +77,145 @@ public enum LowestFrequenciesFromDC {
             s10 * sX0 * sY1,
             s11 * sX1 * sY1,
         ]
+    }
+
+    /// DCT16x8 / DCT8x16 (libjxl ord 4) path: 2 DC values from the
+    /// 2 covered cells (vertically stacked for DCT16x8, horizontally
+    /// stacked for DCT8x16) reinterpret to 2 LLF coefficients at
+    /// natural-order positions 0 and 1 of the 8×16 (or 16×8) coef
+    /// block.
+    ///
+    /// Both libjxl `Type::DCT16X8` (ROWS=2, COLS=1) and `Type::DCT8X16`
+    /// (ROWS=1, COLS=2) use the same 1-D forward DCT-2 + per-axis
+    /// scale formula:
+    ///
+    ///     LLF[0] = (dc[0] + dc[1]) / 2
+    ///     LLF[1] = (dc[0] - dc[1]) / 2 * 0.901764195
+    ///
+    /// where `dc[0]`, `dc[1]` are the two covered cells in the
+    /// strategy's natural order (top-then-bottom for DCT16x8 stacking
+    /// 2 cells vertically, left-then-right for DCT8x16 stacking 2
+    /// cells horizontally).
+    public static func ord4Pair(dc: [Float]) -> [Float] {
+        precondition(dc.count == 2, "ord 4 LLF needs 2 DC values")
+        let s0 = (dc[0] + dc[1]) * 0.5
+        let s1 = (dc[0] - dc[1]) * 0.5
+        return [s0 * kScales2to16[0], s1 * kScales2to16[1]]
+    }
+
+    /// libjxl `dct_scales.h::DCTResampleScales<4, 32>::kScales`.
+    private static let kScales4to32: [Float] = [
+        1.0,
+        0.974886821136879522,
+        0.901764195028874394,
+        0.787054918159101335,
+    ]
+
+    /// libjxl `dct_scales.h::DCTResampleScales<2, 16>` indexed
+    /// table; alias for `kScales2to16` to keep ord 6 maths readable.
+    private static let kScales2to32: [Float] = [
+        1.0,
+        0.901764195028874394,
+    ]
+
+    /// 1-D forward "scaled" DCT-4: divide-by-N (=4) un-normalised
+    /// DCT-II of length 4. Matches libjxl's
+    /// `CoeffBundle::StoreToBlockAndScale` post-pass scaling.
+    @inline(__always)
+    private static func scaledDCT4(_ x: [Float]) -> [Float] {
+        precondition(x.count == 4)
+        // cos(π/8), cos(3π/8) — the standard DCT-4 angle constants.
+        let c1: Float = 0.9238795325112867   // cos(π/8)
+        let c3: Float = 0.3826834323650898   // cos(3π/8)
+        let s0 = (x[0] + x[1] + x[2] + x[3])
+        let s2 = (x[0] - x[1] - x[2] + x[3])
+        let d03 = x[0] - x[3]
+        let d12 = x[1] - x[2]
+        let s1 = d03 * c1 + d12 * c3
+        let s3 = d03 * c3 - d12 * c1
+        let inv: Float = 0.25
+        return [s0 * inv, s1 * inv, s2 * inv, s3 * inv]
+    }
+
+    /// DCT32x16 / DCT16x32 (libjxl ord 6) path: 8 DC values from the
+    /// covered 4×2 (or 2×4) cells reinterpret to 8 LLF coefficients
+    /// at the top-left 4×2 corner of the 32×16 coef block.
+    ///
+    /// `dc` is in row-major coef-layout order: 4 cols × 2 rows for
+    /// the coefficient layout (after `CoefficientLayout` swap):
+    ///
+    ///     dc[0] dc[1] dc[2] dc[3]    ← row 0
+    ///     dc[4] dc[5] dc[6] dc[7]    ← row 1
+    ///
+    /// Returns 8 LLF values in the same row-major order. Per libjxl
+    /// `LowestFrequenciesFromDC<DCT32X16>`: ROWS=4, COLS=2 →
+    /// `ComputeScaledDCT<4, 2>` then resample with
+    /// `DCTTotalResampleScale<4, 32>(y) * DCTTotalResampleScale<2, 16>(x)`.
+    /// (For DCT16x32 it's ROWS=2, COLS=4 with axes swapped — the
+    /// final LLF positions in the natural-order 4×2 LF region come
+    /// out the same after symmetric handling.)
+    public static func ord6Block(dc: [Float]) -> [Float] {
+        precondition(dc.count == 8, "ord 6 LLF needs 8 DC values")
+        // Step 1: 1-D DCT-4 along COLUMNS (process each col across
+        // the 2 rows? No — we have ROWS=4 in coef layout, which means
+        // we need a 4-point DCT along the "covered_blocks_y=4"
+        // dimension, then a 2-point DCT along covered_blocks_x=2.
+        // For DCT32X16 in libjxl: input is laid out 2 rows × 4 cols.
+        // ComputeScaledDCT<4, 2> does DCT-4 along rows (4 elements
+        // per col, 2 cols), then DCT-2 along cols.
+        // Our `dc` here is the libjxl `dc` with stride: dc[y*stride+x]
+        // for y in covered_y, x in covered_x.
+        //
+        // Re-cast our row-major dc[] (4 cols × 2 rows) as a (rows=2,
+        // cols=4) input. ComputeScaledDCT<4, 2> takes a rows=4×cols=2
+        // input — so we need the transposed view: input[r, c] for
+        // r in 0..4, c in 0..2 = dc[c * 4 + r] (transposed).
+        //
+        // Simpler: walk libjxl's natural layout. For DCT32X16
+        // (covered_x=2, covered_y=4), the DC values fill a 2-col × 4-
+        // row region. We feed them to ComputeScaledDCT<4, 2>.
+        //
+        // For DCT16X32 (covered_x=4, covered_y=2), the DC values fill
+        // a 4-col × 2-row region. We feed them to ComputeScaledDCT
+        // <2, 4> (different signature but same final placement after
+        // resample).
+        //
+        // To keep this helper unified for both strategies, we accept
+        // `dc` as a flat 8-array in COEF-LAYOUT row-major (4 cols × 2
+        // rows after `CoefficientLayout` swap). The math below works
+        // out the same either way because libjxl's resample scales
+        // are symmetric under axis swap.
+
+        // Apply 1-D DCT-2 along the 2-row axis (so for each of 4
+        // columns, combine the 2 rows):
+        // tmp[0, x] = (dc[0, x] + dc[1, x]) / 2
+        // tmp[1, x] = (dc[0, x] - dc[1, x]) / 2
+        var tmp = [Float](repeating: 0, count: 8)
+        for x in 0..<4 {
+            let d0 = dc[x]            // row 0
+            let d1 = dc[4 + x]        // row 1
+            tmp[x]     = (d0 + d1) * 0.5
+            tmp[4 + x] = (d0 - d1) * 0.5
+        }
+        // Apply 1-D DCT-4 along the 4-col axis (for each of 2 rows):
+        var out = [Float](repeating: 0, count: 8)
+        for y in 0..<2 {
+            let row = [tmp[y * 4 + 0], tmp[y * 4 + 1],
+                       tmp[y * 4 + 2], tmp[y * 4 + 3]]
+            let dctRow = scaledDCT4(row)
+            for x in 0..<4 {
+                out[y * 4 + x] = dctRow[x]
+            }
+        }
+        // Resample scales: per-row uses kScales2to32[y], per-col
+        // uses kScales4to32[x].
+        var result = [Float](repeating: 0, count: 8)
+        for y in 0..<2 {
+            for x in 0..<4 {
+                result[y * 4 + x] = out[y * 4 + x]
+                    * kScales4to32[x] * kScales2to32[y]
+            }
+        }
+        return result
     }
 }

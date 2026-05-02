@@ -241,6 +241,42 @@ public enum DefaultQuantBands {
         b: [ 506.854140754517, -1.4, -0.2, -0.5, -0.5, -1.5, -3.6]
     )
 
+    /// DCT16x32 / DCT32x16 bands per libjxl `quant_weights.cc`
+    /// `DCT16X32()`. Both share a 32×16 (after `CoefficientLayout`)
+    /// coef layout and therefore the same quant table.
+    public static let dct16x32: (x: [Float], y: [Float], b: [Float]) = (
+        x: [
+             13844.97076442300573,
+                -0.97113799999999995,
+                -0.658,
+                -0.42026,
+                -0.22712,
+                -0.2206,
+                -0.226,
+                -0.6,
+        ],
+        y: [
+              4798.964084220744293,
+                -0.61125308982767057,
+                -0.83770786552491361,
+                -0.79014862079498627,
+                -0.2692727459704829,
+                -0.38272769465388551,
+                -0.22924222653091453,
+                -0.20719098826199578,
+        ],
+        b: [
+              1807.236946760964614,
+                -1.2,
+                -1.2,
+                -0.7,
+                -0.7,
+                -0.7,
+                -0.4,
+                -0.5,
+        ]
+    )
+
     /// libjxl's bitstream multiplies the seed band by 64 after
     /// reading (`DecodeDctParams` line
     /// `params->distance_bands[c][0] *= 64.0f`). Apply here so the
