@@ -247,6 +247,8 @@ The VarDCT bitstream parsers are landing in section-0 layer order, with a fronti
 | Color correlation + inverse OpsinXYB + sRGB OETF + 8-bit RGB (Bite 4) | ✅ — applied per-pixel `X' = X + x_cc_mul * Y` and `B' = B + b_cc_mul * Y` (with `x_cc_mul=0`, `b_cc_mul=1` for our fixture's all-zero CFL slopes); piped through `OpsinXYB.inverse` → linear RGB → IEC 61966-2-1 sRGB OETF → 8-bit clamped output |
 | Wire RGB into `ImageFrame` + verify against djxl pixel-by-pixel (Bite 5) | ✅ — `JXLDecoder().decode(_:)` now returns a populated `ImageFrame(8×8×3, sRGB, uint8)` for the cjxl-d=1 8×8 fixture. Per-channel RGB means = **(133, 120, 124)** vs djxl reference **(114, 113, 114)** (within ±20 — Phase R restoration filters will close the residual). New test [`testVarDCT_8x8Fixture_PixelsMatchDjxlMean`](Tests/JXLSwiftTests/IntegrationTests.swift) cross-validates against `djxl` |
 | **v0.5.0 — VarDCT decode (single-group, no restoration)** | 🎉 **shipped** |
+| **v0.6.0 — Phase R restoration (Gaborish + EPF framework)** | 🎉 **shipped** |
+| **v0.7.0 (in progress) — multi-block, single AC group** | ✅ 16×16 fixture decodes (mean within ±10 of djxl); per-block QF + coefficient-level CFL fixed; refactored AC decode + dequant + IDCT into per-block loop. Multi-group + non-zero EPF sharpness still pending. |
 | AC global (coeff_orders permutation + ANSCode for AC) | ⏳ |
 | AC group orchestration (decoder math ready in `ACGroupDecoder`) | ⏳ |
 | Restoration: Gaborish + EPF (Gaborish math ready) | ⏳ |

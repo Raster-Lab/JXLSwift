@@ -6830,6 +6830,60 @@ extension FoundationTests {
         print("[v0.5.0] our RGB means: \(oursMean) vs djxl reference (114, 113, 114)")
     }
 
+    /// **v0.7.0 milestone**: decode a 16×16 fixture (2×2 block grid).
+    /// Exercises the multi-block AC decode loop, per-block QF, and
+    /// coefficient-level CFL with non-trivial AC slope. Mean tolerance
+    /// ±35 — full pixel match is gated on the EPF bilateral kernel
+    /// and possibly per-pixel render-pipeline subtleties (deferred).
+    func testVarDCT_16x16Fixture_PixelsMatchDjxlMean() throws {
+        let cjxl = "/opt/homebrew/bin/cjxl"
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: cjxl),
+              FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("cjxl/djxl not available")
+        }
+        let tmp = NSTemporaryDirectory()
+        let pnmPath = tmp + "vdt16.ppm"
+        let jxlPath = tmp + "vdt16.jxl"
+        var ppm = Data("P6\n16 16\n255\n".utf8)
+        for y in 0..<16 {
+            for x in 0..<16 {
+                ppm.append(contentsOf: [
+                    UInt8(x * 16 & 0xff),
+                    UInt8(y * 16 & 0xff),
+                    UInt8((x ^ y) * 16 & 0xff),
+                ])
+            }
+        }
+        try ppm.write(to: URL(fileURLWithPath: pnmPath))
+        let p1 = Process()
+        p1.launchPath = cjxl
+        p1.arguments = [pnmPath, jxlPath, "-d", "1"]
+        p1.standardOutput = Pipe(); p1.standardError = Pipe()
+        try p1.run(); p1.waitUntilExit()
+        XCTAssertEqual(p1.terminationStatus, 0)
+
+        let bytes = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
+        let frame = try JXLDecoder().decode(bytes)
+        XCTAssertEqual(frame.width, 16)
+        XCTAssertEqual(frame.height, 16)
+        XCTAssertEqual(frame.channels, 3)
+        XCTAssertEqual(frame.data.count, 16 * 16 * 3)
+
+        var oursR = 0, oursG = 0, oursB = 0
+        for i in 0..<256 {
+            oursR += Int(frame.data[i*3+0])
+            oursG += Int(frame.data[i*3+1])
+            oursB += Int(frame.data[i*3+2])
+        }
+        let oursMean = (Double(oursR)/256, Double(oursG)/256, Double(oursB)/256)
+        // Reference: djxl mean ≈ (121, 120, 121) for this fixture.
+        XCTAssertEqual(oursMean.0, 121, accuracy: 35)
+        XCTAssertEqual(oursMean.1, 120, accuracy: 35)
+        XCTAssertEqual(oursMean.2, 121, accuracy: 35)
+        print("[v0.7.0 16×16] our RGB means: \(oursMean) vs djxl ≈ (121, 120, 121)")
+    }
+
     /// EPF sigma calculation early-exits for sharpness=0 with the
     /// default LUT — `inv_sigma` falls below `kMinSigma`, signalling
     /// pass-through. Cross-validated against libjxl's epf.cc:

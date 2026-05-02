@@ -747,47 +747,80 @@ public final class JXLDecoder {
         // place at `order[k]` to recover the natural-order layout
         // ready for dequant + IDCT.
         let dctOrder = naturalCoeffOrderDCT8
-        var acBlocks: [[Int32]] = []
-        acBlocks.reserveCapacity(3)
+        // Multi-block AC group decode. For an N×M block grid, libjxl
+        // iterates `for (by, bx)` outer, then `for c in {1, 0, 2}`
+        // inner (Y, X, B). For single-cluster routing the order is
+        // bit-equivalent to any consistent order; we keep libjxl's
+        // {1, 0, 2} ordering for safety.
+        let numBlocksXAC = (xsize + 7) / 8
+        let numBlocksYAC = (ysize + 7) / 8
+        let totalACBlocks = numBlocksXAC * numBlocksYAC
+        // acBlocks[blockIdx][iterC] is the 64-coef block for the
+        // i-th decoded (block, channel) pair. iterC ∈ {0=Y, 1=X, 2=B}
+        // matching `acIterToXYB = [1, 0, 2]`.
+        var acBlocks: [[[Int32]]] = []
+        acBlocks.reserveCapacity(totalACBlocks)
         let acDecodeStart = r.position
-        for c in 0..<3 {
-            // For the default kDefaultBlockCtxMap with no DC/QF
-            // thresholds, `context(qdc=0, qf=*, ord=0, c=*)` returns a
-            // cluster index which routes through `contextMap.map[idx]
-            // → 0` (single histogram). Pass blockCtx=0 — actual value
-            // is irrelevant for bit positions on this fixture.
-            var blk = [Int32](repeating: 0, count: 64)
-            do {
-                try ACDecoder.decodeBlock(
-                    block: &blk,
-                    order: dctOrder,
-                    coveredBlocks: 1, log2CoveredBlocks: 0,
-                    blockCtx: 0,
-                    predictedNnz: 0,    // first block, no neighbours
-                    ctxOffset: 0,
-                    ctxMap: bctx,
-                    shift: 0,
-                    stream: &acTokenStream,
-                    from: &r
-                )
-            } catch let e as ACDecoderError {
-                throw DecoderError.notImplemented(
-                    "VarDCT decode: AC block (channel \(c)) decode "
-                    + "failed: \(e). State init or token routing "
-                    + "may have desynced."
-                )
+        // Track row_nzeros across blocks for `predictNnz` (libjxl
+        // `PredictFromTopAndLeft`). For single-cluster routing this
+        // doesn't change bit consumption but keeps the decoder ready
+        // for multi-cluster fixtures.
+        var rowNZAbove = [Int32](repeating: 0, count: numBlocksXAC * 3)
+        var rowNZCurrent = [Int32](repeating: 0, count: numBlocksXAC * 3)
+        for by in 0..<numBlocksYAC {
+            for bx in 0..<numBlocksXAC {
+                var blockChannels: [[Int32]] = []
+                blockChannels.reserveCapacity(3)
+                for c in 0..<3 {
+                    var blk = [Int32](repeating: 0, count: 64)
+                    let predNnz: UInt32 = ACDecoder.predictNnz(
+                        rowAbove: by == 0 ? nil
+                            : Array(rowNZAbove[c * numBlocksXAC ..<
+                                              (c + 1) * numBlocksXAC]),
+                        rowCurrent: Array(rowNZCurrent[c * numBlocksXAC ..<
+                                                       (c + 1) * numBlocksXAC]),
+                        bx: bx
+                    )
+                    do {
+                        try ACDecoder.decodeBlock(
+                            block: &blk,
+                            order: dctOrder,
+                            coveredBlocks: 1, log2CoveredBlocks: 0,
+                            blockCtx: 0,
+                            predictedNnz: predNnz,
+                            ctxOffset: 0,
+                            ctxMap: bctx,
+                            shift: 0,
+                            stream: &acTokenStream,
+                            from: &r
+                        )
+                    } catch let e as ACDecoderError {
+                        throw DecoderError.notImplemented(
+                            "VarDCT decode: AC block (\(bx),\(by)) "
+                            + "channel iter \(c) decode failed: \(e)"
+                        )
+                    }
+                    let nz = Int32(blk.lazy.filter { $0 != 0 }.count)
+                    rowNZCurrent[c * numBlocksXAC + bx] = nz
+                    blockChannels.append(blk)
+                }
+                acBlocks.append(blockChannels)
             }
-            acBlocks.append(blk)
-            traceLayer("ACBlock[c=\(c)]", before: acDecodeStart,
-                       after: r.position)
+            // After finishing this row, swap into rowNZAbove for the
+            // next row's prediction. (For single-cluster fixtures,
+            // this is bookkeeping that doesn't change bit consumption.)
+            swap(&rowNZAbove, &rowNZCurrent)
+            for i in 0..<rowNZCurrent.count { rowNZCurrent[i] = 0 }
         }
+        traceLayer("AC group (\(numBlocksXAC)×\(numBlocksYAC) blocks)",
+                   before: acDecodeStart, after: r.position)
         if trace {
-            for (c, blk) in acBlocks.enumerated() {
-                let nz = blk.filter { $0 != 0 }.count
-                let nzVals = blk.enumerated().filter { $0.element != 0 }
-                    .map { "[\($0.offset)]=\($0.element)" }.joined(separator: " ")
+            for (bIdx, blockChannels) in acBlocks.enumerated() {
+                let nzCounts = blockChannels.map {
+                    $0.filter { $0 != 0 }.count
+                }
                 FileHandle.standardError.write(Data(
-                    "TRACE ACBlock[c=\(c)]: \(nz) nonzeros: \(nzVals)\n".utf8
+                    "TRACE ACBlock[block=\(bIdx)]: nz per iter = \(nzCounts)\n".utf8
                 ))
             }
         }
@@ -841,12 +874,27 @@ public final class JXLDecoder {
         let storageToXYB: [Int] = [1, 0, 2]
         let acIterToXYB: [Int] = [1, 0, 2]
 
-        // qf for our 1-block fixture: ACMeta channel 2 row 1 = `[4]`,
-        // remapped via libjxl `row_qf[ix] = 1 + clamp(row_in_2[num], 0,
-        // kQuantMax - 1)` → 1 + 4 = 5.
-        let qfRaw = acMetaValues.indices.contains(2) && acMetaValues[2].count >= 2
-            ? acMetaValues[2][1] : 0
-        let qfRow = 1 + max(0, min(qfRaw, 255))
+        // ACMeta channel 2 shape = `count × 2` (row 0 = ACS values,
+        // row 1 = QF values). Flat indices: [ACS_0..ACS_{n-1},
+        // QF_0..QF_{n-1}]. Per-block `qf` per libjxl
+        // `dec_modular.cc::DecodeAcMetadata`:
+        //
+        //     row_qf[ix] = 1 + clamp(row_in_2[num], 0, kQuantMax - 1)
+        //
+        // For our 8×8 fixture: count=1, ACS=[0], QF=[4] → qfPerBlock=[5].
+        // For 16×16: count=4, QF=[5,5,6,5] → qfPerBlock=[6,6,7,6].
+        let acMetaCh2 = acMetaValues[2]
+        var perBlockQF = [Int32]()
+        perBlockQF.reserveCapacity(acMetaCount)
+        for i in 0..<acMetaCount {
+            let raw = acMetaCh2.count > acMetaCount + i
+                ? acMetaCh2[acMetaCount + i] : 0
+            perBlockQF.append(1 + max(0, min(raw, 255)))
+        }
+        // For dequant, we use the first block's qf as a fallback when
+        // a single value is needed; the per-block dequant loop uses
+        // perBlockQF[blockIdx] correctly.
+        let qfRow = perBlockQF.first ?? 5
         let invQuantAC: Float = invGlobalScale / Float(qfRow)
 
         // DCT8 default quant weights: 3 × 64 floats. `qweights[c*64+k]`
@@ -866,57 +914,124 @@ public final class JXLDecoder {
             )
         }
 
-        // Output: pixelBlocksXYB[xyb_c] = 64-pixel block for that XYB
-        // channel (Y, X, B → 0, 1, 2 in pixelBlocksXYB order? actually
-        // we'll keep XYB-indexed: pixelBlocksXYB[0]=X, [1]=Y, [2]=B).
-        var pixelBlocksXYB: [[Float]] = Array(repeating: [], count: 3)
-        for storageSlot in 0..<3 {
-            let xybC = storageToXYB[storageSlot]
-            var coefBlock = [Float](repeating: 0, count: 64)
-            // DC at natural position 0: dcValues[storage] holds the
-            // quantised DC for the channel at that storage slot.
-            let dcQuant = Float(dcValues[storageSlot][0])
-            coefBlock[0] = dcQuant * mulDC[xybC] * dcExtraFactor
-            // AC at natural positions order[1..63]: find which
-            // iteration index corresponds to this XYB channel.
-            // `acIterToXYB[iter] == xybC` ⇒ acBlocks[iter] holds this
-            // channel's AC coefs.
-            guard let iter = acIterToXYB.firstIndex(of: xybC) else {
-                throw DecoderError.notImplemented(
-                    "VarDCT decode: AC iteration index for XYB \(xybC) not found"
-                )
+        // Multi-block dequant + IDCT + plane assembly. libjxl applies
+        // CFL **at the coefficient level**, with DIFFERENT factors for
+        // DC vs AC:
+        //   • DC pixel: `cfl_dc_b = ytoBRatio(cmap.ytobDC)` (typically
+        //     1.0 + 0/84 = 1 for default ColorCorrelation).
+        //   • AC coefs: `cfl_ac_b = ytoBRatio(ytob_map[tile])` (depends
+        //     on the per-color-tile slope from ACMeta channel 1).
+        // We mirror that: DC pixel gets DC-CFL baked in, AC coefs get
+        // AC-CFL baked in BEFORE the IDCT. After IDCT no further CFL
+        // is applied. (For our 8×8 fixture both slopes are 0 so DC
+        // and AC use the same factors and the bug was masked.)
+        let dcCflX = cmapDC.ytoXRatio(slope: cmapDC.ytoxDC)
+        let dcCflB = cmapDC.ytoBRatio(slope: cmapDC.ytobDC)
+        // AC slopes from ACMeta (per-color-tile; for our small fixtures
+        // it's a single tile covering the whole image).
+        let ytoxSlopeAC = acMetaValues[0].first ?? 0
+        let ytobSlopeAC = acMetaValues[1].first ?? 0
+        let xCCMul = cmapDC.ytoXRatio(slope: ytoxSlopeAC)
+        let bCCMul = cmapDC.ytoBRatio(slope: ytobSlopeAC)
+        if trace {
+            FileHandle.standardError.write(Data(
+                "TRACE CFL: dc=(x=\(dcCflX), b=\(dcCflB)) ac=(x=\(xCCMul), b=\(bCCMul)) (slopes dc=(\(cmapDC.ytoxDC),\(cmapDC.ytobDC)) ac=(\(ytoxSlopeAC),\(ytobSlopeAC)))\n".utf8
+            ))
+        }
+
+        let planeWidth = numBlocksXAC * 8
+        let planeHeight = numBlocksYAC * 8
+        var planeXYB: [[Float]] = (0..<3).map { _ in
+            [Float](repeating: 0, count: planeWidth * planeHeight)
+        }
+
+        for by in 0..<numBlocksYAC {
+            for bx in 0..<numBlocksXAC {
+                let blockIdx = by * numBlocksXAC + bx
+                // Per-block invQuantAC from this block's QF.
+                let blockQF = blockIdx < perBlockQF.count
+                    ? perBlockQF[blockIdx] : qfRow
+                let blockInvQuantAC = invGlobalScale / Float(blockQF)
+                // 1) Dequant DC for all 3 channels (XYB indexing).
+                var dcPixelXYB = [Float](repeating: 0, count: 3)
+                for storageSlot in 0..<3 {
+                    let xybC = storageToXYB[storageSlot]
+                    let dcQuant = Float(
+                        dcValues[storageSlot][by * dcWidth + bx]
+                    )
+                    dcPixelXYB[xybC] = dcQuant * mulDC[xybC] * dcExtraFactor
+                }
+                // 2) Apply DC-CFL: X' = X + dcCflX·Y, B' = B + dcCflB·Y.
+                let dcY = dcPixelXYB[1]
+                let dcCorrectedX = dcPixelXYB[0] + dcCflX * dcY
+                let dcCorrectedB = dcPixelXYB[2] + dcCflB * dcY
+
+                // 3) Locate iteration indices for each XYB channel.
+                guard
+                    let iterX = acIterToXYB.firstIndex(of: 0),
+                    let iterY = acIterToXYB.firstIndex(of: 1),
+                    let iterB = acIterToXYB.firstIndex(of: 2)
+                else {
+                    throw DecoderError.notImplemented(
+                        "VarDCT decode: AC iter mapping incomplete"
+                    )
+                }
+                let acYBlock = acBlocks[blockIdx][iterY]
+                let acXBlock = acBlocks[blockIdx][iterX]
+                let acBBlock = acBlocks[blockIdx][iterB]
+
+                // 4) Build coefBlocks with DC at position 0, AC-CFL'd
+                //    AC coefs at positions 1..63.
+                var coefY = [Float](repeating: 0, count: 64)
+                var coefX = [Float](repeating: 0, count: 64)
+                var coefB = [Float](repeating: 0, count: 64)
+                coefY[0] = dcY
+                coefX[0] = dcCorrectedX
+                coefB[0] = dcCorrectedB
+                for k in 1..<64 {
+                    let np = dctOrder[k]
+                    let acYDequant = Float(acYBlock[np])
+                        / qweights[1 * 64 + np] * blockInvQuantAC
+                    let acXDequant = Float(acXBlock[np])
+                        / qweights[0 * 64 + np] * blockInvQuantAC
+                    let acBDequant = Float(acBBlock[np])
+                        / qweights[2 * 64 + np] * blockInvQuantAC
+                    coefY[np] = acYDequant
+                    coefX[np] = acXDequant + xCCMul * acYDequant
+                    coefB[np] = acBDequant + bCCMul * acYDequant
+                }
+                // 5) ×N bridge + 8×8 IDCT for each plane.
+                for k in 0..<64 {
+                    coefY[k] *= 8.0
+                    coefX[k] *= 8.0
+                    coefB[k] *= 8.0
+                }
+                DCT2D.inverse(&coefY, size: 8)
+                DCT2D.inverse(&coefX, size: 8)
+                DCT2D.inverse(&coefB, size: 8)
+                // 6) Place 8×8 patches at (bx*8, by*8) in each plane.
+                let xOrigin = bx * 8
+                let yOrigin = by * 8
+                for py in 0..<8 {
+                    let srcRow = py * 8
+                    let dstRow = (yOrigin + py) * planeWidth + xOrigin
+                    for px in 0..<8 {
+                        planeXYB[0][dstRow + px] = coefX[srcRow + px]
+                        planeXYB[1][dstRow + px] = coefY[srcRow + px]
+                        planeXYB[2][dstRow + px] = coefB[srcRow + px]
+                    }
+                }
             }
-            for k in 1..<64 {
-                let np = dctOrder[k]
-                let dequantWeight = 1.0 / qweights[xybC * 64 + np]
-                let acCoef = Float(acBlocks[iter][np])
-                coefBlock[np] = acCoef * dequantWeight * invQuantAC
-            }
-            // libjxl DCT convention: forward divides by N², inverse no
-            // division (DC = mean of pixel block). Our `DCT2D` is
-            // orthonormal (1/√N each side). Bridge: scale every
-            // coefficient by N (=8 for DCT8) before our IDCT.
-            for k in 0..<64 { coefBlock[k] *= 8.0 }
-            // 8×8 IDCT in place — converts frequency-domain to pixel-
-            // domain. Output is XYB-encoded values (still pre color
-            // correlation, pre inverse XYB).
-            DCT2D.inverse(&coefBlock, size: 8)
-            pixelBlocksXYB[xybC] = coefBlock
         }
         if trace {
             let labels = ["X", "Y", "B"]
             for c in 0..<3 {
-                let block = pixelBlocksXYB[c]
+                let block = planeXYB[c]
                 let mean = block.reduce(0.0, +) / Float(block.count)
                 let minVal = block.min() ?? 0
                 let maxVal = block.max() ?? 0
                 FileHandle.standardError.write(Data(
-                    "TRACE pixelBlock[\(labels[c])]: mean=\(mean) range=[\(minVal), \(maxVal)]\n".utf8
-                ))
-                // Sample qweights for this channel
-                let firstFew = (0..<4).map { String(format: "%.2f", qweights[c * 64 + $0]) }
-                FileHandle.standardError.write(Data(
-                    "TRACE qweights[\(labels[c])] first 4: [\(firstFew.joined(separator: ", "))]\n".utf8
+                    "TRACE plane[\(labels[c])]: dim=\(planeWidth)×\(planeHeight) mean=\(mean) range=[\(minVal), \(maxVal)]\n".utf8
                 ))
             }
         }
@@ -936,30 +1051,14 @@ public final class JXLDecoder {
         //     b_cc_mul = base_correlation_b + ytob_map[0] / color_factor
         //              = 1 + 0/84 = 1
         // So X stays, B becomes Y + B.
-        let ytoxSlope = acMetaValues[0].first ?? 0
-        let ytobSlope = acMetaValues[1].first ?? 0
-        let xCCMul = cmapDC.ytoXRatio(slope: ytoxSlope)
-        let bCCMul = cmapDC.ytoBRatio(slope: ytobSlope)
-        if trace {
-            FileHandle.standardError.write(Data(
-                "TRACE CFL: x_cc_mul=\(xCCMul) b_cc_mul=\(bCCMul) (slopes=\(ytoxSlope), \(ytobSlope))\n".utf8
-            ))
-        }
+        // CFL slopes are computed above (before the dequant loop).
 
-        // Apply color correlation per-pixel (mathematically the same
-        // as libjxl's per-coefficient `MulAdd(x_cc_mul, dequant_y, ...)`
-        // since IDCT is linear and CC weights are per-tile constants).
-        var planeX = [Float](repeating: 0, count: 64)
-        var planeY = [Float](repeating: 0, count: 64)
-        var planeB = [Float](repeating: 0, count: 64)
-        for i in 0..<64 {
-            let xRaw = pixelBlocksXYB[0][i]
-            let yRaw = pixelBlocksXYB[1][i]
-            let bRaw = pixelBlocksXYB[2][i]
-            planeX[i] = xRaw + xCCMul * yRaw
-            planeY[i] = yRaw
-            planeB[i] = bRaw + bCCMul * yRaw
-        }
+        // CFL is already baked into the planes at the coefficient
+        // level (DC-CFL on F[0,0], AC-CFL on F[k>0]). Just hand the
+        // planes off to Gaborish + EPF + the inverse XYB stage.
+        var planeX = planeXYB[0]
+        var planeY = planeXYB[1]
+        var planeB = planeXYB[2]
 
         // Phase R restoration filters. libjxl pipeline order
         // (`dec_cache.cc::PreparePipeline`):
@@ -976,39 +1075,31 @@ public final class JXLDecoder {
         //
         // EPF is deferred until later in v0.6.0.
         if fh.loopFilter.gab {
-            Gaborish.apply(to: &planeX, width: 8, height: 8)
-            Gaborish.apply(to: &planeY, width: 8, height: 8)
-            Gaborish.apply(to: &planeB, width: 8, height: 8)
+            Gaborish.apply(to: &planeX, width: planeWidth, height: planeHeight)
+            Gaborish.apply(to: &planeY, width: planeWidth, height: planeHeight)
+            Gaborish.apply(to: &planeB, width: planeWidth, height: planeHeight)
             if trace {
                 FileHandle.standardError.write(Data(
-                    "TRACE Gaborish applied to all 3 channels\n".utf8
+                    "TRACE Gaborish applied to all 3 channels (\(planeWidth)×\(planeHeight))\n".utf8
                 ))
             }
         }
 
         // EPF — edge-preserving filter, up to 3 iterations gated by
         // `lf.epfIters`. For our cjxl-d=1 fixture the EPF sharpness
-        // field (ACMeta channel 3) is all zeros and the default
-        // `epf_sharp_lut[0] = 0` collapses sigma to -1e-4 → inv_sigma
-        // = -10000 → below `kMinSigma`, so EPF is a structural no-op.
-        // Real-world fixtures with non-zero sharpness drive the
-        // bilateral kernel — wired but not yet implemented (throws
-        // `unsupportedNonZeroSharpness` if hit).
+        // field (ACMeta channel 3) is all zeros → no-op fast path.
         if fh.loopFilter.epfIters > 0 {
-            // Sharpness field per block is in ACMetadata channel 3
-            // (1 entry per 8×8 block; for our 8×8 fixture, just 1
-            // value). Default LUT.
             let sharpField: [UInt8] = (acMetaValues.count > 3
                 ? acMetaValues[3].map { UInt8(clamping: $0) }
-                : [0])
+                : [UInt8](repeating: 0, count: numBlocksXAC * numBlocksYAC))
             do {
                 try EPF.applyAllStages(
                     planeX: &planeX, planeY: &planeY, planeB: &planeB,
-                    width: 8, height: 8,
+                    width: planeWidth, height: planeHeight,
                     sharpnessField: sharpField,
                     rowQuant: Int32(qfRow),
                     quantScale: Float(qp.globalScale)
-                        / Float(1 << 16),  // libjxl `Quantizer::Scale()`
+                        / Float(1 << 16),
                     params: EPFParams.default
                 )
                 if trace {
@@ -1019,50 +1110,49 @@ public final class JXLDecoder {
             } catch let e as EPFError {
                 throw DecoderError.notImplemented(
                     "VarDCT decode: EPF bilateral kernel not yet "
-                    + "implemented for non-zero sharpness: \(e). The "
-                    + "no-op fast path covers cjxl-d=1 fixtures with "
-                    + "sharpness=0; richer fixtures will land the full "
-                    + "kernel."
+                    + "implemented for non-zero sharpness: \(e)"
                 )
             }
         }
 
-        // Per-pixel XYB → linear RGB → sRGB → 8-bit.
-        var rgb8 = [UInt8](repeating: 0, count: 8 * 8 * 3)
-        for i in 0..<64 {
-            let lin = OpsinXYB.inverse(
-                (X: planeX[i], Y: planeY[i], B: planeB[i])
-            )
-            rgb8[i * 3 + 0] = linearToSRGB8(lin.R)
-            rgb8[i * 3 + 1] = linearToSRGB8(lin.G)
-            rgb8[i * 3 + 2] = linearToSRGB8(lin.B)
+        // Per-pixel XYB → linear RGB → sRGB → 8-bit. Crop the W*H plane
+        // back to the frame's actual `xsize × ysize` (the plane is
+        // padded out to a multiple of 8).
+        var rgb8 = [UInt8](repeating: 0, count: xsize * ysize * 3)
+        for y in 0..<ysize {
+            for x in 0..<xsize {
+                let pi = y * planeWidth + x
+                let lin = OpsinXYB.inverse(
+                    (X: planeX[pi], Y: planeY[pi], B: planeB[pi])
+                )
+                let oi = (y * xsize + x) * 3
+                rgb8[oi + 0] = linearToSRGB8(lin.R)
+                rgb8[oi + 1] = linearToSRGB8(lin.G)
+                rgb8[oi + 2] = linearToSRGB8(lin.B)
+            }
         }
-
         if trace {
-            for y in 0..<3 {
+            for y in 0..<min(3, ysize) {
                 var row = "TRACE RGB row \(y):"
-                for x in 0..<3 {
-                    let i = y * 8 + x
-                    row += " (\(rgb8[i*3]),\(rgb8[i*3+1]),\(rgb8[i*3+2]))"
+                for x in 0..<min(3, xsize) {
+                    let i = (y * xsize + x) * 3
+                    row += " (\(rgb8[i]),\(rgb8[i+1]),\(rgb8[i+2]))"
                 }
                 FileHandle.standardError.write(Data((row + "\n").utf8))
             }
         }
 
-        // (17) Bite 5 — Wire emitted RGB into `ImageFrame`. For our
-        // 1-DC-group, 1-AC-group fixture the AC group's pixel-domain
-        // values map directly to the frame buffer. Larger frames will
-        // need a per-block placement loop driven by the DC group's
-        // BlockGroupRect; that lands when multi-group support arrives
-        // (v0.7.0). Phase R restoration filters (Gaborish + EPF) — also
-        // deferred — would refine the per-pixel detail; without them
-        // our output matches djxl on overall colour but may differ in
-        // sharpness on natural images.
-        guard xsize == 8, ysize == 8 else {
+        // (17) Wire RGB into ImageFrame. Multi-block (v0.7.0) — for
+        // frames that span multiple AC groups the AC decode loop
+        // would need to be repeated per group with separate ANS
+        // state; that's the v0.7.0+ multi-group milestone. For
+        // single-AC-group frames (xsize, ysize ≤ group_dim, default
+        // 256), the current pipeline is sufficient.
+        guard xsize <= groupDim, ysize <= groupDim else {
             throw DecoderError.notImplemented(
-                "VarDCT decode: \(xsize)×\(ysize) frame — only the "
-                + "single 8×8 block fixture is wired up so far. "
-                + "Multi-block / multi-group support lands in v0.7.0."
+                "VarDCT decode: \(xsize)×\(ysize) frame spans multiple "
+                + "AC groups (group_dim=\(groupDim)). Multi-group "
+                + "support is the next bite for v0.7.0."
             )
         }
         let _ = (kRequiredSizeX, kRequiredSizeY)
