@@ -6469,6 +6469,55 @@ extension FoundationTests {
         }
     }
 
+    /// `LibjxlIDCT.idct2D` of `F[0,0] = c, all-else 0` must give a
+    /// constant `c`-valued block (libjxl "DC = mean" property —
+    /// no bridge factor needed because the IDCT itself absorbs
+    /// the normalisation that our orthonormal `DCT2D.inverse`
+    /// requires us to apply explicitly).
+    func testVarDCT_LibjxlIDCT_DCEqualsMean() throws {
+        for n in [2, 4, 8, 16, 32] {
+            var coefs = [Float](repeating: 0, count: n * n)
+            coefs[0] = 1.0
+            LibjxlIDCT.idct2D(&coefs, size: n)
+            for v in coefs {
+                XCTAssertEqual(v, 1.0, accuracy: 1e-4,
+                    "[N=\(n)] LibjxlIDCT of [c, 0, ...] should give c")
+            }
+        }
+    }
+
+    /// `LibjxlIDCT.idct2D ∘ LibjxlDCT.dct2D` must round-trip to
+    /// identity (within float epsilon). Foundation pin-down for
+    /// the libjxl-IDCT replacement of our orthonormal IDCT + bridge.
+    func testVarDCT_LibjxlIDCT_RoundTrip() throws {
+        for n in [2, 4, 8, 16] {
+            var block: [Float] = (0..<(n * n)).map { Float($0 & 0xff) }
+            let original = block
+            LibjxlDCT.dct2D(&block, size: n)
+            LibjxlIDCT.idct2D(&block, size: n)
+            for i in 0..<(n * n) {
+                XCTAssertEqual(block[i], original[i], accuracy: 1e-3,
+                    "[N=\(n)] round-trip drift at index \(i)")
+            }
+        }
+    }
+
+    /// Asymmetric round-trip — pin-down for `LibjxlIDCT.idct2D(_:rows:cols:)`
+    /// used by DCT8x16/16x8/32x16/16x32 IDCT overlays.
+    func testVarDCT_LibjxlIDCT_AsymmetricRoundTrip() throws {
+        let cases: [(Int, Int)] = [(8, 16), (16, 8), (16, 32), (32, 16)]
+        for (r, c) in cases {
+            var block: [Float] = (0..<(r * c)).map { Float($0 & 0xff) }
+            let original = block
+            LibjxlDCT.dct2D(&block, rows: r, cols: c)
+            LibjxlIDCT.idct2D(&block, rows: r, cols: c)
+            for i in 0..<(r * c) {
+                XCTAssertEqual(block[i], original[i], accuracy: 2e-3,
+                    "[\(r)x\(c)] round-trip drift at \(i)")
+            }
+        }
+    }
+
     /// Confirm `DCT2D.inverse(_:size:8)` is orthonormal — i.e., for
     /// `F[0,0] = c*N` and all other coefficients zero, every pixel
     /// equals `c`. Pin-down for the bridge factor analysis: any

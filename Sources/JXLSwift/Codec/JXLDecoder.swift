@@ -1303,15 +1303,14 @@ public final class JXLDecoder {
                     coefX[np] = acXDequant + xCCMul * acYDequant
                     coefB[np] = acBDequant + bCCMul * acYDequant
                 }
-                // 5) ×N bridge + 8×8 IDCT for each plane.
-                for k in 0..<64 {
-                    coefY[k] *= 8.0
-                    coefX[k] *= 8.0
-                    coefB[k] *= 8.0
-                }
-                DCT2D.inverse(&coefY, size: 8)
-                DCT2D.inverse(&coefX, size: 8)
-                DCT2D.inverse(&coefB, size: 8)
+                // 5) libjxl-convention IDCT (no bridge factor needed —
+                // LibjxlIDCT inverts the libjxl scaled-DCT directly,
+                // unlike our orthonormal `DCT2D.inverse` which would
+                // require a per-coefficient bridge to convert from
+                // libjxl's DC=mean convention to orthonormal scale).
+                LibjxlIDCT.idct2D(&coefY, size: 8)
+                LibjxlIDCT.idct2D(&coefX, size: 8)
+                LibjxlIDCT.idct2D(&coefB, size: 8)
                 // 6) Place 8×8 patches at (bx*8, by*8) in each plane.
                 let xOrigin = bx * 8
                 let yOrigin = by * 8
@@ -1442,14 +1441,11 @@ public final class JXLDecoder {
                     coef[0][np] = acXDeq + xCCMul * acYDeq
                     coef[2][np] = acBDeq + bCCMul * acYDeq
                 }
-                // Bridge ×16 (DC=mean → orthonormal F[0,0]=mean·N).
-                for c in 0..<3 {
-                    for k in 0..<256 { coef[c][k] *= 16 }
-                }
-                // 16×16 IDCT per channel.
-                DCT2D.inverse(&coef[0], size: 16)
-                DCT2D.inverse(&coef[1], size: 16)
-                DCT2D.inverse(&coef[2], size: 16)
+                // libjxl-convention IDCT (no bridge needed —
+                // LibjxlIDCT inverts the libjxl scaled DCT directly).
+                LibjxlIDCT.idct2D(&coef[0], size: 16)
+                LibjxlIDCT.idct2D(&coef[1], size: 16)
+                LibjxlIDCT.idct2D(&coef[2], size: 16)
                 // Place 16×16 patch at (bx*8, by*8).
                 let xOrigin = bx * 8
                 let yOrigin = by * 8
@@ -1561,14 +1557,11 @@ public final class JXLDecoder {
                     coef[0][np] = acXDeq + xCCMul * acYDeq
                     coef[2][np] = acBDeq + bCCMul * acYDeq
                 }
-                // Bridge ×√128 across all coefficients.
-                for c in 0..<3 {
-                    for k in 0..<128 { coef[c][k] *= bridge8x16 }
-                }
-                // 16×8 IDCT per channel (16 wide × 8 tall coef layout).
-                DCT2D.inverse(&coef[0], width: 16, height: 8)
-                DCT2D.inverse(&coef[1], width: 16, height: 8)
-                DCT2D.inverse(&coef[2], width: 16, height: 8)
+                // libjxl-convention IDCT (replaces bridge×√128 + ortho IDCT).
+                // Coef layout is 8 rows × 16 cols (after CoefficientLayout swap).
+                LibjxlIDCT.idct2D(&coef[0], rows: 8, cols: 16)
+                LibjxlIDCT.idct2D(&coef[1], rows: 8, cols: 16)
+                LibjxlIDCT.idct2D(&coef[2], rows: 8, cols: 16)
                 // Place pixels. DCT8x16: 16w × 8h direct.
                 // DCT16x8: 8w × 16h, transposed from the 16w × 8h
                 // IDCT output (pixel[y][x] = coef_pix[x][y]).
@@ -1744,13 +1737,11 @@ public final class JXLDecoder {
                     coef[0][np] = acXDeq + xCCMul * acYDeq
                     coef[2][np] = acBDeq + bCCMul * acYDeq
                 }
-                for c in 0..<3 {
-                    for k in 0..<512 { coef[c][k] *= bridge16x32 }
-                }
-                // 32×16 IDCT per channel.
-                DCT2D.inverse(&coef[0], width: 32, height: 16)
-                DCT2D.inverse(&coef[1], width: 32, height: 16)
-                DCT2D.inverse(&coef[2], width: 32, height: 16)
+                // libjxl-convention IDCT (replaces bridge×√512 + ortho IDCT).
+                // Coef layout 16 rows × 32 cols (after CoefficientLayout swap).
+                LibjxlIDCT.idct2D(&coef[0], rows: 16, cols: 32)
+                LibjxlIDCT.idct2D(&coef[1], rows: 16, cols: 32)
+                LibjxlIDCT.idct2D(&coef[2], rows: 16, cols: 32)
                 // Place pixels.
                 let xOrigin = bx * 8
                 let yOrigin = by * 8
@@ -1873,14 +1864,10 @@ public final class JXLDecoder {
                     coef[0][np] = acXDeq + xCCMul * acYDeq
                     coef[2][np] = acBDeq + bCCMul * acYDeq
                 }
-                // Bridge ×32.
-                for c in 0..<3 {
-                    for k in 0..<1024 { coef[c][k] *= 32 }
-                }
-                // 32×32 IDCT per channel.
-                DCT2D.inverse(&coef[0], size: 32)
-                DCT2D.inverse(&coef[1], size: 32)
-                DCT2D.inverse(&coef[2], size: 32)
+                // libjxl-convention IDCT (replaces bridge×32 + ortho IDCT).
+                LibjxlIDCT.idct2D(&coef[0], size: 32)
+                LibjxlIDCT.idct2D(&coef[1], size: 32)
+                LibjxlIDCT.idct2D(&coef[2], size: 32)
                 // Place 32×32 patch at (bx*8, by*8).
                 let xOrigin = bx * 8
                 let yOrigin = by * 8
