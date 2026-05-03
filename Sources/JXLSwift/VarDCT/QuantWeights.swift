@@ -241,6 +241,42 @@ public enum DefaultQuantBands {
         b: [ 506.854140754517, -1.4, -0.2, -0.5, -0.5, -1.5, -3.6]
     )
 
+    /// DCT64x64 bands per libjxl `quant_weights.cc` `DCT64X64()`.
+    /// Note: libjxl baked in a `0.9 *` factor on the seed values
+    /// for this strategy.
+    public static let dct64x64: (x: [Float], y: [Float], b: [Float]) = (
+        x: [
+             Float(0.9 * 26629.073922049845),
+                -1.025,
+                -0.78,
+                -0.65012,
+                -0.19041574084286472,
+                -0.20819395464,
+                -0.421064,
+                -0.32733845535848671,
+        ],
+        y: [
+             Float(0.9 * 9311.3238710010046),
+                -0.3041958212306401,
+                -0.3633036457487539,
+                -0.35660379990111464,
+                -0.3443074455424403,
+                -0.33699592683512467,
+                -0.30180866526242109,
+                -0.27321683125358037,
+        ],
+        b: [
+             Float(0.9 * 4992.2486445538634),
+                -1.2,
+                -1.2,
+                -0.8,
+                -0.7,
+                -0.7,
+                -0.4,
+                -0.5,
+        ]
+    )
+
     /// DCT16x32 / DCT32x16 bands per libjxl `quant_weights.cc`
     /// `DCT16X32()`. Both share a 32×16 (after `CoefficientLayout`)
     /// coef layout and therefore the same quant table.

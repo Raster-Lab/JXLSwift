@@ -219,6 +219,46 @@ public enum LowestFrequenciesFromDC {
         return result
     }
 
+    /// libjxl `dct_scales.h::DCTResampleScales<8, 64>::kScales`.
+    static let kScales8to64: [Float] = [
+        1.0000000000000000,
+        1.0063534990068217,
+        1.0257600967811158,
+        1.0593017296817173,
+        1.1089373535927318,
+        1.1777765381970435,
+        1.2705593687654873,
+        1.3944898413647777,
+    ]
+
+    /// DCT64x64 (libjxl ord 7) path: 64 DC values from the 8×8
+    /// covered cells reinterpret to 64 LLF coefficients at the
+    /// top-left 8×8 corner of the 64×64 coef block.
+    ///
+    /// `dc` is in row-major coef-layout order (8 cols × 8 rows).
+    /// Per libjxl `LowestFrequenciesFromDC<DCT64X64>`: ROWS=8,
+    /// COLS=8 → `ComputeScaledDCT<8, 8>` (separable 8-point DCT-2)
+    /// then per-axis `DCTTotalResampleScale<8, 64>` resample.
+    ///
+    /// We use `AccelerateDCT.dct2D` (≡ `LibjxlDCT.dct2D` byte-
+    /// equivalent on Apple Silicon) for the 8×8 forward — that
+    /// IS the libjxl scaled-DCT primitive applied at this size.
+    public static func dct64x64(dc: [Float]) -> [Float] {
+        precondition(dc.count == 64, "DCT64x64 LLF needs 64 DC values")
+        // 2-D forward scaled DCT-8 on the 8×8 DC values.
+        var scaled = dc
+        AccelerateDCT.dct2D(&scaled, size: 8)
+        // Per-axis resample with kScales<8, 64>.
+        var result = [Float](repeating: 0, count: 64)
+        for y in 0..<8 {
+            for x in 0..<8 {
+                result[y * 8 + x] = scaled[y * 8 + x]
+                    * kScales8to64[x] * kScales8to64[y]
+            }
+        }
+        return result
+    }
+
     /// DCT32x32 (libjxl ord 3) path: 16 DC values from the 4×4
     /// covered cells reinterpret to 16 LLF coefficients at the
     /// top-left 4×4 corner of the 32×32 coef block.

@@ -1082,6 +1082,7 @@ public final class JXLDecoder {
                         || strategy == .dct32x16
                         || strategy == .dct16x32
                         || strategy == .dct32x32
+                        || strategy == .dct64x64
                     if !strategyIDCTSupported {
                         let nzAny = blockChannels.contains {
                             $0.contains { $0 != 0 }
@@ -1875,6 +1876,115 @@ public final class JXLDecoder {
                     let srcRow = py * 32
                     let dstRow = (yOrigin + py) * planeWidth + xOrigin
                     for px in 0..<32 {
+                        planeXYB[0][dstRow + px] = coef[0][srcRow + px]
+                        planeXYB[1][dstRow + px] = coef[1][srcRow + px]
+                        planeXYB[2][dstRow + px] = coef[2][srcRow + px]
+                    }
+                }
+            }
+        }
+
+        // DCT64x64 IDCT overlay (libjxl ord 7). Square 64×64 strategy
+        // with cellsX = cellsY = 8 (covers 8×8 = 64 cells = 64×64 px).
+        // LLF region is the 8×8 corner of the 64×64 coef block (64
+        // LLF positions). Pattern mirrors DCT32x32.
+        let dct64Bands = DefaultQuantBands.scaledForBitstream(
+            DefaultQuantBands.dct64x64
+        )
+        let qweights64: [Float]
+        do {
+            qweights64 = try QuantWeights.getQuantWeights(
+                rows: 64, cols: 64, bands: dct64Bands
+            )
+        } catch {
+            throw DecoderError.notImplemented(
+                "VarDCT decode: DCT64x64 quant weights computation failed: \(error)"
+            )
+        }
+        let llfSet64x64: Set<Int> = {
+            var s: Set<Int> = []
+            for r in 0..<8 { for c in 0..<8 { s.insert(r * 64 + c) } }
+            return s
+        }()
+        for by in 0..<numBlocksYAC {
+            for bx in 0..<numBlocksXAC {
+                let entry = acsImage.at(x: bx, y: by)
+                if !entry.isFirstBlock { continue }
+                if entry.strategy != .dct64x64 { continue }
+                guard bx + 8 <= numBlocksXAC,
+                      by + 8 <= numBlocksYAC
+                else { continue }
+                let blockIdxFirst = by * totalBlocksX + bx
+                let blockQF = blockIdxFirst < perBlockQF.count
+                    ? perBlockQF[blockIdxFirst] : qfRow
+                let blockInvQuantAC = invGlobalScale / Float(blockQF)
+                // Per-channel coef block (64 cols × 64 rows = 4096).
+                var coef = [[Float]](
+                    repeating: [Float](repeating: 0, count: 4096),
+                    count: 3
+                )
+                // 64 cell DC values + DC-CFL.
+                var dcXYB: [[Float]] = (0..<3).map { _ in
+                    [Float](repeating: 0, count: 64)
+                }
+                for r in 0..<8 {
+                    for c in 0..<8 {
+                        let cellBX = bx + c
+                        let cellBY = by + r
+                        var cellDC = [Float](repeating: 0, count: 3)
+                        for storageSlot in 0..<3 {
+                            let xybC = storageToXYB[storageSlot]
+                            let dcQuant = Float(
+                                dcValues[storageSlot][cellBY * dcWidth + cellBX]
+                            )
+                            cellDC[xybC] = dcQuant * mulDC[xybC] * dcExtraFactor
+                        }
+                        let dcY = cellDC[1]
+                        let idx = r * 8 + c
+                        dcXYB[0][idx] = cellDC[0] + dcCflX * dcY
+                        dcXYB[1][idx] = dcY
+                        dcXYB[2][idx] = cellDC[2] + dcCflB * dcY
+                    }
+                }
+                let llfX = LowestFrequenciesFromDC.dct64x64(dc: dcXYB[0])
+                let llfY = LowestFrequenciesFromDC.dct64x64(dc: dcXYB[1])
+                let llfB = LowestFrequenciesFromDC.dct64x64(dc: dcXYB[2])
+                for r in 0..<8 {
+                    for c in 0..<8 {
+                        let pos = r * 64 + c
+                        coef[0][pos] = llfX[r * 8 + c]
+                        coef[1][pos] = llfY[r * 8 + c]
+                        coef[2][pos] = llfB[r * 8 + c]
+                    }
+                }
+                // AC coefficients (skip 64 LLF positions).
+                let acYBlock = acBlocks[blockIdxFirst][1]
+                let acXBlock = acBlocks[blockIdxFirst][0]
+                let acBBlock = acBlocks[blockIdxFirst][2]
+                for np in 0..<4096 where !llfSet64x64.contains(np) {
+                    let acYDeq = Float(acYBlock[np])
+                        / qweights64[1 * 4096 + np] * blockInvQuantAC
+                    let acXDeq = Float(acXBlock[np])
+                        / qweights64[0 * 4096 + np] * blockInvQuantAC
+                        * xDmMultiplier
+                    let acBDeq = Float(acBBlock[np])
+                        / qweights64[2 * 4096 + np] * blockInvQuantAC
+                        * bDmMultiplier
+                    coef[1][np] = acYDeq
+                    coef[0][np] = acXDeq + xCCMul * acYDeq
+                    coef[2][np] = acBDeq + bCCMul * acYDeq
+                }
+                // 64×64 IDCT per channel (libjxl-convention).
+                AccelerateDCT.idct2D(&coef[0], size: 64)
+                AccelerateDCT.idct2D(&coef[1], size: 64)
+                AccelerateDCT.idct2D(&coef[2], size: 64)
+                // Place 64×64 patch at (bx*8, by*8).
+                let xOrigin = bx * 8
+                let yOrigin = by * 8
+                for py in 0..<64 {
+                    let srcRow = py * 64
+                    let dstRow = (yOrigin + py) * planeWidth + xOrigin
+                    for px in 0..<64 {
                         planeXYB[0][dstRow + px] = coef[0][srcRow + px]
                         planeXYB[1][dstRow + px] = coef[1][srcRow + px]
                         planeXYB[2][dstRow + px] = coef[2][srcRow + px]
