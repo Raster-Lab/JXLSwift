@@ -7282,6 +7282,83 @@ extension FoundationTests {
         }
     }
 
+    /// **v0.9.0e diagnostic**: decode a UNIFORM-color 8×8 block and
+    /// compare to djxl per-pixel. Uniform input → AC coefficients
+    /// near-zero → drift comes from DC dequant + DC-CFL + OpsinXYB
+    /// inverse + sRGB OETF. If this test passes within ±1 byte,
+    /// the DC + OpsinXYB pipeline is correct and the textured-fixture
+    /// drift is in AC. If it fails, the DC pipeline itself has a bug.
+    /// Three colour samples chosen to exercise different inverse-XYB
+    /// regions: low-luma red, mid-grey, high-luma blue-tinted.
+    func testVarDCT_UniformBlock_DjxlByteDiff() throws {
+        let cjxl = "/opt/homebrew/bin/cjxl"
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: cjxl),
+              FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("cjxl/djxl not available")
+        }
+        let tmp = NSTemporaryDirectory()
+        let samples: [(name: String, R: UInt8, G: UInt8, B: UInt8)] = [
+            ("red",   200,  60,  60),
+            ("grey",  128, 128, 128),
+            ("blue",   80, 100, 200),
+        ]
+        for s in samples {
+            let pnmPath = tmp + "vdt_uniform_\(s.name).ppm"
+            let jxlPath = tmp + "vdt_uniform_\(s.name).jxl"
+            let ppmRefPath = tmp + "vdt_uniform_\(s.name)_ref.ppm"
+            var ppm = Data("P6\n8 8\n255\n".utf8)
+            for _ in 0..<64 {
+                ppm.append(contentsOf: [s.R, s.G, s.B])
+            }
+            try ppm.write(to: URL(fileURLWithPath: pnmPath))
+            let p1 = Process()
+            p1.launchPath = cjxl
+            p1.arguments = [pnmPath, jxlPath, "-d", "1"]
+            p1.standardOutput = Pipe(); p1.standardError = Pipe()
+            try p1.run(); p1.waitUntilExit()
+            XCTAssertEqual(p1.terminationStatus, 0)
+            let p2 = Process()
+            p2.launchPath = djxl
+            p2.arguments = [jxlPath, ppmRefPath]
+            p2.standardOutput = Pipe(); p2.standardError = Pipe()
+            try p2.run(); p2.waitUntilExit()
+            XCTAssertEqual(p2.terminationStatus, 0)
+            // Strip the PPM header.
+            let refData = try Data(contentsOf: URL(fileURLWithPath: ppmRefPath))
+            var binStart = 0
+            var newlines = 0
+            for (i, b) in refData.enumerated() {
+                if b == 0x0A {
+                    newlines += 1
+                    if newlines == 3 { binStart = i + 1; break }
+                }
+            }
+            guard refData.count - binStart == 8 * 8 * 3 else {
+                XCTFail("[\(s.name)] djxl PPM size mismatch")
+                continue
+            }
+            let ref = refData.subdata(in: binStart..<refData.count)
+            let bytes = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
+            let frame = try JXLDecoder().decode(bytes)
+            XCTAssertEqual(frame.width, 8)
+            XCTAssertEqual(frame.height, 8)
+            // Per-channel max + first-pixel diff vs djxl.
+            var maxR = 0, maxG = 0, maxB = 0
+            for i in 0..<64 {
+                maxR = max(maxR, abs(Int(frame.data[i*3+0]) - Int(ref[i*3+0])))
+                maxG = max(maxG, abs(Int(frame.data[i*3+1]) - Int(ref[i*3+1])))
+                maxB = max(maxB, abs(Int(frame.data[i*3+2]) - Int(ref[i*3+2])))
+            }
+            print(String(format:
+                "[UNIFORM \(s.name) src=(%d,%d,%d)] djxl[0]=(%d,%d,%d) ours[0]=(%d,%d,%d) max=(R=%d,G=%d,B=%d)",
+                s.R, s.G, s.B,
+                ref[0], ref[1], ref[2],
+                frame.data[0], frame.data[1], frame.data[2],
+                maxR, maxG, maxB))
+        }
+    }
+
     /// **v0.5.0 milestone**: decode the cjxl-d=1 8×8 fixture all the
     /// way to RGB pixels and compare against djxl. Without Phase R
     /// restoration filters (Gaborish + EPF), pixels won't be
