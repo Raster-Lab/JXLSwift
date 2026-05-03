@@ -6567,6 +6567,57 @@ extension FoundationTests {
             iters, scalarMs, umaMs, scalarMs / umaMs))
     }
 
+    /// `AccelerateDCT.dct2D(_:rows:cols:)` (asymmetric, vDSP_mmul)
+    /// must produce byte-equal output to `LibjxlDCT.dct2D(_:rows:cols:)`
+    /// for the strategies the decoder ships (8×16, 16×8, 16×32, 32×16).
+    func testVarDCT_AccelerateDCT_AsymmetricMatchesScalarReference() throws {
+        let cases: [(Int, Int)] = [(8, 16), (16, 8), (16, 32), (32, 16)]
+        for (r, c) in cases {
+            var blockA: [Float] = (0..<(r * c)).map {
+                Float($0 & 0xff) - 127.5
+            }
+            var blockB = blockA
+            LibjxlDCT.dct2D(&blockA, rows: r, cols: c)
+            AccelerateDCT.dct2D(&blockB, rows: r, cols: c)
+            for i in 0..<(r * c) {
+                XCTAssertEqual(blockB[i], blockA[i], accuracy: 1e-3,
+                    "[\(r)x\(c)] DCT drift at \(i): scalar=\(blockA[i]) accelerate=\(blockB[i])")
+            }
+        }
+    }
+
+    /// Same for asymmetric inverse.
+    func testVarDCT_AccelerateIDCT_AsymmetricMatchesScalarReference() throws {
+        let cases: [(Int, Int)] = [(8, 16), (16, 8), (16, 32), (32, 16)]
+        for (r, c) in cases {
+            var blockA: [Float] = (0..<(r * c)).map {
+                Float($0 < 5 ? Float($0) - 2.0 : 0.0)
+            }
+            var blockB = blockA
+            LibjxlIDCT.idct2D(&blockA, rows: r, cols: c)
+            AccelerateDCT.idct2D(&blockB, rows: r, cols: c)
+            for i in 0..<(r * c) {
+                XCTAssertEqual(blockB[i], blockA[i], accuracy: 1e-3,
+                    "[\(r)x\(c)] IDCT drift at \(i): scalar=\(blockA[i]) accelerate=\(blockB[i])")
+            }
+        }
+    }
+
+    /// Asymmetric round-trip via the `AccelerateDCT` pair.
+    func testVarDCT_AccelerateDCT_AsymmetricRoundTrip() throws {
+        let cases: [(Int, Int)] = [(8, 16), (16, 8), (16, 32), (32, 16)]
+        for (r, c) in cases {
+            var block: [Float] = (0..<(r * c)).map { Float($0 & 0xff) }
+            let original = block
+            AccelerateDCT.dct2D(&block, rows: r, cols: c)
+            AccelerateDCT.idct2D(&block, rows: r, cols: c)
+            for i in 0..<(r * c) {
+                XCTAssertEqual(block[i], original[i], accuracy: 2e-2,
+                    "[\(r)x\(c)] AccelerateDCT round-trip drift at \(i)")
+            }
+        }
+    }
+
     /// Round-trip through the `AccelerateDCT` pair (forward + inverse)
     /// must recover the original block.
     func testVarDCT_AccelerateDCT_RoundTrip() throws {

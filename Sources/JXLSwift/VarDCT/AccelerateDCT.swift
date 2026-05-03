@@ -169,6 +169,139 @@ public enum AccelerateDCT {
         }
     }
 
+    /// Asymmetric 2-D forward DCT, R×C (libjxl scaled-DCT
+    /// convention). Mirrors `LibjxlDCT.dct2D(_:rows:cols:)`:
+    ///
+    ///   pre-transpose (R rows × C cols → C rows × R cols)
+    ///   1-D forward DCT-C with M=R
+    ///   transpose (C rows × R cols → R rows × C cols)
+    ///   1-D forward DCT-R with M=C
+    ///
+    /// `M_fwd<N>` cached per N as in the square path; both N=R and
+    /// N=C are warmed lazily.
+    public static func dct2D(
+        _ block: inout [Float], rows R: Int, cols C: Int
+    ) {
+        precondition(block.count == R * C, "block must be R*C")
+        if R == C {
+            dct2D(&block, size: R)
+            return
+        }
+        let MC = forwardMatrix(N: C)
+        let MR = forwardMatrix(N: R)
+        var transposed = [Float](repeating: 0, count: R * C)
+        var temp1 = [Float](repeating: 0, count: R * C)
+        // Pre-transpose block (R rows × C cols) into transposed
+        // (C rows × R cols). Using vDSP_mtrans (P=C, Q=R for the
+        // post-transpose row/col counts).
+        block.withUnsafeBufferPointer { blkBuf in
+            transposed.withUnsafeMutableBufferPointer { trBuf in
+                vDSP_mtrans(
+                    blkBuf.baseAddress!, 1,
+                    trBuf.baseAddress!, 1,
+                    vDSP_Length(C), vDSP_Length(R)
+                )
+            }
+        }
+        // 1-D DCT-C with M=R: apply matrix MC (C×C) to transposed
+        // (C rows × R cols), result shape C×R written to temp1.
+        // vDSP_mmul: A=MC (C×C), B=transposed (C×R), C=temp1 (C×R).
+        transposed.withUnsafeBufferPointer { trBuf in
+            temp1.withUnsafeMutableBufferPointer { t1Buf in
+                MC.withUnsafeBufferPointer { mBuf in
+                    vDSP_mmul(
+                        mBuf.baseAddress!, 1,
+                        trBuf.baseAddress!, 1,
+                        t1Buf.baseAddress!, 1,
+                        vDSP_Length(C), vDSP_Length(R), vDSP_Length(C)
+                    )
+                }
+            }
+        }
+        // Transpose temp1 (C×R) → transposed (R×C). Reuse buffer.
+        temp1.withUnsafeBufferPointer { t1Buf in
+            transposed.withUnsafeMutableBufferPointer { trBuf in
+                vDSP_mtrans(
+                    t1Buf.baseAddress!, 1,
+                    trBuf.baseAddress!, 1,
+                    vDSP_Length(R), vDSP_Length(C)
+                )
+            }
+        }
+        // 1-D DCT-R with M=C: matrix MR (R×R) × transposed (R×C)
+        // → block (R×C).
+        transposed.withUnsafeBufferPointer { trBuf in
+            block.withUnsafeMutableBufferPointer { blkBuf in
+                MR.withUnsafeBufferPointer { mBuf in
+                    vDSP_mmul(
+                        mBuf.baseAddress!, 1,
+                        trBuf.baseAddress!, 1,
+                        blkBuf.baseAddress!, 1,
+                        vDSP_Length(R), vDSP_Length(C), vDSP_Length(R)
+                    )
+                }
+            }
+        }
+    }
+
+    /// Asymmetric 2-D inverse DCT, R×C. Mirrors
+    /// `LibjxlIDCT.idct2D(_:rows:cols:)` with vDSP-backed mmuls.
+    public static func idct2D(
+        _ block: inout [Float], rows R: Int, cols C: Int
+    ) {
+        precondition(block.count == R * C, "block must be R*C")
+        if R == C {
+            idct2D(&block, size: R)
+            return
+        }
+        let MC = inverseMatrix(N: C)
+        let MR = inverseMatrix(N: R)
+        var transposed = [Float](repeating: 0, count: R * C)
+        var temp1 = [Float](repeating: 0, count: R * C)
+        block.withUnsafeBufferPointer { blkBuf in
+            transposed.withUnsafeMutableBufferPointer { trBuf in
+                vDSP_mtrans(
+                    blkBuf.baseAddress!, 1,
+                    trBuf.baseAddress!, 1,
+                    vDSP_Length(C), vDSP_Length(R)
+                )
+            }
+        }
+        transposed.withUnsafeBufferPointer { trBuf in
+            temp1.withUnsafeMutableBufferPointer { t1Buf in
+                MC.withUnsafeBufferPointer { mBuf in
+                    vDSP_mmul(
+                        mBuf.baseAddress!, 1,
+                        trBuf.baseAddress!, 1,
+                        t1Buf.baseAddress!, 1,
+                        vDSP_Length(C), vDSP_Length(R), vDSP_Length(C)
+                    )
+                }
+            }
+        }
+        temp1.withUnsafeBufferPointer { t1Buf in
+            transposed.withUnsafeMutableBufferPointer { trBuf in
+                vDSP_mtrans(
+                    t1Buf.baseAddress!, 1,
+                    trBuf.baseAddress!, 1,
+                    vDSP_Length(R), vDSP_Length(C)
+                )
+            }
+        }
+        transposed.withUnsafeBufferPointer { trBuf in
+            block.withUnsafeMutableBufferPointer { blkBuf in
+                MR.withUnsafeBufferPointer { mBuf in
+                    vDSP_mmul(
+                        mBuf.baseAddress!, 1,
+                        trBuf.baseAddress!, 1,
+                        blkBuf.baseAddress!, 1,
+                        vDSP_Length(R), vDSP_Length(C), vDSP_Length(R)
+                    )
+                }
+            }
+        }
+    }
+
     /// 2-D inverse DCT, N×N square. Equivalent to
     /// `LibjxlIDCT.idct2D(_:size:N)` — same vDSP_mmul + transpose
     /// pipeline as `dct2D` but with the inverse matrix.
@@ -232,6 +365,16 @@ public enum AccelerateDCT {
     }
     public static func idct2D(_ block: inout [Float], size N: Int) {
         LibjxlIDCT.idct2D(&block, size: N)
+    }
+    public static func dct2D(
+        _ block: inout [Float], rows R: Int, cols C: Int
+    ) {
+        LibjxlDCT.dct2D(&block, rows: R, cols: C)
+    }
+    public static func idct2D(
+        _ block: inout [Float], rows R: Int, cols C: Int
+    ) {
+        LibjxlIDCT.idct2D(&block, rows: R, cols: C)
     }
 }
 
