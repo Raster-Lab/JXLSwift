@@ -7282,6 +7282,98 @@ extension FoundationTests {
         }
     }
 
+    /// **v0.9.0f diagnostic**: decode an 8×8 block with a single-axis
+    /// linear gradient. Three samples — horizontal-only (R varies in
+    /// x), vertical-only (R varies in y), diagonal (R varies in x+y).
+    /// Each excites a sparse, predictable subset of the 8×8 DCT AC
+    /// spectrum. If our decoder matches djxl per-pixel within ±2,
+    /// low-frequency AC dequant + IDCT is correct; if it doesn't,
+    /// the bug is in low-freq AC. (Uniform blocks already verified
+    /// the DC pipeline in `testVarDCT_UniformBlock_DjxlByteDiff`.)
+    func testVarDCT_GradientBlock_DjxlByteDiff() throws {
+        let cjxl = "/opt/homebrew/bin/cjxl"
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: cjxl),
+              FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("cjxl/djxl not available")
+        }
+        let tmp = NSTemporaryDirectory()
+        // Each sample produces a different AC support pattern:
+        //   horiz: AC[0, j>0] (first DCT row only)
+        //   vert:  AC[i>0, 0] (first DCT column only)
+        //   diag:  AC[i, j] for i+j > 0 (low-freq diagonal energy)
+        let samples: [(name: String, kind: String)] = [
+            ("horiz", "horiz"),
+            ("vert",  "vert"),
+            ("diag",  "diag"),
+        ]
+        for s in samples {
+            let pnmPath = tmp + "vdt_grad_\(s.name).ppm"
+            let jxlPath = tmp + "vdt_grad_\(s.name).jxl"
+            let ppmRefPath = tmp + "vdt_grad_\(s.name)_ref.ppm"
+            var ppm = Data("P6\n8 8\n255\n".utf8)
+            for y in 0..<8 {
+                for x in 0..<8 {
+                    let v: Int
+                    switch s.kind {
+                    case "horiz": v = 100 + x * 16
+                    case "vert":  v = 100 + y * 16
+                    default:      v = 64 + (x + y) * 8
+                    }
+                    ppm.append(contentsOf: [
+                        UInt8(clamping: v),
+                        UInt8(128),
+                        UInt8(128),
+                    ])
+                }
+            }
+            try ppm.write(to: URL(fileURLWithPath: pnmPath))
+            let p1 = Process()
+            p1.launchPath = cjxl
+            p1.arguments = [pnmPath, jxlPath, "-d", "1"]
+            p1.standardOutput = Pipe(); p1.standardError = Pipe()
+            try p1.run(); p1.waitUntilExit()
+            XCTAssertEqual(p1.terminationStatus, 0)
+            let p2 = Process()
+            p2.launchPath = djxl
+            p2.arguments = [jxlPath, ppmRefPath]
+            p2.standardOutput = Pipe(); p2.standardError = Pipe()
+            try p2.run(); p2.waitUntilExit()
+            XCTAssertEqual(p2.terminationStatus, 0)
+            let refData = try Data(contentsOf: URL(fileURLWithPath: ppmRefPath))
+            var binStart = 0
+            var newlines = 0
+            for (i, b) in refData.enumerated() {
+                if b == 0x0A {
+                    newlines += 1
+                    if newlines == 3 { binStart = i + 1; break }
+                }
+            }
+            guard refData.count - binStart == 8 * 8 * 3 else {
+                XCTFail("[\(s.name)] djxl PPM size mismatch")
+                continue
+            }
+            let ref = refData.subdata(in: binStart..<refData.count)
+            let bytes = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
+            let frame = try JXLDecoder().decode(bytes)
+            var maxR = 0, maxG = 0, maxB = 0
+            var sumR = 0, sumG = 0, sumB = 0
+            for i in 0..<64 {
+                let dR = abs(Int(frame.data[i*3+0]) - Int(ref[i*3+0]))
+                let dG = abs(Int(frame.data[i*3+1]) - Int(ref[i*3+1]))
+                let dB = abs(Int(frame.data[i*3+2]) - Int(ref[i*3+2]))
+                maxR = max(maxR, dR); maxG = max(maxG, dG); maxB = max(maxB, dB)
+                sumR += dR; sumG += dG; sumB += dB
+            }
+            print(String(format:
+                "[GRAD \(s.name)] max=(R=%d,G=%d,B=%d) mean=(%.2f,%.2f,%.2f) djxl[0]=(%d,%d,%d) ours[0]=(%d,%d,%d)",
+                maxR, maxG, maxB,
+                Float(sumR)/64, Float(sumG)/64, Float(sumB)/64,
+                ref[0], ref[1], ref[2],
+                frame.data[0], frame.data[1], frame.data[2]))
+        }
+    }
+
     /// **v0.9.0e diagnostic**: decode a UNIFORM-color 8×8 block and
     /// compare to djxl per-pixel. Uniform input → AC coefficients
     /// near-zero → drift comes from DC dequant + DC-CFL + OpsinXYB
