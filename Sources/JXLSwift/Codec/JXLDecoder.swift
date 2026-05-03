@@ -1083,6 +1083,8 @@ public final class JXLDecoder {
                         || strategy == .dct16x32
                         || strategy == .dct32x32
                         || strategy == .dct64x64
+                        || strategy == .dct64x32
+                        || strategy == .dct32x64
                     if !strategyIDCTSupported {
                         let nzAny = blockChannels.contains {
                             $0.contains { $0 != 0 }
@@ -1879,6 +1881,145 @@ public final class JXLDecoder {
                         planeXYB[0][dstRow + px] = coef[0][srcRow + px]
                         planeXYB[1][dstRow + px] = coef[1][srcRow + px]
                         planeXYB[2][dstRow + px] = coef[2][srcRow + px]
+                    }
+                }
+            }
+        }
+
+        // DCT64x32 / DCT32x64 IDCT overlay (libjxl ord 8). Asymmetric
+        // 64×32 coef layout (after CoefficientLayout swap). LLF is
+        // the top-left 8×4 corner of that grid (32 LLF positions).
+        // Pattern mirrors DCT32x16/16x32.
+        let dct32x64Bands = DefaultQuantBands.scaledForBitstream(
+            DefaultQuantBands.dct32x64
+        )
+        let qweights32x64: [Float]
+        do {
+            qweights32x64 = try QuantWeights.getQuantWeights(
+                rows: 32, cols: 64, bands: dct32x64Bands
+            )
+        } catch {
+            throw DecoderError.notImplemented(
+                "VarDCT decode: DCT32x64 quant weights computation failed: \(error)"
+            )
+        }
+        let llfSet32x64: Set<Int> = {
+            var s: Set<Int> = []
+            for r in 0..<4 { for c in 0..<8 { s.insert(r * 64 + c) } }
+            return s
+        }()
+        for by in 0..<numBlocksYAC {
+            for bx in 0..<numBlocksXAC {
+                let entry = acsImage.at(x: bx, y: by)
+                if !entry.isFirstBlock { continue }
+                if entry.strategy != .dct64x32 && entry.strategy != .dct32x64 {
+                    continue
+                }
+                let isVerticalStack = entry.strategy == .dct64x32  // 32w×64h px
+                let cellsX = isVerticalStack ? 4 : 8
+                let cellsY = isVerticalStack ? 8 : 4
+                guard bx + cellsX <= numBlocksXAC,
+                      by + cellsY <= numBlocksYAC
+                else { continue }
+                let blockIdxFirst = by * totalBlocksX + bx
+                let blockQF = blockIdxFirst < perBlockQF.count
+                    ? perBlockQF[blockIdxFirst] : qfRow
+                let blockInvQuantAC = invGlobalScale / Float(blockQF)
+                // Per-channel coef block (64 cols × 32 rows = 2048).
+                var coef = [[Float]](
+                    repeating: [Float](repeating: 0, count: 2048),
+                    count: 3
+                )
+                // 32 cell DC values + DC-CFL. Coef-layout order is
+                // 8 cols × 4 rows (cx=8, cy=4 after CoefficientLayout).
+                var dcXYB: [[Float]] = (0..<3).map { _ in
+                    [Float](repeating: 0, count: 32)
+                }
+                for r in 0..<4 {
+                    for c in 0..<8 {
+                        let cellBX: Int
+                        let cellBY: Int
+                        if isVerticalStack {
+                            // DCT64x32 (cellsX=4, cellsY=8): coef row r
+                            // ↔ pixel-cell column r; coef col c ↔ cell row c.
+                            cellBX = bx + r
+                            cellBY = by + c
+                        } else {
+                            // DCT32x64 (cellsX=8, cellsY=4): coef row r
+                            // ↔ cell row r; coef col c ↔ cell col c.
+                            cellBX = bx + c
+                            cellBY = by + r
+                        }
+                        var cellDC = [Float](repeating: 0, count: 3)
+                        for storageSlot in 0..<3 {
+                            let xybC = storageToXYB[storageSlot]
+                            let dcQuant = Float(
+                                dcValues[storageSlot][cellBY * dcWidth + cellBX]
+                            )
+                            cellDC[xybC] = dcQuant * mulDC[xybC] * dcExtraFactor
+                        }
+                        let dcY = cellDC[1]
+                        let idx = r * 8 + c
+                        dcXYB[0][idx] = cellDC[0] + dcCflX * dcY
+                        dcXYB[1][idx] = dcY
+                        dcXYB[2][idx] = cellDC[2] + dcCflB * dcY
+                    }
+                }
+                let llfX = LowestFrequenciesFromDC.ord8Block(dc: dcXYB[0])
+                let llfY = LowestFrequenciesFromDC.ord8Block(dc: dcXYB[1])
+                let llfB = LowestFrequenciesFromDC.ord8Block(dc: dcXYB[2])
+                for r in 0..<4 {
+                    for c in 0..<8 {
+                        let pos = r * 64 + c
+                        coef[0][pos] = llfX[r * 8 + c]
+                        coef[1][pos] = llfY[r * 8 + c]
+                        coef[2][pos] = llfB[r * 8 + c]
+                    }
+                }
+                let acYBlock = acBlocks[blockIdxFirst][1]
+                let acXBlock = acBlocks[blockIdxFirst][0]
+                let acBBlock = acBlocks[blockIdxFirst][2]
+                for np in 0..<2048 where !llfSet32x64.contains(np) {
+                    let acYDeq = Float(acYBlock[np])
+                        / qweights32x64[1 * 2048 + np] * blockInvQuantAC
+                    let acXDeq = Float(acXBlock[np])
+                        / qweights32x64[0 * 2048 + np] * blockInvQuantAC
+                        * xDmMultiplier
+                    let acBDeq = Float(acBBlock[np])
+                        / qweights32x64[2 * 2048 + np] * blockInvQuantAC
+                        * bDmMultiplier
+                    coef[1][np] = acYDeq
+                    coef[0][np] = acXDeq + xCCMul * acYDeq
+                    coef[2][np] = acBDeq + bCCMul * acYDeq
+                }
+                // 64×32 IDCT per channel (libjxl-convention).
+                AccelerateDCT.idct2D(&coef[0], rows: 32, cols: 64)
+                AccelerateDCT.idct2D(&coef[1], rows: 32, cols: 64)
+                AccelerateDCT.idct2D(&coef[2], rows: 32, cols: 64)
+                // Place pixels.
+                let xOrigin = bx * 8
+                let yOrigin = by * 8
+                if isVerticalStack {
+                    // DCT64x32: 32 wide × 64 tall (transposed from coef).
+                    for py in 0..<64 {
+                        let dstRow = (yOrigin + py) * planeWidth + xOrigin
+                        for px in 0..<32 {
+                            let srcIdx = px * 64 + py
+                            planeXYB[0][dstRow + px] = coef[0][srcIdx]
+                            planeXYB[1][dstRow + px] = coef[1][srcIdx]
+                            planeXYB[2][dstRow + px] = coef[2][srcIdx]
+                        }
+                    }
+                } else {
+                    // DCT32x64: 64 wide × 32 tall (matches coef layout).
+                    for py in 0..<32 {
+                        let srcRow = py * 64
+                        let dstRow = (yOrigin + py) * planeWidth + xOrigin
+                        for px in 0..<64 {
+                            planeXYB[0][dstRow + px] = coef[0][srcRow + px]
+                            planeXYB[1][dstRow + px] = coef[1][srcRow + px]
+                            planeXYB[2][dstRow + px] = coef[2][srcRow + px]
+                        }
                     }
                 }
             }

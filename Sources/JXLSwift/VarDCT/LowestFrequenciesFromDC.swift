@@ -219,6 +219,29 @@ public enum LowestFrequenciesFromDC {
         return result
     }
 
+    /// DCT64x32 / DCT32x64 (libjxl ord 8) path: 32 DC values from
+    /// the covered 8×4 (or 4×8) cells reinterpret to 32 LLF coefs
+    /// at the top-left 8×4 corner of the 64×32 coef block.
+    ///
+    /// Per libjxl: `ComputeScaledDCT<4, 8>` (4 rows × 8 cols input)
+    /// then per-axis `DCTTotalResampleScale<4, 32>(y) *
+    /// DCTTotalResampleScale<8, 64>(x)`.
+    public static func ord8Block(dc: [Float]) -> [Float] {
+        precondition(dc.count == 32, "ord 8 LLF needs 32 DC values")
+        // 2-D forward scaled DCT on 4 rows × 8 cols input.
+        var scaled = dc
+        AccelerateDCT.dct2D(&scaled, rows: 4, cols: 8)
+        // Per-axis resample.
+        var result = [Float](repeating: 0, count: 32)
+        for y in 0..<4 {
+            for x in 0..<8 {
+                result[y * 8 + x] = scaled[y * 8 + x]
+                    * kScales8to64[x] * kScales4to32[y]
+            }
+        }
+        return result
+    }
+
     /// libjxl `dct_scales.h::DCTResampleScales<8, 64>::kScales`.
     static let kScales8to64: [Float] = [
         1.0000000000000000,
