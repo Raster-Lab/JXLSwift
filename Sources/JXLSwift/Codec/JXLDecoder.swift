@@ -1294,13 +1294,16 @@ public final class JXLDecoder {
                 coefB[0] = dcCorrectedB
                 for k in 1..<64 {
                     let np = dctOrder[k]
-                    let acYDequant = Float(acYBlock[np])
-                        / qweights[1 * 64 + np] * blockInvQuantAC
-                    let acXDequant = Float(acXBlock[np])
-                        / qweights[0 * 64 + np] * blockInvQuantAC
+                    let acYDequant = AdjustQuantBias.adjust(
+                        channel: 1, quant: acYBlock[np]
+                    ) / qweights[1 * 64 + np] * blockInvQuantAC
+                    let acXDequant = AdjustQuantBias.adjust(
+                        channel: 0, quant: acXBlock[np]
+                    ) / qweights[0 * 64 + np] * blockInvQuantAC
                         * xDmMultiplier
-                    let acBDequant = Float(acBBlock[np])
-                        / qweights[2 * 64 + np] * blockInvQuantAC
+                    let acBDequant = AdjustQuantBias.adjust(
+                        channel: 2, quant: acBBlock[np]
+                    ) / qweights[2 * 64 + np] * blockInvQuantAC
                         * bDmMultiplier
                     coefY[np] = acYDequant
                     coefX[np] = acXDequant + xCCMul * acYDequant
@@ -1432,13 +1435,16 @@ public final class JXLDecoder {
                 let acBBlock = acBlocks[blockIdxFirst][iterB16]
                 let llfSet: Set<Int> = [0, 1, 16, 17]
                 for np in 0..<256 where !llfSet.contains(np) {
-                    let acYDeq = Float(acYBlock[np])
-                        / qweights16[1 * 256 + np] * blockInvQuantAC
-                    let acXDeq = Float(acXBlock[np])
-                        / qweights16[0 * 256 + np] * blockInvQuantAC
+                    let acYDeq = AdjustQuantBias.adjust(
+                        channel: 1, quant: acYBlock[np]
+                    ) / qweights16[1 * 256 + np] * blockInvQuantAC
+                    let acXDeq = AdjustQuantBias.adjust(
+                        channel: 0, quant: acXBlock[np]
+                    ) / qweights16[0 * 256 + np] * blockInvQuantAC
                         * xDmMultiplier
-                    let acBDeq = Float(acBBlock[np])
-                        / qweights16[2 * 256 + np] * blockInvQuantAC
+                    let acBDeq = AdjustQuantBias.adjust(
+                        channel: 2, quant: acBBlock[np]
+                    ) / qweights16[2 * 256 + np] * blockInvQuantAC
                         * bDmMultiplier
                     coef[1][np] = acYDeq
                     coef[0][np] = acXDeq + xCCMul * acYDeq
@@ -1548,13 +1554,16 @@ public final class JXLDecoder {
                 let acXBlock = acBlocks[blockIdxFirst][0]
                 let acBBlock = acBlocks[blockIdxFirst][2]
                 for np in 2..<128 {
-                    let acYDeq = Float(acYBlock[np])
-                        / qweights8x16[1 * 128 + np] * blockInvQuantAC
-                    let acXDeq = Float(acXBlock[np])
-                        / qweights8x16[0 * 128 + np] * blockInvQuantAC
+                    let acYDeq = AdjustQuantBias.adjust(
+                        channel: 1, quant: acYBlock[np]
+                    ) / qweights8x16[1 * 128 + np] * blockInvQuantAC
+                    let acXDeq = AdjustQuantBias.adjust(
+                        channel: 0, quant: acXBlock[np]
+                    ) / qweights8x16[0 * 128 + np] * blockInvQuantAC
                         * xDmMultiplier
-                    let acBDeq = Float(acBBlock[np])
-                        / qweights8x16[2 * 128 + np] * blockInvQuantAC
+                    let acBDeq = AdjustQuantBias.adjust(
+                        channel: 2, quant: acBBlock[np]
+                    ) / qweights8x16[2 * 128 + np] * blockInvQuantAC
                         * bDmMultiplier
                     coef[1][np] = acYDeq
                     coef[0][np] = acXDeq + xCCMul * acYDeq
@@ -1728,13 +1737,16 @@ public final class JXLDecoder {
                 let acXBlock = acBlocks[blockIdxFirst][0]
                 let acBBlock = acBlocks[blockIdxFirst][2]
                 for np in 0..<512 where !llfSet.contains(np) {
-                    let acYDeq = Float(acYBlock[np])
-                        / qweights16x32[1 * 512 + np] * blockInvQuantAC
-                    let acXDeq = Float(acXBlock[np])
-                        / qweights16x32[0 * 512 + np] * blockInvQuantAC
+                    let acYDeq = AdjustQuantBias.adjust(
+                        channel: 1, quant: acYBlock[np]
+                    ) / qweights16x32[1 * 512 + np] * blockInvQuantAC
+                    let acXDeq = AdjustQuantBias.adjust(
+                        channel: 0, quant: acXBlock[np]
+                    ) / qweights16x32[0 * 512 + np] * blockInvQuantAC
                         * xDmMultiplier
-                    let acBDeq = Float(acBBlock[np])
-                        / qweights16x32[2 * 512 + np] * blockInvQuantAC
+                    let acBDeq = AdjustQuantBias.adjust(
+                        channel: 2, quant: acBBlock[np]
+                    ) / qweights16x32[2 * 512 + np] * blockInvQuantAC
                         * bDmMultiplier
                     coef[1][np] = acYDeq
                     coef[0][np] = acXDeq + xCCMul * acYDeq
@@ -1855,13 +1867,16 @@ public final class JXLDecoder {
                 let acXBlock = acBlocks[blockIdxFirst][0]
                 let acBBlock = acBlocks[blockIdxFirst][2]
                 for np in 0..<1024 where !llfSet32x32.contains(np) {
-                    let acYDeq = Float(acYBlock[np])
-                        / qweights32[1 * 1024 + np] * blockInvQuantAC
-                    let acXDeq = Float(acXBlock[np])
-                        / qweights32[0 * 1024 + np] * blockInvQuantAC
+                    let acYDeq = AdjustQuantBias.adjust(
+                        channel: 1, quant: acYBlock[np]
+                    ) / qweights32[1 * 1024 + np] * blockInvQuantAC
+                    let acXDeq = AdjustQuantBias.adjust(
+                        channel: 0, quant: acXBlock[np]
+                    ) / qweights32[0 * 1024 + np] * blockInvQuantAC
                         * xDmMultiplier
-                    let acBDeq = Float(acBBlock[np])
-                        / qweights32[2 * 1024 + np] * blockInvQuantAC
+                    let acBDeq = AdjustQuantBias.adjust(
+                        channel: 2, quant: acBBlock[np]
+                    ) / qweights32[2 * 1024 + np] * blockInvQuantAC
                         * bDmMultiplier
                     coef[1][np] = acYDeq
                     coef[0][np] = acXDeq + xCCMul * acYDeq
@@ -1980,13 +1995,16 @@ public final class JXLDecoder {
                 let acXBlock = acBlocks[blockIdxFirst][0]
                 let acBBlock = acBlocks[blockIdxFirst][2]
                 for np in 0..<2048 where !llfSet32x64.contains(np) {
-                    let acYDeq = Float(acYBlock[np])
-                        / qweights32x64[1 * 2048 + np] * blockInvQuantAC
-                    let acXDeq = Float(acXBlock[np])
-                        / qweights32x64[0 * 2048 + np] * blockInvQuantAC
+                    let acYDeq = AdjustQuantBias.adjust(
+                        channel: 1, quant: acYBlock[np]
+                    ) / qweights32x64[1 * 2048 + np] * blockInvQuantAC
+                    let acXDeq = AdjustQuantBias.adjust(
+                        channel: 0, quant: acXBlock[np]
+                    ) / qweights32x64[0 * 2048 + np] * blockInvQuantAC
                         * xDmMultiplier
-                    let acBDeq = Float(acBBlock[np])
-                        / qweights32x64[2 * 2048 + np] * blockInvQuantAC
+                    let acBDeq = AdjustQuantBias.adjust(
+                        channel: 2, quant: acBBlock[np]
+                    ) / qweights32x64[2 * 2048 + np] * blockInvQuantAC
                         * bDmMultiplier
                     coef[1][np] = acYDeq
                     coef[0][np] = acXDeq + xCCMul * acYDeq
@@ -2103,13 +2121,16 @@ public final class JXLDecoder {
                 let acXBlock = acBlocks[blockIdxFirst][0]
                 let acBBlock = acBlocks[blockIdxFirst][2]
                 for np in 0..<4096 where !llfSet64x64.contains(np) {
-                    let acYDeq = Float(acYBlock[np])
-                        / qweights64[1 * 4096 + np] * blockInvQuantAC
-                    let acXDeq = Float(acXBlock[np])
-                        / qweights64[0 * 4096 + np] * blockInvQuantAC
+                    let acYDeq = AdjustQuantBias.adjust(
+                        channel: 1, quant: acYBlock[np]
+                    ) / qweights64[1 * 4096 + np] * blockInvQuantAC
+                    let acXDeq = AdjustQuantBias.adjust(
+                        channel: 0, quant: acXBlock[np]
+                    ) / qweights64[0 * 4096 + np] * blockInvQuantAC
                         * xDmMultiplier
-                    let acBDeq = Float(acBBlock[np])
-                        / qweights64[2 * 4096 + np] * blockInvQuantAC
+                    let acBDeq = AdjustQuantBias.adjust(
+                        channel: 2, quant: acBBlock[np]
+                    ) / qweights64[2 * 4096 + np] * blockInvQuantAC
                         * bDmMultiplier
                     coef[1][np] = acYDeq
                     coef[0][np] = acXDeq + xCCMul * acYDeq

@@ -6552,6 +6552,60 @@ extension FoundationTests {
         }
     }
 
+    /// `AdjustQuantBias.adjust` pin-down — every branch of the
+    /// libjxl `quantizer-inl.h::AdjustQuantBias` decision tree.
+    /// `q == 0 → 0`, `|q| == 1 → ±0.5`, `|q| >= 2 → q − 0.145/q`.
+    func testVarDCT_AdjustQuantBias_AllBranches() throws {
+        // q == 0 returns 0 for every channel.
+        for c in 0..<3 {
+            XCTAssertEqual(
+                AdjustQuantBias.adjust(channel: c, quant: 0),
+                0.0, accuracy: 0,
+                "q=0 should return exactly 0 for channel \(c)"
+            )
+        }
+        // q == ±1 returns ±zeroBias[c]; default zeroBias = 0.5.
+        for c in 0..<3 {
+            XCTAssertEqual(
+                AdjustQuantBias.adjust(channel: c, quant: 1),
+                0.5, accuracy: 1e-7,
+                "q=+1 should return +0.5 for channel \(c)"
+            )
+            XCTAssertEqual(
+                AdjustQuantBias.adjust(channel: c, quant: -1),
+                -0.5, accuracy: 1e-7,
+                "q=-1 should return -0.5 for channel \(c)"
+            )
+        }
+        // |q| >= 2 returns q − 0.145 / q.
+        // q = 2 → 2 − 0.0725 = 1.9275
+        // q = 4 → 4 − 0.03625 = 3.96375
+        // q = -2 → -2 + 0.0725 = -1.9275
+        let cases: [(Int32, Float)] = [
+            (2, 1.9275), (3, 3 - 0.145 / 3),
+            (4, 3.96375), (10, 10 - 0.0145),
+            (-2, -1.9275), (-5, -5 + 0.029),
+        ]
+        for (q, expected) in cases {
+            XCTAssertEqual(
+                AdjustQuantBias.adjust(channel: 1, quant: q),
+                expected, accuracy: 1e-6,
+                "q=\(q) should return \(expected)"
+            )
+        }
+        // Custom zeroBias / biasNumerator are honoured.
+        let custom = AdjustQuantBias.adjust(
+            channel: 0, quant: 1,
+            zeroBias: [0.7, 0.7, 0.7], biasNumerator: 0.2
+        )
+        XCTAssertEqual(custom, 0.7, accuracy: 1e-7)
+        let customLarge = AdjustQuantBias.adjust(
+            channel: 0, quant: 4,
+            zeroBias: [0.7, 0.7, 0.7], biasNumerator: 0.2
+        )
+        XCTAssertEqual(customLarge, 4 - 0.05, accuracy: 1e-6)
+    }
+
     /// `AccelerateDCT.dct2D` (UMA-friendly vDSP_mmul backend) must
     /// produce byte-equal output to `LibjxlDCT.dct2D` (scalar source-
     /// of-truth) within float epsilon. Pin-down for the future
