@@ -6502,6 +6502,56 @@ extension FoundationTests {
         }
     }
 
+    /// `AFV.idct4x4` for `coeffs[0] = c, all-else 0` must give
+    /// constant `c/4` across all 16 pixels (the DC basis is
+    /// uniform 1/4). Pin-down for the AFV foundation primitive.
+    func testVarDCT_AFV_IDCT_DCMode() throws {
+        var coeffs = [Float](repeating: 0, count: 16)
+        coeffs[0] = 4.0  // DC=4
+        var pixels = [Float](repeating: 0, count: 16)
+        AFV.idct4x4(coeffs, &pixels)
+        // Every pixel = DC * 0.25 = 1.0.
+        for v in pixels {
+            XCTAssertEqual(v, 1.0, accuracy: 1e-6,
+                "AFV DC-only IDCT should give constant DC * 0.25")
+        }
+    }
+
+    /// AFV basis orthonormality — `<basis_i, basis_j> = δ_{ij}`
+    /// (rows of `k4x4AFVBasis` form an orthonormal basis of R^16).
+    /// Equivalently: applying `idct4x4` to a single-coef-1.0 input
+    /// produces a vector whose squared magnitude equals 1.
+    func testVarDCT_AFV_BasisOrthonormality() throws {
+        for j in 0..<16 {
+            var coeffs = [Float](repeating: 0, count: 16)
+            coeffs[j] = 1.0
+            var pixels = [Float](repeating: 0, count: 16)
+            AFV.idct4x4(coeffs, &pixels)
+            // Squared magnitude of pixels should equal 1.
+            let mag2 = pixels.reduce(Float(0)) { $0 + $1 * $1 }
+            XCTAssertEqual(mag2, 1.0, accuracy: 1e-4,
+                "AFV basis row \(j) should be unit length")
+        }
+        // Cross-orthogonality: pick two basis functions, decode each
+        // separately, then verify the dot product of their pixel
+        // vectors is zero.
+        for j1 in 0..<16 {
+            for j2 in (j1 + 1)..<16 {
+                var c1 = [Float](repeating: 0, count: 16)
+                var c2 = [Float](repeating: 0, count: 16)
+                c1[j1] = 1.0
+                c2[j2] = 1.0
+                var p1 = [Float](repeating: 0, count: 16)
+                var p2 = [Float](repeating: 0, count: 16)
+                AFV.idct4x4(c1, &p1)
+                AFV.idct4x4(c2, &p2)
+                let dot = (0..<16).reduce(Float(0)) { $0 + p1[$1] * p2[$1] }
+                XCTAssertEqual(dot, 0.0, accuracy: 1e-4,
+                    "AFV basis rows \(j1) and \(j2) should be orthogonal")
+            }
+        }
+    }
+
     /// `AccelerateDCT.dct2D` (UMA-friendly vDSP_mmul backend) must
     /// produce byte-equal output to `LibjxlDCT.dct2D` (scalar source-
     /// of-truth) within float epsilon. Pin-down for the future
