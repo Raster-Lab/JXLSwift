@@ -1308,9 +1308,9 @@ public final class JXLDecoder {
                 // unlike our orthonormal `DCT2D.inverse` which would
                 // require a per-coefficient bridge to convert from
                 // libjxl's DC=mean convention to orthonormal scale).
-                LibjxlIDCT.idct2D(&coefY, size: 8)
-                LibjxlIDCT.idct2D(&coefX, size: 8)
-                LibjxlIDCT.idct2D(&coefB, size: 8)
+                AccelerateDCT.idct2D(&coefY, size: 8)
+                AccelerateDCT.idct2D(&coefX, size: 8)
+                AccelerateDCT.idct2D(&coefB, size: 8)
                 // 6) Place 8×8 patches at (bx*8, by*8) in each plane.
                 let xOrigin = bx * 8
                 let yOrigin = by * 8
@@ -1443,9 +1443,9 @@ public final class JXLDecoder {
                 }
                 // libjxl-convention IDCT (no bridge needed —
                 // LibjxlIDCT inverts the libjxl scaled DCT directly).
-                LibjxlIDCT.idct2D(&coef[0], size: 16)
-                LibjxlIDCT.idct2D(&coef[1], size: 16)
-                LibjxlIDCT.idct2D(&coef[2], size: 16)
+                AccelerateDCT.idct2D(&coef[0], size: 16)
+                AccelerateDCT.idct2D(&coef[1], size: 16)
+                AccelerateDCT.idct2D(&coef[2], size: 16)
                 // Place 16×16 patch at (bx*8, by*8).
                 let xOrigin = bx * 8
                 let yOrigin = by * 8
@@ -1559,9 +1559,9 @@ public final class JXLDecoder {
                 }
                 // libjxl-convention IDCT (replaces bridge×√128 + ortho IDCT).
                 // Coef layout is 8 rows × 16 cols (after CoefficientLayout swap).
-                LibjxlIDCT.idct2D(&coef[0], rows: 8, cols: 16)
-                LibjxlIDCT.idct2D(&coef[1], rows: 8, cols: 16)
-                LibjxlIDCT.idct2D(&coef[2], rows: 8, cols: 16)
+                AccelerateDCT.idct2D(&coef[0], rows: 8, cols: 16)
+                AccelerateDCT.idct2D(&coef[1], rows: 8, cols: 16)
+                AccelerateDCT.idct2D(&coef[2], rows: 8, cols: 16)
                 // Place pixels. DCT8x16: 16w × 8h direct.
                 // DCT16x8: 8w × 16h, transposed from the 16w × 8h
                 // IDCT output (pixel[y][x] = coef_pix[x][y]).
@@ -1739,9 +1739,9 @@ public final class JXLDecoder {
                 }
                 // libjxl-convention IDCT (replaces bridge×√512 + ortho IDCT).
                 // Coef layout 16 rows × 32 cols (after CoefficientLayout swap).
-                LibjxlIDCT.idct2D(&coef[0], rows: 16, cols: 32)
-                LibjxlIDCT.idct2D(&coef[1], rows: 16, cols: 32)
-                LibjxlIDCT.idct2D(&coef[2], rows: 16, cols: 32)
+                AccelerateDCT.idct2D(&coef[0], rows: 16, cols: 32)
+                AccelerateDCT.idct2D(&coef[1], rows: 16, cols: 32)
+                AccelerateDCT.idct2D(&coef[2], rows: 16, cols: 32)
                 // Place pixels.
                 let xOrigin = bx * 8
                 let yOrigin = by * 8
@@ -1865,9 +1865,9 @@ public final class JXLDecoder {
                     coef[2][np] = acBDeq + bCCMul * acYDeq
                 }
                 // libjxl-convention IDCT (replaces bridge×32 + ortho IDCT).
-                LibjxlIDCT.idct2D(&coef[0], size: 32)
-                LibjxlIDCT.idct2D(&coef[1], size: 32)
-                LibjxlIDCT.idct2D(&coef[2], size: 32)
+                AccelerateDCT.idct2D(&coef[0], size: 32)
+                AccelerateDCT.idct2D(&coef[1], size: 32)
+                AccelerateDCT.idct2D(&coef[2], size: 32)
                 // Place 32×32 patch at (bx*8, by*8).
                 let xOrigin = bx * 8
                 let yOrigin = by * 8
