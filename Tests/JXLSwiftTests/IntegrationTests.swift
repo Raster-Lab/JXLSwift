@@ -6507,7 +6507,7 @@ extension FoundationTests {
     /// of-truth) within float epsilon. Pin-down for the future
     /// VarDCT encoder's UMA acceleration path.
     func testVarDCT_AccelerateDCT_MatchesScalarReference() throws {
-        for n in [8, 16, 32] {
+        for n in [8, 16, 32, 64] {
             var blockA: [Float] = (0..<(n * n)).map {
                 Float($0 & 0xff) - 127.5  // mid-range, signed
             }
@@ -6525,7 +6525,7 @@ extension FoundationTests {
     /// output to `LibjxlIDCT.idct2D` (scalar reference). Pin-down
     /// for the inverse path of the UMA backend.
     func testVarDCT_AccelerateIDCT_MatchesScalarReference() throws {
-        for n in [8, 16, 32] {
+        for n in [8, 16, 32, 64] {
             var blockA: [Float] = (0..<(n * n)).map {
                 // Sparse coefficient pattern: DC + a few AC.
                 Float($0 < 5 ? Float($0) - 2.0 : 0.0)
@@ -6571,7 +6571,7 @@ extension FoundationTests {
     /// must produce byte-equal output to `LibjxlDCT.dct2D(_:rows:cols:)`
     /// for the strategies the decoder ships (8×16, 16×8, 16×32, 32×16).
     func testVarDCT_AccelerateDCT_AsymmetricMatchesScalarReference() throws {
-        let cases: [(Int, Int)] = [(8, 16), (16, 8), (16, 32), (32, 16)]
+        let cases: [(Int, Int)] = [(8, 16), (16, 8), (16, 32), (32, 16), (32, 64), (64, 32)]
         for (r, c) in cases {
             var blockA: [Float] = (0..<(r * c)).map {
                 Float($0 & 0xff) - 127.5
@@ -6588,7 +6588,7 @@ extension FoundationTests {
 
     /// Same for asymmetric inverse.
     func testVarDCT_AccelerateIDCT_AsymmetricMatchesScalarReference() throws {
-        let cases: [(Int, Int)] = [(8, 16), (16, 8), (16, 32), (32, 16)]
+        let cases: [(Int, Int)] = [(8, 16), (16, 8), (16, 32), (32, 16), (32, 64), (64, 32)]
         for (r, c) in cases {
             var blockA: [Float] = (0..<(r * c)).map {
                 Float($0 < 5 ? Float($0) - 2.0 : 0.0)
@@ -6605,14 +6605,15 @@ extension FoundationTests {
 
     /// Asymmetric round-trip via the `AccelerateDCT` pair.
     func testVarDCT_AccelerateDCT_AsymmetricRoundTrip() throws {
-        let cases: [(Int, Int)] = [(8, 16), (16, 8), (16, 32), (32, 16)]
+        let cases: [(Int, Int)] = [(8, 16), (16, 8), (16, 32), (32, 16), (32, 64), (64, 32)]
         for (r, c) in cases {
             var block: [Float] = (0..<(r * c)).map { Float($0 & 0xff) }
             let original = block
             AccelerateDCT.dct2D(&block, rows: r, cols: c)
             AccelerateDCT.idct2D(&block, rows: r, cols: c)
+            let tol: Float = max(r, c) >= 32 ? 5e-2 : 2e-2
             for i in 0..<(r * c) {
-                XCTAssertEqual(block[i], original[i], accuracy: 2e-2,
+                XCTAssertEqual(block[i], original[i], accuracy: tol,
                     "[\(r)x\(c)] AccelerateDCT round-trip drift at \(i)")
             }
         }
@@ -6621,13 +6622,14 @@ extension FoundationTests {
     /// Round-trip through the `AccelerateDCT` pair (forward + inverse)
     /// must recover the original block.
     func testVarDCT_AccelerateDCT_RoundTrip() throws {
-        for n in [8, 16, 32] {
+        for n in [8, 16, 32, 64] {
             var block: [Float] = (0..<(n * n)).map { Float($0 & 0xff) }
             let original = block
             AccelerateDCT.dct2D(&block, size: n)
             AccelerateDCT.idct2D(&block, size: n)
+            let tol: Float = n >= 32 ? 5e-2 : 1e-2
             for i in 0..<(n * n) {
-                XCTAssertEqual(block[i], original[i], accuracy: 1e-2,
+                XCTAssertEqual(block[i], original[i], accuracy: tol,
                     "[N=\(n)] AccelerateDCT round-trip drift at \(i)")
             }
         }
@@ -6636,14 +6638,17 @@ extension FoundationTests {
     /// Asymmetric round-trip — pin-down for `LibjxlIDCT.idct2D(_:rows:cols:)`
     /// used by DCT8x16/16x8/32x16/16x32 IDCT overlays.
     func testVarDCT_LibjxlIDCT_AsymmetricRoundTrip() throws {
-        let cases: [(Int, Int)] = [(8, 16), (16, 8), (16, 32), (32, 16)]
+        let cases: [(Int, Int)] = [(8, 16), (16, 8), (16, 32), (32, 16), (32, 64), (64, 32)]
         for (r, c) in cases {
             var block: [Float] = (0..<(r * c)).map { Float($0 & 0xff) }
             let original = block
             LibjxlDCT.dct2D(&block, rows: r, cols: c)
             LibjxlIDCT.idct2D(&block, rows: r, cols: c)
+            // Float precision accumulates ~O(N²) for the matrix-form
+            // round-trip; loosen tolerance for the larger sizes.
+            let tol: Float = max(r, c) >= 32 ? 1e-2 : 2e-3
             for i in 0..<(r * c) {
-                XCTAssertEqual(block[i], original[i], accuracy: 2e-3,
+                XCTAssertEqual(block[i], original[i], accuracy: tol,
                     "[\(r)x\(c)] round-trip drift at \(i)")
             }
         }
