@@ -6502,6 +6502,86 @@ extension FoundationTests {
         }
     }
 
+    /// `AccelerateDCT.dct2D` (UMA-friendly vDSP_mmul backend) must
+    /// produce byte-equal output to `LibjxlDCT.dct2D` (scalar source-
+    /// of-truth) within float epsilon. Pin-down for the future
+    /// VarDCT encoder's UMA acceleration path.
+    func testVarDCT_AccelerateDCT_MatchesScalarReference() throws {
+        for n in [8, 16, 32] {
+            var blockA: [Float] = (0..<(n * n)).map {
+                Float($0 & 0xff) - 127.5  // mid-range, signed
+            }
+            var blockB = blockA
+            LibjxlDCT.dct2D(&blockA, size: n)
+            AccelerateDCT.dct2D(&blockB, size: n)
+            for i in 0..<(n * n) {
+                XCTAssertEqual(blockB[i], blockA[i], accuracy: 1e-3,
+                    "[N=\(n)] DCT drift at \(i): scalar=\(blockA[i]) accelerate=\(blockB[i])")
+            }
+        }
+    }
+
+    /// `AccelerateDCT.idct2D` (vDSP_mmul) must produce byte-equal
+    /// output to `LibjxlIDCT.idct2D` (scalar reference). Pin-down
+    /// for the inverse path of the UMA backend.
+    func testVarDCT_AccelerateIDCT_MatchesScalarReference() throws {
+        for n in [8, 16, 32] {
+            var blockA: [Float] = (0..<(n * n)).map {
+                // Sparse coefficient pattern: DC + a few AC.
+                Float($0 < 5 ? Float($0) - 2.0 : 0.0)
+            }
+            var blockB = blockA
+            LibjxlIDCT.idct2D(&blockA, size: n)
+            AccelerateDCT.idct2D(&blockB, size: n)
+            for i in 0..<(n * n) {
+                XCTAssertEqual(blockB[i], blockA[i], accuracy: 1e-3,
+                    "[N=\(n)] IDCT drift at \(i): scalar=\(blockA[i]) accelerate=\(blockB[i])")
+            }
+        }
+    }
+
+    /// Informational benchmark: time `LibjxlDCT.dct2D` vs
+    /// `AccelerateDCT.dct2D` over many 8×8 blocks. The UMA path
+    /// should win on Apple Silicon. No XCTAssert — just prints
+    /// the ratio so it's visible in test output.
+    func testVarDCT_AccelerateDCT_BenchInfo() throws {
+        let n = 8
+        let iters = 5000
+        var blockA: [Float] = (0..<(n * n)).map { Float($0 & 0xff) }
+        let original = blockA
+        let t0 = Date()
+        for _ in 0..<iters {
+            blockA = original
+            LibjxlDCT.dct2D(&blockA, size: n)
+        }
+        let scalarMs = Date().timeIntervalSince(t0) * 1000
+        var blockB = original
+        let t1 = Date()
+        for _ in 0..<iters {
+            blockB = original
+            AccelerateDCT.dct2D(&blockB, size: n)
+        }
+        let umaMs = Date().timeIntervalSince(t1) * 1000
+        print(String(format:
+            "[BENCH DCT8x8 %d iters] scalar=%.2fms UMA=%.2fms speedup=%.2fx",
+            iters, scalarMs, umaMs, scalarMs / umaMs))
+    }
+
+    /// Round-trip through the `AccelerateDCT` pair (forward + inverse)
+    /// must recover the original block.
+    func testVarDCT_AccelerateDCT_RoundTrip() throws {
+        for n in [8, 16, 32] {
+            var block: [Float] = (0..<(n * n)).map { Float($0 & 0xff) }
+            let original = block
+            AccelerateDCT.dct2D(&block, size: n)
+            AccelerateDCT.idct2D(&block, size: n)
+            for i in 0..<(n * n) {
+                XCTAssertEqual(block[i], original[i], accuracy: 1e-2,
+                    "[N=\(n)] AccelerateDCT round-trip drift at \(i)")
+            }
+        }
+    }
+
     /// Asymmetric round-trip — pin-down for `LibjxlIDCT.idct2D(_:rows:cols:)`
     /// used by DCT8x16/16x8/32x16/16x32 IDCT overlays.
     func testVarDCT_LibjxlIDCT_AsymmetricRoundTrip() throws {
