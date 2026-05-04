@@ -22,27 +22,71 @@ struct Version: ParsableCommand {
     }
 }
 
-/// Compare two images pixel-by-pixel (PSNR / SSIM / etc.).
-/// Mirrors `j2k compare`. Stub for Phase A — the comparison
-/// metrics will be wired in a follow-on bite.
+/// Compare two images pixel-by-pixel and report quality metrics.
+/// Mirrors `j2k compare` — same metrics (PSNR, MSE, MAE, max
+/// error, bit-exact flag) and same output shape (text or JSON).
+///
+/// Inputs are PNM / PGM / PPM / PAM files. JXL-decoded bitstreams
+/// are accepted via the existing `decode` subcommand pipeline:
+/// pre-decode the JXL to a PNM and feed both PNMs to `compare`.
+/// Direct JXL inputs would require routing through the
+/// JXLDecoder — left as a follow-on once the decoder is robust
+/// enough to ship as the canonical reader.
+///
+/// Usage:
+///
+///     jxl compare reference.ppm test.ppm
+///     jxl compare reference.ppm test.ppm --json
+///
+/// PSNR formula (per channel):
+///
+///     MSE   = mean((reference[i] - test[i])²) over all pixels
+///     PSNR  = 10 · log10(maxVal² / MSE)  dB
+///     where maxVal = (1 << bitsPerSample) - 1.
 struct Compare: ParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "Compare two images (stub — pending PSNR/SSIM impl)."
+        abstract: "Compare two images (PSNR / MSE / MAE / max error)."
     )
 
-    @Argument(help: "Reference image path")
+    @Argument(help: "Reference (original) image path — PGM / PPM / PAM.")
     var reference: String
 
-    @Argument(help: "Test image path")
+    @Argument(help: "Test (reconstructed) image path — PGM / PPM / PAM.")
     var test: String
 
+    @Flag(help: "Emit JSON instead of human-readable text.")
+    var json: Bool = false
+
+    @Flag(help: "Suppress per-component table; report overall metrics only.")
+    var quiet: Bool = false
+
     func run() throws {
-        FileHandle.standardError.write(Data((
-            "compare: not yet implemented — pending PSNR / SSIM / " +
-            "byte-equality metric port from J2KSwift's compare " +
-            "subcommand. Inputs: \(reference), \(test)\n"
-        ).utf8))
-        throw JXLExitCode.notImplemented
+        let refData = try Data(contentsOf: URL(fileURLWithPath: reference))
+        let testData = try Data(contentsOf: URL(fileURLWithPath: test))
+        let refImg = try PNM.read(refData)
+        let testImg = try PNM.read(testData)
+
+        guard refImg.width == testImg.width,
+              refImg.height == testImg.height,
+              refImg.channels == testImg.channels,
+              refImg.pixelType == testImg.pixelType else {
+            FileHandle.standardError.write(Data((
+                "compare: image shapes differ — " +
+                "reference \(refImg.width)×\(refImg.height) " +
+                "\(refImg.channels)ch \(refImg.pixelType.bitsPerSample)bpp vs " +
+                "test \(testImg.width)×\(testImg.height) " +
+                "\(testImg.channels)ch \(testImg.pixelType.bitsPerSample)bpp\n"
+            ).utf8))
+            throw JXLExitCode.invalidArguments
+        }
+
+        let metrics = ImageMetrics.compute(reference: refImg, test: testImg)
+
+        if json {
+            print(metrics.jsonOutput(reference: reference, test: test))
+        } else {
+            metrics.printText(reference: reference, test: test, quiet: quiet)
+        }
     }
 }
 

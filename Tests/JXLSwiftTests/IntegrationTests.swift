@@ -7315,6 +7315,72 @@ extension FoundationTests {
         XCTAssertNotNil((decErr as? LocalizedError)?.errorDescription)
     }
 
+    /// `ImageMetrics.compute` produces correct PSNR / MSE / MAE /
+    /// max-error / bit-exact flag for hand-derived test inputs.
+    func testImageMetrics_ComputesCorrectValues() throws {
+        // Identical images → zero error, infinite PSNR, bit-exact.
+        let ref1 = ImageFrame(width: 4, height: 4, channels: 1)
+        let test1 = ref1
+        let m1 = ImageMetrics.compute(reference: ref1, test: test1)
+        XCTAssertEqual(m1.overallMSE, 0)
+        XCTAssertEqual(m1.overallMAE, 0)
+        XCTAssertEqual(m1.overallMaxError, 0)
+        XCTAssertTrue(m1.overallPSNR.isInfinite)
+        XCTAssertTrue(m1.bitExact)
+        XCTAssertEqual(m1.perChannel.count, 1)
+        XCTAssertTrue(m1.perChannel[0].bitExact)
+
+        // Single-pixel diff = 1 in a 16-pixel image:
+        //   MSE = 1/16 = 0.0625
+        //   MAE = 1/16 = 0.0625
+        //   PSNR = 10 * log10(255²/0.0625) ≈ 60.172 dB
+        var ref2 = ImageFrame(width: 4, height: 4, channels: 1)
+        for i in 0..<16 { ref2.data[i] = 100 }
+        var test2 = ref2
+        test2.data[0] = 101  // single perturbation
+        let m2 = ImageMetrics.compute(reference: ref2, test: test2)
+        XCTAssertEqual(m2.overallMSE, 1.0 / 16.0, accuracy: 1e-9)
+        XCTAssertEqual(m2.overallMAE, 1.0 / 16.0, accuracy: 1e-9)
+        XCTAssertEqual(m2.overallMaxError, 1)
+        XCTAssertEqual(m2.overallPSNR, 60.172, accuracy: 1e-2)
+        XCTAssertFalse(m2.bitExact)
+
+        // 3-channel image with channel-2 differing by 2:
+        //   per-channel maxError: 0, 0, 2
+        //   per-channel MSE: 0, 0, 4
+        //   overall MSE = (0 + 0 + 4) / 3 ≈ 1.333
+        var ref3 = ImageFrame(width: 4, height: 4, channels: 3)
+        for i in 0..<ref3.data.count { ref3.data[i] = 50 }
+        var test3 = ref3
+        for px in 0..<16 {
+            test3.data[px * 3 + 2] = 52  // perturb channel 2
+        }
+        let m3 = ImageMetrics.compute(reference: ref3, test: test3)
+        XCTAssertEqual(m3.perChannel.count, 3)
+        XCTAssertEqual(m3.perChannel[0].maxError, 0)
+        XCTAssertEqual(m3.perChannel[1].maxError, 0)
+        XCTAssertEqual(m3.perChannel[2].maxError, 2)
+        XCTAssertEqual(m3.perChannel[2].mse, 4.0, accuracy: 1e-9)
+        XCTAssertEqual(m3.overallMSE, 4.0 / 3.0, accuracy: 1e-9)
+        XCTAssertEqual(m3.overallMaxError, 2)
+        XCTAssertFalse(m3.bitExact)
+    }
+
+    /// `ImageMetrics.jsonOutput` produces parseable, expected JSON.
+    func testImageMetrics_JSONOutput_HasRightKeys() throws {
+        let ref = ImageFrame(width: 2, height: 2, channels: 1)
+        let test = ref
+        let m = ImageMetrics.compute(reference: ref, test: test)
+        let json = m.jsonOutput(reference: "ref.pgm", test: "test.pgm")
+        XCTAssertTrue(json.contains("\"reference\": \"ref.pgm\""))
+        XCTAssertTrue(json.contains("\"test\": \"test.pgm\""))
+        XCTAssertTrue(json.contains("\"width\": 2"))
+        XCTAssertTrue(json.contains("\"height\": 2"))
+        XCTAssertTrue(json.contains("\"bitExact\": true"))
+        // Infinity is encoded as a string per our hand-rolled JSON.
+        XCTAssertTrue(json.contains("\"psnr\": \"Infinity\""))
+    }
+
     /// edge (sharpening boosts high frequencies). Pin-down for the
     /// libjxl `enc_gaborish.cc::GaborishInverse` port.
     func testVarDCT_GaborishInverse5x5_PreservesDC_SharpensEdge() throws {
