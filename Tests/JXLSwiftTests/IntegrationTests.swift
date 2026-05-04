@@ -6926,6 +6926,45 @@ extension FoundationTests {
             "pixel must not exceed the high side")
     }
 
+    /// `Gaborish.applyInverse5x5` (encoder-side sharpening) preserves
+    /// DC (constant image stays constant — sum of weights = 1) and
+    /// produces a HIGHER-CONTRAST output than the input at a step
+    /// edge (sharpening boosts high frequencies). Pin-down for the
+    /// libjxl `enc_gaborish.cc::GaborishInverse` port.
+    func testVarDCT_GaborishInverse5x5_PreservesDC_SharpensEdge() throws {
+        // 1. Uniform image → unchanged within float precision.
+        let w = 16, h = 16
+        var uniform = [Float](repeating: 100.0, count: w * h)
+        Gaborish.applyInverse5x5(to: &uniform, width: w, height: h)
+        for v in uniform {
+            XCTAssertEqual(v, 100.0, accuracy: 1e-3,
+                "uniform image must round-trip exactly under inverse Gaborish")
+        }
+        // 2. Vertical step at x=8 (left=0, right=255). Inverse-Gaborish
+        // is a sharpening filter, so the value just LEFT of the edge
+        // should drop BELOW 0 (overshoot) and the value just RIGHT
+        // should rise ABOVE 255 (overshoot). This is the "edge boost"
+        // characteristic of inverse-Gaborish.
+        var step = [Float](repeating: 0, count: w * h)
+        for y in 0..<h {
+            for x in 0..<w {
+                step[y * w + x] = (x < 8) ? 0 : 255
+            }
+        }
+        Gaborish.applyInverse5x5(to: &step, width: w, height: h)
+        // Pixel at x=0 (far from edge, cushioned by mirror padding):
+        // should be ≤ 0 + ε (could undershoot slightly).
+        XCTAssertLessThan(step[0], 5.0,
+            "pixel far from edge stays near 0")
+        // Pixel at x=7 (just before edge): inverse-Gaborish overshoots
+        // BELOW 0 — characteristic of edge sharpening.
+        XCTAssertLessThan(step[7], 0,
+            "pixel just before edge undershoots due to sharpening")
+        // Pixel at x=8 (just after edge): overshoots ABOVE 255.
+        XCTAssertGreaterThan(step[8], 255,
+            "pixel just after edge overshoots due to sharpening")
+    }
+
     /// Default `BlockCtxMap` reproduces the libjxl spec defaults
     /// — 15 distinct block classes, exactly 1 DC context, no QF
     /// thresholds.
