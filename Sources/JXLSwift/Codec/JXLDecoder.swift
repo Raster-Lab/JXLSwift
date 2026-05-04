@@ -1204,9 +1204,10 @@ public final class JXLDecoder {
         // DCT8 default quant weights: 3 × 64 floats. `qweights[c*64+k]`
         // is the QUANT weight (libjxl stores its inverse in `Matrix()`,
         // so `dequant_matrix = 1 / qweights`). Indexed by XYB channel.
-        let dct8Bands = DefaultQuantBands.scaledForBitstream(
-            DefaultQuantBands.dct8x8
-        )
+        // **v0.9.0l fix**: LIBRARY-mode defaults are NOT pre-multiplied
+        // by 64; the ×64 only applies on bitstream-decoded DCT-mode
+        // params (libjxl `quant_weights.cc::DecodeDctParams`).
+        let dct8Bands = DefaultQuantBands.dct8x8
         let qweights: [Float]
         do {
             qweights = try QuantWeights.getQuantWeights(
@@ -1261,11 +1262,17 @@ public final class JXLDecoder {
                         let xybC = c
                         let storageSlot = [1, 0, 2][xybC]
                         _ = storageSlot
-                        let preview = (0..<8).map {
+                        // Print first row (flat 0..7 = vanilla [0, 0..7]) and
+                        // first column (flat 0, 8, 16, ..., 56 = vanilla
+                        // [0..7, 0]).
+                        let row0 = (0..<8).map {
                             "\(acBlocks[0][c][$0])"
                         }.joined(separator: ",")
+                        let col0 = (0..<8).map {
+                            "\(acBlocks[0][c][$0 * 8])"
+                        }.joined(separator: ",")
                         FileHandle.standardError.write(Data(
-                            "TRACE_AC blk0 c=\(c) (\(labels[c])) first8=[\(preview)]\n".utf8
+                            "TRACE_AC blk0 c=\(c) (\(labels[c])) row0=[\(row0)] col0=[\(col0)]\n".utf8
                         ))
                     }
                     FileHandle.standardError.write(Data(
@@ -1349,11 +1356,26 @@ public final class JXLDecoder {
                         "TRACE_AC qweights[0,1] (X,Y,B)=(\(qwx), \(qwy), \(qwb)) blockInvQuantAC=\(blockInvQuantAC) xDmMul=\(xDmMultiplier) bDmMul=\(bDmMultiplier)\n".utf8
                     ))
                 }
-                // 5) libjxl-convention IDCT (no bridge factor needed —
-                // LibjxlIDCT inverts the libjxl scaled-DCT directly,
-                // unlike our orthonormal `DCT2D.inverse` which would
-                // require a per-coefficient bridge to convert from
-                // libjxl's DC=mean convention to orthonormal scale).
+                // 5) libjxl-convention IDCT.
+                // **v0.9.0l fix**: libjxl's bitstream coefficient block is
+                // in TRANSPOSED layout (`block[y*N+x]` holds vanilla DCT
+                // coef [x, y], not [y, x]). libjxl's `ComputeScaledIDCT`
+                // is structured to operate on this transposed layout
+                // (M·X^T·M^T = vanilla(X^T)). Our `AccelerateDCT.idct2D`
+                // computes vanilla IDCT (M·X·M^T), so we transpose the
+                // coefficient block first to match libjxl's input
+                // convention. (For square N×N blocks, transposing in
+                // place is straightforward.)
+                func transposeInPlace8(_ b: inout [Float]) {
+                    for r in 0..<8 {
+                        for c in (r + 1)..<8 {
+                            b.swapAt(r * 8 + c, c * 8 + r)
+                        }
+                    }
+                }
+                transposeInPlace8(&coefY)
+                transposeInPlace8(&coefX)
+                transposeInPlace8(&coefB)
                 AccelerateDCT.idct2D(&coefY, size: 8)
                 AccelerateDCT.idct2D(&coefX, size: 8)
                 AccelerateDCT.idct2D(&coefB, size: 8)
