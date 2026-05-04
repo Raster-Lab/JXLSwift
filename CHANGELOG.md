@@ -43,9 +43,42 @@ libjxl's `ComputeScaledDCT(P) = M·P^T·M^T = vanilla(P^T)` for ROWS≥COLS stra
 - **`AFV.transformToPixels`** — full overlay port of libjxl `AFVTransformToPixels`. Decomposes 8×8 cell into 4×4 AFV corner + 4×4 IDCT corner + 4×8 IDCT half. Two pin-down tests cover all 4 AFV-kind variants.
 - **4 build warnings cleanup** — removed dead `bridge8x16` / `bridge16x32` constants, tightened `var temp` → `let temp`. Build is now warning-free.
 
+### v0.9.0q–s: encoder primitives + AFV pin-downs
+
+- **`ACQuantize.quantizeBlock`** in `Sources/JXLSwift/VarDCT/ACQuantize.swift` — direct port of libjxl's `enc_group.cc::QuantizeBlockAC`. Encoder-side per-block AC quantization with per-quadrant chroma thresholding. Two pin-down tests verify round-trip with `Dequantize.dequantize` and chroma threshold gating.
+- **AFV corner-flip pin-down** — new test verifies the libjxl `srcY = (afvY == 1) ? 3 - iy : iy` corner-flip mapping in `AFV.transformToPixels` against the libjxl source line-for-line.
+
+### v0.9.0t–z: family-API-parity audit + Phase A/B/C alignment with J2KSwift
+
+- **`Documentation/FAMILY-API-PARITY.md`** — 13-divergence audit of JXLSwift ↔ J2KSwift surfaces, with a 3-phase recommended alignment plan.
+- **Phase A — non-breaking additions** (v0.9.0u): `JXLImage` typealias for `ImageFrame`; `EncodingOptions` static presets (`.lossless`, `.highQuality`, `.balanced`, `.fast`); `JXLConfiguration` shim with `quality: Double` + `lossless: Bool` matching `J2KConfiguration`; `jxl` CLI alias as a second executable product (both `jxl` and `jxl-tool` now ship); stub subcommands `version`, `compare`, `completions`, `validate` matching `j2k`'s surface.
+- **Phase B — parity migrations** (v0.9.0v–y): `JXLEncoder` and `JXLDecoder` converted from `final class` → `public struct: Sendable`. Async overloads on `encode(_:) async throws` / `decode(_:) async throws` / `decodeAll(_:) async throws`. Progress-callback overloads with `JXLEncoderProgressUpdate` / `JXLDecoderProgressUpdate` types matching J2KSwift's shape. CLI canonical name renamed `jxl-tool` → `jxl` in `--help` / `--version`.
+- **Phase C — final convergence** (v0.9.0z): `CompressionImage`, `CompressionOutput`, `CompressionEncoder`, `CompressionDecoder`, `CompressionError` protocols defined in JXLSwift. JXLSwift's own types conform. Generic-over-codec helpers compile + run.
+
 ### Tests
 
-- **353 tests passing, 3 skipped, 0 failures.** (+3 from v0.9.0d-p: AdjustQuantBias all-branches, GaborishInverse5x5 step-edge, AFV transformToPixels.)
+- **366 tests passing, 3 skipped, 0 failures.** (+13 from v0.9.0d-z: AdjustQuantBias all-branches, GaborishInverse5x5 step-edge, AFV transformToPixels DC-only / all-kinds / corner-flip, ACQuantize round-trip / chroma thresholding, JXLImage typealias, EncodingOptions presets, JXLConfiguration mapping, async overloads round-trip, progress callbacks, generic-over-encoder, generic-over-decoder, CompressionError catch.)
+
+---
+
+## [0.10.0] — in progress (shared package + family-parity polish)
+
+The headline of v0.10.0 is extracting the family-parity protocol surface to a standalone Swift package both libraries depend on, so callers can write codec-agnostic generic code that works across the family today (not just within one library).
+
+### Added
+
+- **`CompressionFamily` shared Swift package** at `/Users/raster/Documents/raster/CompressionFamily/`. JXLSwift and J2KSwift both depend on it via path. Five protocols (`CompressionImage`, `CompressionOutput`, `CompressionEncoder`, `CompressionDecoder`, `CompressionError`) + default `Data: CompressionOutput` conformance. 2 self-contained smoke tests in the package itself.
+- **J2KSwift adoption** (cross-repo, commit `56c61ab` in J2KSwift main, awaiting upstream push) — 2 conformance files (`J2KCore` + `J2KCodec`), 5 pin-down tests in J2KCodecTests.
+- **`Sources/JXLSwift/ImageMetrics.swift`** — public library API for image-quality metrics (PSNR, MSE, MAE, max error, bit-exact). `ImageMetrics.compute(reference:test:)` over two shape-matched `ImageFrame`s. Used by `jxl compare` (real metrics now, not stub).
+
+### Changed
+
+- `jxl compare ref.pgm test.pgm` (Phase A.5 stub) is now a real metrics command. Text + JSON output. Mirrors `j2k compare`.
+- `jxl completions <bash|zsh|fish>` (Phase A.5 stub) now generates real, syntactically-valid completion scripts via swift-argument-parser's `completionScript(for:)`.
+
+### Tests
+
+- **366 tests passing, 3 skipped, 0 failures.** (+5 from v0.10.0a-c: ImageMetrics correctness, ImageMetrics JSON output.)
 
 ---
 
