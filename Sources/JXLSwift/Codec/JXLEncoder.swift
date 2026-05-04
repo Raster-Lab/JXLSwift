@@ -37,7 +37,18 @@ public enum EncoderError: Error, LocalizedError, Sendable {
     }
 }
 
-public final class JXLEncoder {
+/// JPEG XL encoder. `Sendable`-by-default value type — copies are
+/// independent. Mirrors J2KSwift's `J2KEncoder` shape for family
+/// API parity (Phase B.6 of the alignment plan; see
+/// [Documentation/FAMILY-API-PARITY.md](../../../Documentation/FAMILY-API-PARITY.md)).
+///
+/// Pre-Phase-B JXLSwift defined this as a `final class`; the
+/// conversion to `struct` is a soft source change. Existing callers
+/// using `JXLEncoder()` continue to work; the only breakage is for
+/// callers who relied on REFERENCE semantics (storing a ref +
+/// expecting mutation across copies). For an encoder, that pattern
+/// is rare in practice.
+public struct JXLEncoder: Sendable {
     public let options: EncodingOptions
 
     public init(options: EncodingOptions = EncodingOptions()) {

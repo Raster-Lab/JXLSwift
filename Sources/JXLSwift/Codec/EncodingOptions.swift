@@ -200,7 +200,7 @@ extension JXLEncoder {
     /// `J2KEncoder.init(configuration:)`. Internally constructs
     /// the canonical ``EncodingOptions`` via
     /// ``JXLConfiguration/encodingOptions``.
-    public convenience init(configuration: JXLConfiguration) {
+    public init(configuration: JXLConfiguration) {
         self.init(options: configuration.encodingOptions)
     }
 }

@@ -83,7 +83,11 @@ private func log2Floor(_ x: Int) -> Int {
     return 63 - UInt64(x).leadingZeroBitCount
 }
 
-public final class JXLDecoder {
+/// JPEG XL decoder. `Sendable`-by-default value type. Mirrors
+/// J2KSwift's `J2KDecoder` shape (Phase B.6 family-parity
+/// migration; see
+/// [Documentation/FAMILY-API-PARITY.md](../../../Documentation/FAMILY-API-PARITY.md)).
+public struct JXLDecoder: Sendable {
     public init() {}
 
     /// Decode a JPEG XL byte stream into an `ImageFrame`. Detection
