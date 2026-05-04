@@ -1085,6 +1085,13 @@ public final class JXLDecoder {
                         || strategy == .dct64x64
                         || strategy == .dct64x32
                         || strategy == .dct32x64
+                        // AFV foundation primitive
+                        // (`AFV.transformToPixels`) is shipped but the
+                        // dispatch is not wired here — AFV needs its
+                        // dedicated quant-matrix path (`kQuantModeAFV`),
+                        // which is not yet ported. Adding `.afv0/1/2/3`
+                        // here without proper weights would produce
+                        // visibly-wrong output (worse than throwing).
                     if !strategyIDCTSupported {
                         let nzAny = blockChannels.contains {
                             $0.contains { $0 != 0 }

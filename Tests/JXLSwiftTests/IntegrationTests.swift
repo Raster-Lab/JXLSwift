@@ -6669,6 +6669,68 @@ extension FoundationTests {
         }
     }
 
+    /// `AFV.transformToPixels` pin-down — corner-flip is applied
+    /// only to the AFV 4×4 sub-block. For an input where the AFV
+    /// basis is asymmetric (we set a single non-DC AFV basis function,
+    /// then verify the produced AFV pixel patch differs by index-flip
+    /// between afvKind=0 and afvKind=3).
+    func testVarDCT_AFV_TransformToPixels_CornerFlip() throws {
+        let idct4x4: (inout [Float]) -> Void = { block in
+            LibjxlIDCT.idct2D(&block, size: 4)
+        }
+        let idct4x8: (inout [Float]) -> Void = { block in
+            LibjxlIDCT.idct2D(&block, rows: 4, cols: 8)
+        }
+        // Build coefficients such that the AFV sub-block has an
+        // asymmetric pixel pattern. AFV's basis row 1 (the first
+        // non-DC AFV basis function) has values that vary across
+        // the 4×4 patch in a non-symmetric way (per `k4x4AFVBasis`
+        // row 1: [0.876..., 0.220..., -0.101..., -0.101..., ...]).
+        // Setting this basis to non-zero and zeroing all others
+        // produces a 4×4 pattern that's dominated by the top-left
+        // corner.
+        var coefs = [Float](repeating: 0, count: 64)
+        // The AFV sub-block uses (even, even) positions of the 8×8
+        // coefficient block. Position (iy=0, ix=2) in AFV-sub-block
+        // = flat 0*4+2 = 2 → 8x8 position iy=0*2=0, ix=2*2=4 → flat 4.
+        // So coefficients[4] = AFV basis row 2 contribution.
+        // Position (iy=2, ix=0) in AFV-sub-block = flat 2*4+0 = 8.
+        // 8x8 position iy=2*2=4, ix=0*2=0 → flat 32.
+        // For AFV kind=0, we'd expect AFV pixels in the top-left
+        // 4×4. Set coefs[4] = 1 (AFV basis index 2). The AFV pixel
+        // pattern is row 2 of `k4x4AFVBasis`.
+        coefs[4] = 1.0
+
+        var pixK0 = [Float](repeating: 0, count: 64)
+        AFV.transformToPixels(
+            afvKind: 0, coefficients: coefs, pixels: &pixK0,
+            idct4x4Backend: idct4x4, idct4x8Backend: idct4x8
+        )
+        var pixK3 = [Float](repeating: 0, count: 64)
+        AFV.transformToPixels(
+            afvKind: 3, coefficients: coefs, pixels: &pixK3,
+            idct4x4Backend: idct4x4, idct4x8Backend: idct4x8
+        )
+        // For kind=0 the AFV patch lives at top-left (rows 0..3, cols 0..3).
+        // For kind=3 the AFV patch lives at bottom-right (rows 4..7, cols 4..7),
+        // with the corner-flip mapping (iy, ix) → (3-iy, 3-ix).
+        // So pixK3[4+(3-iy), 4+(3-ix)] should equal pixK0[iy, ix] for the
+        // AFV sub-block — i.e., pixK3 at (4+r, 4+c) = pixK0 at (3-r, 3-c).
+        for r in 0..<4 {
+            for c in 0..<4 {
+                let v0 = pixK0[r * 8 + c]
+                let v3 = pixK3[(4 + (3 - r)) * 8 + (4 + (3 - c))]
+                // wait: pixK3 places AFV at (afvY=1)*4+iy, (afvX=1)*4+ix
+                // with srcY=3-iy, srcX=3-ix. So pixK3[(4+iy)*8 + (4+ix)] = afvPix[(3-iy)*4 + (3-ix)].
+                // pixK0[r*8 + c] = afvPix[r*4 + c].
+                // So we want pixK3[(4+(3-r))*8 + (4+(3-c))] = afvPix[r*4 + c].
+                XCTAssertEqual(v0, v3, accuracy: 1e-4,
+                    "AFV corner-flip mismatch: pixK0(\(r),\(c))=\(v0) " +
+                    "≠ pixK3(\(4+(3-r)),\(4+(3-c)))=\(v3)")
+            }
+        }
+    }
+
     /// `AFV.transformToPixels` pin-down — afvKind variants 1, 2, 3 all
     /// produce the same constant-cell output for DC-only input
     /// (because DC reconstruction is independent of the corner-flip).
