@@ -1252,6 +1252,26 @@ public final class JXLDecoder {
         for by in 0..<numBlocksYAC {
             for bx in 0..<numBlocksXAC {
                 let blockIdx = by * numBlocksXAC + bx
+                // v0.9.0h: dump first block's quantised AC values for
+                // diagnostic vs djxl. Triggered by JXL_TRACE_AC env var.
+                if blockIdx == 0,
+                   ProcessInfo.processInfo.environment["JXL_TRACE_AC"] != nil {
+                    let labels = ["X", "Y", "B"]
+                    for c in 0..<3 {
+                        let xybC = c
+                        let storageSlot = [1, 0, 2][xybC]
+                        _ = storageSlot
+                        let preview = (0..<8).map {
+                            "\(acBlocks[0][c][$0])"
+                        }.joined(separator: ",")
+                        FileHandle.standardError.write(Data(
+                            "TRACE_AC blk0 c=\(c) (\(labels[c])) first8=[\(preview)]\n".utf8
+                        ))
+                    }
+                    FileHandle.standardError.write(Data(
+                        "TRACE_AC blk0 dc=(\(dcValues[0][0]), \(dcValues[1][0]), \(dcValues[2][0])) qf=\(blockIdx < perBlockQF.count ? perBlockQF[blockIdx] : qfRow) globalScale=\(qp.globalScale)\n".utf8
+                    ))
+                }
                 // Per-block invQuantAC from this block's QF.
                 let blockQF = blockIdx < perBlockQF.count
                     ? perBlockQF[blockIdx] : qfRow
