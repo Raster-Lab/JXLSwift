@@ -6552,6 +6552,91 @@ extension FoundationTests {
         }
     }
 
+    /// `ACQuantize.quantizeBlock` pin-down — round-trip with the
+    /// decoder's `Dequantize.dequantize` reproduces the input float
+    /// coefficients within rounding error (Y channel, no thresholding).
+    func testVarDCT_ACQuantize_RoundTripWithDequant_Y() throws {
+        // 64 random-ish float coefficients (Y channel).
+        var coefs = [Float](repeating: 0, count: 64)
+        for i in 0..<64 {
+            coefs[i] = Float(i) * 0.1 - 3.2  // values in [-3.2, +3.2]
+        }
+        // Per-coef weights: synthetic but realistic (DCT8 default-ish).
+        var weights = [Float](repeating: 0, count: 64)
+        for i in 0..<64 {
+            weights[i] = 100.0 + Float(i) * 5.0
+        }
+        let quant: Float = 10.0
+        let scale: Float = 5111.0 / 65536.0  // libjxl Scale at d=1
+        let qmMul: Float = 1.0
+        // Quantize.
+        let quantized = ACQuantize.quantizeBlock(
+            blockIn: coefs, weights: weights,
+            quant: quant, scale: scale, qmMultiplier: qmMul,
+            xsize: 1, ysize: 1
+        )
+        // Dequantize via the decoder's formula:
+        //   coef_decoded = quantized / weight / (quant * scale * qmMul)
+        // This is the inverse of `quantizeBlock`'s formula.
+        let invQuantv = 1.0 / (quant * scale * qmMul)
+        for i in 0..<64 {
+            let decoded = Float(quantized[i]) / weights[i] * invQuantv
+            // Round-trip error is bounded by the quantization step:
+            //   step = 1 / (weight * quant * scale * qmMul)
+            // So |decoded - coefs[i]| < 0.5 * step.
+            let step = 1.0 / (weights[i] * quant * scale * qmMul)
+            XCTAssertLessThan(
+                abs(decoded - coefs[i]), 0.5 * step + 1e-5,
+                "Roundtrip drift at coef \(i): in=\(coefs[i]) " +
+                "quantized=\(quantized[i]) decoded=\(decoded) step=\(step)"
+            )
+        }
+    }
+
+    /// `ACQuantize.quantizeBlock` pin-down — chroma-channel
+    /// thresholding zeroes out small-magnitude coefficients.
+    /// Y channel (threshold = 0) keeps them; X / B channels
+    /// (threshold > 0) zero them.
+    func testVarDCT_ACQuantize_ChromaThresholding() throws {
+        // Set 64 coefs to a small constant value across all positions.
+        let coefs = [Float](repeating: 0.001, count: 64)  // very small
+        let weights = [Float](repeating: 100.0, count: 64)
+        let quant: Float = 10.0
+        let scale: Float = 5111.0 / 65536.0
+        // Y channel (threshold = 0): every coef should be quantized.
+        // val = 0.001 * 100 * 10 * 5111/65536 * 1.0 = 0.0780
+        // Y rounds to 0 anyway (|val| < 0.5).
+        let yQuant = ACQuantize.quantizeBlock(
+            blockIn: coefs, weights: weights,
+            quant: quant, scale: scale, qmMultiplier: 1.0,
+            xsize: 1, ysize: 1
+        )
+        for v in yQuant { XCTAssertEqual(v, 0) }
+
+        // Chroma (X, threshold = [0.58, 0.62, 0.62, 0.62]): val ~ 0.078
+        // is below all thresholds → all-zero output.
+        let xQuant = ACQuantize.quantizeBlock(
+            blockIn: coefs, weights: weights,
+            quant: quant, scale: scale, qmMultiplier: 1.25,
+            xsize: 1, ysize: 1,
+            thresholds: ACQuantize.kDefaultChromaThresholds
+        )
+        for v in xQuant { XCTAssertEqual(v, 0) }
+
+        // Now make coefs LARGE — should pass threshold and quantize.
+        let bigCoefs = [Float](repeating: 1.0, count: 64)
+        // val = 1.0 * 100 * 10 * (5111/65536) * 1.25 = 97.494 → 97
+        let xQuantBig = ACQuantize.quantizeBlock(
+            blockIn: bigCoefs, weights: weights,
+            quant: quant, scale: scale, qmMultiplier: 1.25,
+            xsize: 1, ysize: 1,
+            thresholds: ACQuantize.kDefaultChromaThresholds
+        )
+        for v in xQuantBig {
+            XCTAssertEqual(v, 97, "Big coef should round to 97, got \(v)")
+        }
+    }
+
     /// `AFV.transformToPixels` pin-down — DC-only coefficient input
     /// with `afvKind=0` produces a constant 8×8 cell. The dcs[] split
     /// reconstructs three internal sub-DCs from a single non-zero
