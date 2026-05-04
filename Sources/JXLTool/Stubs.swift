@@ -130,22 +130,198 @@ enum ShellChoice: String, ExpressibleByArgument, CaseIterable {
 }
 
 /// Validate a JPEG XL file against the spec. Mirrors `j2k validate`.
-/// Stub — full conformance validation requires a test-vector harness
-/// (see ROADMAP.md Phase C).
+///
+/// Two-tier validation:
+///
+/// 1. **Structural** — `JXLDecoder.inspect(_:)` walks container,
+///    SizeHeader, ImageMetadata, and reports parse errors with
+///    spec-section citations. Always runs.
+/// 2. **Functional** — attempts a full `JXLDecoder.decode(_:)`.
+///    Reports whether all frames decode and any throw points
+///    (e.g., "VarDCT frame requires kQuantModeAFV — not yet ported").
+///    Skipped with `--no-decode` for fast metadata-only checks.
+///
+/// A full ISO/IEC 18181 conformance pass against the
+/// [jxl-conformance](https://github.com/libjxl/conformance)
+/// test-vector repository is a follow-on bite — would require
+/// fetching the repo + parsing its manifest. For now, this
+/// subcommand validates ANY JPEG XL file the user supplies, which
+/// is the more common need.
 struct Validate: ParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "Validate a JPEG XL file against ISO/IEC 18181 (stub)."
+        abstract: "Validate a JPEG XL file against ISO/IEC 18181."
     )
 
-    @Argument(help: "JPEG XL file to validate")
+    @Argument(help: "JPEG XL file to validate.")
     var input: String
 
+    @Flag(help: "Skip the decode step; structural validation only.")
+    var noDecode: Bool = false
+
+    @Flag(help: "Emit JSON instead of human-readable text.")
+    var json: Bool = false
+
     func run() throws {
-        FileHandle.standardError.write(Data((
-            "validate: not yet implemented — pending conformance " +
-            "test-vector harness (jxl-conformance repo). Input: " +
-            "\(input)\n"
-        ).utf8))
-        throw JXLExitCode.notImplemented
+        let url = URL(fileURLWithPath: input)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            FileHandle.standardError.write(Data(
+                "validate: file not found: \(input)\n".utf8))
+            throw JXLExitCode.invalidArguments
+        }
+        let data: Data
+        do { data = try Data(contentsOf: url) }
+        catch {
+            FileHandle.standardError.write(Data(
+                "validate: cannot read \(input): \(error)\n".utf8))
+            throw JXLExitCode.generalError
+        }
+
+        var report = ValidationReport(input: input, fileSize: data.count)
+        let decoder = JXLDecoder()
+
+        // 1. Structural validation via inspect().
+        do {
+            let inspection = try decoder.inspect(data)
+            report.structural = .passStructural(
+                form: inspection.form == .naked ? "naked codestream" : "ISOBMFF container",
+                width: Int(inspection.xsize),
+                height: Int(inspection.ysize),
+                boxTypes: inspection.boxTypes,
+                hasMetadata: inspection.metadata != nil)
+        } catch {
+            report.structural = .fail(reason: "\(error)")
+        }
+
+        // 2. Functional validation via decode() (unless --no-decode).
+        if !noDecode, report.structural.isPass {
+            do {
+                let frame = try decoder.decode(data)
+                report.functional = .passFunctional(
+                    frameCount: 1,
+                    firstFrameWidth: frame.width,
+                    firstFrameHeight: frame.height,
+                    firstFrameChannels: frame.channels)
+            } catch {
+                report.functional = .fail(reason: "\(error)")
+            }
+        }
+
+        // 3. Print report.
+        if json {
+            print(report.jsonOutput())
+        } else {
+            report.printText()
+        }
+
+        // Exit code: 0 if both passed, 1 if any failed. Use direct
+        // exit() instead of throwing so the validation report (which
+        // is the user-facing output) isn't cluttered with
+        // ArgumentParser's "Error: ..." display.
+        if !report.allPassed {
+            Foundation.exit(1)
+        }
+    }
+}
+
+/// Internal validation-report container. Sendable for safety.
+struct ValidationReport {
+    let input: String
+    let fileSize: Int
+    var structural: Result = .notRun
+    var functional: Result = .notRun
+
+    enum Result {
+        case notRun
+        case passStructural(form: String, width: Int, height: Int,
+                            boxTypes: [String], hasMetadata: Bool)
+        case passFunctional(frameCount: Int, firstFrameWidth: Int,
+                            firstFrameHeight: Int, firstFrameChannels: Int)
+        case fail(reason: String)
+
+        var isPass: Bool {
+            switch self {
+            case .passStructural, .passFunctional: return true
+            case .fail, .notRun: return false
+            }
+        }
+    }
+
+    var allPassed: Bool {
+        if case .fail = structural { return false }
+        if case .fail = functional { return false }
+        return true
+    }
+
+    func printText() {
+        print("Validating: \(input)")
+        print("  File size:  \(fileSize) bytes")
+        print("")
+        print("  Structural validation (headers, container):")
+        switch structural {
+        case .passStructural(let form, let w, let h, let boxes, let meta):
+            print("    ✅ PASS")
+            print("       Form:        \(form)")
+            print("       Dimensions:  \(w)×\(h)")
+            print("       Boxes:       \(boxes.isEmpty ? "(none)" : boxes.joined(separator: ", "))")
+            print("       Metadata:    \(meta ? "parsed" : "not present")")
+        case .fail(let reason):
+            print("    ❌ FAIL: \(reason)")
+        case .notRun, .passFunctional:
+            print("    ⚠️  NOT RUN")
+        }
+        print("")
+        print("  Functional validation (decode pipeline):")
+        switch functional {
+        case .passFunctional(let n, let w, let h, let c):
+            print("    ✅ PASS")
+            print("       Frames decoded: \(n)")
+            print("       First frame:    \(w)×\(h), \(c) channel(s)")
+        case .fail(let reason):
+            print("    ❌ FAIL: \(reason)")
+        case .notRun:
+            print("    ⚠️  SKIPPED (use without --no-decode to enable)")
+        case .passStructural:
+            print("    ⚠️  NOT RUN")
+        }
+        print("")
+        if allPassed {
+            print("  Overall: ✅ \(input) is a valid JPEG XL file.")
+        } else {
+            print("  Overall: ❌ Validation failed (see above).")
+        }
+    }
+
+    func jsonOutput() -> String {
+        var s = "{\n"
+        s += "  \"input\": \"\(input)\",\n"
+        s += "  \"fileSize\": \(fileSize),\n"
+        s += "  \"structural\": \(jsonResult(structural)),\n"
+        s += "  \"functional\": \(jsonResult(functional)),\n"
+        s += "  \"allPassed\": \(allPassed)\n"
+        s += "}"
+        return s
+    }
+
+    private func jsonResult(_ r: Result) -> String {
+        switch r {
+        case .notRun:
+            return "{\"status\": \"notRun\"}"
+        case .passStructural(let form, let w, let h, let boxes, let meta):
+            let boxStr = boxes.map { "\"\($0)\"" }.joined(separator: ", ")
+            return "{\"status\": \"pass\", \"form\": \"\(form)\", " +
+                   "\"width\": \(w), \"height\": \(h), " +
+                   "\"boxes\": [\(boxStr)], \"hasMetadata\": \(meta)}"
+        case .passFunctional(let n, let w, let h, let c):
+            return "{\"status\": \"pass\", \"frameCount\": \(n), " +
+                   "\"firstFrameWidth\": \(w), " +
+                   "\"firstFrameHeight\": \(h), " +
+                   "\"firstFrameChannels\": \(c)}"
+        case .fail(let reason):
+            // Escape backslashes and quotes for JSON string safety.
+            let escaped = reason
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "\"", with: "\\\"")
+            return "{\"status\": \"fail\", \"reason\": \"\(escaped)\"}"
+        }
     }
 }
