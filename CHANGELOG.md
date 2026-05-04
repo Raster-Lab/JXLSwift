@@ -88,6 +88,12 @@ The headline of v0.10.0 is extracting the family-parity protocol surface to a st
 - **Findings:** cjxl emits AFV across `diagEdge` / `antiDiag` / `hLine` fixtures at d=1.0..2.0, hitting all 4 variants (afv0/1/2/3). Our decoder completes without throwing — but produces catastrophic byte-diff vs djxl: `max=(R=156, G=244, B=232)` on `hLine d=0.5`. Confirms the v0.10.0f dispatch is wired correctly (no `notImplemented` on AFV blocks) but the math is wrong somewhere in the AFV path. Anchors AFV correctness investigation against real fixtures instead of just libjxl source.
 - The capture helper uses a temp file rather than a `Pipe` so that JXL_TRACE volume can't deadlock the writer mid-decode. Test passes; correctness numbers are informational and tighten in a follow-up bite.
 
+### v0.10.0h — fix AFV quant-matrix pair-swap (latent)
+
+- `QuantWeights.getAFVQuantWeights(...)` stored `afv[0]/afv[1]` and `afv[2]/afv[3]` at swapped (x, y) positions vs libjxl's `set_weight(x, y, val)` convention (which writes to flat index `y * 8 + x`). For LIBRARY defaults this was **invisible** — `DefaultQuantBands.afv` has `afv[0]==afv[1]` and `afv[2]==afv[3]` for all three channels, so the resulting quant matrix was bit-identical regardless of swap. The bug surfaces only when the bitstream emits non-default `afv_weights` via the explicit `kQuantModeAFV` mode (future encoder territory).
+- Latent bug, fixed for correctness. **Net byte-diff vs djxl on the v0.10.0g probe is unchanged** — confirms the pair-swap was *not* the source of the catastrophic AFV residual. Investigation continues; next candidates are the `ComputeScaledIDCT<4, 4>` / `<4, 8>` backend convention and the per-cell DC-CFL application path inside the AFV overlay.
+- Pin-down test extended with unique marker values 100..500 in `afv[0..4]` so a future pair-swap regression would fail.
+
 ### Tests
 
 - **365 tests passing, 3 skipped, 0 failures.** (+5 from v0.10.0a-c: ImageMetrics correctness, ImageMetrics JSON output. +1 from v0.10.0g: real-fixture AFV probe. Net since v0.9.0z: -2 due to test consolidation in v0.10.0a-f doc-refresh sub-bites.)
