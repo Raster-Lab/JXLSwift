@@ -7201,6 +7201,26 @@ extension FoundationTests {
                        JXLConfiguration.balanced.encodingOptions.distance)
     }
 
+    /// Phase B.7 — `JXLEncoder.encode(_:) async throws` and
+    /// `JXLDecoder.decode(_:) async throws` overloads exist and
+    /// round-trip pixel-exact via the M0 placeholder format.
+    func testFamilyParity_AsyncOverloads_RoundTrip() async throws {
+        // Build a small grayscale frame.
+        var frame = ImageFrame(width: 8, height: 8, channels: 1)
+        for i in 0..<frame.data.count { frame.data[i] = UInt8(i & 0xFF) }
+
+        // Async encode → async decode → bit-equal pixels.
+        let enc = JXLEncoder(options: EncodingOptions(useM0Placeholder: true))
+        let result: EncodedImage = try await enc.encode(frame)
+
+        let dec = JXLDecoder()
+        let decoded: ImageFrame = try await dec.decode(result.data)
+        XCTAssertEqual(decoded.width, 8)
+        XCTAssertEqual(decoded.height, 8)
+        XCTAssertEqual(decoded.data, frame.data,
+            "M0 round-trip via async API must be pixel-exact")
+    }
+
     /// edge (sharpening boosts high frequencies). Pin-down for the
     /// libjxl `enc_gaborish.cc::GaborishInverse` port.
     func testVarDCT_GaborishInverse5x5_PreservesDC_SharpensEdge() throws {
