@@ -2229,6 +2229,9 @@ public final class JXLDecoder {
         var planeY = planeXYB[1]
         var planeB = planeXYB[2]
 
+        // EXPERIMENT v0.9.0k: skip Gaborish + EPF to isolate raw IDCT pixels.
+        let skipPhaseR = ProcessInfo.processInfo.environment["JXL_SKIP_PHASE_R"] != nil
+
         // Phase R restoration filters. libjxl pipeline order
         // (`dec_cache.cc::PreparePipeline`):
         //
@@ -2243,7 +2246,7 @@ public final class JXLDecoder {
         //   (same for Y and B; identical to our `Gaborish.defaultWeight*`)
         //
         // EPF is deferred until later in v0.6.0.
-        if fh.loopFilter.gab {
+        if fh.loopFilter.gab && !skipPhaseR {
             Gaborish.apply(to: &planeX, width: planeWidth, height: planeHeight)
             Gaborish.apply(to: &planeY, width: planeWidth, height: planeHeight)
             Gaborish.apply(to: &planeB, width: planeWidth, height: planeHeight)
@@ -2257,7 +2260,7 @@ public final class JXLDecoder {
         // EPF — edge-preserving filter, up to 3 iterations gated by
         // `lf.epfIters`. For our cjxl-d=1 fixture the EPF sharpness
         // field (ACMeta channel 3) is all zeros → no-op fast path.
-        if fh.loopFilter.epfIters > 0 {
+        if fh.loopFilter.epfIters > 0 && !skipPhaseR {
             // Sharpness field per block (ACMeta channel 3).
             let totalBlocks = numBlocksXAC * numBlocksYAC
             let sharpField: [UInt8] = (acMetaValues.count > 3

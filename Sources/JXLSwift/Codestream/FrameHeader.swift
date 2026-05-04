@@ -409,33 +409,42 @@ public struct LoopFilter: Sendable, Equatable {
         if isDefault {
             // BeginExtensions U64 follows even on the default path.
             _ = try r.readU64()
+            if ProcessInfo.processInfo.environment["JXL_TRACE_AC"] != nil {
+                FileHandle.standardError.write(Data(
+                    "TRACE_LF allDefault=true gab=true gabCustom=N/A\n".utf8))
+            }
             return LoopFilter(allDefault: true)
         }
         // Gaborish flag.
         let gab = try r.readBit()
+        var gabCustom: Bool = false
         if gab {
-            let gabCustom = try r.readBit()
+            gabCustom = try r.readBit()
             if gabCustom {
                 // 6 × F16 for X/Y/B weight pairs.
                 for _ in 0..<6 { _ = try r.read(bits: 16) }
             }
         }
+        // (epf trace flag values logged below after read)
         // EPF iters — raw u(2). Default 2.
         let epfIters = try r.read(bits: 2)
+        var epfSharpCustom = false
+        var epfWeightCustom = false
+        var epfSigmaCustom = false
         if epfIters > 0 {
             if !isModular {
-                let epfSharpCustom = try r.readBit()
+                epfSharpCustom = try r.readBit()
                 if epfSharpCustom {
                     // 8 entries of the per-sharpness LUT, each F16.
                     for _ in 0..<8 { _ = try r.read(bits: 16) }
                 }
             }
-            let epfWeightCustom = try r.readBit()
+            epfWeightCustom = try r.readBit()
             if epfWeightCustom {
                 // 3 channel scales + 2 zeroflush thresholds.
                 for _ in 0..<5 { _ = try r.read(bits: 16) }
             }
-            let epfSigmaCustom = try r.readBit()
+            epfSigmaCustom = try r.readBit()
             if epfSigmaCustom {
                 if !isModular {
                     _ = try r.read(bits: 16)   // epf_quant_mul
@@ -449,6 +458,10 @@ public struct LoopFilter: Sendable, Equatable {
         }
         // Extensions: U64.
         _ = try r.readU64()
+        if ProcessInfo.processInfo.environment["JXL_TRACE_AC"] != nil {
+            FileHandle.standardError.write(Data(
+                "TRACE_LF allDefault=false gab=\(gab) gabCustom=\(gabCustom) epfIters=\(epfIters) epfSharpCustom=\(epfSharpCustom) epfWeightCustom=\(epfWeightCustom) epfSigmaCustom=\(epfSigmaCustom)\n".utf8))
+        }
         return LoopFilter(allDefault: false, gab: gab, epfIters: epfIters)
     }
 }
