@@ -103,7 +103,7 @@ public enum LibjxlIDCT {
         }
         // Now transposed[u' * R + x'] for u' ∈ [0, C) and x' ∈ [0, R).
         // Apply IDCT-C with M=R: 1-D IDCT-C on each "column" of length C.
-        var temp = idct1D(N: C, M: R, input: transposed)
+        let temp = idct1D(N: C, M: R, input: transposed)
         // temp[u * R + x] for u ∈ [0, C), x ∈ [0, R).
         // Now apply IDCT-R with M=C. Need temp re-laid as
         // temp_for_pass2[u * C + x] for u ∈ [0, R), x ∈ [0, C).
@@ -176,7 +176,7 @@ public enum LibjxlDCT {
                 transposed[x * R + u] = block[u * C + x]
             }
         }
-        var temp = dct1D(N: C, M: R, input: transposed)
+        let temp = dct1D(N: C, M: R, input: transposed)
         var temp2 = [Float](repeating: 0, count: R * C)
         for u in 0..<C {
             for x in 0..<R {

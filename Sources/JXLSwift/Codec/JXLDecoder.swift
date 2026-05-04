@@ -1530,8 +1530,6 @@ public final class JXLDecoder {
                 "VarDCT decode: DCT8x16 quant weights computation failed: \(error)"
             )
         }
-        // ×N bridge for asymmetric 16×8 = √(16*8) = √128.
-        let bridge8x16: Float = (16.0 * 8.0).squareRoot()
         for by in 0..<numBlocksYAC {
             for bx in 0..<numBlocksXAC {
                 let entry = acsImage.at(x: bx, y: by)
@@ -1663,7 +1661,6 @@ public final class JXLDecoder {
                 "VarDCT decode: DCT16x32 quant weights computation failed: \(error)"
             )
         }
-        let bridge16x32: Float = (32.0 * 16.0).squareRoot()  // ≈ 22.627
         for by in 0..<numBlocksYAC {
             for bx in 0..<numBlocksXAC {
                 let entry = acsImage.at(x: bx, y: by)
