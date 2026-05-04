@@ -7221,6 +7221,37 @@ extension FoundationTests {
             "M0 round-trip via async API must be pixel-exact")
     }
 
+    /// Phase B.8 — `JXLEncoder.encode(_:progress:)` and
+    /// `JXLDecoder.decode(_:progress:)` overloads invoke the
+    /// progress callback at start (overallProgress = 0) and end
+    /// (overallProgress = 1).
+    func testFamilyParity_ProgressCallbacks() async throws {
+        var frame = ImageFrame(width: 8, height: 8, channels: 1)
+        for i in 0..<frame.data.count { frame.data[i] = UInt8(i & 0xFF) }
+
+        let enc = JXLEncoder(options: EncodingOptions(useM0Placeholder: true))
+        var encoderUpdates = [JXLEncoderProgressUpdate]()
+        let result = try await enc.encode(frame) { update in
+            encoderUpdates.append(update)
+        }
+        XCTAssertGreaterThanOrEqual(encoderUpdates.count, 2,
+            "encode progress callback must fire at least at start + end")
+        XCTAssertEqual(encoderUpdates.first?.overallProgress, 0.0)
+        XCTAssertEqual(encoderUpdates.last?.overallProgress, 1.0)
+        XCTAssertEqual(encoderUpdates.last?.stage, .complete)
+
+        let dec = JXLDecoder()
+        var decoderUpdates = [JXLDecoderProgressUpdate]()
+        _ = try await dec.decode(result.data) { update in
+            decoderUpdates.append(update)
+        }
+        XCTAssertGreaterThanOrEqual(decoderUpdates.count, 2,
+            "decode progress callback must fire at least at start + end")
+        XCTAssertEqual(decoderUpdates.first?.overallProgress, 0.0)
+        XCTAssertEqual(decoderUpdates.last?.overallProgress, 1.0)
+        XCTAssertEqual(decoderUpdates.last?.stage, .complete)
+    }
+
     /// edge (sharpening boosts high frequencies). Pin-down for the
     /// libjxl `enc_gaborish.cc::GaborishInverse` port.
     func testVarDCT_GaborishInverse5x5_PreservesDC_SharpensEdge() throws {
