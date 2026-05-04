@@ -1089,13 +1089,16 @@ public struct JXLDecoder: Sendable {
                         || strategy == .dct64x64
                         || strategy == .dct64x32
                         || strategy == .dct32x64
-                        // AFV foundation primitive
-                        // (`AFV.transformToPixels`) is shipped but the
-                        // dispatch is not wired here — AFV needs its
-                        // dedicated quant-matrix path (`kQuantModeAFV`),
-                        // which is not yet ported. Adding `.afv0/1/2/3`
-                        // here without proper weights would produce
-                        // visibly-wrong output (worse than throwing).
+                        // AFV (4 variants) — `kQuantModeAFV` quant
+                        // matrix port + `AFV.transformToPixels`
+                        // dispatch shipped in v0.10.0f. Shares the
+                        // v0.9.0 residual byte-diff (the 2.286×
+                        // factor in the dequant chain) until the
+                        // libjxl-trace close-out lands.
+                        || strategy == .afv0
+                        || strategy == .afv1
+                        || strategy == .afv2
+                        || strategy == .afv3
                     if !strategyIDCTSupported {
                         let nzAny = blockChannels.contains {
                             $0.contains { $0 != 0 }
@@ -2200,6 +2203,136 @@ public struct JXLDecoder: Sendable {
                         planeXYB[0][dstRow + px] = coef[0][srcRow + px]
                         planeXYB[1][dstRow + px] = coef[1][srcRow + px]
                         planeXYB[2][dstRow + px] = coef[2][srcRow + px]
+                    }
+                }
+            }
+        }
+
+        // AFV overlay (v0.10.0f). 4 variants (afv0..afv3); each
+        // covers a single 8×8 cell. Quant matrix is the libjxl
+        // `kQuantModeAFV` LIBRARY-default port from
+        // `QuantWeights.getAFVQuantWeights`. Shares the v0.9.0
+        // residual byte-diff (the 2.286× factor) — until the
+        // libjxl-trace close-out lands, AFV decode is approximate.
+        let afvWeights: [Float]
+        do {
+            let dct8x4 = DefaultQuantBands.scaledForBitstream(
+                DefaultQuantBands.dct4x8)
+            let dct4x4 = DefaultQuantBands.scaledForBitstream(
+                DefaultQuantBands.dct4x4)
+            // Note: `afv` only ×64s the [5] seed, since that's the
+            // band[0] that `getAFVQuantWeights` interprets as the
+            // bands[0] seed (per libjxl `DecodeDctParams` semantics).
+            // The other 8 entries are direct weight values for
+            // specific positions and don't get scaled.
+            var afv = DefaultQuantBands.afv
+            afv.x[5] *= 64; afv.y[5] *= 64; afv.b[5] *= 64
+            afvWeights = try QuantWeights.getAFVQuantWeights(
+                dct4x8Bands: dct8x4,
+                dct4x4Bands: dct4x4,
+                afvWeights: afv)
+        } catch {
+            throw DecoderError.notImplemented(
+                "VarDCT decode: AFV quant weights computation failed: \(error)"
+            )
+        }
+        for by in 0..<numBlocksYAC {
+            for bx in 0..<numBlocksXAC {
+                let entry = acsImage.at(x: bx, y: by)
+                if !entry.isFirstBlock { continue }
+                let strategy = entry.strategy
+                let afvKind: Int
+                switch strategy {
+                case .afv0: afvKind = 0
+                case .afv1: afvKind = 1
+                case .afv2: afvKind = 2
+                case .afv3: afvKind = 3
+                default: continue
+                }
+
+                let blockIdxFirst = by * totalBlocksX + bx
+                let blockQF = blockIdxFirst < perBlockQF.count
+                    ? perBlockQF[blockIdxFirst] : qfRow
+                let blockInvQuantAC = invGlobalScale / Float(blockQF)
+                let acYBlock = acBlocks[blockIdxFirst][1]
+                let acXBlock = acBlocks[blockIdxFirst][0]
+                let acBBlock = acBlocks[blockIdxFirst][2]
+
+                // 1) DC dequant — same path as DCT8x8 (AFV is a
+                //    1×1 cell strategy, single DC value per channel).
+                var dcPixelXYB = [Float](repeating: 0, count: 3)
+                for storageSlot in 0..<3 {
+                    let xybC = storageToXYB[storageSlot]
+                    let dcQuant = Float(
+                        dcValues[storageSlot][by * dcWidth + bx]
+                    )
+                    dcPixelXYB[xybC] = dcQuant * mulDC[xybC] * dcExtraFactor
+                }
+                let dcY = dcPixelXYB[1]
+                let dcCorrectedX = dcPixelXYB[0] + dcCflX * dcY
+                let dcCorrectedB = dcPixelXYB[2] + dcCflB * dcY
+
+                // 2) AC dequant for all 64 positions (AFV uses a
+                //    single 64-coef block, not multi-block). DC at
+                //    flat 0 is overwritten with the dequantized DC
+                //    after the loop.
+                var coefY = [Float](repeating: 0, count: 64)
+                var coefX = [Float](repeating: 0, count: 64)
+                var coefB = [Float](repeating: 0, count: 64)
+                for k in 1..<64 {
+                    let acYDeq = AdjustQuantBias.adjust(
+                        channel: 1, quant: acYBlock[k]
+                    ) / afvWeights[1 * 64 + k] * blockInvQuantAC
+                    let acXDeq = AdjustQuantBias.adjust(
+                        channel: 0, quant: acXBlock[k]
+                    ) / afvWeights[0 * 64 + k] * blockInvQuantAC
+                        * xDmMultiplier
+                    let acBDeq = AdjustQuantBias.adjust(
+                        channel: 2, quant: acBBlock[k]
+                    ) / afvWeights[2 * 64 + k] * blockInvQuantAC
+                        * bDmMultiplier
+                    coefY[k] = acYDeq
+                    coefX[k] = acXDeq + xCCMul * acYDeq
+                    coefB[k] = acBDeq + bCCMul * acYDeq
+                }
+                coefY[0] = dcY
+                coefX[0] = dcCorrectedX
+                coefB[0] = dcCorrectedB
+
+                // 3) AFV transform → 8×8 pixels via the 3-sub-block
+                //    decomposition (AFV 4×4 + IDCT 4×4 + IDCT 4×8).
+                let idct4x4Backend: (inout [Float]) -> Void = { block in
+                    AccelerateDCT.idct2D(&block, size: 4)
+                }
+                let idct4x8Backend: (inout [Float]) -> Void = { block in
+                    AccelerateDCT.idct2D(&block, rows: 4, cols: 8)
+                }
+                var pixY = [Float](repeating: 0, count: 64)
+                var pixX = [Float](repeating: 0, count: 64)
+                var pixB = [Float](repeating: 0, count: 64)
+                AFV.transformToPixels(
+                    afvKind: afvKind, coefficients: coefY, pixels: &pixY,
+                    idct4x4Backend: idct4x4Backend,
+                    idct4x8Backend: idct4x8Backend)
+                AFV.transformToPixels(
+                    afvKind: afvKind, coefficients: coefX, pixels: &pixX,
+                    idct4x4Backend: idct4x4Backend,
+                    idct4x8Backend: idct4x8Backend)
+                AFV.transformToPixels(
+                    afvKind: afvKind, coefficients: coefB, pixels: &pixB,
+                    idct4x4Backend: idct4x4Backend,
+                    idct4x8Backend: idct4x8Backend)
+
+                // 4) Place 8×8 pixels at (bx*8, by*8).
+                let xOrigin = bx * 8
+                let yOrigin = by * 8
+                for py in 0..<8 {
+                    let srcRow = py * 8
+                    let dstRow = (yOrigin + py) * planeWidth + xOrigin
+                    for px in 0..<8 {
+                        planeXYB[0][dstRow + px] = pixX[srcRow + px]
+                        planeXYB[1][dstRow + px] = pixY[srcRow + px]
+                        planeXYB[2][dstRow + px] = pixB[srcRow + px]
                     }
                 }
             }

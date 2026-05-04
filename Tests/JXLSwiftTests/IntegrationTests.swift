@@ -6670,6 +6670,57 @@ extension FoundationTests {
         }
     }
 
+    /// `QuantWeights.getAFVQuantWeights` produces the expected
+    /// 64-entry layout per channel: weights at all 64 positions
+    /// non-zero (no holes), DC slot is the libjxl 1.0-placeholder,
+    /// and the 5 hand-set AFV special positions match the
+    /// libjxl LIBRARY-default values directly (no interpolation).
+    func testVarDCT_AFVQuantWeights_LayoutAndSpecialPositions() throws {
+        // Using LIBRARY defaults (×64 on the seeds).
+        let dct8x4 = DefaultQuantBands.scaledForBitstream(DefaultQuantBands.dct4x8)
+        let dct4x4 = DefaultQuantBands.scaledForBitstream(DefaultQuantBands.dct4x4)
+        var afv = DefaultQuantBands.afv
+        afv.x[5] *= 64; afv.y[5] *= 64; afv.b[5] *= 64
+        let weights = try QuantWeights.getAFVQuantWeights(
+            dct4x8Bands: dct8x4, dct4x4Bands: dct4x4, afvWeights: afv)
+        XCTAssertEqual(weights.count, 3 * 64)
+
+        // Check DC slot is 1.0 (libjxl's MSAN-avoiding placeholder).
+        for c in 0..<3 {
+            XCTAssertEqual(weights[c * 64], 1.0)
+        }
+
+        // The 5 hand-set AFV special positions per channel match the
+        // afv[0..4] entries directly (DC tendency + 3 corner weights).
+        // (These are the LIBRARY default values, NOT ×64'd.)
+        for (c, expected) in [(0, [3072.0, 3072.0, 256.0, 256.0, 256.0]),
+                              (1, [1024.0, 1024.0,  50.0,  50.0,  50.0]),
+                              (2, [ 384.0,  384.0,  12.0,  12.0,  12.0])] {
+            // Position (0, 1) → flat 1, (1, 0) → flat 8,
+            //          (0, 2) → flat 2, (2, 0) → flat 16,
+            //          (2, 2) → flat 18.
+            XCTAssertEqual(weights[c * 64 + 1],  Float(expected[0]),
+                accuracy: 1e-3, "channel \(c) (0,1)")
+            XCTAssertEqual(weights[c * 64 + 8],  Float(expected[1]),
+                accuracy: 1e-3, "channel \(c) (1,0)")
+            XCTAssertEqual(weights[c * 64 + 2],  Float(expected[2]),
+                accuracy: 1e-3, "channel \(c) (0,2)")
+            XCTAssertEqual(weights[c * 64 + 16], Float(expected[3]),
+                accuracy: 1e-3, "channel \(c) (2,0)")
+            XCTAssertEqual(weights[c * 64 + 18], Float(expected[4]),
+                accuracy: 1e-3, "channel \(c) (2,2)")
+        }
+
+        // No zero weights anywhere except the DC slot.
+        for c in 0..<3 {
+            for k in 1..<64 {
+                XCTAssertNotEqual(
+                    weights[c * 64 + k], 0,
+                    "AFV weight channel \(c) flat \(k) is unexpectedly zero")
+            }
+        }
+    }
+
     /// `AFV.transformToPixels` pin-down — corner-flip is applied
     /// only to the AFV 4×4 sub-block. For an input where the AFV
     /// basis is asymmetric (we set a single non-DC AFV basis function,

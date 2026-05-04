@@ -361,4 +361,162 @@ public enum DefaultQuantBands {
         x[0] *= 64; y[0] *= 64; b[0] *= 64
         return (x: x, y: y, b: b)
     }
+
+    // MARK: - DCT4X4 / DCT4X8 sub-block bands (used by AFV).
+
+    /// DCT4X4 quant bands (libjxl `quant_weights.cc::DCT4X4()`).
+    /// Used when building AFV quant matrices.
+    public static let dct4x4: (x: [Float], y: [Float], b: [Float]) = (
+        x: [2200.0, 0.0, 0.0, 0.0],
+        y: [ 392.0, 0.0, 0.0, 0.0],
+        b: [ 112.0, -0.25, -0.25, -0.5]
+    )
+
+    /// DCT4X8 quant bands (libjxl `quant_weights.cc::DCT4X8()`).
+    /// Used when building AFV quant matrices.
+    public static let dct4x8: (x: [Float], y: [Float], b: [Float]) = (
+        x: [2198.050556016380522,  -0.96269623020744692,
+            -0.76194253026666783,  -0.6551140670773547],
+        y: [ 764.3655248643528689, -0.92630200888366945,
+            -0.9675229603596517,   -0.27845290869168118],
+        b: [ 527.107573587542228,  -1.4594385811273854,
+            -1.450082094097871593, -1.5843722511996204]
+    )
+
+    // MARK: - AFV LIBRARY-default weights (libjxl `AFV0()`).
+
+    /// AFV-mode 9-element weight tuples per libjxl's `AFV0()`
+    /// LIBRARY default. Layout:
+    /// ```
+    /// [0]  = 4×8/4×4 DC tendency at (0, 1)
+    /// [1]  = 4×8/4×4 DC tendency at (1, 0)
+    /// [2]  = AFV corner weight at (0, 2)
+    /// [3]  = AFV corner weight at (2, 0)
+    /// [4]  = AFV corner weight at (2, 2)
+    /// [5]  = AFV high-freq band[0] (seed)
+    /// [6]  = AFV high-freq band[1] delta
+    /// [7]  = AFV high-freq band[2] delta
+    /// [8]  = AFV high-freq band[3] delta
+    /// ```
+    public static let afv: (x: [Float], y: [Float], b: [Float]) = (
+        x: [3072, 3072, 256, 256, 256, 414, 0, 0, 0],
+        y: [1024, 1024,  50,  50,  50,  58, 0, 0, 0],
+        b: [ 384,  384,  12,  12,  12,  22, -0.25, -0.25, -0.25]
+    )
+}
+
+// MARK: - AFV quant-matrix builder
+
+extension QuantWeights {
+
+    /// Per libjxl's `quant_weights.cc::ComputeQuantTable`
+    /// `kQuantModeAFV` case (lines 240–320 of the 0.11.2 source).
+    /// Builds a 3×64 AFV quant matrix: combines DCT4X8 weights
+    /// (odd rows), DCT4X4 weights (even rows / odd cols), and
+    /// AFV-specific weights (even rows / even cols, including the
+    /// 5 hardcoded "corner" positions and 11 interpolated
+    /// high-frequency positions per the libjxl `kFreqs` table).
+    ///
+    /// `dct4x8Bands`, `dct4x4Bands` are the DCT4X8 / DCT4X4 quant
+    /// bands (caller passes the LIBRARY default + ×64 if needed).
+    /// `afvWeights` is a 3-tuple of length-9 AFV weight vectors
+    /// from ``DefaultQuantBands/afv``.
+    public static func getAFVQuantWeights(
+        dct4x8Bands: (x: [Float], y: [Float], b: [Float]),
+        dct4x4Bands: (x: [Float], y: [Float], b: [Float]),
+        afvWeights: (x: [Float], y: [Float], b: [Float])
+    ) throws -> [Float] {
+        let weights4x8 = try getQuantWeights(
+            rows: 4, cols: 8, bands: dct4x8Bands)
+        let weights4x4 = try getQuantWeights(
+            rows: 4, cols: 4, bands: dct4x4Bands)
+
+        // libjxl's `kFreqs` table — 16 entries, one per AFV 4×4
+        // sub-block position (iy*4 + ix). Values at positions
+        // (0,0..1) and (1,0..1) are unused (the 0xBAD entries —
+        // those get overridden by the 5 AFV-specific corner
+        // weights below, and (0,0) is the DC). The remaining 11
+        // entries seed an interpolation against the 4-band
+        // high-freq curve.
+        let kFreqs: [Float] = [
+            0,  // 0xBAD — unused (DC).
+            0,  // 0xBAD — overridden at (0,1) below.
+            0.8517778890324296,
+            5.37778436506804,
+            0,  // 0xBAD — overridden at (1,0) below.
+            0,  // 0xBAD — but unused: (1,1) is in the IDCT 4x4 region.
+            4.734747904497923,
+            5.449245381693219,
+            1.6598270267479331,
+            4,
+            7.275749096817861,
+            10.423227632456525,
+            2.662932286148962,
+            7.630657783650829,
+            8.962388608184032,
+            12.97166202570235,
+        ]
+        let lo: Float = 0.8517778890324296
+        let hi: Float = 12.97166202570235 - lo + 1e-6
+
+        let afvPerChannel: [[Float]] = [afvWeights.x, afvWeights.y, afvWeights.b]
+        var out = [Float](repeating: 0, count: 3 * 64)
+
+        for c in 0..<3 {
+            let aw = afvPerChannel[c]
+            // High-freq bands seed + 3 deltas.
+            var bands = [Float](repeating: 0, count: 4)
+            bands[0] = aw[5]
+            for i in 1..<4 {
+                bands[i] = bands[i - 1] * mult(aw[i + 5])
+            }
+
+            let start = c * 64
+            // The (0, 0) DC slot. libjxl writes 1.0 here (unused;
+            // avoids MSAN false-positive).
+            out[start] = 1.0
+            // Hand-set 5 AFV special positions:
+            //   (0, 1) and (1, 0): DC tendency from afv[0] / afv[1]
+            //   (0, 2), (2, 0), (2, 2): AFV corner weights
+            //     from afv[2] / afv[3] / afv[4]
+            // Layout: out[start + y*8 + x].
+            out[start + 0 * 8 + 1] = aw[0]   // (y=0, x=1)
+            out[start + 1 * 8 + 0] = aw[1]   // (y=1, x=0)
+            out[start + 0 * 8 + 2] = aw[2]   // (y=0, x=2)
+            out[start + 2 * 8 + 0] = aw[3]   // (y=2, x=0)
+            out[start + 2 * 8 + 2] = aw[4]   // (y=2, x=2)
+
+            // Remaining AFV high-freq weights (even rows / even
+            // cols, excluding the 4 hand-set positions plus DC).
+            // Maps libjxl's `set_weight(2*x, 2*y, ...)` for
+            // (x, y) in [0, 4) × [0, 4) where NOT (x < 2 && y < 2).
+            for y in 0..<4 {
+                for x in 0..<4 {
+                    if x < 2 && y < 2 { continue }
+                    let pos = kFreqs[y * 4 + x] - lo
+                    let w = interpolate(pos: pos, max: hi, array: bands)
+                    out[start + 2 * y * 8 + 2 * x] = w
+                }
+            }
+
+            // 4×8 weights → odd rows of the 8×8 layout, all cols
+            // except (0, 0).
+            for y in 0..<4 {
+                for x in 0..<8 {
+                    if x == 0 && y == 0 { continue }
+                    out[start + (2 * y + 1) * 8 + x] =
+                        weights4x8[c * 32 + y * 8 + x]
+                }
+            }
+            // 4×4 weights → even rows / odd cols, except (0, 1).
+            for y in 0..<4 {
+                for x in 0..<4 {
+                    if x == 0 && y == 0 { continue }
+                    out[start + (2 * y) * 8 + 2 * x + 1] =
+                        weights4x4[c * 16 + y * 4 + x]
+                }
+            }
+        }
+        return out
+    }
 }
