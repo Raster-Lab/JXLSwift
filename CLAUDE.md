@@ -13,6 +13,7 @@ Guidance for Claude Code when working in this repository.
 3. **No shared mutable global state.** Use `actor` for shared mutability; pass dependencies explicitly otherwise.
 4. **libjxl is a test-only oracle.** It must never be a runtime dependency, never a fallback codec backend, never imported from `Sources/`. Acceptable usage: tests can shell out to `cjxl`/`djxl`/`jxlinfo` to validate output bytes; benchmarks can compare against libjxl numbers (but the comparison numbers must not be published in the repo's user-facing docs — see the legal-exposure scrub from earlier rounds).
 5. **Not DICOM-aware.** JXLSwift is the codec. DICOM lives in DICOMkit. Any DICOM file format / metadata / transfer-syntax handling does not belong here. The earlier `Sources/JXLSwift/Medical/DICOMReader.swift` was moved to `Documentation/legacy/` for this reason.
+6. **Family parity with J2KSwift.** JXLSwift is part of a Swift compression-library family alongside [J2KSwift](/Users/raster/Documents/raster/J2KSwift) (JPEG 2000). Public API + CLI surface should mirror J2KSwift so callers can switch between codecs without re-learning the syntax. Before adding or changing public types / methods / flags, check J2KSwift for the equivalent and align — see [Documentation/FAMILY-API-PARITY.md](Documentation/FAMILY-API-PARITY.md) for the current divergence audit. Bidirectional alignment is allowed (J2KSwift can change to match too).
 
 ### Design priorities (in order)
 
