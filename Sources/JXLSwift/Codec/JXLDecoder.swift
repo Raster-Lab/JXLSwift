@@ -1329,6 +1329,26 @@ public final class JXLDecoder {
                     coefX[np] = acXDequant + xCCMul * acYDequant
                     coefB[np] = acBDequant + bCCMul * acYDequant
                 }
+                // v0.9.0i: dump dequantised first-block AC values
+                // (post-formula, pre-IDCT) for diagnostic.
+                if blockIdx == 0,
+                   ProcessInfo.processInfo.environment["JXL_TRACE_AC"] != nil {
+                    let labels = ["X", "Y", "B"]
+                    for (label, buf) in zip(labels, [coefX, coefY, coefB]) {
+                        let preview = (0..<8).map {
+                            String(format: "%.5f", buf[$0])
+                        }.joined(separator: ",")
+                        FileHandle.standardError.write(Data(
+                            "TRACE_AC blk0 \(label) DEQUANT first8=[\(preview)]\n".utf8
+                        ))
+                    }
+                    let qwy = qweights[1 * 64 + 1]
+                    let qwx = qweights[0 * 64 + 1]
+                    let qwb = qweights[2 * 64 + 1]
+                    FileHandle.standardError.write(Data(
+                        "TRACE_AC qweights[0,1] (X,Y,B)=(\(qwx), \(qwy), \(qwb)) blockInvQuantAC=\(blockInvQuantAC) xDmMul=\(xDmMultiplier) bDmMul=\(bDmMultiplier)\n".utf8
+                    ))
+                }
                 // 5) libjxl-convention IDCT (no bridge factor needed —
                 // LibjxlIDCT inverts the libjxl scaled-DCT directly,
                 // unlike our orthonormal `DCT2D.inverse` which would
