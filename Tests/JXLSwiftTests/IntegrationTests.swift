@@ -6,6 +6,7 @@
 
 import XCTest
 @testable import JXLSwift
+import CompressionFamily
 
 final class FoundationTests: XCTestCase {
 

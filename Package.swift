@@ -26,10 +26,18 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.5.0"),
+        // Shared protocol surface for the Swift compression-library
+        // family. JXLSwift conforms its types to these protocols so
+        // callers can write codec-agnostic code that also works with
+        // J2KSwift (which adopts the same protocols).
+        .package(path: "../CompressionFamily"),
     ],
     targets: [
         .target(
             name: "JXLSwift",
+            dependencies: [
+                .product(name: "CompressionFamily", package: "CompressionFamily"),
+            ],
             swiftSettings: [
                 .enableExperimentalFeature("StrictConcurrency"),
             ]
@@ -43,7 +51,10 @@ let package = Package(
         ),
         .testTarget(
             name: "JXLSwiftTests",
-            dependencies: ["JXLSwift"]
+            dependencies: [
+                "JXLSwift",
+                .product(name: "CompressionFamily", package: "CompressionFamily"),
+            ]
         ),
     ]
 )
