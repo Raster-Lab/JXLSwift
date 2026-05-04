@@ -11520,6 +11520,149 @@ extension FoundationTests {
                 "logAlphaSize round-trip failed at \(logAlpha)")
         }
     }
+
+    /// **v0.10.0g — AFV decoder dispatch real-fixture probe.**
+    ///
+    /// v0.10.0f wired `AFV.transformToPixels` into the JXLDecoder via
+    /// a port of libjxl's `kQuantModeAFV` quant matrix, but the path
+    /// was anchored to libjxl source only — never validated against a
+    /// cjxl-emitted AFV-using bitstream. This probe sweeps several
+    /// content patterns known to favour AFV in the libjxl encoder
+    /// heuristics (sharp half-and-half edges, diagonal edges, sparse
+    /// dot patterns) across a distance sweep, captures the strategy
+    /// histogram our decoder reads, and (when AFV blocks are present)
+    /// reports per-channel byte-diff vs `djxl`.
+    ///
+    /// Always passes — informational. The "[AFV-PROBE]" / "[AFV-DIFF]"
+    /// log lines surface whether AFV is being exercised end-to-end and
+    /// whether dispatch produces output that matches the reference
+    /// bytes within ±N. If cjxl never picks AFV for these synthetic
+    /// patterns, the test logs that fact so we know to revisit with
+    /// real-text fixtures.
+    func testVarDCT_AFV_DjxlByteDiffProbe() throws {
+        let cjxl = "/opt/homebrew/bin/cjxl"
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: cjxl),
+              FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("cjxl/djxl not available")
+        }
+        let tmp = NSTemporaryDirectory()
+        let patterns: [(name: String,
+                        gen: (Int, Int) -> (UInt8, UInt8, UInt8))] = [
+            ("sharpEdgeX", { x, _ in
+                x < 16 ? (0, 0, 0) : (255, 255, 255)
+            }),
+            ("sharpEdgeY", { _, y in
+                y < 16 ? (0, 0, 0) : (255, 255, 255)
+            }),
+            ("diagEdge",   { x, y in
+                (x + y) < 32 ? (0, 0, 0) : (255, 255, 255)
+            }),
+            ("antiDiag",   { x, y in
+                (x + (31 - y)) < 32 ? (0, 0, 0) : (255, 255, 255)
+            }),
+            ("dots",       { x, y in
+                ((x & 3) == 0 && (y & 3) == 0)
+                    ? (0, 0, 0) : (240, 240, 240)
+            }),
+            ("hLine",      { _, y in
+                y == 16 ? (255, 0, 0) : (240, 240, 240)
+            }),
+        ]
+        let distances = ["0.5", "1.0", "2.0", "5.0"]
+        var anyAFVHit = false
+        for pattern in patterns {
+            let pnmPath = tmp + "vdt_afv_\(pattern.name).ppm"
+            var ppm = Data("P6\n32 32\n255\n".utf8)
+            for y in 0..<32 {
+                for x in 0..<32 {
+                    let (r, g, b) = pattern.gen(x, y)
+                    ppm.append(contentsOf: [r, g, b])
+                }
+            }
+            try ppm.write(to: URL(fileURLWithPath: pnmPath))
+            for d in distances {
+                let jxlPath = tmp + "vdt_afv_\(pattern.name)_d\(d).jxl"
+                let p1 = Process()
+                p1.launchPath = cjxl
+                p1.arguments = [pnmPath, jxlPath, "-d", d]
+                p1.standardOutput = Pipe(); p1.standardError = Pipe()
+                try p1.run(); p1.waitUntilExit()
+                guard p1.terminationStatus == 0 else { continue }
+                let bytes = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
+                let counts = captureStrategyCounts(bytes: bytes)
+                let afvBlocks =
+                    (counts[14] ?? 0) + (counts[15] ?? 0)
+                  + (counts[16] ?? 0) + (counts[17] ?? 0)
+                print("[AFV-PROBE \(pattern.name) d=\(d)] "
+                      + "strategies=\(counts) afv=\(afvBlocks)")
+                guard afvBlocks > 0 else { continue }
+                anyAFVHit = true
+                let ppmRefPath = tmp + "vdt_afv_\(pattern.name)_d\(d)_ref.ppm"
+                let p2 = Process()
+                p2.launchPath = djxl
+                p2.arguments = [jxlPath, ppmRefPath]
+                p2.standardOutput = Pipe(); p2.standardError = Pipe()
+                try p2.run(); p2.waitUntilExit()
+                guard p2.terminationStatus == 0 else {
+                    print("[AFV-DIFF \(pattern.name) d=\(d)] "
+                          + "djxl decode failed")
+                    continue
+                }
+                let refData = try Data(
+                    contentsOf: URL(fileURLWithPath: ppmRefPath))
+                var binStart = 0, newlines = 0
+                for (i, b) in refData.enumerated() where b == 0x0A {
+                    newlines += 1
+                    if newlines == 3 { binStart = i + 1; break }
+                }
+                guard refData.count - binStart == 32 * 32 * 3 else {
+                    print("[AFV-DIFF \(pattern.name) d=\(d)] "
+                          + "ref PPM size mismatch")
+                    continue
+                }
+                let ref = refData.subdata(in: binStart..<refData.count)
+                let frame: ImageFrame
+                do { frame = try JXLDecoder().decode(bytes) }
+                catch {
+                    print("[AFV-DIFF \(pattern.name) d=\(d)] "
+                          + "our decode failed: \(error)")
+                    continue
+                }
+                guard frame.width == 32, frame.height == 32,
+                      frame.channels == 3,
+                      frame.data.count == 32 * 32 * 3
+                else {
+                    print("[AFV-DIFF \(pattern.name) d=\(d)] "
+                          + "frame shape mismatch")
+                    continue
+                }
+                var sumR = 0, sumG = 0, sumB = 0
+                var maxR = 0, maxG = 0, maxB = 0
+                for i in 0..<(32 * 32) {
+                    let dR = abs(Int(frame.data[i*3+0]) - Int(ref[i*3+0]))
+                    let dG = abs(Int(frame.data[i*3+1]) - Int(ref[i*3+1]))
+                    let dB = abs(Int(frame.data[i*3+2]) - Int(ref[i*3+2]))
+                    sumR += dR; sumG += dG; sumB += dB
+                    maxR = max(maxR, dR)
+                    maxG = max(maxG, dG)
+                    maxB = max(maxB, dB)
+                }
+                let n = Float(32 * 32)
+                print(String(format:
+                    "[AFV-DIFF \(pattern.name) d=%@] afv=%d "
+                  + "max=(R=%d,G=%d,B=%d) mean=(%.2f,%.2f,%.2f)",
+                    d, afvBlocks, maxR, maxG, maxB,
+                    Float(sumR)/n, Float(sumG)/n, Float(sumB)/n))
+            }
+        }
+        if !anyAFVHit {
+            print("[AFV-PROBE] no AFV blocks emitted by cjxl across "
+                  + "\(patterns.count) patterns × \(distances.count) "
+                  + "distances. AFV decoder dispatch remains "
+                  + "library-anchored; revisit with text fixtures.")
+        }
+    }
 }
 
 /// Helper: serialise a distribution of the requested shape and
@@ -11561,4 +11704,58 @@ private func histogramOfTokens(
         histo[Int(t.token)] &+= 1
     }
     return histo
+}
+
+/// Helper: redirect this process's stderr into a temp file, set
+/// `JXL_TRACE=1` so the decoder emits its `TRACE ACStrategyImage:`
+/// lines, decode the supplied JXL bytes, then parse the captured
+/// stderr file and sum strategy counts across groups. Returns a
+/// histogram keyed by `ACStrategy.rawValue`. Decode failures are
+/// silently swallowed — strategy counts come from the AC-strategy
+/// plane build which precedes most failure points.
+///
+/// Uses a regular file (not a `Pipe`) for capture: a pipe's 16-64 KB
+/// buffer can fill up mid-decode and deadlock the writer; a file is
+/// unbounded and survives any trace volume.
+private func captureStrategyCounts(bytes: Data) -> [Int: Int] {
+    let tempPath = NSTemporaryDirectory() +
+        "afv_trace_\(UUID().uuidString).log"
+    let captureFd = open(tempPath, O_WRONLY | O_CREAT | O_TRUNC, 0o644)
+    guard captureFd >= 0 else { return [:] }
+    fflush(stderr)
+    let oldStderr = dup(fileno(stderr))
+    dup2(captureFd, fileno(stderr))
+    close(captureFd)
+    setenv("JXL_TRACE", "1", 1)
+    do {
+        _ = try JXLDecoder().decode(bytes)
+    } catch {
+        // ignore — counts gathered before any throw point
+    }
+    fflush(stderr)
+    dup2(oldStderr, fileno(stderr))
+    close(oldStderr)
+    unsetenv("JXL_TRACE")
+    let s = (try? String(contentsOfFile: tempPath, encoding: .utf8)) ?? ""
+    try? FileManager.default.removeItem(atPath: tempPath)
+    var counts = [Int: Int]()
+    for raw in s.split(separator: "\n")
+        where raw.contains("TRACE ACStrategyImage")
+    {
+        guard let bracketStart = raw.range(of: "strategies=["),
+              let bracketEnd = raw.range(
+                of: "]",
+                range: bracketStart.upperBound..<raw.endIndex)
+        else { continue }
+        let inner = raw[bracketStart.upperBound..<bracketEnd.lowerBound]
+        for kv in inner.split(separator: ",") {
+            let parts = kv.split(separator: ":")
+            guard parts.count == 2,
+                  let k = Int(parts[0].trimmingCharacters(in: .whitespaces)),
+                  let v = Int(parts[1].trimmingCharacters(in: .whitespaces))
+            else { continue }
+            counts[k, default: 0] += v
+        }
+    }
+    return counts
 }
