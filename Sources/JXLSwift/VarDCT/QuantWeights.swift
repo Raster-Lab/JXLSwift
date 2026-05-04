@@ -475,16 +475,16 @@ extension QuantWeights {
             // The (0, 0) DC slot. libjxl writes 1.0 here (unused;
             // avoids MSAN false-positive).
             out[start] = 1.0
-            // Hand-set 5 AFV special positions:
-            //   (0, 1) and (1, 0): DC tendency from afv[0] / afv[1]
-            //   (0, 2), (2, 0), (2, 2): AFV corner weights
-            //     from afv[2] / afv[3] / afv[4]
+            // Hand-set 5 AFV special positions, mirroring libjxl's
+            // `set_weight(x, y, val) { weights[start + y*8 + x] = val }`
+            // signature exactly (so afv[0] lands at (x=0, y=1) — which
+            // is row 1, col 0 in our row-major layout, offset 8).
             // Layout: out[start + y*8 + x].
-            out[start + 0 * 8 + 1] = aw[0]   // (y=0, x=1)
-            out[start + 1 * 8 + 0] = aw[1]   // (y=1, x=0)
-            out[start + 0 * 8 + 2] = aw[2]   // (y=0, x=2)
-            out[start + 2 * 8 + 0] = aw[3]   // (y=2, x=0)
-            out[start + 2 * 8 + 2] = aw[4]   // (y=2, x=2)
+            out[start + 1 * 8 + 0] = aw[0]   // set_weight(0, 1, afv[0])
+            out[start + 0 * 8 + 1] = aw[1]   // set_weight(1, 0, afv[1])
+            out[start + 2 * 8 + 0] = aw[2]   // set_weight(0, 2, afv[2])
+            out[start + 0 * 8 + 2] = aw[3]   // set_weight(2, 0, afv[3])
+            out[start + 2 * 8 + 2] = aw[4]   // set_weight(2, 2, afv[4])
 
             // Remaining AFV high-freq weights (even rows / even
             // cols, excluding the 4 hand-set positions plus DC).

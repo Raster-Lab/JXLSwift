@@ -6696,20 +6696,50 @@ extension FoundationTests {
         for (c, expected) in [(0, [3072.0, 3072.0, 256.0, 256.0, 256.0]),
                               (1, [1024.0, 1024.0,  50.0,  50.0,  50.0]),
                               (2, [ 384.0,  384.0,  12.0,  12.0,  12.0])] {
-            // Position (0, 1) → flat 1, (1, 0) → flat 8,
-            //          (0, 2) → flat 2, (2, 0) → flat 16,
-            //          (2, 2) → flat 18.
-            XCTAssertEqual(weights[c * 64 + 1],  Float(expected[0]),
-                accuracy: 1e-3, "channel \(c) (0,1)")
-            XCTAssertEqual(weights[c * 64 + 8],  Float(expected[1]),
-                accuracy: 1e-3, "channel \(c) (1,0)")
-            XCTAssertEqual(weights[c * 64 + 2],  Float(expected[2]),
-                accuracy: 1e-3, "channel \(c) (0,2)")
-            XCTAssertEqual(weights[c * 64 + 16], Float(expected[3]),
-                accuracy: 1e-3, "channel \(c) (2,0)")
+            // libjxl `set_weight(x, y, val)` stores at `y*8+x`, so:
+            //   afv[0] → set_weight(0, 1) → row 1 col 0 → flat 8
+            //   afv[1] → set_weight(1, 0) → row 0 col 1 → flat 1
+            //   afv[2] → set_weight(0, 2) → row 2 col 0 → flat 16
+            //   afv[3] → set_weight(2, 0) → row 0 col 2 → flat 2
+            //   afv[4] → set_weight(2, 2) → row 2 col 2 → flat 18
+            XCTAssertEqual(weights[c * 64 + 8],  Float(expected[0]),
+                accuracy: 1e-3, "channel \(c) afv[0] @ (x=0,y=1)")
+            XCTAssertEqual(weights[c * 64 + 1],  Float(expected[1]),
+                accuracy: 1e-3, "channel \(c) afv[1] @ (x=1,y=0)")
+            XCTAssertEqual(weights[c * 64 + 16], Float(expected[2]),
+                accuracy: 1e-3, "channel \(c) afv[2] @ (x=0,y=2)")
+            XCTAssertEqual(weights[c * 64 + 2],  Float(expected[3]),
+                accuracy: 1e-3, "channel \(c) afv[3] @ (x=2,y=0)")
             XCTAssertEqual(weights[c * 64 + 18], Float(expected[4]),
-                accuracy: 1e-3, "channel \(c) (2,2)")
+                accuracy: 1e-3, "channel \(c) afv[4] @ (x=2,y=2)")
         }
+
+        // Distinguish-the-pair-swap pin-down: feed afv[0..4] = unique
+        // values 100, 200, 300, 400, 500 so a pair-swap regression
+        // would fail this test (LIBRARY defaults have afv[0]==afv[1]
+        // and afv[2]==afv[3], which masks the pair-swap bug).
+        var marker = (
+            x: [Float](repeating: 0, count: 9),
+            y: [Float](repeating: 0, count: 9),
+            b: [Float](repeating: 0, count: 9)
+        )
+        marker.x[0] = 100; marker.x[1] = 200
+        marker.x[2] = 300; marker.x[3] = 400; marker.x[4] = 500
+        marker.x[5] = afv.x[5]; marker.x[6] = afv.x[6]
+        marker.x[7] = afv.x[7]; marker.x[8] = afv.x[8]
+        marker.y = marker.x; marker.b = marker.x
+        let markerWeights = try QuantWeights.getAFVQuantWeights(
+            dct4x8Bands: dct8x4, dct4x4Bands: dct4x4, afvWeights: marker)
+        XCTAssertEqual(markerWeights[8],  100, accuracy: 1e-3,
+            "afv[0] must land at flat 8 (libjxl `set_weight(0, 1, ·)`)")
+        XCTAssertEqual(markerWeights[1],  200, accuracy: 1e-3,
+            "afv[1] must land at flat 1 (libjxl `set_weight(1, 0, ·)`)")
+        XCTAssertEqual(markerWeights[16], 300, accuracy: 1e-3,
+            "afv[2] must land at flat 16 (libjxl `set_weight(0, 2, ·)`)")
+        XCTAssertEqual(markerWeights[2],  400, accuracy: 1e-3,
+            "afv[3] must land at flat 2 (libjxl `set_weight(2, 0, ·)`)")
+        XCTAssertEqual(markerWeights[18], 500, accuracy: 1e-3,
+            "afv[4] must land at flat 18 (libjxl `set_weight(2, 2, ·)`)")
 
         // No zero weights anywhere except the DC slot.
         for c in 0..<3 {
