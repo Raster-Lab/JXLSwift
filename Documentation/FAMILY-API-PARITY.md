@@ -195,16 +195,60 @@ Items 6–9 are landed. Item 10 is cross-repo and deferred.
     Phase A.5 — the parser-library divergence is implementation,
     not user-visible surface, so this is non-urgent.
 
-### Phase C — final convergence (optional, future)
+### Phase C — final convergence ✅ shipped (v0.9.0z)
 
-11. Shared `CompressionFamily` umbrella product with
-    `CompressionImage`/`CompressionEncoder`/`CompressionDecoder`
-    protocols both libraries conform to. Callers can write
-    `func encode<E: CompressionEncoder>(...)` and parameterise.
-12. **J2KSwift `J2KImage`**: add a `pixelType`-style constructor
-    when all components share bit depth (matches `ImageFrame` shape).
-13. Common `CompressionError` parent enum, with library-specific
-    refinements.
+Items 11 and 13 are landed in JXLSwift. Item 12 is cross-repo
+(J2KSwift) and deferred.
+
+11. **`CompressionFamily` protocols** —
+    [Sources/JXLSwift/CompressionFamily.swift](../Sources/JXLSwift/CompressionFamily.swift)
+    defines four protocols:
+    - `CompressionImage: Sendable` — minimal common ground (`width`,
+      `height`).
+    - `CompressionOutput: Sendable` — encoded-bitstream wrapper with
+      `data: Data` accessor.
+    - `CompressionEncoder: Sendable` — `associatedtype Image` +
+      `associatedtype Output`, `encode(_:) async throws -> Output`.
+    - `CompressionDecoder: Sendable` — `associatedtype Image`,
+      `decode(_:) async throws -> Image`.
+
+    JXLSwift conformances added: `ImageFrame: CompressionImage`,
+    `EncodedImage: CompressionOutput`, `JXLEncoder:
+    CompressionEncoder`, `JXLDecoder: CompressionDecoder`. Callers
+    can write generic-over-codec helpers like:
+
+        func encodeAll<E: CompressionEncoder>(
+            _ enc: E, images: [E.Image]
+        ) async throws -> [Data] { ... }
+
+    Pin-downs:
+    `testFamilyParity_GenericOverCompressionEncoder`,
+    `testFamilyParity_GenericOverCompressionDecoder`.
+
+13. **`CompressionError` umbrella protocol** — `EncoderError` and
+    `DecoderError` both conform. Callers can `catch let e as
+    CompressionError` regardless of which library emitted it.
+    Pin-down: `testFamilyParity_CompressionError_UmbrellaCatch`.
+
+### Phase C item 12 — deferred (cross-repo)
+
+12. **J2KSwift `J2KImage` pixelType-style convenience constructor**
+    — would let `J2KImage` be constructible from the same
+    `(width, height, channels, bitDepth)` shape as `ImageFrame`.
+    Requires changes to the J2KSwift repo. JXLSwift's
+    `ImageFrame.init` is already in this shape, so the convergence
+    will land bidirectionally once J2KSwift adopts.
+
+### Cross-repo follow-ons (deferred to J2KSwift)
+
+For the family-parity story to complete, J2KSwift must:
+1. Mirror the four `CompressionFamily` protocols (or import them
+   if we extract a shared package). Each conformance is a one-line
+   extension if the existing types already match the shape.
+2. Add the `J2KImage(width:height:channels:bitDepth:)` convenience
+   constructor (Phase C.12).
+3. Optionally switch its CLI parser to swift-argument-parser
+   (Phase B.10) — non-urgent; flag surface already aligned.
 
 ---
 

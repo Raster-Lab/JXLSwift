@@ -7252,6 +7252,68 @@ extension FoundationTests {
         XCTAssertEqual(decoderUpdates.last?.stage, .complete)
     }
 
+    /// Phase C.11 — `CompressionFamily` umbrella protocols. Generic
+    /// helper functions parameterised on `CompressionEncoder` /
+    /// `CompressionDecoder` work with `JXLEncoder` / `JXLDecoder`.
+    /// J2KSwift will adopt the same protocols in a follow-on release.
+    func testFamilyParity_GenericOverCompressionEncoder() async throws {
+        // Generic helper — agnostic to which library's encoder is passed.
+        @Sendable
+        func encodeAndExtractBytes<E: CompressionEncoder>(
+            _ encoder: E, image: E.Image
+        ) async throws -> Data {
+            let output = try await encoder.encode(image)
+            return output.data
+        }
+
+        // Build a frame.
+        var frame = ImageFrame(width: 8, height: 8, channels: 1)
+        for i in 0..<frame.data.count { frame.data[i] = UInt8(i & 0xFF) }
+
+        // Pass JXLEncoder through the generic helper.
+        let enc = JXLEncoder(options: EncodingOptions(useM0Placeholder: true))
+        let bytes = try await encodeAndExtractBytes(enc, image: frame)
+        XCTAssertGreaterThan(bytes.count, 0)
+    }
+
+    /// Phase C.11 — `CompressionDecoder` generic-over-codec helper.
+    func testFamilyParity_GenericOverCompressionDecoder() async throws {
+        @Sendable
+        func decodeBytes<D: CompressionDecoder>(
+            _ decoder: D, data: Data
+        ) async throws -> D.Image {
+            try await decoder.decode(data)
+        }
+
+        // Round-trip via M0.
+        var frame = ImageFrame(width: 8, height: 8, channels: 1)
+        for i in 0..<frame.data.count { frame.data[i] = UInt8(i & 0xFF) }
+        let enc = JXLEncoder(options: EncodingOptions(useM0Placeholder: true))
+        let bytes = try await enc.encode(frame).data
+
+        let dec = JXLDecoder()
+        let decoded = try await decodeBytes(dec, data: bytes)
+        XCTAssertEqual(decoded.width, 8)
+        XCTAssertEqual(decoded.height, 8)
+    }
+
+    /// Phase C.13 — `CompressionError` umbrella protocol. Both
+    /// `EncoderError` and `DecoderError` conform; callers can
+    /// catch a single type regardless of which side errored.
+    func testFamilyParity_CompressionError_UmbrellaCatch() throws {
+        // Construct an EncoderError and a DecoderError and verify
+        // both can be caught as CompressionError.
+        let encErr: any Error = EncoderError.notImplemented("test")
+        let decErr: any Error = DecoderError.notImplemented("test")
+        XCTAssertTrue(encErr is CompressionError,
+            "EncoderError must conform to CompressionError")
+        XCTAssertTrue(decErr is CompressionError,
+            "DecoderError must conform to CompressionError")
+        // Both should have a non-empty errorDescription.
+        XCTAssertNotNil((encErr as? LocalizedError)?.errorDescription)
+        XCTAssertNotNil((decErr as? LocalizedError)?.errorDescription)
+    }
+
     /// edge (sharpening boosts high frequencies). Pin-down for the
     /// libjxl `enc_gaborish.cc::GaborishInverse` port.
     func testVarDCT_GaborishInverse5x5_PreservesDC_SharpensEdge() throws {
