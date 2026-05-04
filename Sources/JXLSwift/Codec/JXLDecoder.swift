@@ -1204,10 +1204,9 @@ public final class JXLDecoder {
         // DCT8 default quant weights: 3 × 64 floats. `qweights[c*64+k]`
         // is the QUANT weight (libjxl stores its inverse in `Matrix()`,
         // so `dequant_matrix = 1 / qweights`). Indexed by XYB channel.
-        // **v0.9.0l fix**: LIBRARY-mode defaults are NOT pre-multiplied
-        // by 64; the ×64 only applies on bitstream-decoded DCT-mode
-        // params (libjxl `quant_weights.cc::DecodeDctParams`).
-        let dct8Bands = DefaultQuantBands.dct8x8
+        let dct8Bands = DefaultQuantBands.scaledForBitstream(
+            DefaultQuantBands.dct8x8
+        )
         let qweights: [Float]
         do {
             qweights = try QuantWeights.getQuantWeights(
@@ -1357,25 +1356,6 @@ public final class JXLDecoder {
                     ))
                 }
                 // 5) libjxl-convention IDCT.
-                // **v0.9.0l fix**: libjxl's bitstream coefficient block is
-                // in TRANSPOSED layout (`block[y*N+x]` holds vanilla DCT
-                // coef [x, y], not [y, x]). libjxl's `ComputeScaledIDCT`
-                // is structured to operate on this transposed layout
-                // (M·X^T·M^T = vanilla(X^T)). Our `AccelerateDCT.idct2D`
-                // computes vanilla IDCT (M·X·M^T), so we transpose the
-                // coefficient block first to match libjxl's input
-                // convention. (For square N×N blocks, transposing in
-                // place is straightforward.)
-                func transposeInPlace8(_ b: inout [Float]) {
-                    for r in 0..<8 {
-                        for c in (r + 1)..<8 {
-                            b.swapAt(r * 8 + c, c * 8 + r)
-                        }
-                    }
-                }
-                transposeInPlace8(&coefY)
-                transposeInPlace8(&coefX)
-                transposeInPlace8(&coefB)
                 AccelerateDCT.idct2D(&coefY, size: 8)
                 AccelerateDCT.idct2D(&coefX, size: 8)
                 AccelerateDCT.idct2D(&coefB, size: 8)
@@ -2374,6 +2354,19 @@ public final class JXLDecoder {
         var frame = ImageFrame(width: xsize, height: ysize, channels: 3)
         frame.data = rgb8
         return frame
+    }
+
+    /// Transpose an N×N square coefficient block in place. Used to
+    /// convert from libjxl's bitstream coefficient layout (which
+    /// `ComputeScaledDCT` produces in transposed-vanilla form for
+    /// ROWS≥COLS strategies) to the layout our vanilla IDCT expects.
+    @inline(__always)
+    static func transposeSquareInPlace(_ b: inout [Float], size N: Int) {
+        for r in 0..<N {
+            for c in (r + 1)..<N {
+                b.swapAt(r * N + c, c * N + r)
+            }
+        }
     }
 
     /// Per-IEC 61966-2-1 sRGB OETF: linear-light [0,1] → 8-bit code
