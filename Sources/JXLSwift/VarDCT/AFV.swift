@@ -140,4 +140,122 @@ public enum AFV {
             pixels[i] = pixel
         }
     }
+
+    /// Apply the full AFV inverse transform for a single 8×8 cell to
+    /// pixel-domain output. Direct port of libjxl
+    /// `dec_transforms-inl.h::AFVTransformToPixels<afv_kind>`.
+    ///
+    /// AFV breaks an 8×8 cell into three sub-regions:
+    /// - 4×4 corner using the AFV basis (`AFV.idct4x4`)
+    /// - 4×4 corner using a standard `IDCT4×4`
+    /// - 4×8 half using a standard `IDCT4×8`
+    ///
+    /// The 4 AFV variants (afvKind ∈ {0, 1, 2, 3}) place the AFV
+    /// corner in a different quadrant of the 8×8 cell:
+    ///
+    ///     afvKind=0: AFV at (top, left)
+    ///     afvKind=1: AFV at (top, right)
+    ///     afvKind=2: AFV at (bottom, left)
+    ///     afvKind=3: AFV at (bottom, right)
+    ///
+    /// `coefficients` is the 8×8 dequantised float block (length 64).
+    /// `pixels` is a 64-element output buffer for the 8×8 pixel cell.
+    /// Both row-major.
+    ///
+    /// The first three coefficients carry "DC-like" information that's
+    /// decomposed into three sub-DCs:
+    ///
+    ///     dcs[0] = (block[0,0] + block[0,1] + block[1,0]) * 4   // AFV  4×4 DC
+    ///     dcs[1] = block[0,0] + block[1,0] - block[0,1]         // IDCT 4×4 DC
+    ///     dcs[2] = block[0,0] - block[1,0]                      // IDCT 4×8 DC
+    ///
+    /// **`idct4x4Backend`** and **`idct4x8Backend`** must apply the
+    /// libjxl-convention 2-D scaled IDCT to a 16-coefficient (4×4) or
+    /// 32-coefficient (4×8) block in-place. Callers typically pass
+    /// `LibjxlIDCT.idct2D` / `AccelerateDCT.idct2D` adapters.
+    public static func transformToPixels(
+        afvKind: Int,
+        coefficients: [Float],
+        pixels: inout [Float],
+        idct4x4Backend: (inout [Float]) -> Void,
+        idct4x8Backend: (inout [Float]) -> Void
+    ) {
+        precondition(afvKind >= 0 && afvKind < 4, "afvKind must be 0..3")
+        precondition(coefficients.count == 64,
+                     "AFV coefficients must be 64 floats")
+        precondition(pixels.count == 64,
+                     "AFV pixels must be 64 floats")
+        let afvX = afvKind & 1
+        let afvY = afvKind / 2
+
+        // 1) Three sub-DCs from the LLF coefficients.
+        let block00 = coefficients[0]
+        let block01 = coefficients[1]
+        let block10 = coefficients[8]
+        let dc0: Float = (block00 + block10 + block01) * 4.0
+        let dc1: Float = block00 + block10 - block01
+        let dc2: Float = block00 - block10
+
+        // 2) AFV 4×4 corner. Pulls coefficients at (even, even)
+        //    positions from the 8×8 block.
+        var afvCoeffs = [Float](repeating: 0, count: 16)
+        afvCoeffs[0] = dc0
+        for iy in 0..<4 {
+            for ix in 0..<4 {
+                if ix == 0 && iy == 0 { continue }
+                afvCoeffs[iy * 4 + ix] = coefficients[iy * 2 * 8 + ix * 2]
+            }
+        }
+        var afvPix = [Float](repeating: 0, count: 16)
+        idct4x4(afvCoeffs, &afvPix)
+        // Place at quadrant (afvY * 4, afvX * 4) with conditional flip.
+        for iy in 0..<4 {
+            for ix in 0..<4 {
+                let srcY = (afvY == 1) ? (3 - iy) : iy
+                let srcX = (afvX == 1) ? (3 - ix) : ix
+                pixels[(iy + afvY * 4) * 8 + afvX * 4 + ix] =
+                    afvPix[srcY * 4 + srcX]
+            }
+        }
+
+        // 3) IDCT 4×4 in (odd, even) positions.
+        var idctBlock4x4 = [Float](repeating: 0, count: 16)
+        idctBlock4x4[0] = dc1
+        for iy in 0..<4 {
+            for ix in 0..<4 {
+                if ix == 0 && iy == 0 { continue }
+                idctBlock4x4[iy * 4 + ix] =
+                    coefficients[iy * 2 * 8 + ix * 2 + 1]
+            }
+        }
+        idct4x4Backend(&idctBlock4x4)
+        // Place at row-range (afvY * 4 .. +4), col-range opposite afvX.
+        let idct4x4ColOrigin = (afvX == 1) ? 0 : 4
+        for iy in 0..<4 {
+            for ix in 0..<4 {
+                pixels[(iy + afvY * 4) * 8 + idct4x4ColOrigin + ix] =
+                    idctBlock4x4[iy * 4 + ix]
+            }
+        }
+
+        // 4) IDCT 4×8 — fills the OTHER half of the 8×8 cell along
+        //    the y-axis (the half NOT covered by the 4×4 patches).
+        var idctBlock4x8 = [Float](repeating: 0, count: 32)
+        idctBlock4x8[0] = dc2
+        for iy in 0..<4 {
+            for ix in 0..<8 {
+                if ix == 0 && iy == 0 { continue }
+                idctBlock4x8[iy * 8 + ix] =
+                    coefficients[(1 + iy * 2) * 8 + ix]
+            }
+        }
+        idct4x8Backend(&idctBlock4x8)
+        let idct4x8RowOrigin = (afvY == 1) ? 0 : 4
+        for iy in 0..<4 {
+            for ix in 0..<8 {
+                pixels[(iy + idct4x8RowOrigin) * 8 + ix] =
+                    idctBlock4x8[iy * 8 + ix]
+            }
+        }
+    }
 }

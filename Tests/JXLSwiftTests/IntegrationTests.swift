@@ -6552,6 +6552,63 @@ extension FoundationTests {
         }
     }
 
+    /// `AFV.transformToPixels` pin-down — DC-only coefficient input
+    /// with `afvKind=0` produces a constant 8×8 cell. The dcs[] split
+    /// reconstructs three internal sub-DCs from a single non-zero
+    /// `block[0,0]`, then the three sub-IDCTs each output a constant
+    /// patch matching their respective sub-DC.
+    func testVarDCT_AFV_TransformToPixels_DCOnly() throws {
+        var coefs = [Float](repeating: 0, count: 64)
+        coefs[0] = 1.0  // block[0,0] = 1, all else = 0.
+        // dc0 = (1+0+0) * 4 = 4 → AFV 4×4 sub-DC = 4 → AFV pixel = 4 * 0.25 = 1.0
+        // dc1 = 1+0-0 = 1 → IDCT 4×4 sub-DC = 1 → IDCT pixel = 1.0 (DC=mean)
+        // dc2 = 1-0 = 1 → IDCT 4×8 sub-DC = 1 → IDCT pixel = 1.0
+        // So all 64 pixels should be 1.0.
+        var pixels = [Float](repeating: 0, count: 64)
+
+        // Backends: libjxl-convention IDCT (uses our LibjxlIDCT).
+        let idct4x4: (inout [Float]) -> Void = { block in
+            LibjxlIDCT.idct2D(&block, size: 4)
+        }
+        let idct4x8: (inout [Float]) -> Void = { block in
+            LibjxlIDCT.idct2D(&block, rows: 4, cols: 8)
+        }
+        AFV.transformToPixels(
+            afvKind: 0, coefficients: coefs, pixels: &pixels,
+            idct4x4Backend: idct4x4, idct4x8Backend: idct4x8
+        )
+        // All 64 pixels should equal 1.0 (DC-only input → constant cell).
+        for (i, v) in pixels.enumerated() {
+            XCTAssertEqual(v, 1.0, accuracy: 1e-4,
+                "AFV(DC=1, kind=0) pixel \(i) should be 1.0, got \(v)")
+        }
+    }
+
+    /// `AFV.transformToPixels` pin-down — afvKind variants 1, 2, 3 all
+    /// produce the same constant-cell output for DC-only input
+    /// (because DC reconstruction is independent of the corner-flip).
+    func testVarDCT_AFV_TransformToPixels_AllAfvKindsDCOnly() throws {
+        let idct4x4: (inout [Float]) -> Void = { block in
+            LibjxlIDCT.idct2D(&block, size: 4)
+        }
+        let idct4x8: (inout [Float]) -> Void = { block in
+            LibjxlIDCT.idct2D(&block, rows: 4, cols: 8)
+        }
+        var coefs = [Float](repeating: 0, count: 64)
+        coefs[0] = 5.0
+        for afvKind in 0..<4 {
+            var pixels = [Float](repeating: 0, count: 64)
+            AFV.transformToPixels(
+                afvKind: afvKind, coefficients: coefs, pixels: &pixels,
+                idct4x4Backend: idct4x4, idct4x8Backend: idct4x8
+            )
+            for (i, v) in pixels.enumerated() {
+                XCTAssertEqual(v, 5.0, accuracy: 1e-4,
+                    "AFV(DC=5, kind=\(afvKind)) pixel \(i) = \(v)")
+            }
+        }
+    }
+
     /// `AdjustQuantBias.adjust` pin-down — every branch of the
     /// libjxl `quantizer-inl.h::AdjustQuantBias` decision tree.
     /// `q == 0 → 0`, `|q| == 1 → ±0.5`, `|q| >= 2 → q − 0.145/q`.
