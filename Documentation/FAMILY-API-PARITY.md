@@ -160,20 +160,40 @@ All five Phase A items are landed:
    [Package.swift:23](../Package.swift).
 5. **Stub subcommands** (`version`, `compare`, `completions`, `validate`) — tracked in [Sources/JXLTool/Stubs.swift](../Sources/JXLTool/Stubs.swift). All registered in `JXLTool.subcommands`. Each prints a "not yet implemented" message and exits with `JXLExitCode.notImplemented`. The parsing surface (flags, arg names) matches J2KSwift's `j2k` for drop-in compatibility.
 
-### Phase B — parity migrations (next, with deprecation)
+### Phase B — parity migrations ✅ shipped (v0.9.0v–y)
 
-These change shape but preserve old-call compatibility:
+Items 6–9 are landed. Item 10 is cross-repo and deferred.
 
-6. **JXLSwift `JXLEncoder`/`JXLDecoder`**: convert from `final class`
-   to `public struct: Sendable`. Deprecation cycle for class form.
-7. **JXLSwift**: add async overloads on `encode(_:)` and `decode(_:)`.
-   Keep sync versions as the default (Swift permits both).
-8. **JXLSwift**: add progress-callback overload on encode/decode.
-9. **JXLSwift CLI**: rename to `jxl` as the canonical name; alias
-   `jxl-tool` as legacy.
-10. **J2KSwift CLI**: switch to `swift-argument-parser` to match
-    JXLSwift's parser library. Or keep both — flag names matter,
-    not the library.
+6. **`JXLEncoder` / `JXLDecoder` are now `public struct: Sendable`** —
+   converted from `final class`. Soft source change; existing
+   callers using `JXLEncoder()` / `JXLDecoder()` work unchanged.
+   The only break is for callers who relied on REFERENCE semantics.
+   [Sources/JXLSwift/Codec/JXLEncoder.swift](../Sources/JXLSwift/Codec/JXLEncoder.swift),
+   [Sources/JXLSwift/Codec/JXLDecoder.swift](../Sources/JXLSwift/Codec/JXLDecoder.swift).
+7. **Async overloads** on `encode(_:)` / `decode(_:)` /
+   `decodeAll(_:)` — [Sources/JXLSwift/Codec/AsyncOverloads.swift](../Sources/JXLSwift/Codec/AsyncOverloads.swift).
+   Pin-down: `testFamilyParity_AsyncOverloads_RoundTrip`.
+8. **Progress-callback overloads** on encode/decode with
+   `JXLEncoderProgressUpdate` / `JXLDecoderProgressUpdate` types
+   matching J2KSwift's shape. JXL-specific stage enums
+   (`JXLEncodingStage`, `JXLDecodingStage`).
+   [Sources/JXLSwift/Codec/Progress.swift](../Sources/JXLSwift/Codec/Progress.swift).
+   Pin-down: `testFamilyParity_ProgressCallbacks`.
+   **Granularity caveat**: callbacks fire at start (overallProgress=0)
+   and end (overallProgress=1). Future revisions add per-stage updates.
+9. **CLI canonical name renamed** to `jxl`. Both binaries
+   (`jxl` and `jxl-tool`) display "jxl" in `--help` / `--version`.
+   The legacy `jxl-tool` binary still ships as a Phase A.4 product
+   alias and is functionally identical.
+   [Sources/JXLTool/JXLTool.swift](../Sources/JXLTool/JXLTool.swift).
+
+### Phase B item 10 — deferred (cross-repo)
+
+10. **J2KSwift CLI parser switch** to `swift-argument-parser`
+    (matching JXLSwift's parser library). This requires changes to
+    the J2KSwift repo, not JXLSwift. Flag names already match per
+    Phase A.5 — the parser-library divergence is implementation,
+    not user-visible surface, so this is non-urgent.
 
 ### Phase C — final convergence (optional, future)
 

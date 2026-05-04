@@ -1,4 +1,8 @@
-// jxl-tool — front-end CLI for the pure-Swift JXLSwift implementation.
+// jxl — front-end CLI for the pure-Swift JXLSwift implementation.
+//
+// The canonical name is `jxl` (matches J2KSwift's `j2k`). The
+// `jxl-tool` binary is also produced (legacy alias) by the second
+// `.executable` product entry in Package.swift.
 //
 // STATUS: foundation only. `info` works (parses container + SizeHeader).
 // `encode`/`decode` throw "not yet implemented" — see ROADMAP.md.
@@ -8,7 +12,7 @@ import ArgumentParser
 @main
 struct JXLTool: ParsableCommand {
     static let configuration = CommandConfiguration(
-        commandName: "jxl-tool",
+        commandName: "jxl",
         abstract: "JPEG XL inspect/encode/decode (pure Swift, ISO/IEC 18181).",
         version: "jxl \(JXLToolVersion) (pure-Swift, foundation only — see ROADMAP.md)",
         subcommands: [
