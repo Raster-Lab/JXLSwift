@@ -76,9 +76,21 @@ The headline of v0.10.0 is extracting the family-parity protocol surface to a st
 - `jxl compare ref.pgm test.pgm` (Phase A.5 stub) is now a real metrics command. Text + JSON output. Mirrors `j2k compare`.
 - `jxl completions <bash|zsh|fish>` (Phase A.5 stub) now generates real, syntactically-valid completion scripts via swift-argument-parser's `completionScript(for:)`.
 
+### v0.10.0d–f: docs refresh + real `validate` + AFV decoder dispatch
+
+- **`v0.10.0d`** — manager-facing docs (STATUS / CHANGELOG / ROADMAP) refreshed for the v0.9.0 → v0.10.0 transition.
+- **`v0.10.0e`** — `jxl validate` is now a real two-tier validator: structural via `JXLDecoder.inspect` (form, dimensions, box types, metadata presence), functional via full `JXLDecoder.decode`. `--no-decode` flag for headers-only mode; `--json` output for tooling.
+- **`v0.10.0f`** — AFV decoder dispatch wired into `JXLDecoder`. `QuantWeights.getAFVQuantWeights(...)` ports libjxl's `kQuantModeAFV` quant-matrix builder; `AFV.transformToPixels` is invoked from the per-cell IDCT loop for strategies `afv0` / `afv1` / `afv2` / `afv3`. Correctness anchored to libjxl source — no real-fixture validation at the time of landing.
+
+### v0.10.0g — real-fixture AFV probe vs `djxl`
+
+- **`testVarDCT_AFV_DjxlByteDiffProbe`** sweeps 6 synthetic content patterns (sharp half-and-half X/Y edges, two diagonal edges, dot grid, single horizontal line) across cjxl distances 0.5 / 1.0 / 2.0 / 5.0. Captures the AC-strategy plane our decoder reads via `setenv(JXL_TRACE)` + a temp-file stderr-redirect helper (`captureStrategyCounts`), and reports per-channel byte-diff vs `djxl 0.11.2` whenever AFV blocks (raw strategies 14..17) appear.
+- **Findings:** cjxl emits AFV across `diagEdge` / `antiDiag` / `hLine` fixtures at d=1.0..2.0, hitting all 4 variants (afv0/1/2/3). Our decoder completes without throwing — but produces catastrophic byte-diff vs djxl: `max=(R=156, G=244, B=232)` on `hLine d=0.5`. Confirms the v0.10.0f dispatch is wired correctly (no `notImplemented` on AFV blocks) but the math is wrong somewhere in the AFV path. Anchors AFV correctness investigation against real fixtures instead of just libjxl source.
+- The capture helper uses a temp file rather than a `Pipe` so that JXL_TRACE volume can't deadlock the writer mid-decode. Test passes; correctness numbers are informational and tighten in a follow-up bite.
+
 ### Tests
 
-- **366 tests passing, 3 skipped, 0 failures.** (+5 from v0.10.0a-c: ImageMetrics correctness, ImageMetrics JSON output.)
+- **365 tests passing, 3 skipped, 0 failures.** (+5 from v0.10.0a-c: ImageMetrics correctness, ImageMetrics JSON output. +1 from v0.10.0g: real-fixture AFV probe. Net since v0.9.0z: -2 due to test consolidation in v0.10.0a-f doc-refresh sub-bites.)
 
 ---
 
