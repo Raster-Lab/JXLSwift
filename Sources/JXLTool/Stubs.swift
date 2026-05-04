@@ -47,24 +47,41 @@ struct Compare: ParsableCommand {
 }
 
 /// Generate shell completions for `jxl` / `jxl-tool`. Mirrors
-/// `j2k completions`. Stub — relies on swift-argument-parser's
-/// built-in completion-generation, which we'll expose in a follow-on
-/// bite.
+/// `j2k completions`. Delegates to swift-argument-parser's
+/// `JXLTool.completionScript(for:)` so completions automatically
+/// stay in sync with the actual CLI surface — no hand-maintained
+/// completion lists.
+///
+/// Usage:
+///
+///     jxl completions bash > /etc/bash_completion.d/jxl
+///     jxl completions zsh  > ~/.zsh-completions/_jxl
+///     jxl completions fish > ~/.config/fish/completions/jxl.fish
 struct Completions: ParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Generate shell completions for the jxl CLI."
     )
 
-    @Option(help: "Target shell: bash, zsh, fish")
-    var shell: String = "zsh"
+    @Argument(help: "Target shell: bash, zsh, or fish.")
+    var shell: ShellChoice
 
     func run() throws {
-        FileHandle.standardError.write(Data((
-            "completions: not yet implemented — will use " +
-            "swift-argument-parser's `--generate-completion-script` " +
-            "for shell \(shell) in a follow-on bite.\n"
-        ).utf8))
-        throw JXLExitCode.notImplemented
+        let script = JXLTool.completionScript(for: shell.completionShell)
+        print(script)
+    }
+}
+
+/// Argument-parser-friendly enum for the supported shells.
+/// Mirrors `CompletionShell` but as an `ExpressibleByArgument`.
+enum ShellChoice: String, ExpressibleByArgument, CaseIterable {
+    case bash, zsh, fish
+
+    var completionShell: CompletionShell {
+        switch self {
+        case .bash: return .bash
+        case .zsh:  return .zsh
+        case .fish: return .fish
+        }
     }
 }
 
