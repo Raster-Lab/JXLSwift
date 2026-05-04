@@ -66,11 +66,31 @@ quantized integers than libjxl's documented encoder formula
 (`coef * weight * Scale * quant * qm_multiplier`) would predict.
 
 This is the missing scaling factor blocking byte-equality close-out.
-The factor 2.286 is not a clean known constant; candidates remain:
-encoder-side perceptual / butteraugli adjustment, a `1/qm_multiplier`
-variant we haven't located, or a different distance-band metric in
-LIBRARY-mode `getQuantWeights` that gives weight ≈ 245 instead of 560
-for Y at [0,1].
+The factor 2.286 is not a clean known constant.
+
+### What we ruled out via the standalone test
+
+- **Inverse-Gaborish 5×5 sharpening** (`enc_gaborish.cc::GaborishInverse`).
+  The encoder applies a butteraugli-calibrated 5×5 sharpening kernel
+  to opsin pixels before DCT. We ported it (Symmetric5 layout) and
+  added it to Test 8. Effect on AC: −0.0375 → −0.0394. Predicted
+  quantized: −16 → −17. Direction wrong; magnitude tiny. **Not the
+  2.286× source.**
+- **Encoder OpsinXYB scaling.** `enc_xyb.cc::ComputePremulAbsorb` uses
+  `intensity_target / 255` which is 1.0 for default fixtures.
+- **`FindBestDequantMatrices` mode selection.** For default cparams
+  (not `max_error_mode`, not `disable_perceptual_optimizations`),
+  the encoder uses LIBRARY-default matrices.
+
+### Still candidate
+
+- **Encoder adaptive quantization field** — per-block `quant` scaling.
+  The bitstream `qf=10` may already include this scaling, OR the
+  encoder may use a higher effective `quant` internally before writing.
+- A `qm_multiplier` variant in encoder (e.g., `enc_state->y_qm_multiplier`).
+- Different distance-band metric in LIBRARY-mode `getQuantWeights`
+  giving weight ≈ 245 instead of 560 for Y at [0,1].
+- Forward-DCT-side scaling we haven't traced.
 
 ## What's NOT in these diagnostics
 

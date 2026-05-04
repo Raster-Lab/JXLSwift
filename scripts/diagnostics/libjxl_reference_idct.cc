@@ -173,6 +173,61 @@ int main() {
     printf("  block[1] (= TRANSPOSED [0,1] = bitstream first horizontal-frequency-of-transposed) = %.6f\n", block[1]);
   }
 
+  // ENCODER inverse-Gaborish 5x5 symmetric filter (butteraugli-calibrated).
+  // Per libjxl `enc_gaborish.cc::GaborishInverse`. Applied to opsin
+  // pixels BEFORE the forward DCT. NOT a mathematical inverse of
+  // decoder's 3x3 forward Gaborish — this is a separately-calibrated
+  // sharpening kernel.
+  auto enc_inverse_gaborish_5x5 = [](double* pixels, double mul = 1.0) {
+    static const double kGab[5] = {
+        -0.09495815671340026, -0.041031725066768575, 0.013710004822696948,
+        0.006510206083837737, -0.0014789063378272242,
+    };
+    double sum = 1.0 + mul * 4.0 * (kGab[0] + kGab[1] + kGab[2] +
+                                     kGab[4] + 2 * kGab[3]);
+    double normalize = 1.0 / sum;
+    double nm = mul * normalize;
+
+    // Symmetric5 weights map (per libjxl `convolve_symmetric5.cc`):
+    // The 6 named weights {center, axis-1, diag-1, axis-2, knight,
+    // corner} cover the 25-cell footprint at 6 distance classes:
+    //   0:    (0,0)               1 cell
+    //   1:    (±1,0), (0,±1)      4 cells (axis-1, "outside" of 3x3)
+    //   √2:   (±1,±1)             4 cells (diag-1)
+    //   2:    (±2,0), (0,±2)      4 cells (axis-2)
+    //   √5:   (±2,±1), (±1,±2)    8 cells (knight)
+    //   2√2:  (±2,±2)             4 cells (corner)
+    double w_center = normalize;
+    double w_axis1  = nm * kGab[0];
+    double w_diag1  = nm * kGab[1];
+    double w_axis2  = nm * kGab[2];
+    double w_knight = nm * kGab[3];
+    double w_corner = nm * kGab[4];
+
+    double out[64];
+    for (int y = 0; y < 8; y++) {
+      for (int x = 0; x < 8; x++) {
+        auto px = [&](int dy, int dx) {
+          int ny = y + dy; int nx = x + dx;
+          if (ny < 0) ny = -ny;
+          if (nx < 0) nx = -nx;
+          if (ny >= 8) ny = 14 - ny;
+          if (nx >= 8) nx = 14 - nx;
+          return pixels[ny * 8 + nx];
+        };
+        double v = w_center * px(0, 0);
+        v += w_axis1  * (px(-1, 0) + px(1, 0) + px(0, -1) + px(0, 1));
+        v += w_diag1  * (px(-1, -1) + px(-1, 1) + px(1, -1) + px(1, 1));
+        v += w_axis2  * (px(-2, 0) + px(2, 0) + px(0, -2) + px(0, 2));
+        v += w_knight * (px(-2, -1) + px(-2, 1) + px(2, -1) + px(2, 1) +
+                        px(-1, -2) + px(-1, 2) + px(1, -2) + px(1, 2));
+        v += w_corner * (px(-2, -2) + px(-2, 2) + px(2, -2) + px(2, 2));
+        out[y * 8 + x] = v;
+      }
+    }
+    for (int i = 0; i < 64; i++) pixels[i] = out[i];
+  };
+
   // Test 8: full pipeline: linear-RGB → OpsinXYB Y → ComputeScaledDCT
   // → encoder quantization. Use libjxl's exact OpsinXYB constants
   // and exact sRGB OETF.
@@ -218,6 +273,12 @@ int main() {
         block[y * 8 + x] = Y[x];
       }
     }
+
+    // Apply ENCODER inverse-Gaborish 5x5 (the missing piece!).
+    enc_inverse_gaborish_5x5(block);
+    printf("Test 8: post-inverse-Gaborish opsin Y row 0:\n  ");
+    for (int x = 0; x < 8; x++) printf("%.5f ", block[x]);
+    printf("\n");
 
     // ComputeScaledDCT
     std::vector<double> g(64);
