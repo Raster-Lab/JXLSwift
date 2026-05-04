@@ -146,22 +146,19 @@ names should match; the parser implementation can stay separate.
 
 The alignment is substantial. Recommend phasing:
 
-### Phase A — non-breaking additions (do first)
+### Phase A — non-breaking additions ✅ shipped (v0.9.0u)
 
-These add new surface without breaking existing callers:
+All five Phase A items are landed:
 
-1. **JXLSwift**: add `JXLImage` typealias for `ImageFrame`. Both
-   names work going forward; `ImageFrame` deprecated in a major.
-2. **JXLSwift**: add static factory presets on `EncodingOptions`
-   matching J2KSwift: `.lossless`, `.highQuality`, `.balanced`,
-   `.fast` — mapped to JXL distance values.
-3. **JXLSwift**: add `JXLConfiguration` type with `quality: Double`
-   + `lossless: Bool`, mapping to `EncodingOptions` internally.
-   Either becomes the canonical encoder-init parameter.
-4. **JXLSwift CLI**: install `jxl` as a second executable target
-   wrapping `jxl-tool` (or vice versa). Gives users both names.
-5. **JXLSwift CLI**: add subcommands `version`, `compare`,
-   `completions`, `validate` (no-op stubs OK initially).
+1. **`JXLImage` typealias for `ImageFrame`** —
+   [Sources/JXLSwift/Codec/ImageFrame.swift:131](../Sources/JXLSwift/Codec/ImageFrame.swift). Pin-down: `testFamilyParity_JXLImage_isImageFrame`.
+2. **`EncodingOptions` static presets** (`.lossless`, `.highQuality`, `.balanced`, `.fast`) —
+   [Sources/JXLSwift/Codec/EncodingOptions.swift](../Sources/JXLSwift/Codec/EncodingOptions.swift). Pin-down: `testFamilyParity_EncodingOptions_Presets`.
+3. **`JXLConfiguration`** struct with `quality: Double` + `lossless: Bool` mapping to `EncodingOptions` via the `.encodingOptions` computed property. `JXLEncoder.init(configuration:)` convenience init added.
+   [Sources/JXLSwift/Codec/EncodingOptions.swift](../Sources/JXLSwift/Codec/EncodingOptions.swift). Pin-down: `testFamilyParity_JXLConfiguration_MapsToEncodingOptions`.
+4. **`jxl` CLI alias** — added as a second `.executable` product targeting the existing `JXLTool` target. SwiftPM compiles two binaries (`jxl` and `jxl-tool`) from one source.
+   [Package.swift:23](../Package.swift).
+5. **Stub subcommands** (`version`, `compare`, `completions`, `validate`) — tracked in [Sources/JXLTool/Stubs.swift](../Sources/JXLTool/Stubs.swift). All registered in `JXLTool.subcommands`. Each prints a "not yet implemented" message and exits with `JXLExitCode.notImplemented`. The parsing surface (flags, arg names) matches J2KSwift's `j2k` for drop-in compatibility.
 
 ### Phase B — parity migrations (next, with deprecation)
 

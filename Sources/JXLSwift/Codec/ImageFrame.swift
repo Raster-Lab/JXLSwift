@@ -129,3 +129,14 @@ public struct ImageFrame: Sendable {
 
     public var hasAlpha: Bool { alphaChannels > 0 }
 }
+
+/// Family-parity alias for ``ImageFrame``. JXLSwift is part of a Swift
+/// compression-library family alongside J2KSwift (which uses
+/// `J2KImage`); `JXLImage` lets callers write codec-agnostic call
+/// sites that swap between the two libraries by name only. Both
+/// names refer to the same type — `ImageFrame` remains the canonical
+/// in-tree spelling.
+///
+/// See [Documentation/FAMILY-API-PARITY.md](../../../Documentation/FAMILY-API-PARITY.md)
+/// for the full alignment plan.
+public typealias JXLImage = ImageFrame

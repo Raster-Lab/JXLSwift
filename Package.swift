@@ -19,6 +19,10 @@ let package = Package(
     products: [
         .library(name: "JXLSwift", targets: ["JXLSwift"]),
         .executable(name: "jxl-tool", targets: ["JXLTool"]),
+        // Family-parity alias: `jxl` (matches J2KSwift's `j2k`).
+        // Same target as `jxl-tool`; SwiftPM produces two binaries
+        // from the same source. See Documentation/FAMILY-API-PARITY.md.
+        .executable(name: "jxl", targets: ["JXLTool"]),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.5.0"),

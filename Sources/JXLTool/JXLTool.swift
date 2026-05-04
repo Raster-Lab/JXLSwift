@@ -10,9 +10,17 @@ struct JXLTool: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "jxl-tool",
         abstract: "JPEG XL inspect/encode/decode (pure Swift, ISO/IEC 18181).",
-        version: "jxl-tool \(JXLToolVersion) (pure-Swift, foundation only — see ROADMAP.md)",
-        subcommands: [Info.self, Encode.self, Decode.self,
-                      EncodeM0.self, DecodeM0.self, Benchmark.self]
+        version: "jxl \(JXLToolVersion) (pure-Swift, foundation only — see ROADMAP.md)",
+        subcommands: [
+            // Core codec subcommands.
+            Info.self, Encode.self, Decode.self,
+            // Project-internal placeholder (M0 lossless vertical slice).
+            EncodeM0.self, DecodeM0.self,
+            // Performance.
+            Benchmark.self,
+            // Family-parity stubs (mirror J2KSwift's `j2k`).
+            Version.self, Compare.self, Completions.self, Validate.self,
+        ]
     )
 }
 

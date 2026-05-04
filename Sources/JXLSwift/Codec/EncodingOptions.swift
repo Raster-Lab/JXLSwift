@@ -96,6 +96,115 @@ public struct EncodingOptions: Sendable {
     }
 }
 
+// MARK: - Family-parity factory presets
+
+extension EncodingOptions {
+
+    /// Bit-exact lossless preset. Mirrors J2KSwift's
+    /// `J2KConfiguration.lossless`. Distance = 0.0; effort
+    /// `.squirrel` for a balance of speed and compression.
+    public static var lossless: EncodingOptions {
+        EncodingOptions(mode: .lossless, effort: .squirrel)
+    }
+
+    /// High-quality lossy preset (~95 % equivalent quality).
+    /// Mirrors J2KSwift's `J2KConfiguration.highQuality`. Distance
+    /// = 0.55, effort `.kitten` for stronger compression at higher
+    /// quality.
+    public static var highQuality: EncodingOptions {
+        EncodingOptions(mode: .lossy(quality: 95), effort: .kitten)
+    }
+
+    /// Balanced preset (~90 % quality). Mirrors J2KSwift's
+    /// `J2KConfiguration.balanced`. The recommended default for
+    /// most use cases. Distance ≈ 1.0, effort `.squirrel`.
+    public static var balanced: EncodingOptions {
+        EncodingOptions(mode: .lossy(quality: 90), effort: .squirrel)
+    }
+
+    /// Fast preset — favours encode speed over compression ratio.
+    /// Mirrors J2KSwift's `J2KConfiguration.fast`. Distance ≈ 1.0,
+    /// effort `.hare` (faster than balanced).
+    public static var fast: EncodingOptions {
+        EncodingOptions(mode: .lossy(quality: 90), effort: .hare)
+    }
+}
+
+/// Family-parity wrapper for ``EncodingOptions``. Mirrors
+/// J2KSwift's `J2KConfiguration` (high-level: `quality` + `lossless`)
+/// so callers can write codec-agnostic code that switches between
+/// libraries by name only.
+///
+/// `JXLConfiguration` is a thin shim over `EncodingOptions`. The
+/// `quality: Double` is a 0.0..1.0 score (J2KSwift convention)
+/// mapped to the libjxl quality scale (0..100) at construction time.
+///
+/// See [Documentation/FAMILY-API-PARITY.md](../../../Documentation/FAMILY-API-PARITY.md)
+/// for the full alignment plan.
+public struct JXLConfiguration: Sendable {
+    /// Quality factor, 0.0 to 1.0. Higher = better visual fidelity
+    /// at the cost of larger output. Mirrors J2KSwift's
+    /// `J2KConfiguration.quality`.
+    public let quality: Double
+
+    /// When `true`, distance is forced to 0 (bit-exact lossless)
+    /// regardless of `quality`. Mirrors J2KSwift's
+    /// `J2KConfiguration.lossless`.
+    public let lossless: Bool
+
+    /// Creates a configuration. `quality` is 0.0 (worst) to
+    /// 1.0 (best). `lossless = true` forces bit-exact regardless
+    /// of `quality`.
+    public init(quality: Double = 0.9, lossless: Bool = false) {
+        self.quality = quality
+        self.lossless = lossless
+    }
+
+    // MARK: - Factory presets matching J2KSwift
+
+    /// Bit-exact lossless. Distance = 0.0.
+    public static var lossless: JXLConfiguration {
+        JXLConfiguration(quality: 1.0, lossless: true)
+    }
+
+    /// High-quality lossy (`quality = 0.95`).
+    public static var highQuality: JXLConfiguration {
+        JXLConfiguration(quality: 0.95, lossless: false)
+    }
+
+    /// Balanced (`quality = 0.9`). Recommended default.
+    public static var balanced: JXLConfiguration {
+        JXLConfiguration(quality: 0.9, lossless: false)
+    }
+
+    /// Fast lossy (`quality = 0.75`). Trades quality for speed.
+    public static var fast: JXLConfiguration {
+        JXLConfiguration(quality: 0.75, lossless: false)
+    }
+
+    /// Convert to the canonical ``EncodingOptions`` used by
+    /// ``JXLEncoder``. The conversion maps:
+    /// - `lossless = true` → `mode = .lossless`
+    /// - else → `mode = .lossy(quality: quality * 100)`
+    public var encodingOptions: EncodingOptions {
+        if lossless {
+            return EncodingOptions(mode: .lossless)
+        }
+        let q = max(0.0, min(quality, 1.0))
+        return EncodingOptions(mode: .lossy(quality: Float(q * 100)))
+    }
+}
+
+extension JXLEncoder {
+    /// Family-parity convenience init. Mirrors J2KSwift's
+    /// `J2KEncoder.init(configuration:)`. Internally constructs
+    /// the canonical ``EncodingOptions`` via
+    /// ``JXLConfiguration/encodingOptions``.
+    public convenience init(configuration: JXLConfiguration) {
+        self.init(options: configuration.encodingOptions)
+    }
+}
+
 /// Statistics returned alongside an encoded image.
 public struct CompressionStats: Sendable {
     public let originalSize: Int

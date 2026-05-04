@@ -7133,6 +7133,74 @@ extension FoundationTests {
     /// `Gaborish.applyInverse5x5` (encoder-side sharpening) preserves
     /// DC (constant image stays constant — sum of weights = 1) and
     /// produces a HIGHER-CONTRAST output than the input at a step
+    // MARK: - Family API parity (Phase A) pin-downs
+
+    /// Phase A.1 — `JXLImage` typealias for `ImageFrame`. Both names
+    /// must refer to the same Swift type so callers can swap library
+    /// imports without changing call sites.
+    func testFamilyParity_JXLImage_isImageFrame() throws {
+        let frame = ImageFrame(width: 4, height: 4, channels: 3)
+        let alias: JXLImage = frame
+        XCTAssertEqual(alias.width, 4)
+        XCTAssertEqual(alias.height, 4)
+        XCTAssertEqual(alias.channels, 3)
+        // Round-trip via the type system.
+        let frame2: ImageFrame = alias
+        XCTAssertEqual(frame2.width, frame.width)
+    }
+
+    /// Phase A.2 — `EncodingOptions` static factory presets match the
+    /// J2KSwift `J2KConfiguration` set. Each preset must produce a
+    /// stable `EncodingOptions` value.
+    func testFamilyParity_EncodingOptions_Presets() throws {
+        // .lossless → distance 0
+        XCTAssertEqual(EncodingOptions.lossless.distance, 0.0)
+        if case .lossless = EncodingOptions.lossless.mode {} else {
+            XCTFail("`.lossless` preset must use mode `.lossless`")
+        }
+        // .highQuality → distance < 1.0
+        XCTAssertLessThan(EncodingOptions.highQuality.distance, 1.0)
+        // .balanced → distance ≈ 1.0
+        let bal = EncodingOptions.balanced.distance
+        XCTAssertGreaterThan(bal, 0.5)
+        XCTAssertLessThan(bal, 2.0)
+        // .fast → favours speed (effort `.hare`).
+        XCTAssertEqual(EncodingOptions.fast.effort, .hare)
+    }
+
+    /// Phase A.3 — `JXLConfiguration` shim maps to `EncodingOptions`
+    /// with the J2KSwift-aligned `quality: Double` (0.0..1.0) +
+    /// `lossless: Bool` interface. `JXLEncoder.init(configuration:)`
+    /// accepts it.
+    func testFamilyParity_JXLConfiguration_MapsToEncodingOptions() throws {
+        // Default: quality 0.9, lossy.
+        let defaultCfg = JXLConfiguration()
+        XCTAssertEqual(defaultCfg.quality, 0.9)
+        XCTAssertFalse(defaultCfg.lossless)
+        if case .lossy(let q) = defaultCfg.encodingOptions.mode {
+            XCTAssertEqual(q, 90.0, accuracy: 1e-4,
+                "quality = 0.9 must map to lossy(90)")
+        } else {
+            XCTFail("default JXLConfiguration must map to .lossy mode")
+        }
+
+        // Lossless preset.
+        let losslessOpts = JXLConfiguration.lossless.encodingOptions
+        if case .lossless = losslessOpts.mode {} else {
+            XCTFail("`.lossless` preset must produce lossless EncodingOptions")
+        }
+
+        // High-quality / balanced / fast presets construct without crashing.
+        _ = JXLConfiguration.highQuality.encodingOptions
+        _ = JXLConfiguration.balanced.encodingOptions
+        _ = JXLConfiguration.fast.encodingOptions
+
+        // JXLEncoder.init(configuration:) accepts JXLConfiguration.
+        let enc = JXLEncoder(configuration: JXLConfiguration.balanced)
+        XCTAssertEqual(enc.options.distance,
+                       JXLConfiguration.balanced.encodingOptions.distance)
+    }
+
     /// edge (sharpening boosts high frequencies). Pin-down for the
     /// libjxl `enc_gaborish.cc::GaborishInverse` port.
     func testVarDCT_GaborishInverse5x5_PreservesDC_SharpensEdge() throws {
