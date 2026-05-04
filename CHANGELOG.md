@@ -23,13 +23,29 @@ The headline goal of v0.9.0 is closing the residual textured-fixture pixel drift
 
 ### Investigated and ruled out
 
-- **CFL slopes** — `cmapDC.ytoXRatio(slope:)` formula matches libjxl byte-exact; per-tile slope lookup correct; disabling AC-CFL produced essentially identical byte-diffs (AC magnitudes too small for CFL to matter).
-- **`AdjustQuantBias` magnitude** — neutral on byte-diffs (±0.03 mean per channel). Correct but small; not the dominant bug.
-- **`kInvDCQuant` indexing** — XYB-c indexing (X=0, Y=1, B=2 → 4096, 512, 256) is correct. Storage-c reindexing experiment produced 12 test failures and dramatically worse drift.
+- **CFL slopes** — `cmapDC.ytoXRatio(slope:)` formula matches libjxl byte-exact.
+- **`AdjustQuantBias` magnitude** — neutral on byte-diffs (±0.03 mean per channel).
+- **`kInvDCQuant` indexing** — XYB-c indexing (X=0, Y=1, B=2 → 4096, 512, 256) is correct.
+- **`Interpolate` / `GetQuantWeights` arithmetic** — byte-identical to libjxl source.
+- **Inverse-Gaborish 5×5** — encoder applies a sharpening kernel before DCT; tiny effect (~5 %), wrong direction. Not the residual source.
+- **Encoder OpsinXYB scaling** — `intensity_target / 255 = 1.0` for default fixtures.
+- **`FindBestDequantMatrices`** — LIBRARY-default matrices for default cparams.
+- **Phase R filters** (Gaborish + EPF) — `JXL_SKIP_PHASE_R=1` accounts for only ~4 of the 16-byte gap.
+
+### v0.9.0l mathematical insight (root cause partially confirmed)
+
+libjxl's `ComputeScaledDCT(P) = M·P^T·M^T = vanilla(P^T)` for ROWS≥COLS strategies — bitstream stores TRANSPOSED layout. Verified via runtime `JXL_TRACE_AC=1 col0` dump matching first-principles prediction. Drop-`×64` + transpose for DCT8x8 alone reduces gradient max R: 58 → 17 (3.4× improvement). But interacts with a SECOND missing factor; full fix regresses SWEEP. Reverted; preserved in `transposeSquareInPlace` helper for follow-on bite.
+
+### v0.9.0m–p: standalone numerical reference + foundation primitives
+
+- **`scripts/diagnostics/libjxl_reference_idct.cc`** — self-contained C++ test ports libjxl's reference IDCT/DCT, exact OpsinXYB, exact encoder quantization. **Quantifies residual: 2.286× discrepancy** between libjxl's documented arithmetic and what cjxl actually emits.
+- **`Gaborish.applyInverse5x5`** in `Sources/JXLSwift/VarDCT/Gaborish.swift` — full Swift port of libjxl `enc_gaborish.cc::GaborishInverse` (butteraugli-calibrated 5×5 sharpening kernel).
+- **`AFV.transformToPixels`** — full overlay port of libjxl `AFVTransformToPixels`. Decomposes 8×8 cell into 4×4 AFV corner + 4×4 IDCT corner + 4×8 IDCT half. Two pin-down tests cover all 4 AFV-kind variants.
+- **4 build warnings cleanup** — removed dead `bridge8x16` / `bridge16x32` constants, tightened `var temp` → `let temp`. Build is now warning-free.
 
 ### Tests
 
-- 350 tests passing, 3 skipped, 0 failures.
+- **353 tests passing, 3 skipped, 0 failures.** (+3 from v0.9.0d-p: AdjustQuantBias all-branches, GaborishInverse5x5 step-edge, AFV transformToPixels.)
 
 ---
 
