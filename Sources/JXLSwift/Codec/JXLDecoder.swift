@@ -621,6 +621,24 @@ public struct JXLDecoder: Sendable {
             FileHandle.standardError.write(Data((
                 "TRACE ACStrategyImage: \(acsImage.firstBlocks.count) "
                 + "first-blocks, strategies=\(counts)\n").utf8))
+            // JXL_TRACE_BLK="bx,by" → dump the strategy + first-block
+            // of one block (debug aid for localised pixel residuals).
+            if let q = ProcessInfo.processInfo
+                .environment["JXL_TRACE_BLK"] {
+                let parts = q.split(separator: ",").compactMap { Int($0) }
+                if parts.count == 2,
+                   parts[0] >= 0, parts[0] < xsizeBlocks,
+                   parts[1] >= 0, parts[1] < ysizeBlocks {
+                    let e = acsImage.at(x: parts[0], y: parts[1])
+                    FileHandle.standardError.write(Data((
+                        "TRACE_BLK (\(parts[0]),\(parts[1])): "
+                        + "strategy=\(e.strategy) raw="
+                        + "\(e.strategy.rawValue) firstBlock="
+                        + "(\(e.firstBlockX),\(e.firstBlockY)) "
+                        + "isFirst=\(e.isFirstBlock) qf=\(e.qf)\n"
+                    ).utf8))
+                }
+            }
         }
         // Per-cell QF — every cell inherits its first-block's QF.
         var perBlockQF = [Int32](
@@ -1190,7 +1208,8 @@ public struct JXLDecoder: Sendable {
         // `iterIdx` lines up directly with the XYB channel index
         // (iter 0 = X, iter 1 = Y, iter 2 = B). `acBlocks[blkIdx][i]`
         // is therefore indexed by XYB channel directly.
-        let storageToXYB: [Int] = [1, 0, 2]
+        // `dcFloat` is built directly from this storage swap
+        // (`dcValues[1]`=X, `[0]`=Y, `[2]`=B).
         let acIterToXYB: [Int] = [0, 1, 2]
 
         // ACMeta channel 2 shape = `count × 2` (row 0 = ACS values,
@@ -1269,6 +1288,32 @@ public struct JXLDecoder: Sendable {
             FileHandle.standardError.write(Data(cflMsg.utf8))
         }
 
+        // Full-frame dequantised + DC-CfL DC plane (libjxl
+        // `compressed_dc.cc::DequantDC`). `dcValues` is in storage
+        // order {Y, X, B}; `dcFloat` is XYB-indexed. Then — unless
+        // the frame opts out — adaptive DC smoothing runs here, which
+        // libjxl does in `FinalizeDC` between DC-group and AC-group
+        // decode. Skipping it leaves a low-frequency drift that
+        // shifts every multi-block transform's `LowestFrequenciesFromDC`.
+        var dcFloat: [[Float]] = (0..<3).map { _ in
+            [Float](repeating: 0, count: dcWidth * dcHeight)
+        }
+        for idx in 0..<(dcWidth * dcHeight) {
+            let inX = Float(dcValues[1][idx]) * mulDC[0] * dcExtraFactor
+            let inY = Float(dcValues[0][idx]) * mulDC[1] * dcExtraFactor
+            let inB = Float(dcValues[2][idx]) * mulDC[2] * dcExtraFactor
+            dcFloat[1][idx] = inY
+            dcFloat[0][idx] = inX + dcCflX * inY
+            dcFloat[2][idx] = inB + dcCflB * inY
+        }
+        // `kSkipAdaptiveDCSmoothing` is frame-flag bit 7 (128);
+        // `kUseDcFrame` is bit 5 (32) and also implies skip.
+        if (fh.flags & 128) == 0 && (fh.flags & 32) == 0 {
+            AdaptiveDCSmoothing.apply(
+                dc: &dcFloat, width: dcWidth, height: dcHeight,
+                dcFactors: mulDC)
+        }
+
         let planeWidth = numBlocksXAC * 8
         let planeHeight = numBlocksYAC * 8
         var planeXYB: [[Float]] = (0..<3).map { _ in
@@ -1310,19 +1355,11 @@ public struct JXLDecoder: Sendable {
                 let blockQF = blockIdx < perBlockQF.count
                     ? perBlockQF[blockIdx] : qfRow
                 let blockInvQuantAC = invGlobalScale / Float(blockQF)
-                // 1) Dequant DC for all 3 channels (XYB indexing).
-                var dcPixelXYB = [Float](repeating: 0, count: 3)
-                for storageSlot in 0..<3 {
-                    let xybC = storageToXYB[storageSlot]
-                    let dcQuant = Float(
-                        dcValues[storageSlot][by * dcWidth + bx]
-                    )
-                    dcPixelXYB[xybC] = dcQuant * mulDC[xybC] * dcExtraFactor
-                }
-                // 2) Apply DC-CFL: X' = X + dcCflX·Y, B' = B + dcCflB·Y.
-                let dcY = dcPixelXYB[1]
-                let dcCorrectedX = dcPixelXYB[0] + dcCflX * dcY
-                let dcCorrectedB = dcPixelXYB[2] + dcCflB * dcY
+                // 1-2) DC pixel — dequantised + DC-CfL + smoothed,
+                // read straight from the prepared `dcFloat` plane.
+                let dcY = dcFloat[1][by * dcWidth + bx]
+                let dcCorrectedX = dcFloat[0][by * dcWidth + bx]
+                let dcCorrectedB = dcFloat[2][by * dcWidth + bx]
 
                 // 3) Locate iteration indices for each XYB channel.
                 guard
@@ -1467,18 +1504,10 @@ public struct JXLDecoder: Sendable {
                     ? perBlockQF[blockIdx] : qfRow
                 let blockInvQuantAC = invGlobalScale / Float(blockQF)
                 let (xCCMul, bCCMul) = acCFLMul(bx: bx, by: by)
-                // DC dequant (XYB indexing) + DC-CFL.
-                var dcPixelXYB = [Float](repeating: 0, count: 3)
-                for storageSlot in 0..<3 {
-                    let xybC = storageToXYB[storageSlot]
-                    let dcQuant = Float(
-                        dcValues[storageSlot][by * dcWidth + bx]
-                    )
-                    dcPixelXYB[xybC] = dcQuant * mulDC[xybC] * dcExtraFactor
-                }
-                let dcY = dcPixelXYB[1]
-                let dcX = dcPixelXYB[0] + dcCflX * dcY
-                let dcB = dcPixelXYB[2] + dcCflB * dcY
+                // DC pixel — dequantised + DC-CfL + smoothed.
+                let dcY = dcFloat[1][by * dcWidth + bx]
+                let dcX = dcFloat[0][by * dcWidth + bx]
+                let dcB = dcFloat[2][by * dcWidth + bx]
                 // `acBlocks` is XYB-indexed (slot 0=X, 1=Y, 2=B).
                 let acXBlock = acBlocks[blockIdx][0]
                 let acYBlock = acBlocks[blockIdx][1]
@@ -1582,22 +1611,10 @@ public struct JXLDecoder: Sendable {
                 }
                 for (i, off) in cellOffsets.enumerated() {
                     let (dx, dy) = off
-                    let cellBX = bx + dx
-                    let cellBY = by + dy
-                    var cellDC = [Float](repeating: 0, count: 3)
-                    for storageSlot in 0..<3 {
-                        let xybC = storageToXYB[storageSlot]
-                        let dcQuant = Float(
-                            dcValues[storageSlot][cellBY * dcWidth + cellBX]
-                        )
-                        cellDC[xybC] = dcQuant * mulDC[xybC] * dcExtraFactor
-                    }
-                    // Apply DC-CFL on the cell DC values (same factors
-                    // the per-cell loop uses).
-                    let dcY = cellDC[1]
-                    dcXYB[0][i] = cellDC[0] + dcCflX * dcY
-                    dcXYB[1][i] = dcY
-                    dcXYB[2][i] = cellDC[2] + dcCflB * dcY
+                    let cIdx = (by + dy) * dcWidth + (bx + dx)
+                    dcXYB[0][i] = dcFloat[0][cIdx]
+                    dcXYB[1][i] = dcFloat[1][cIdx]
+                    dcXYB[2][i] = dcFloat[2][cIdx]
                 }
                 // LLF coefficients per channel via 2×2 forward DCT +
                 // resample scaling. Map to natural-order positions
@@ -1711,20 +1728,10 @@ public struct JXLDecoder: Sendable {
                 }
                 for (i, off) in cellOffsets.enumerated() {
                     let (dx, dy) = off
-                    let cellBX = bx + dx
-                    let cellBY = by + dy
-                    var cellDC = [Float](repeating: 0, count: 3)
-                    for storageSlot in 0..<3 {
-                        let xybC = storageToXYB[storageSlot]
-                        let dcQuant = Float(
-                            dcValues[storageSlot][cellBY * dcWidth + cellBX]
-                        )
-                        cellDC[xybC] = dcQuant * mulDC[xybC] * dcExtraFactor
-                    }
-                    let dcY = cellDC[1]
-                    dcXYB[0][i] = cellDC[0] + dcCflX * dcY
-                    dcXYB[1][i] = dcY
-                    dcXYB[2][i] = cellDC[2] + dcCflB * dcY
+                    let cIdx = (by + dy) * dcWidth + (bx + dx)
+                    dcXYB[0][i] = dcFloat[0][cIdx]
+                    dcXYB[1][i] = dcFloat[1][cIdx]
+                    dcXYB[2][i] = dcFloat[2][cIdx]
                 }
                 // 2 LLF coefficients per channel at natural-order
                 // positions 0 and 1.
@@ -1884,19 +1891,11 @@ public struct JXLDecoder: Sendable {
                             cellBX = bx + c
                             cellBY = by + r
                         }
-                        var cellDC = [Float](repeating: 0, count: 3)
-                        for storageSlot in 0..<3 {
-                            let xybC = storageToXYB[storageSlot]
-                            let dcQuant = Float(
-                                dcValues[storageSlot][cellBY * dcWidth + cellBX]
-                            )
-                            cellDC[xybC] = dcQuant * mulDC[xybC] * dcExtraFactor
-                        }
-                        let dcY = cellDC[1]
+                        let cIdx = cellBY * dcWidth + cellBX
                         let idx = r * 4 + c
-                        dcXYB[0][idx] = cellDC[0] + dcCflX * dcY
-                        dcXYB[1][idx] = dcY
-                        dcXYB[2][idx] = cellDC[2] + dcCflB * dcY
+                        dcXYB[0][idx] = dcFloat[0][cIdx]
+                        dcXYB[1][idx] = dcFloat[1][cIdx]
+                        dcXYB[2][idx] = dcFloat[2][cIdx]
                     }
                 }
                 // 8 LLF coefficients per channel.
@@ -2018,21 +2017,11 @@ public struct JXLDecoder: Sendable {
                 }
                 for r in 0..<4 {
                     for c in 0..<4 {
-                        let cellBX = bx + c
-                        let cellBY = by + r
-                        var cellDC = [Float](repeating: 0, count: 3)
-                        for storageSlot in 0..<3 {
-                            let xybC = storageToXYB[storageSlot]
-                            let dcQuant = Float(
-                                dcValues[storageSlot][cellBY * dcWidth + cellBX]
-                            )
-                            cellDC[xybC] = dcQuant * mulDC[xybC] * dcExtraFactor
-                        }
-                        let dcY = cellDC[1]
+                        let cIdx = (by + r) * dcWidth + (bx + c)
                         let idx = r * 4 + c
-                        dcXYB[0][idx] = cellDC[0] + dcCflX * dcY
-                        dcXYB[1][idx] = dcY
-                        dcXYB[2][idx] = cellDC[2] + dcCflB * dcY
+                        dcXYB[0][idx] = dcFloat[0][cIdx]
+                        dcXYB[1][idx] = dcFloat[1][cIdx]
+                        dcXYB[2][idx] = dcFloat[2][cIdx]
                     }
                 }
                 let llfX = LowestFrequenciesFromDC.dct32x32(dc: dcXYB[0])
@@ -2152,19 +2141,11 @@ public struct JXLDecoder: Sendable {
                             cellBX = bx + c
                             cellBY = by + r
                         }
-                        var cellDC = [Float](repeating: 0, count: 3)
-                        for storageSlot in 0..<3 {
-                            let xybC = storageToXYB[storageSlot]
-                            let dcQuant = Float(
-                                dcValues[storageSlot][cellBY * dcWidth + cellBX]
-                            )
-                            cellDC[xybC] = dcQuant * mulDC[xybC] * dcExtraFactor
-                        }
-                        let dcY = cellDC[1]
+                        let cIdx = cellBY * dcWidth + cellBX
                         let idx = r * 8 + c
-                        dcXYB[0][idx] = cellDC[0] + dcCflX * dcY
-                        dcXYB[1][idx] = dcY
-                        dcXYB[2][idx] = cellDC[2] + dcCflB * dcY
+                        dcXYB[0][idx] = dcFloat[0][cIdx]
+                        dcXYB[1][idx] = dcFloat[1][cIdx]
+                        dcXYB[2][idx] = dcFloat[2][cIdx]
                     }
                 }
                 let llfX = LowestFrequenciesFromDC.ord8Block(dc: dcXYB[0])
@@ -2276,19 +2257,11 @@ public struct JXLDecoder: Sendable {
                     for c in 0..<8 {
                         let cellBX = bx + c
                         let cellBY = by + r
-                        var cellDC = [Float](repeating: 0, count: 3)
-                        for storageSlot in 0..<3 {
-                            let xybC = storageToXYB[storageSlot]
-                            let dcQuant = Float(
-                                dcValues[storageSlot][cellBY * dcWidth + cellBX]
-                            )
-                            cellDC[xybC] = dcQuant * mulDC[xybC] * dcExtraFactor
-                        }
-                        let dcY = cellDC[1]
+                        let cIdx = cellBY * dcWidth + cellBX
                         let idx = r * 8 + c
-                        dcXYB[0][idx] = cellDC[0] + dcCflX * dcY
-                        dcXYB[1][idx] = dcY
-                        dcXYB[2][idx] = cellDC[2] + dcCflB * dcY
+                        dcXYB[0][idx] = dcFloat[0][cIdx]
+                        dcXYB[1][idx] = dcFloat[1][cIdx]
+                        dcXYB[2][idx] = dcFloat[2][cIdx]
                     }
                 }
                 let llfX = LowestFrequenciesFromDC.dct64x64(dc: dcXYB[0])
@@ -2387,19 +2360,11 @@ public struct JXLDecoder: Sendable {
                 let acXBlock = acBlocks[blockIdxFirst][0]
                 let acBBlock = acBlocks[blockIdxFirst][2]
 
-                // 1) DC dequant — same path as DCT8x8 (AFV is a
-                //    1×1 cell strategy, single DC value per channel).
-                var dcPixelXYB = [Float](repeating: 0, count: 3)
-                for storageSlot in 0..<3 {
-                    let xybC = storageToXYB[storageSlot]
-                    let dcQuant = Float(
-                        dcValues[storageSlot][by * dcWidth + bx]
-                    )
-                    dcPixelXYB[xybC] = dcQuant * mulDC[xybC] * dcExtraFactor
-                }
-                let dcY = dcPixelXYB[1]
-                let dcCorrectedX = dcPixelXYB[0] + dcCflX * dcY
-                let dcCorrectedB = dcPixelXYB[2] + dcCflB * dcY
+                // 1) DC pixel — dequantised + DC-CfL + smoothed (AFV
+                //    is a 1×1 cell strategy, single DC value).
+                let dcY = dcFloat[1][by * dcWidth + bx]
+                let dcCorrectedX = dcFloat[0][by * dcWidth + bx]
+                let dcCorrectedB = dcFloat[2][by * dcWidth + bx]
 
                 // 2) AC dequant for all 64 positions (AFV uses a
                 //    single 64-coef block, not multi-block). DC at

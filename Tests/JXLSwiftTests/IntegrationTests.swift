@@ -7880,6 +7880,20 @@ extension FoundationTests {
         XCTAssertEqual(frame.width, dim)
         XCTAssertEqual(frame.height, dim)
         XCTAssertEqual(frame.data.count, dim * dim * 3)
+        // Whole-frame max byte-diff. With adaptive DC smoothing
+        // (v0.10.0r) this large textured frame is byte-exact bar the
+        // ±1 sRGB rounding floor; a smoothing regression drifts the
+        // low frequencies of every multi-block transform up to ~20.
+        var maxDiff = 0
+        for i in 0..<(dim * dim * 3) {
+            maxDiff = max(maxDiff,
+                          abs(Int(frame.data[i]) - Int(ref[i])))
+        }
+        XCTAssertLessThanOrEqual(
+            maxDiff, 5,
+            "2056×2056 multi-DC-group fixture: max byte-diff vs djxl "
+            + "is \(maxDiff) (adaptive DC smoothing / stitching "
+            + "regression)")
         // Per-DC-group-quadrant mean error — a stitching bug would
         // spike exactly one quadrant.
         let half = dim / 2
