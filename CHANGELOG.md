@@ -197,9 +197,18 @@ The VarDCT decoder threw `notImplemented` on any frame with extra channels — s
 
 - **Meta-channels modular decode.** After the global tree, when the frame has extra channels the decoder reads the `gi` GroupHeader, builds the extra-channel modular image (sized per `extra_channel_upsampling`), applies meta-transforms, decodes the channels with the existing `decodeAllChannels`, and undoes the transforms — reusing the Modular machinery (`metaApplyTransforms` / `applyInverseTransforms`) already proven on the lossless path. A single alpha extra channel is interleaved behind the VarDCT-decoded RGB into a 4-channel RGBA `ImageFrame`.
 - **Palette `numC == 1` trap fixed.** cjxl routinely applies a 1-channel **Palette** transform to the alpha channel. `metaApplyPalette` walked the palette range with the closed range `(beginC + 1)...endC`, which for `numC == 1` is `1...0` — an invalid range that **traps** at runtime. Changed to the half-open `(beginC + 1)..<(endC + 1)` (empty for `numC == 1`). This also hardens the lossless Modular path against single-channel palettes.
-- **Scope.** Extra channels that fit in one modular group (frames ≤ `group_dim`, ~256 px) are decoded in this global pass. Larger frames defer their extra channels to per-group modular sections — not yet implemented; they throw a clear `notImplemented`. A single alpha channel is wired to RGBA output; other extra-channel types still throw.
+- **Scope.** Extra channels that fit in one modular group (frames ≤ `group_dim`, ~256 px) are decoded in this global pass; larger frames are handled in `v0.10.0t`. A single alpha channel is wired to RGBA output; other extra-channel types still throw.
 - **Result.** 64×64 RGBA fixtures decode **byte-exact vs `djxl 0.11.2`** at d=0.5/1.0/3.0 — colour `max=(1,1,1)` (±1 sRGB floor), modular **alpha exact** (`max=0`). New pin-down test `testVarDCT_RGBA_DjxlByteEquality`.
 - **372 tests passing, 3 skipped, 0 failures.**
+
+### v0.10.0t — per-AC-group modular extra channels (RGBA > 256 px)
+
+`v0.10.0s` decoded extra channels only when they fit one modular group. Larger frames defer the extra channels to **per-AC-group** modular sections: libjxl `ProcessACGroup` runs the VarDCT AC decode and then `ModularFrameDecoder::DecodeGroup` from the *same* section cursor — the modular extra-channel data follows the VarDCT AC tokens within each AC group's TOC section. That tail is now decoded.
+
+- **Global / per-group split.** The global `gi` pass decodes channels up to the first non-meta channel exceeding `group_dim` (libjxl `ModularDecode`'s `num_chans` loop); the rest are deferred. The deferred channels' full-frame planes are filled in the AC-group loop — each AC group, after its VarDCT AC blocks, reads a local modular GroupHeader and decodes that group's `group_dim`-pixel sub-rect of every deferred channel. The meta-transform inverse runs once, after the loop, on the assembled full image.
+- **Palette straddle.** When cjxl palettises a large alpha channel, the palette *table* is a small meta-channel decoded in the global pass while the *index* channel is large and per-group. The decoder decodes both halves into one `ModularImage` and applies the inverse Palette on the assembled whole — reusing `applyInversePalette`.
+- **Result.** 300×300 / 320×320 / 600×600 RGBA fixtures — palettised and non-palettised alpha, 2×2 and 3×3 AC-group grids — decode **byte-exact vs `djxl 0.11.2`**: colour `max ≤ 2` (±2 sRGB floor), modular **alpha exact** (`max=0`). New pin-down test `testVarDCT_RGBALarge_DjxlByteEquality` (320×320, palettised, per-group). The earlier rANS-end-position concern was unfounded — the VarDCT AC decode leaves the cursor exactly at the modular tail.
+- **373 tests passing, 3 skipped, 0 failures.**
 
 ---
 

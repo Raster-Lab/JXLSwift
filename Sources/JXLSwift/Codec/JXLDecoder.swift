@@ -359,8 +359,16 @@ public struct JXLDecoder: Sendable {
         // `DivCeil(xsize, ecups) × DivCeil(ysize, ecups)`.
         let nbExtraChannels = metadata.extraChannels.count
         // Decoded extra-channel planes (one `xsize × ysize` Int32
-        // array per channel); empty when the frame has none.
+        // array per channel); empty until populated below (small
+        // frames) or after the AC-group loop (large frames).
         var extraChannelPlanes: [[Int32]] = []
+        // When the extra-channel modular image has channels too large
+        // for the global pass, those channels decode per AC group.
+        // The partially-filled image + its header survive to the AC
+        // loop; `extraFirstBig` is the boundary channel index.
+        var extraGiImage: ModularImage? = nil
+        var extraGiGH: GroupHeader? = nil
+        var extraFirstBig = 0
         if nbExtraChannels > 0 {
             // `gi` GroupHeader (libjxl `ModularDecode` → `Bundle::Read`).
             let giGH: GroupHeader
@@ -397,12 +405,6 @@ public struct JXLDecoder: Sendable {
                     width: ecW, height: ecH,
                     hshift: max(0, shift), vshift: max(0, shift))
             }
-            if trace {
-                let m = "TRACE gi GH: useGlobal=\(giGH.useGlobalTree) "
-                    + "transforms=\(giGH.transforms.map { ($0.id, $0.beginC, $0.numC) }) "
-                    + "preChans=\(giImage.channels.map { ($0.width, $0.height) })\n"
-                FileHandle.standardError.write(Data(m.utf8))
-            }
             // Meta-transforms (Squeeze / RCT / Palette) reshape the
             // channel list before the pixel decode.
             do {
@@ -414,60 +416,72 @@ public struct JXLDecoder: Sendable {
                     + "(\(giGH.transforms.map { $0.id })) MetaApply "
                     + "failed: \(error)")
             }
-            // Every (possibly transformed) channel must fit one
-            // modular group so it decodes in this global pass;
-            // larger channels defer to per-group modular sections.
-            for ch in giImage.channels {
-                guard ch.width <= groupDim, ch.height <= groupDim else {
-                    throw DecoderError.notImplemented(
-                        "VarDCT decode: extra-channel modular channel "
-                        + "\(ch.width)×\(ch.height) exceeds one group "
-                        + "(\(groupDim) px) — per-group modular decode "
-                        + "not implemented")
+            // libjxl `ModularDecode`'s `num_chans` loop: the global
+            // pass decodes channels up to (not including) the first
+            // *non-meta* channel that exceeds one modular group. The
+            // rest defer to per-AC-group modular sections.
+            var firstBig = giImage.channels.count
+            for c in 0..<giImage.channels.count {
+                let ch = giImage.channels[c]
+                if c >= giImage.nbMetaChannels
+                    && (ch.width > groupDim || ch.height > groupDim) {
+                    firstBig = c
+                    break
                 }
             }
             if trace {
-                let m = "TRACE gi postMetaApply chans="
-                    + "\(giImage.channels.map { ($0.width, $0.height) })\n"
+                let m = "TRACE gi: transforms="
+                    + "\(giGH.transforms.map { $0.id }) chans="
+                    + "\(giImage.channels.map { ($0.width, $0.height) }) "
+                    + "nbMeta=\(giImage.nbMetaChannels) "
+                    + "firstBig=\(firstBig)\n"
                 FileHandle.standardError.write(Data(m.utf8))
             }
-            let geometries = giImage.channels.map {
-                ModularChannelGeometry(width: $0.width, height: $0.height)
+            // Decode channels [0, firstBig) in this global pass.
+            if firstBig > 0 {
+                let geometries = (0..<firstBig).map {
+                    ModularChannelGeometry(
+                        width: giImage.channels[$0].width,
+                        height: giImage.channels[$0].height)
+                }
+                var giStream = TokenStreamReader(
+                    header: giPostHdr, codebook: giPostCb)
+                let decoded: [[Int32]]
+                do {
+                    decoded = try decodeAllChannels(
+                        channels: geometries,
+                        groupId: 0,    // ModularStreamId::Global()
+                        tree: giTree, stream: &giStream,
+                        from: &r, wpHeader: giGH.wpHeader)
+                } catch let e as ModularChannelDecoderError {
+                    throw DecoderError.notImplemented(
+                        "VarDCT decode: extra-channel global decode "
+                        + "failed: \(e)")
+                }
+                for i in 0..<firstBig {
+                    giImage.channels[i].pixels = decoded[i]
+                }
             }
-            var giStream = TokenStreamReader(
-                header: giPostHdr, codebook: giPostCb)
-            let decoded: [[Int32]]
-            do {
-                decoded = try decodeAllChannels(
-                    channels: geometries,
-                    groupId: 0,    // ModularStreamId::Global()
-                    tree: giTree, stream: &giStream,
-                    from: &r, wpHeader: giGH.wpHeader)
-            } catch let e as ModularChannelDecoderError {
-                throw DecoderError.notImplemented(
-                    "VarDCT decode: extra-channel decode failed: \(e)")
-            }
-            for i in 0..<giImage.channels.count {
-                giImage.channels[i].pixels = decoded[i]
-            }
-            // Undo the meta-transforms to reconstruct the extra
-            // channels at full resolution.
-            do {
-                try applyInverseTransforms(
-                    image: &giImage, transforms: giGH.transforms)
-            } catch {
-                throw DecoderError.notImplemented(
-                    "VarDCT decode: meta-channels inverse transform "
-                    + "failed: \(error)")
-            }
-            extraChannelPlanes = (0..<nbExtraChannels).map {
-                giImage.channels[$0].pixels
-            }
-            if trace {
-                let msg = "TRACE extra channels: \(nbExtraChannels) "
-                    + "decoded \(xsize)×\(ysize) "
-                    + "transforms=\(giGH.transforms.map { $0.id })\n"
-                FileHandle.standardError.write(Data(msg.utf8))
+            if firstBig == giImage.channels.count {
+                // Whole extra-channel image fits the global pass —
+                // undo transforms now.
+                do {
+                    try applyInverseTransforms(
+                        image: &giImage, transforms: giGH.transforms)
+                } catch {
+                    throw DecoderError.notImplemented(
+                        "VarDCT decode: meta-channels inverse "
+                        + "transform failed: \(error)")
+                }
+                extraChannelPlanes = (0..<nbExtraChannels).map {
+                    giImage.channels[$0].pixels
+                }
+            } else {
+                // Big channels decode per AC group; finish after the
+                // AC-group loop.
+                extraGiImage = giImage
+                extraGiGH = giGH
+                extraFirstBig = firstBig
             }
         }
         let _ = (kRequiredSizeX, kRequiredSizeY, DequantMatricesAC.self)
@@ -1230,6 +1244,97 @@ public struct JXLDecoder: Sendable {
                     }
                     acBlocks[by * totalBlocksX + bx] = blockChannels
                 }
+            }
+            // Per-AC-group modular decode of the deferred (large)
+            // extra channels. libjxl `ProcessACGroup` runs the
+            // VarDCT AC decode and then `ModularFrameDecoder::
+            // DecodeGroup` from the *same* section cursor; the
+            // modular data follows the VarDCT AC tokens. Each AC
+            // group decodes its `groupDim`-pixel sub-rect of every
+            // deferred channel and copies it into the full image.
+            if var giImage = extraGiImage {
+                let gOX = gx * groupDim
+                let gOY = gy * groupDim
+                let pgGH: GroupHeader
+                do { pgGH = try GroupHeader.read(from: &r) }
+                catch let e as GroupHeaderError {
+                    throw DecoderError.notImplemented(
+                        "VarDCT decode: AC group \(groupIdx) modular "
+                        + "GroupHeader read failed: \(e)")
+                }
+                guard pgGH.transforms.isEmpty else {
+                    throw DecoderError.notImplemented(
+                        "VarDCT decode: AC group \(groupIdx) modular "
+                        + "with \(pgGH.transforms.count) transform(s) "
+                        + "not implemented")
+                }
+                let (pgTree, pgHdr, pgCb) = try resolveModularTree(
+                    useGlobal: pgGH.useGlobalTree,
+                    label: "AC group \(groupIdx) modular")
+                // Deferred channels [extraFirstBig, end) cropped to
+                // this group's rect (channels carry their own shift).
+                var subGeoms: [ModularChannelGeometry] = []
+                var subRects: [(c: Int, x: Int, y: Int, w: Int, h: Int)] = []
+                for c in extraFirstBig..<giImage.channels.count {
+                    let ch = giImage.channels[c]
+                    let rx = gOX >> ch.hshift
+                    let ry = gOY >> ch.vshift
+                    let rw = min(groupDim, ch.width - rx)
+                    let rh = min(groupDim, ch.height - ry)
+                    if rw <= 0 || rh <= 0 { continue }
+                    subGeoms.append(
+                        ModularChannelGeometry(width: rw, height: rh))
+                    subRects.append((c, rx, ry, rw, rh))
+                }
+                if !subGeoms.isEmpty {
+                    // ModularStreamId::ModularAC(group, 0) =
+                    // 1 + 3·num_dc_groups + kNumQuantTables(17) + group.
+                    let modAcId = Int32(
+                        1 + 3 * numDcGroups + 17 + groupIdx)
+                    var pgStream = TokenStreamReader(
+                        header: pgHdr, codebook: pgCb)
+                    let decoded: [[Int32]]
+                    do {
+                        decoded = try decodeAllChannels(
+                            channels: subGeoms, groupId: modAcId,
+                            tree: pgTree, stream: &pgStream,
+                            from: &r, wpHeader: pgGH.wpHeader)
+                    } catch let e as ModularChannelDecoderError {
+                        throw DecoderError.notImplemented(
+                            "VarDCT decode: AC group \(groupIdx) "
+                            + "extra-channel decode failed: \(e)")
+                    }
+                    for (i, sr) in subRects.enumerated() {
+                        let chW = giImage.channels[sr.c].width
+                        var pix = giImage.channels[sr.c].pixels
+                        let src = decoded[i]
+                        for yy in 0..<sr.h {
+                            let dstRow = (sr.y + yy) * chW + sr.x
+                            let srcRow = yy * sr.w
+                            for xx in 0..<sr.w {
+                                pix[dstRow + xx] = src[srcRow + xx]
+                            }
+                        }
+                        giImage.channels[sr.c].pixels = pix
+                    }
+                }
+                extraGiImage = giImage
+            }
+        }
+        // Finish the deferred extra channels: every AC group has
+        // filled its sub-rect, so undo the meta-transforms once on
+        // the assembled full-frame image.
+        if var giImage = extraGiImage, let giGH = extraGiGH {
+            do {
+                try applyInverseTransforms(
+                    image: &giImage, transforms: giGH.transforms)
+            } catch {
+                throw DecoderError.notImplemented(
+                    "VarDCT decode: deferred extra-channel inverse "
+                    + "transform failed: \(error)")
+            }
+            extraChannelPlanes = (0..<nbExtraChannels).map {
+                giImage.channels[$0].pixels
             }
         }
         let numBlocksXAC = totalBlocksX

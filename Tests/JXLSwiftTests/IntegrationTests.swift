@@ -8010,6 +8010,88 @@ extension FoundationTests {
         }
     }
 
+    /// Large RGBA (extra-channel) VarDCT decode pin-down. A 320×320
+    /// frame spans a 2×2 AC-group grid, so its alpha channel exceeds
+    /// one modular group and decodes **per AC group** — the modular
+    /// extra-channel data follows the VarDCT AC tokens in each AC
+    /// group's TOC section (libjxl `ProcessACGroup`). The low-entropy
+    /// alpha here is palettised by cjxl: the palette table decodes
+    /// globally, the index channel per-group, and the inverse Palette
+    /// runs once on the assembled full image. Colour matches `djxl`
+    /// to the ±2 floor; the modular alpha is byte-exact.
+    func testVarDCT_RGBALarge_DjxlByteEquality() throws {
+        let cjxl = "/opt/homebrew/bin/cjxl"
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: cjxl),
+              FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("cjxl/djxl not available")
+        }
+        let dim = 320
+        let tmp = NSTemporaryDirectory()
+        let pamPath = tmp + "vdt_rgbal.pam"
+        var pam = Data(
+            "P7\nWIDTH \(dim)\nHEIGHT \(dim)\nDEPTH 4\nMAXVAL 255\n"
+            .utf8)
+        pam.append(Data("TUPLTYPE RGB_ALPHA\nENDHDR\n".utf8))
+        for y in 0..<dim {
+            for x in 0..<dim {
+                pam.append(UInt8(x & 0xff))
+                pam.append(UInt8(y & 0xff))
+                pam.append(UInt8((x ^ y) & 0xff))
+                // Low-entropy alpha → cjxl applies a Palette transform.
+                pam.append(UInt8(((x / 20) * 17) & 0xff))
+            }
+        }
+        try pam.write(to: URL(fileURLWithPath: pamPath))
+        let jxlPath = tmp + "vdt_rgbal.jxl"
+        let refPath = tmp + "vdt_rgbal_ref.pam"
+        let p1 = Process()
+        p1.launchPath = cjxl
+        p1.arguments = [pamPath, jxlPath, "-d", "1.0"]
+        p1.standardOutput = Pipe(); p1.standardError = Pipe()
+        try p1.run(); p1.waitUntilExit()
+        guard p1.terminationStatus == 0 else {
+            throw XCTSkip("cjxl encode failed")
+        }
+        let p2 = Process()
+        p2.launchPath = djxl
+        p2.arguments = [jxlPath, refPath]
+        p2.standardOutput = Pipe(); p2.standardError = Pipe()
+        try p2.run(); p2.waitUntilExit()
+        guard p2.terminationStatus == 0 else {
+            throw XCTSkip("djxl decode failed")
+        }
+        let refData = try Data(contentsOf: URL(fileURLWithPath: refPath))
+        guard let hdrEnd = refData.range(of: Data("ENDHDR\n".utf8)) else {
+            throw XCTSkip("djxl PAM header not found")
+        }
+        let ref = refData.subdata(in: hdrEnd.upperBound..<refData.count)
+        guard ref.count == dim * dim * 4 else {
+            throw XCTSkip("djxl PAM size mismatch")
+        }
+        let bytes = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
+        let frame = try JXLDecoder().decode(bytes)
+        XCTAssertEqual(frame.channels, 4)
+        XCTAssertEqual(frame.alphaChannels, 1)
+        XCTAssertEqual(frame.data.count, dim * dim * 4)
+        var maxRGB = 0, maxA = 0
+        for i in 0..<(dim * dim) {
+            for c in 0..<3 {
+                maxRGB = max(maxRGB, abs(
+                    Int(frame.data[i * 4 + c]) - Int(ref[i * 4 + c])))
+            }
+            maxA = max(maxA, abs(
+                Int(frame.data[i * 4 + 3]) - Int(ref[i * 4 + 3])))
+        }
+        XCTAssertLessThanOrEqual(
+            maxRGB, 5,
+            "320×320 RGBA: colour max byte-diff vs djxl \(maxRGB)")
+        XCTAssertEqual(
+            maxA, 0,
+            "320×320 RGBA: per-group modular alpha must be byte-exact "
+            + "(got max diff \(maxA))")
+    }
+
     /// Probe a sweep of cjxl distances to see which quant modes
     /// each emits — informs which `QuantEncoding` modes are
     /// load-bearing for real-world cjxl output. Reports the
