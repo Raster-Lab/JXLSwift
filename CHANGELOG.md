@@ -68,6 +68,16 @@ The encoder accepted 4-channel frames but silently dropped the alpha. It now car
 - **Scope.** Single-section frames (≤ 256 px); RGBA frames spanning more than one AC group throw a clear `unsupported` error (the deferred per-AC-group alpha decode is a follow-up).
 - **378 tests passing, 3 skipped, 0 failures.**
 
+### v0.11.0g — VarDCT wired into the public encoder API + CLI
+
+The VarDCT lossy encoder was reachable only through the internal `VarDCTBitstreamWriter`. It is now the codec `JXLEncoder` and `jxl-tool encode` use for lossy modes — the encoder is end-to-end usable.
+
+- **`JXLEncoder.encode(_:)` picks the codec from `options.mode`.** `.lossless` always uses the Modular path. A lossy mode (`.lossy` / `.distance`) routes to `VarDCTBitstreamWriter` at `options.distance`. Previously every mode silently produced lossless Modular output regardless of `mode` — a long-standing latent bug, since the *default* `EncodingOptions()` is `.lossy(quality: 90)`.
+- **Graceful fallback.** When VarDCT can't take a frame (non-8-bit, grayscale, or beyond its size limits) the `unsupported` error is caught and the encode falls back to the lossless Modular path, so `encode` always yields a valid codestream rather than failing. Any *other* encoder error propagates.
+- **CLI.** `jxl-tool encode` now honours `--lossless` / `--quality`: the default is lossy VarDCT, `--lossless` forces Modular. The summary line reports the mode used.
+- **Verified.** `testJXLEncoder_LossyRoutesToVarDCT` confirms a lossy RGB8 encode is a VarDCT frame that round-trips within `mean < 4` and is markedly smaller than the lossless Modular encode of the same frame (which round-trips bit-exact); `testJXLEncoder_LossyGrayscaleFallsBackToModular` confirms the Modular fallback. `testJXLEncoder_DispatchRGB8` now constructs `.lossless` options explicitly, since it tests the Modular dispatch.
+- **380 tests passing, 3 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)

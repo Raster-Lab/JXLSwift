@@ -1,17 +1,22 @@
 // JXLEncoder — pure-Swift JPEG XL encoder.
 //
-// STATUS: lossless Modular path is wired up for 8-bit and 16-bit
-// integer samples (single channel grayscale, RGB, RGBA), single-pass,
-// any size up to the encoder's 8K cap. Output round-trips through
-// `djxl 0.11.2`. VarDCT (lossy) is still pending; calling
-// `encode(_:)` with a `float32` frame throws `EncoderError.notImplemented`.
+// STATUS: both halves of the codec are wired up.
+//   • Lossless Modular — 8-bit and 16-bit integer samples (grayscale,
+//     RGB, RGBA), single-pass, any size up to the encoder's 8K cap.
+//   • Lossy VarDCT — 8-bit RGB / RGBA via `VarDCTBitstreamWriter`
+//     (DCT8×8, single DC group; RGB ≤ 2048 px, RGBA ≤ 256 px).
+// Output round-trips through `djxl 0.11.2`.
 //
-// Routing: `encode(_:)` deinterleaves the caller's
-// channel-interleaved `ImageFrame.data` into per-channel `[UInt8]`
-// (or `[UInt16]`) buffers and dispatches into `SpecModularEncoder`'s
-// 8-bit/16-bit, grayscale/RGB/RGBA paths. `EncodingOptions.
-// useM0Placeholder` still routes to the legacy M0 vertical slice
-// for benchmark continuity.
+// Routing: `encode(_:)` picks the codec from `options.mode`.
+// `.lossless` always uses the Modular path. Lossy modes
+// (`.lossy` / `.distance`) use the VarDCT path when the frame is one
+// VarDCT can take; for frames it can't (grayscale, 16-bit, oversized)
+// the encoder **falls back to lossless Modular** so `encode` always
+// yields a valid codestream rather than failing. The Modular path
+// deinterleaves the caller's channel-interleaved `ImageFrame.data`
+// into per-channel buffers and dispatches into `SpecModularEncoder`.
+// `EncodingOptions.useM0Placeholder` still routes to the legacy M0
+// vertical slice for benchmark continuity.
 //
 // Track progress in ROADMAP.md.
 
@@ -55,12 +60,18 @@ public struct JXLEncoder: Sendable {
         self.options = options
     }
 
-    /// Encode a single frame. When
-    /// `EncodingOptions.useM0Placeholder == true`, routes through
-    /// `MinimalLosslessCodec` (the legacy M0 vertical slice).
-    /// Otherwise dispatches into `SpecModularEncoder` based on the
-    /// frame's `pixelType`, `channels`, and `alphaChannels` —
-    /// produces a real spec-compliant codestream `djxl` can decode.
+    /// Encode a single frame.
+    ///
+    /// - `EncodingOptions.useM0Placeholder == true` routes through
+    ///   `MinimalLosslessCodec` (the legacy M0 vertical slice).
+    /// - A lossy `mode` (`.lossy` / `.distance`) routes to the VarDCT
+    ///   encoder when the frame is 8-bit RGB/RGBA within VarDCT's
+    ///   size limits; otherwise it **falls back** to the lossless
+    ///   Modular path (so the call still produces a valid codestream).
+    /// - `.lossless` always uses the Modular path, dispatched on the
+    ///   frame's `pixelType`, `channels`, and `alphaChannels`.
+    ///
+    /// Produces a real spec-compliant codestream `djxl` can decode.
     /// `float32` and frames with `iccProfile` set throw
     /// `.notImplemented` for now.
     public func encode(_ frame: ImageFrame) throws -> EncodedImage {
@@ -85,6 +96,36 @@ public struct JXLEncoder: Sendable {
             )
         }
         let start = Date()
+
+        // Lossy modes encode through the VarDCT codec. When the frame
+        // is one VarDCT can't take (non-8-bit, <3 or >4 channels,
+        // beyond the writer's size limits) `VarDCTBitstreamWriter` /
+        // `VarDCTEncoder` throw their `unsupported` case — caught here
+        // so the encode falls back to the lossless Modular path below.
+        if case .lossless = options.mode {
+            // Lossless — skip VarDCT, use Modular directly.
+        } else {
+            do {
+                let cs = try VarDCTBitstreamWriter.encode(
+                    frame: frame, distance: options.distance)
+                let wrapped = options.containerWrap
+                    ? buildJXLContainer(codestream: cs) : cs
+                return EncodedImage(
+                    data: wrapped,
+                    stats: CompressionStats(
+                        originalSize: frame.data.count,
+                        compressedSize: wrapped.count,
+                        encodingTime: Date().timeIntervalSince(start)
+                    )
+                )
+            } catch is VarDCTBitstreamWriter.WriterError {
+                // VarDCT can't take this frame — fall through to
+                // the lossless Modular dispatch below.
+            } catch is VarDCTEncoder.EncoderError {
+                // Likewise (non-8-bit / wrong channel count).
+            }
+        }
+
         let bytes: Data
         // High-bit-depth encoders accept 9..16; clamp to the spec
         // range. ImageFrame's `pixelType.bitsPerSample` is always

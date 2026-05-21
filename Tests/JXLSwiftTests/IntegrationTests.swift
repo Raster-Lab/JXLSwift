@@ -9831,7 +9831,8 @@ extension FoundationTests {
     /// `JXLEncoder.encode(_:)` dispatches frames into
     /// `SpecModularEncoder` based on `pixelType`/`channels`. Verify
     /// the dispatch by encoding a 16×16 RGB frame and recovering the
-    /// pixels through our decoder.
+    /// pixels through our decoder. The `.lossless` mode is required —
+    /// a lossy mode would route to the VarDCT codec instead.
     func testJXLEncoder_DispatchRGB8() throws {
         var frame = ImageFrame(
             width: 16, height: 16, channels: 3,
@@ -9845,7 +9846,8 @@ extension FoundationTests {
                 frame.data[i + 2] = UInt8((x ^ y) * 8)
             }
         }
-        let encoded = try JXLEncoder().encode(frame)
+        let encoded = try JXLEncoder(
+            options: EncodingOptions(mode: .lossless)).encode(frame)
         XCTAssertGreaterThan(encoded.data.count, 0)
         let image = try JXLDecoder().decodeModular(encoded.data)
         XCTAssertEqual(image.channels.count, 3)
@@ -9855,6 +9857,80 @@ extension FoundationTests {
                 XCTAssertEqual(image.channels[ci].pixels[i], want)
             }
         }
+    }
+
+    /// `JXLEncoder.encode(_:)` picks the codec from `options.mode`: a
+    /// lossy mode routes an 8-bit RGB frame to the VarDCT codec, a
+    /// `.lossless` mode routes it to the Modular codec. Verify both
+    /// by frame structure and round-trip behaviour — lossy is a
+    /// VarDCT frame that round-trips within a small error and is
+    /// markedly smaller; lossless is a Modular frame that round-trips
+    /// bit-exact.
+    func testJXLEncoder_LossyRoutesToVarDCT() throws {
+        let dim = 64
+        var frame = ImageFrame(
+            width: dim, height: dim, channels: 3,
+            pixelType: .uint8, colorSpace: .sRGB)
+        for y in 0..<dim {
+            for x in 0..<dim {
+                let i = (y * dim + x) * 3
+                frame.data[i + 0] = UInt8(30 + x * 2)
+                frame.data[i + 1] = UInt8(40 + y * 2)
+                frame.data[i + 2] = UInt8(60 + (x + y))
+            }
+        }
+
+        // Lossy (default mode) → VarDCT.
+        let lossy = try JXLEncoder().encode(frame)
+        let lossyInspect = JXLDecoder()
+            .inspectFrameStructure(lossy.data)
+        XCTAssertEqual(lossyInspect.encoding, FrameEncoding.varDCT,
+            "a lossy mode must route an RGB8 frame to VarDCT")
+        let lossyDecoded = try JXLDecoder().decode(lossy.data)
+        var lossyErr = 0
+        for i in 0..<(dim * dim * 3) {
+            lossyErr += abs(Int(lossyDecoded.data[i])
+                            - Int(frame.data[i]))
+        }
+        XCTAssertLessThan(Double(lossyErr) / Double(dim * dim * 3), 4.0,
+            "VarDCT lossy round-trip error too large")
+
+        // Lossless → Modular, bit-exact.
+        let lossless = try JXLEncoder(
+            options: EncodingOptions(mode: .lossless)).encode(frame)
+        let llInspect = JXLDecoder()
+            .inspectFrameStructure(lossless.data)
+        XCTAssertEqual(llInspect.encoding, FrameEncoding.modular,
+            "`.lossless` must route to the Modular codec")
+        let llDecoded = try JXLDecoder().decode(lossless.data)
+        XCTAssertEqual(llDecoded.data, frame.data,
+            "Modular lossless must round-trip bit-exact")
+
+        // VarDCT lossy should be the smaller of the two.
+        XCTAssertLessThan(lossy.data.count, lossless.data.count,
+            "lossy VarDCT (\(lossy.data.count) B) should beat "
+            + "lossless Modular (\(lossless.data.count) B)")
+    }
+
+    /// `JXLEncoder.encode(_:)` lossy-mode **fallback**: VarDCT can't
+    /// take an 8-bit grayscale frame, so a lossy request falls back
+    /// to the lossless Modular path rather than failing. The output
+    /// is a Modular frame that round-trips bit-exact.
+    func testJXLEncoder_LossyGrayscaleFallsBackToModular() throws {
+        var frame = ImageFrame(
+            width: 24, height: 24, channels: 1,
+            pixelType: .uint8, colorSpace: .grayscale)
+        for i in 0..<frame.data.count {
+            frame.data[i] = UInt8((i * 7) & 0xff)
+        }
+        // Default options are lossy — VarDCT rejects grayscale.
+        let encoded = try JXLEncoder().encode(frame)
+        let inspect = JXLDecoder().inspectFrameStructure(encoded.data)
+        XCTAssertEqual(inspect.encoding, FrameEncoding.modular,
+            "lossy grayscale must fall back to the Modular codec")
+        let decoded = try JXLDecoder().decode(encoded.data)
+        XCTAssertEqual(decoded.data, frame.data,
+            "Modular fallback must round-trip bit-exact")
     }
 
     /// Multi-group RGB at 1024×1024 → 2×2 = 4 groups. Validates the
