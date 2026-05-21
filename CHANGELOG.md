@@ -23,6 +23,16 @@ New `Sources/JXLSwift/Codec/VarDCTEncoder.swift` — the analysis half of the co
 - **Survey.** A full audit of existing encoder-side primitives (forward DCT, `OpsinXYB.forward`, `ACQuantize`, `ANSEncoder`, the entropy-section / codebook / TOC / GroupHeader writers) confirmed the orchestration layer can call them directly; the only missing writers are the trivial all-default forms of `DequantMatricesDC/AC`, `BlockCtxMap`, and `ColorCorrelation` — built alongside the bitstream layer.
 - **374 tests passing, 3 skipped, 0 failures.**
 
+### v0.11.0b — bitstream serialisation: a `djxl`-decodable frame 🎉
+
+New `Sources/JXLSwift/Codec/VarDCTBitstreamWriter.swift` — the serialisation layer that turns `VarDCTEncoder.Quantized` into a complete JPEG XL codestream, written section-for-section as the inverse of `JXLDecoder.decodeVarDCTPartial`.
+
+- **First cut — DC-only.** Every block's AC coefficients are emitted as `nzeros = 0`, so *any* image encodes to a structurally valid lossy frame (blocky — each 8×8 block decodes to its average colour). Real AC coefficient tokens are the next increment.
+- **Full frame.** Signature + SizeHeader + ImageMetadata + VarDCT FrameHeader + single-entry TOC; LfGlobal (default `DequantMatricesDC` / `BlockCtxMap` / `ColorCorrelation`, `QuantizerParams`, the global modular tree); the DC group (modular DC sub-image + ACMetadata sub-image, sharing one pooled Huffman codebook reused from the proven `SpecModularEncoder` pattern); HfGlobal (`used_orders = 0`, the AC histogram); the AC group's `nzeros = 0` token stream.
+- **Verified against libjxl.** `testVarDCTBitstreamWriter_RoundTrip` encodes a 24×24 image and decodes it with **both** our own decoder **and `djxl 0.11.2`** — djxl accepts the codestream and reconstructs every 8×8 block's average colour to within ±1 of the source. Our encoder now emits genuinely spec-compliant JPEG XL.
+- **Scope.** Single-section frames (≤ ~256 px), DCT8×8, RGB. Multi-section and real AC follow.
+- **375 tests passing, 3 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)

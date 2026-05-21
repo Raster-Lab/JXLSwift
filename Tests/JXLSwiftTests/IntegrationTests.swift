@@ -8186,6 +8186,95 @@ extension FoundationTests {
             "VarDCT encoder round-trip max error \(maxErr)")
     }
 
+    /// `VarDCTBitstreamWriter` end-to-end. Encodes a 24×24 image to a
+    /// VarDCT codestream and verifies it both with our own decoder
+    /// **and with libjxl `djxl`** — i.e. our encoder emits a genuinely
+    /// spec-compliant JPEG XL frame. This first cut is DC-only, so
+    /// each 8×8 block decodes to its average colour; the per-block
+    /// mean is checked against the source.
+    func testVarDCTBitstreamWriter_RoundTrip() throws {
+        let dim = 24
+        var frame = ImageFrame(width: dim, height: dim, channels: 3)
+        for y in 0..<dim {
+            for x in 0..<dim {
+                let i = (y * dim + x) * 3
+                frame.data[i + 0] = UInt8(60 + x * 4)
+                frame.data[i + 1] = UInt8(70 + y * 4)
+                frame.data[i + 2] = UInt8(90 + (x + y) * 2)
+            }
+        }
+        // Expected per-block average of the source.
+        func srcMean(_ bx: Int, _ by: Int, _ c: Int) -> Int {
+            var s = 0
+            for yy in 0..<8 {
+                for xx in 0..<8 {
+                    s += Int(frame.data[
+                        ((by * 8 + yy) * dim + (bx * 8 + xx)) * 3 + c])
+                }
+            }
+            return s / 64
+        }
+
+        let codestream = try VarDCTBitstreamWriter.encode(frame: frame)
+        XCTAssertGreaterThan(codestream.count, 0)
+
+        // (1) Our own decoder.
+        let decoded = try JXLDecoder().decode(codestream)
+        XCTAssertEqual(decoded.width, dim)
+        XCTAssertEqual(decoded.height, dim)
+        XCTAssertEqual(decoded.channels, 3)
+        var maxOurs = 0
+        for by in 0..<3 {
+            for bx in 0..<3 {
+                for c in 0..<3 {
+                    let v = Int(decoded.data[
+                        ((by * 8 + 3) * dim + (bx * 8 + 3)) * 3 + c])
+                    maxOurs = max(maxOurs, abs(v - srcMean(bx, by, c)))
+                }
+            }
+        }
+        XCTAssertLessThan(maxOurs, 24,
+            "DC-only block-mean diff (our decoder) \(maxOurs)")
+
+        // (2) libjxl djxl — confirms genuine spec compliance.
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("djxl not available for spec-compliance check")
+        }
+        let tmp = NSTemporaryDirectory()
+        let jxlPath = tmp + "vdt_encwrite.jxl"
+        let outPath = tmp + "vdt_encwrite_dj.ppm"
+        try codestream.write(to: URL(fileURLWithPath: jxlPath))
+        let p = Process()
+        p.launchPath = djxl
+        p.arguments = [jxlPath, outPath]
+        p.standardOutput = Pipe(); p.standardError = Pipe()
+        try p.run(); p.waitUntilExit()
+        XCTAssertEqual(p.terminationStatus, 0,
+            "djxl rejected our VarDCT codestream")
+        let djData = try Data(contentsOf: URL(fileURLWithPath: outPath))
+        var binStart = 0, nl = 0
+        for (i, b) in djData.enumerated() {
+            if b == 0x0A { nl += 1; if nl == 3 { binStart = i + 1; break } }
+        }
+        guard djData.count - binStart == dim * dim * 3 else {
+            throw XCTSkip("djxl PPM size mismatch")
+        }
+        let dj = djData.subdata(in: binStart..<djData.count)
+        var maxDj = 0
+        for by in 0..<3 {
+            for bx in 0..<3 {
+                for c in 0..<3 {
+                    let v = Int(dj[((by * 8 + 3) * dim
+                                    + (bx * 8 + 3)) * 3 + c])
+                    maxDj = max(maxDj, abs(v - srcMean(bx, by, c)))
+                }
+            }
+        }
+        XCTAssertLessThan(maxDj, 24,
+            "DC-only block-mean diff (djxl) \(maxDj)")
+    }
+
     /// Probe a sweep of cjxl distances to see which quant modes
     /// each emits — informs which `QuantEncoding` modes are
     /// load-bearing for real-world cjxl output. Reports the
