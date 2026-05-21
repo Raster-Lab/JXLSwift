@@ -10,10 +10,12 @@
 // then `ZeroDensityContext`-routed coefficient tokens — so the
 // frame is a genuine lossy compression, not just block averages.
 //
-// Scope: single-section frames (one AC group, one DC group, one
-// pass — i.e. xsize, ysize ≤ group_dim ≈ 256 px), DCT8×8 only,
-// default colour-correlation / quant matrices / block-context map,
-// `used_orders = 0`, `num_histograms = 1`.
+// Scope: frames up to one DC group (≤ 2048 px) — single-section
+// when ≤ 256 px, otherwise a multi-section codestream of one AC
+// group per 256-px tile. RGB and RGBA (one lossless modular alpha
+// extra channel). DCT8×8 only, one pass, default colour-correlation
+// / quant matrices / block-context map, `used_orders = 0`,
+// `num_histograms = 1`.
 //
 // Spec reference: ISO/IEC 18181-1 §K. libjxl: `enc_frame.cc`.
 
@@ -55,15 +57,12 @@ public enum VarDCTBitstreamWriter {
 
         // --- Alpha extra channel (RGBA) --------------------------
         // A 4-channel frame's trailing channel is carried losslessly
-        // as one modular alpha extra channel in the LfGlobal `gi`
-        // sub-image. Single-section frames only — for frames > one AC
-        // group the alpha channel defers per-AC-group (not yet wired).
+        // as one modular alpha extra channel. Single-section frames
+        // decode it whole in the LfGlobal `gi` global pass; for
+        // frames spanning more than one 256-px group the channel is
+        // larger than a modular group, so it defers per-AC-group
+        // (the decoder's `extraGiImage` deferred path).
         let hasAlpha = frame.channels >= 4
-        if hasAlpha && numGroups != 1 {
-            throw WriterError.unsupported(
-                "VarDCT encode: RGBA frames > 256 px (multi-section "
-                + "alpha) not implemented — \(q.xsize)×\(q.ysize)")
-        }
         var alphaPix = [Int32]()
         if hasAlpha {
             let ch = frame.channels
@@ -116,12 +115,40 @@ public enum VarDCTBitstreamWriter {
         }
         // The alpha extra channel's residuals share the same pooled
         // post-tree codebook (decoded with the LfGlobal global tree).
-        var alphaPacked: [UInt32] = []
+        // Single-section: the whole channel, gradient-predicted once.
+        // Multi-section: one gradient-predicted sub-rect per AC group
+        // (the decoder decodes each group's rect independently).
+        var alphaWholePacked: [UInt32] = []
+        var alphaGroupPackedTmp: [[UInt32]] = []
         if hasAlpha {
-            alphaPacked = modularResiduals(
-                alphaPix, width: q.xsize, height: q.ysize,
-                cfg: postCfg, histo: &modHisto, maxToken: &maxModToken)
+            if numGroups == 1 {
+                alphaWholePacked = modularResiduals(
+                    alphaPix, width: q.xsize, height: q.ysize,
+                    cfg: postCfg, histo: &modHisto, maxToken: &maxModToken)
+            } else {
+                for gy in 0..<numGroupsY {
+                    for gx in 0..<numGroupsX {
+                        let rx = gx * groupDim, ry = gy * groupDim
+                        let rw = min(groupDim, q.xsize - rx)
+                        let rh = min(groupDim, q.ysize - ry)
+                        var sub = [Int32](repeating: 0, count: rw * rh)
+                        for yy in 0..<rh {
+                            let srcRow = (ry + yy) * q.xsize + rx
+                            for xx in 0..<rw {
+                                sub[yy * rw + xx] = alphaPix[srcRow + xx]
+                            }
+                        }
+                        alphaGroupPackedTmp.append(modularResiduals(
+                            sub, width: rw, height: rh,
+                            cfg: postCfg, histo: &modHisto,
+                            maxToken: &maxModToken))
+                    }
+                }
+            }
         }
+        // Bound as `let` so the @Sendable `writeACGroup` can capture it.
+        let alphaPacked = alphaWholePacked
+        let alphaPackedPerGroup = alphaGroupPackedTmp
         let modAlphabet = maxModToken + 1
         let modLengths = lengthLimitedCanonicalHuffman(
             counts: Array(modHisto[0..<modAlphabet]),
@@ -188,15 +215,21 @@ public enum VarDCTBitstreamWriter {
             // gi modular sub-image: the alpha extra channel for RGBA
             // frames. Plain RGB has 0 modular channels here, so the
             // decoder's `ModularDecode` early-returns and nothing is
-            // written; a single alpha channel is emitted as a default
-            // GroupHeader followed by its gradient-predicted residual
-            // tokens (the inverse of the decoder's gi global pass).
+            // written. For RGBA the gi GroupHeader is always emitted;
+            // a single-section frame then carries the whole alpha
+            // channel here (gradient-predicted residual tokens — the
+            // inverse of the decoder's gi global pass), while a
+            // multi-section frame writes only the GroupHeader (the
+            // channel exceeds one group and defers per-AC-group).
             if hasAlpha {
                 try GroupHeader.default.write(to: &w)
-                let giWriter = TokenStreamWriter(
-                    header: modHeader, codebook: modCodebook)
-                for v in alphaPacked {
-                    try giWriter.writeToken(context: 0, value: v, to: &w)
+                if numGroups == 1 {
+                    let giWriter = TokenStreamWriter(
+                        header: modHeader, codebook: modCodebook)
+                    for v in alphaPacked {
+                        try giWriter.writeToken(
+                            context: 0, value: v, to: &w)
+                    }
                 }
             }
         }
@@ -242,6 +275,19 @@ public enum VarDCTBitstreamWriter {
             for tok in acTokensPerGroup[group] {
                 try acWriter.writeToken(
                     context: tok.context, value: tok.value, to: &w)
+            }
+            // Deferred alpha extra channel (multi-section RGBA): the
+            // VarDCT AC tokens are followed by a default modular
+            // GroupHeader then this group's gradient-predicted alpha
+            // sub-rect — the inverse of the decoder's per-AC-group
+            // `extraGiImage` decode.
+            if hasAlpha && numGroups > 1 {
+                try GroupHeader.default.write(to: &w)
+                let giWriter = TokenStreamWriter(
+                    header: modHeader, codebook: modCodebook)
+                for v in alphaPackedPerGroup[group] {
+                    try giWriter.writeToken(context: 0, value: v, to: &w)
+                }
             }
         }
 

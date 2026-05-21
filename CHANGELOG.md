@@ -78,6 +78,14 @@ The VarDCT lossy encoder was reachable only through the internal `VarDCTBitstrea
 - **Verified.** `testJXLEncoder_LossyRoutesToVarDCT` confirms a lossy RGB8 encode is a VarDCT frame that round-trips within `mean < 4` and is markedly smaller than the lossless Modular encode of the same frame (which round-trips bit-exact); `testJXLEncoder_LossyGrayscaleFallsBackToModular` confirms the Modular fallback. `testJXLEncoder_DispatchRGB8` now constructs `.lossless` options explicitly, since it tests the Modular dispatch.
 - **380 tests passing, 3 skipped, 0 failures.**
 
+### v0.11.0h — multi-section RGBA encode
+
+RGBA encode (v0.11.0f) was limited to single-section frames (≤ 256 px) — larger RGBA frames threw `unsupported`. They now encode, so RGBA reaches the same size ceiling as RGB (one DC group, ≤ 2048 px).
+
+- **Deferred per-AC-group alpha.** When an RGBA frame spans more than one 256-px group its alpha channel is larger than a modular group, so — exactly as the decoder's `extraGiImage` path expects — the LfGlobal `gi` sub-image writes only a `GroupHeader` (the alpha channel decodes nothing in the global pass), and each AC-group TOC section carries its VarDCT AC tokens followed by a modular `GroupHeader` + that group's gradient-predicted alpha sub-rect. Every sub-rect's residuals pool into the shared post-tree codebook.
+- **Verified.** `testVarDCTBitstreamWriter_RGBA_MultiSection` encodes a 384×384 RGBA frame (2×2 groups) and round-trips it through our decoder **and `djxl 0.11.2`**: RGB within `mean < 4`, alpha **byte-exact** at every pixel in both decoders.
+- **381 tests passing, 3 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)

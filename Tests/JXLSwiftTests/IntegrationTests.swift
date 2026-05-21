@@ -8461,6 +8461,93 @@ extension FoundationTests {
             "RGBA encode RGB round-trip mean error (djxl) \(djMean)")
     }
 
+    /// Multi-section RGBA `VarDCTBitstreamWriter`. A 384×384 RGBA
+    /// frame spans a 2×2 grid of 256-px groups, so the alpha extra
+    /// channel exceeds one modular group and is **deferred per AC
+    /// group** — each AC-group TOC section carries its VarDCT tokens
+    /// then a modular GroupHeader + that group's alpha sub-rect. The
+    /// alpha must still be byte-exact; RGB stays lossy within
+    /// `mean < 4`. Verified with our decoder and libjxl `djxl`.
+    func testVarDCTBitstreamWriter_RGBA_MultiSection() throws {
+        let dim = 384
+        var frame = ImageFrame(
+            width: dim, height: dim, channels: 4, alphaChannels: 1)
+        for y in 0..<dim {
+            for x in 0..<dim {
+                let i = (y * dim + x) * 4
+                frame.data[i + 0] = UInt8((40 + x) & 0xff)
+                frame.data[i + 1] = UInt8((50 + y) & 0xff)
+                frame.data[i + 2] = UInt8((70 + (x + y) / 2) & 0xff)
+                frame.data[i + 3] = UInt8((x * 2 + y * 3) & 0xff)
+            }
+        }
+        let codestream = try VarDCTBitstreamWriter.encode(frame: frame)
+
+        // (1) Our own decoder — RGB lossy, alpha lossless.
+        let decoded = try JXLDecoder().decode(codestream)
+        XCTAssertEqual(decoded.width, dim)
+        XCTAssertEqual(decoded.channels, 4,
+            "multi-section RGBA should round-trip 4 channels")
+        var rgbErr = 0
+        for i in 0..<(dim * dim) {
+            for c in 0..<3 {
+                rgbErr += abs(Int(decoded.data[i * 4 + c])
+                              - Int(frame.data[i * 4 + c]))
+            }
+            XCTAssertEqual(decoded.data[i * 4 + 3], frame.data[i * 4 + 3],
+                "multi-section alpha must be lossless at pixel \(i)")
+        }
+        let oursMean = Double(rgbErr) / Double(dim * dim * 3)
+        XCTAssertLessThan(oursMean, 4.0,
+            "multi-section RGBA RGB round-trip mean error "
+            + "(our decoder) \(oursMean)")
+
+        // (2) libjxl djxl.
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("djxl not available")
+        }
+        let tmp = NSTemporaryDirectory()
+        let jxlPath = tmp + "vdt_rgba_multi.jxl"
+        let outPath = tmp + "vdt_rgba_multi_dj.pam"
+        try codestream.write(to: URL(fileURLWithPath: jxlPath))
+        let p = Process()
+        p.launchPath = djxl
+        p.arguments = [jxlPath, outPath]
+        let errPipe = Pipe()
+        p.standardOutput = Pipe(); p.standardError = errPipe
+        try p.run(); p.waitUntilExit()
+        let djErr = String(
+            data: errPipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8) ?? ""
+        XCTAssertEqual(p.terminationStatus, 0,
+            "djxl rejected our multi-section RGBA codestream; "
+            + "stderr: \(djErr)")
+        let pam = try Data(contentsOf: URL(fileURLWithPath: outPath))
+        guard let endhdr = pam.range(
+            of: "ENDHDR\n".data(using: .utf8)!) else {
+            throw XCTSkip("djxl PAM output missing ENDHDR")
+        }
+        let pixelStart = endhdr.upperBound
+        guard pam.count - pixelStart == dim * dim * 4 else {
+            throw XCTSkip("djxl PAM size mismatch")
+        }
+        var djRGB = 0
+        for i in 0..<(dim * dim) {
+            for c in 0..<3 {
+                djRGB += abs(Int(pam[pixelStart + i * 4 + c])
+                             - Int(frame.data[i * 4 + c]))
+            }
+            XCTAssertEqual(pam[pixelStart + i * 4 + 3],
+                frame.data[i * 4 + 3],
+                "djxl multi-section alpha must be lossless at pixel \(i)")
+        }
+        let djMean = Double(djRGB) / Double(dim * dim * 3)
+        XCTAssertLessThan(djMean, 4.0,
+            "multi-section RGBA RGB round-trip mean error (djxl) "
+            + "\(djMean)")
+    }
+
     /// Probe a sweep of cjxl distances to see which quant modes
     /// each emits — informs which `QuantEncoding` modes are
     /// load-bearing for real-world cjxl output. Reports the
