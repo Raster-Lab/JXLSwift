@@ -149,4 +149,106 @@ public struct ACStrategyImage: Sendable {
             entries: entries, firstBlocks: firstBlocks
         )
     }
+
+    /// A single DC group's ACMetadata channel-2 segment.
+    public struct Segment: Sendable {
+        /// Top-left block offset of the DC group within the frame.
+        public let offsetX: Int
+        public let offsetY: Int
+        /// DC group block dimensions (clipped at the frame edge).
+        public let width: Int
+        public let height: Int
+        /// ACMeta channel 2 (`[ACS_0…, QF_0…]`) for this DC group.
+        public let channel2: [Int32]
+        /// First-block count for this DC group.
+        public let count: Int
+        public init(offsetX: Int, offsetY: Int, width: Int, height: Int,
+                    channel2: [Int32], count: Int) {
+            self.offsetX = offsetX; self.offsetY = offsetY
+            self.width = width; self.height = height
+            self.channel2 = channel2; self.count = count
+        }
+    }
+
+    /// Build a full-frame strategy plane from per-DC-group ACMeta
+    /// channel-2 segments. Each DC group covers a `dc_group_dim`-block
+    /// sub-region; its first-block raster walk is independent (a
+    /// multi-block transform never crosses a DC group boundary — see
+    /// libjxl `dec_modular.cc::DecodeAcMetadata`, where the walk is
+    /// confined to `DCGroupRect`). First-block coordinates are emitted
+    /// in DC-group order, then raster order within each group.
+    public static func buildMultiGroup(
+        fullWidth: Int, fullHeight: Int,
+        segments: [Segment]
+    ) throws -> ACStrategyImage {
+        precondition(fullWidth > 0 && fullHeight > 0)
+        let total = fullWidth * fullHeight
+        var entries = [ACStrategyEntry](
+            repeating: ACStrategyEntry(
+                isFirstBlock: false, strategy: .dct8x8,
+                firstBlockX: 0, firstBlockY: 0, qf: 0
+            ),
+            count: total
+        )
+        var covered = [Bool](repeating: false, count: total)
+        var firstBlocks: [(x: Int, y: Int)] = []
+        for seg in segments {
+            precondition(seg.channel2.count >= seg.count * 2,
+                         "segment channel-2 must have count*2 entries")
+            var num = 0
+            for ly in 0..<seg.height {
+                for lx in 0..<seg.width {
+                    let bx = seg.offsetX + lx
+                    let by = seg.offsetY + ly
+                    if covered[by * fullWidth + bx] { continue }
+                    guard num < seg.count else {
+                        throw ACStrategyImageError.acsCountMismatch(
+                            expected: seg.count, actual: num
+                        )
+                    }
+                    let acsRaw = seg.channel2[num]
+                    guard acsRaw >= 0, acsRaw <= 26,
+                          let acs = ACStrategy(rawValue: UInt8(acsRaw))
+                    else {
+                        throw ACStrategyImageError
+                            .invalidStrategyValue(acsRaw)
+                    }
+                    let qfRaw = seg.channel2[seg.count + num]
+                    let qf = 1 + max(0, min(qfRaw, 255))
+                    let cells = acs.blockCells
+                    guard lx + cells.cellsX <= seg.width,
+                          ly + cells.cellsY <= seg.height
+                    else {
+                        throw ACStrategyImageError.overflow(
+                            blockX: bx, blockY: by,
+                            cellsX: cells.cellsX, cellsY: cells.cellsY
+                        )
+                    }
+                    for iy in 0..<cells.cellsY {
+                        for ix in 0..<cells.cellsX {
+                            let cx = bx + ix, cy = by + iy
+                            let isFirst = (ix == 0 && iy == 0)
+                            entries[cy * fullWidth + cx] = ACStrategyEntry(
+                                isFirstBlock: isFirst, strategy: acs,
+                                firstBlockX: bx, firstBlockY: by,
+                                qf: isFirst ? qf : 0
+                            )
+                            covered[cy * fullWidth + cx] = true
+                        }
+                    }
+                    firstBlocks.append((x: bx, y: by))
+                    num += 1
+                }
+            }
+            guard num == seg.count else {
+                throw ACStrategyImageError.acsCountMismatch(
+                    expected: seg.count, actual: num
+                )
+            }
+        }
+        return ACStrategyImage(
+            width: fullWidth, height: fullHeight,
+            entries: entries, firstBlocks: firstBlocks
+        )
+    }
 }

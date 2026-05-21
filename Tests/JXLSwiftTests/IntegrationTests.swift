@@ -7812,6 +7812,102 @@ extension FoundationTests {
         }
     }
 
+    /// Multi-DC-group pin-down. A 2056×2056 frame spans a 2×2 grid of
+    /// DC groups (each DC group covers ≤ 256 blocks = 2048 px; libjxl
+    /// `DCGroupRect`). Exercises: per-DC-group TOC section seeking,
+    /// per-DC-group local modular trees (`has_tree=false` is typical
+    /// for multi-DC-group cjxl output), sub-region stitching of the
+    /// DC / cmap / EPF / AC-strategy planes, and the
+    /// `num_histograms > 1` AC histogram selector.
+    ///
+    /// Regression guard: before v0.10.0q the decoder threw
+    /// `notImplemented` on any frame > one DC group. A stitching or
+    /// histogram-selector regression desyncs the AC stream (decode
+    /// throws) or misplaces a quadrant (mean error explodes) — both
+    /// caught by the `mean < 1.0` assertion.
+    func testVarDCT_MultiDCGroup_DjxlByteEquality() throws {
+        let cjxl = "/opt/homebrew/bin/cjxl"
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: cjxl),
+              FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("cjxl/djxl not available")
+        }
+        let dim = 2056   // > 2048 → 2×2 DC groups
+        let tmp = NSTemporaryDirectory()
+        let pnmPath = tmp + "vdt_mdcg.ppm"
+        var ppm = Data("P6\n\(dim) \(dim)\n255\n".utf8)
+        ppm.reserveCapacity(ppm.count + dim * dim * 3)
+        for y in 0..<dim {
+            for x in 0..<dim {
+                ppm.append(UInt8((x * 2 + y) & 0xff))
+                ppm.append(UInt8((y * 2) & 0xff))
+                ppm.append(UInt8((x ^ y) & 0xff))
+            }
+        }
+        try ppm.write(to: URL(fileURLWithPath: pnmPath))
+
+        let jxlPath = tmp + "vdt_mdcg.jxl"
+        let refPath = tmp + "vdt_mdcg_ref.ppm"
+        let p1 = Process()
+        p1.launchPath = cjxl
+        p1.arguments = [pnmPath, jxlPath, "-d", "1.0"]
+        p1.standardOutput = Pipe(); p1.standardError = Pipe()
+        try p1.run(); p1.waitUntilExit()
+        guard p1.terminationStatus == 0 else {
+            throw XCTSkip("cjxl encode failed")
+        }
+        let p2 = Process()
+        p2.launchPath = djxl
+        p2.arguments = [jxlPath, refPath]
+        p2.standardOutput = Pipe(); p2.standardError = Pipe()
+        try p2.run(); p2.waitUntilExit()
+        guard p2.terminationStatus == 0 else {
+            throw XCTSkip("djxl decode failed")
+        }
+        let refData = try Data(contentsOf: URL(fileURLWithPath: refPath))
+        var binStart = 0, newlines = 0
+        for (i, b) in refData.enumerated() {
+            if b == 0x0A { newlines += 1; if newlines == 3 {
+                binStart = i + 1; break
+            } }
+        }
+        guard refData.count - binStart == dim * dim * 3 else {
+            throw XCTSkip("djxl PPM size mismatch")
+        }
+        let ref = refData.subdata(in: binStart..<refData.count)
+        let bytes = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
+        let frame = try JXLDecoder().decode(bytes)
+        XCTAssertEqual(frame.width, dim)
+        XCTAssertEqual(frame.height, dim)
+        XCTAssertEqual(frame.data.count, dim * dim * 3)
+        // Per-DC-group-quadrant mean error — a stitching bug would
+        // spike exactly one quadrant.
+        let half = dim / 2
+        for qy in 0..<2 {
+            for qx in 0..<2 {
+                var sum = 0, cnt = 0
+                var yy = qy * half
+                while yy < (qy + 1) * half {
+                    var xx = qx * half
+                    while xx < (qx + 1) * half {
+                        let i = (yy * dim + xx) * 3
+                        for c in 0..<3 {
+                            sum += abs(Int(frame.data[i + c])
+                                       - Int(ref[i + c]))
+                        }
+                        cnt += 3; xx += 5
+                    }
+                    yy += 5
+                }
+                let mean = Double(sum) / Double(cnt)
+                XCTAssertLessThan(
+                    mean, 1.0,
+                    "DC-group quadrant (\(qx),\(qy)) mean byte-diff "
+                    + "\(mean) — multi-DC-group stitching regression")
+            }
+        }
+    }
+
     /// Probe a sweep of cjxl distances to see which quant modes
     /// each emits — informs which `QuantEncoding` modes are
     /// load-bearing for real-world cjxl output. Reports the

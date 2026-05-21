@@ -171,6 +171,17 @@ The AFV transform decomposes its 8×8 cell into three sub-blocks — a 4×4 AFV-
 - **Result.** The 192×192 textured multi-tile fixture now decodes **byte-exact vs `djxl 0.11.2`** — `max=(1,1,1)` at d=1, `max=(3,1,3)` at d=2 (the same sub-±3 rounding floor as SWEEP/DCT64x64). New pin-down test `testVarDCT_MultiTileAFV_DjxlByteEquality` asserts `max ≤ 5` and would fail at >100 on either the v0.10.0o CfL or v0.10.0p transpose regression. SWEEP + AFV-probe fixtures stay byte-exact.
 - **370 tests passing, 3 skipped, 0 failures.**
 
+### v0.10.0q — multi-DC-group decode (frames > ~2048 px)
+
+The VarDCT decoder handled exactly **one DC group** — `JXLDecoder.decodeVarDCT` threw `notImplemented` on any frame wider or taller than a DC group (`dc_group_dim` ≈ 2048 px). Real-world photographs are almost always larger, so this gated the decoder to small fixtures only. The DC-group decode is now a loop over all DC groups.
+
+- **Per-DC-group loop.** libjxl decodes each DC group as an independent `DecodeVarDCTDC` (3 DC channels) + `DecodeAcMetadata` (4 channels) pair, each at its own TOC section (`1 + dc_group`). The decoder now iterates `num_dc_groups`, seeks each section, and stitches every group's `groupDim`-block sub-region (libjxl `frame_dimensions.h::DCGroupRect`) into full-frame DC / YToX-YToB cmap / EPF-sharpness / AC-strategy planes. New `ACStrategyImage.buildMultiGroup` runs the first-block raster walk per DC-group segment (a multi-block transform never crosses a DC-group boundary).
+- **Local modular trees.** Multi-DC-group cjxl output commonly sets `has_tree=false` (no global tree); each DC group's DC and ACMeta sub-images then carry their own local tree. New `resolveModularTree` helper reads a local tree inline (`EntropySectionHeader → MultiClusterCodebook → ModularTree → post-tree header → post-tree codebook`) when a GroupHeader's `use_global_tree` is false — previously a hard `notImplemented`.
+- **`num_histograms > 1` AC histogram selector.** Large frames split the AC histograms into sets; each AC group's token stream opens with `CeilLog2Nonzero(num_histograms)` bits selecting its set, shifting every AC context by `cur_histogram × NumACContexts` (libjxl `dec_group.cc:656`). The decoder read neither — it assumed `num_histograms == 1` and a zero context offset. Both are now handled.
+- **`VarDCTDC` modular stream id** corrected to `1 + dc_group` (was the `ModularDC` formula `1 + num_dc_groups + group`); harmless for single-DC-group fixtures whose tree ignores the group-id property, but wrong in general.
+- **Result.** A 2080×2080 textured fixture (4 DC groups, local trees, `num_histograms=4`, 81 AC groups) decodes vs `djxl 0.11.2` at mean `(0.24, 0.24, 0.26)` — uniform across all four DC-group quadrants. New pin-down test `testVarDCT_MultiDCGroup_DjxlByteEquality` (2056×2056, 2×2 DC groups) asserts per-quadrant mean `< 1.0`. A residual handful of B-channel pixels drift up to ~20 on large textured frames (≈ 0.04 % of pixels, present on single-DC-group large frames too — a separate pre-existing big-asymmetric-DCT/EPF-edge residual, not a multi-DC-group artefact).
+- **371 tests passing, 3 skipped, 0 failures.**
+
 ---
 
 ## [0.8.0] — 2026 — Multi-AC-strategy + UMA backend
