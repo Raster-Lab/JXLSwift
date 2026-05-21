@@ -122,6 +122,13 @@ The prior investigation's "**2.286× factor**" was a red herring: with the chann
 - Still unimplemented (decode throws on non-zero AC): `DCT2X2`, `DCT4X4`, `DCT4X8`, `DCT8X4`, `DCT32X8`, `DCT8X32`. libjxl `TransformToPixels` ports for each are the remaining close-out work.
 - **368 tests passing, 3 skipped, 0 failures.**
 
+### v0.10.0k — DCT2X2 + DCT4X4 transforms; `used_orders` gap identified
+
+- **DCT2X2 and DCT4X4 transforms** (`Sources/JXLSwift/VarDCT/SmallACTransforms.swift`) — ports of libjxl `dec_transforms-inl.h` (`Type::DCT2X2` via the `IDCT2TopBlock<2/4/8>` cascade; `Type::DCT4X4` via four 4×4 `ComputeScaledIDCT` quadrants). Quant matrices: `QuantWeights.getDCT2QuantWeights` (the `kQuantModeDCT2` 6-weight fan-out) and `getDCT4QuantWeights` (the `kQuantModeDCT4` 4×4-table upsample). Both wired into the single-cell decoder overlay alongside IDENTITY. **DCT2X2 verified byte-exact vs `djxl`** on the `diagEdge` probe fixture (edge-carrying dct2x2 blocks, `used_orders=0`). DCT4X4 ported faithfully + DC-only pin-down (`testVarDCT_SmallACTransforms_DCOnlyIsFlat`); no cjxl fixture was found that selects pure DCT4X4, so its AC path is verified only by composition of verified parts.
+- **`used_orders != 0` (`DecodeCoeffOrders`) gap identified.** A 64×64 all-dct2x2 fixture (`checker4`) decoded to garbage. An instrumented djxl trace pinned the cause: that bitstream sets `used_orders = 2` (a custom Lehmer-coded coefficient order for ord 1), and our `ProcessACGlobal` mis-handles the `used_orders != 0` path — desyncing the AC token stream. This is **not** a DCT2X2 bug (the dct2x2 transform decodes byte-exact whenever `used_orders = 0`); it is the pre-existing ⏳ `DecodeCoeffOrders` item, and it affects **every** AC strategy on bitstreams that emit custom coefficient orders. This is the recommended next work.
+- Still unimplemented: `DCT4X8`, `DCT8X4`, `DCT32X8`, `DCT8X32` (transform ports remain).
+- **369 tests passing, 3 skipped, 0 failures.**
+
 ---
 
 ## [0.8.0] — 2026 — Multi-AC-strategy + UMA backend

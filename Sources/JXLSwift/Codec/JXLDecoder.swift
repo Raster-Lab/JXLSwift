@@ -1089,6 +1089,8 @@ public struct JXLDecoder: Sendable {
                     let strategyIDCTSupported =
                         strategy == .dct8x8
                         || strategy == .hornuss
+                        || strategy == .dct2x2
+                        || strategy == .dct4x4
                         || strategy == .dct16x16
                         || strategy == .dct8x16
                         || strategy == .dct16x8
@@ -1409,19 +1411,47 @@ public struct JXLDecoder: Sendable {
             }
         }
 
-        // IDENTITY ("hornuss", AC strategy 1) overlay. A single 8×8
-        // cell with no frequency transform — the dequantised block
-        // feeds `IdentityTransform.transformToPixels` directly (no
-        // IDCT, hence no transpose). Quant matrix is the libjxl
-        // `kQuantModeID` LIBRARY default.
+        // Single-8×8-cell special-strategy overlay — IDENTITY
+        // ("hornuss"), DCT2X2, DCT4X4. Each dequantises the 8×8
+        // block with its own LIBRARY-default quant matrix, then
+        // applies its spatial transform. None involves an 8×8 DCT,
+        // so no top-level transpose (DCT4X4 transposes its 4×4
+        // quadrants internally).
         let identityQweights = QuantWeights.getIdentityQuantWeights(
             DefaultQuantBands.identity
         )
+        let dct2Qweights = QuantWeights.getDCT2QuantWeights(
+            DefaultQuantBands.dct2x2
+        )
+        let dct4Qweights: [Float]
+        do {
+            dct4Qweights = try QuantWeights.getDCT4QuantWeights(
+                bands: DefaultQuantBands.dct4x4
+            )
+        } catch {
+            throw DecoderError.notImplemented(
+                "VarDCT decode: DCT4X4 quant weights failed: \(error)"
+            )
+        }
         for by in 0..<numBlocksYAC {
             for bx in 0..<numBlocksXAC {
                 let entry = acsImage.at(x: bx, y: by)
-                guard entry.isFirstBlock, entry.strategy == .hornuss
-                else { continue }
+                guard entry.isFirstBlock else { continue }
+                let qw: [Float]
+                let transform: ([Float]) -> [Float]
+                switch entry.strategy {
+                case .hornuss:
+                    qw = identityQweights
+                    transform = IdentityTransform.transformToPixels
+                case .dct2x2:
+                    qw = dct2Qweights
+                    transform = DCT2x2Transform.transformToPixels
+                case .dct4x4:
+                    qw = dct4Qweights
+                    transform = DCT4x4Transform.transformToPixels
+                default:
+                    continue
+                }
                 let blockIdx = by * totalBlocksX + bx
                 let blockQF = blockIdx < perBlockQF.count
                     ? perBlockQF[blockIdx] : qfRow
@@ -1449,22 +1479,22 @@ public struct JXLDecoder: Sendable {
                 for np in 1..<64 {
                     let acYDeq = AdjustQuantBias.adjust(
                         channel: 1, quant: acYBlock[np]
-                    ) / identityQweights[1 * 64 + np] * blockInvQuantAC
+                    ) / qw[1 * 64 + np] * blockInvQuantAC
                     let acXDeq = AdjustQuantBias.adjust(
                         channel: 0, quant: acXBlock[np]
-                    ) / identityQweights[0 * 64 + np] * blockInvQuantAC
+                    ) / qw[0 * 64 + np] * blockInvQuantAC
                         * xDmMultiplier
                     let acBDeq = AdjustQuantBias.adjust(
                         channel: 2, quant: acBBlock[np]
-                    ) / identityQweights[2 * 64 + np] * blockInvQuantAC
+                    ) / qw[2 * 64 + np] * blockInvQuantAC
                         * bDmMultiplier
                     coefY[np] = acYDeq
                     coefX[np] = acXDeq + xCCMul * acYDeq
                     coefB[np] = acBDeq + bCCMul * acYDeq
                 }
-                let pixX = IdentityTransform.transformToPixels(coefX)
-                let pixY = IdentityTransform.transformToPixels(coefY)
-                let pixB = IdentityTransform.transformToPixels(coefB)
+                let pixX = transform(coefX)
+                let pixY = transform(coefY)
+                let pixB = transform(coefB)
                 let xOrigin = bx * 8
                 let yOrigin = by * 8
                 for py in 0..<8 {

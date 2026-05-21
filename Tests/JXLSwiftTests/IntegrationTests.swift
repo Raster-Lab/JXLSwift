@@ -6899,6 +6899,39 @@ extension FoundationTests {
         XCTAssertEqual(customLarge, 4 - 0.05, accuracy: 1e-6)
     }
 
+    /// Pin-down for the single-8×8-cell AC transforms (IDENTITY /
+    /// "hornuss", DCT2X2, DCT4X4). A DC-only coefficient block must
+    /// reconstruct to a flat (constant = DC) pixel block — the
+    /// "DC = mean" property — for all three. The AC paths are
+    /// cross-validated against `djxl` by the integration probes.
+    func testVarDCT_SmallACTransforms_DCOnlyIsFlat() throws {
+        var dc = [Float](repeating: 0, count: 64)
+        dc[0] = 0.375
+        let cases: [(String, [Float])] = [
+            ("IDENTITY", IdentityTransform.transformToPixels(dc)),
+            ("DCT2X2", DCT2x2Transform.transformToPixels(dc)),
+            ("DCT4X4", DCT4x4Transform.transformToPixels(dc)),
+        ]
+        for (name, pixels) in cases {
+            XCTAssertEqual(pixels.count, 64, "\(name): 64-pixel block")
+            for (i, p) in pixels.enumerated() {
+                XCTAssertEqual(
+                    p, 0.375, accuracy: 1e-5,
+                    "\(name): DC-only pixel \(i) should equal the DC mean"
+                )
+            }
+        }
+        // DCT2X2 `IDCT2TopBlock<2>` butterfly on the top-left 2×2 is
+        // the standard sum/difference pattern — pin one hand value.
+        var b = [Float](repeating: 0, count: 64)
+        b[0] = 1; b[1] = 1; b[8] = 1; b[9] = 1   // c00=c01=c10=c11=1
+        let step = DCT2x2Transform.idct2TopBlock(b, s: 2)
+        XCTAssertEqual(step[0], 4, accuracy: 1e-6, "r00 = 1+1+1+1")
+        XCTAssertEqual(step[1], 0, accuracy: 1e-6, "r01 = 1+1-1-1")
+        XCTAssertEqual(step[8], 0, accuracy: 1e-6, "r10 = 1-1+1-1")
+        XCTAssertEqual(step[9], 0, accuracy: 1e-6, "r11 = 1-1-1+1")
+    }
+
     /// `AccelerateDCT.dct2D` (UMA-friendly vDSP_mmul backend) must
     /// produce byte-equal output to `LibjxlDCT.dct2D` (scalar source-
     /// of-truth) within float epsilon. Pin-down for the future

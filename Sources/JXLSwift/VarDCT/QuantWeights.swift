@@ -173,6 +173,66 @@ extension QuantWeights {
         }
         return out
     }
+
+    /// Build the 3×64 DCT2X2 quant matrix. Mirrors libjxl
+    /// `quant_weights.cc::GetQuantWeightsDCT2`: the six per-channel
+    /// weights fan out over the 8×8 grid in nested 1/2/4-sized
+    /// blocks. Position 0 (DC) is libjxl's `0xBAD` sentinel — it is
+    /// always overwritten by `LowestFrequenciesFromDC`, so this
+    /// builder leaves it 0.
+    public static func getDCT2QuantWeights(
+        _ dct2weights: (x: [Float], y: [Float], b: [Float])
+    ) -> [Float] {
+        let perChannel: [[Float]] = [dct2weights.x, dct2weights.y,
+                                     dct2weights.b]
+        var out = [Float](repeating: 0, count: 3 * 64)
+        for c in 0..<3 {
+            let w = perChannel[c]
+            let s = c * 64
+            out[s + 1] = w[0]; out[s + 8] = w[0]
+            out[s + 9] = w[1]
+            for y in 0..<2 {
+                for x in 0..<2 {
+                    out[s + y * 8 + x + 2] = w[2]
+                    out[s + (y + 2) * 8 + x] = w[2]
+                }
+            }
+            for y in 0..<2 {
+                for x in 0..<2 { out[s + (y + 2) * 8 + x + 2] = w[3] }
+            }
+            for y in 0..<4 {
+                for x in 0..<4 {
+                    out[s + y * 8 + x + 4] = w[4]
+                    out[s + (y + 4) * 8 + x] = w[4]
+                }
+            }
+            for y in 0..<4 {
+                for x in 0..<4 { out[s + (y + 4) * 8 + x + 4] = w[5] }
+            }
+        }
+        return out
+    }
+
+    /// Build the 3×64 DCT4X4 quant matrix. Mirrors libjxl
+    /// `ComputeQuantTable`'s `kQuantModeDCT4` case: a 4×4
+    /// `getQuantWeights` table fanned out 2× in each axis. The
+    /// LIBRARY-default DCT4 multipliers are all 1, so no per-slot
+    /// division is applied.
+    public static func getDCT4QuantWeights(
+        bands: (x: [Float], y: [Float], b: [Float])
+    ) throws -> [Float] {
+        let w4 = try getQuantWeights(rows: 4, cols: 4, bands: bands)
+        var out = [Float](repeating: 0, count: 3 * 64)
+        for c in 0..<3 {
+            for y in 0..<8 {
+                for x in 0..<8 {
+                    out[c * 64 + y * 8 + x] =
+                        w4[c * 16 + (y / 2) * 4 + (x / 2)]
+                }
+            }
+        }
+        return out
+    }
 }
 
 /// libjxl-frozen distance bands for the default AC strategies.
@@ -436,6 +496,16 @@ public enum DefaultQuantBands {
         x: [280.0, 3160.0, 3160.0],
         y: [ 60.0,  864.0,  864.0],
         b: [ 18.0,  200.0,  200.0]
+    )
+
+    /// DCT2X2 LIBRARY-default weights — libjxl
+    /// `DequantMatricesLibraryDef::DCT2X2()`. Six weights per
+    /// channel, fanned out across the 8×8 grid by
+    /// `getDCT2QuantWeights`.
+    public static let dct2x2: (x: [Float], y: [Float], b: [Float]) = (
+        x: [3840.0, 2560.0, 1280.0, 640.0, 480.0, 300.0],
+        y: [ 960.0,  640.0,  320.0, 180.0, 140.0, 120.0],
+        b: [ 640.0,  320.0,  128.0,  64.0,  32.0,  16.0]
     )
 }
 
