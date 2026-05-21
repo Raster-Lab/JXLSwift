@@ -173,8 +173,16 @@ public enum EPF {
             }
         }
 
-        // Stage application order per libjxl. Run EPF1 first (always
-        // applied), then EPF2 (iters >= 2), then EPF0 (iters >= 3).
+        // Stage application order per libjxl `dec_cache.cc` — the
+        // render pipeline adds stages 0, 1, 2 in that order, so EPF0
+        // (iters ≥ 3) runs FIRST, then EPF1 (iters ≥ 1), then EPF2
+        // (iters ≥ 2).
+        if params.epfIters >= 3 {
+            applyEPF0(planeX: &planeX, planeY: &planeY, planeB: &planeB,
+                      width: width, height: height,
+                      blocksX: blocksX, invSigmaPerBlock: invSigmaPerBlock,
+                      params: params)
+        }
         if params.epfIters >= 1 {
             applyEPF1(planeX: &planeX, planeY: &planeY, planeB: &planeB,
                       width: width, height: height,
@@ -183,12 +191,6 @@ public enum EPF {
         }
         if params.epfIters >= 2 {
             applyEPF2(planeX: &planeX, planeY: &planeY, planeB: &planeB,
-                      width: width, height: height,
-                      blocksX: blocksX, invSigmaPerBlock: invSigmaPerBlock,
-                      params: params)
-        }
-        if params.epfIters >= 3 {
-            applyEPF0(planeX: &planeX, planeY: &planeY, planeB: &planeB,
                       width: width, height: height,
                       blocksX: blocksX, invSigmaPerBlock: invSigmaPerBlock,
                       params: params)
@@ -331,7 +333,9 @@ public enum EPF {
         var outX = inX
         var outY = inY
         var outB = inB
-        let sm: Float = params.pass2SigmaScale
+        // libjxl `stage_epf.cc::EPF2Stage`: `sm = epf_pass2_sigma_scale
+        // * 1.65` — the ×1.65 matches EPF0/EPF1 and was missing here.
+        let sm: Float = params.pass2SigmaScale * 1.65
         let bsm: Float = sm * params.borderSadMul
         @inline(__always)
         func sadMul(ix: Int, iy: Int) -> Float {

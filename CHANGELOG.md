@@ -143,6 +143,16 @@ The prior investigation's "**2.286× factor**" was a red herring: with the chann
 - **Verified byte-exact vs `djxl`** — a random-noise 64×64 fixture (cjxl picks DCT4X8) and a 4-pixel checkerboard (DCT4X8 + DCT8X4) both decode at `max byte-diff = 1`.
 - **369 tests passing, 3 skipped, 0 failures.**
 
+### v0.10.0n — 🎉 EPF fixes — VarDCT byte-equality across the full distance range
+
+Two bugs in the EPF (edge-preserving) restoration filter, surfaced by tracing the SWEEP d≥2 residual (the VarDCT *core* decode was already proven byte-exact — the dequantised coefficient block matched `djxl` to 1e-6, so the residual was localised entirely to EPF):
+
+- **EPF2 `sm` missing the ×1.65.** libjxl `stage_epf.cc::EPF2Stage` computes `sm = epf_pass2_sigma_scale × 1.65`; our `applyEPF2` used `pass2SigmaScale` raw. EPF0 and EPF1 had the factor; EPF2 didn't. The 1.65× sad-multiplier error skewed every EPF2 weight. (EPF2 runs at `epf_iters ≥ 2`, i.e. cjxl distance ≥ 2 — which is why d=0.5/1.0 were already byte-exact.)
+- **EPF stage order.** libjxl's render pipeline adds the stages 0, 1, 2 and runs them in that order; our code ran EPF1 → EPF2 → EPF0. For `epf_iters = 3` (cjxl distance ≥ ~5) EPF0 must run **first**. Reordered to EPF0 → EPF1 → EPF2.
+
+- **Result:** the 64×64 textured SWEEP fixture is now **byte-exact vs `djxl` at every distance** — d=0.5 / 1.0 / 2.0 / 5.0 / 10 all `max byte-diff = 1`. The v0.9.0 byte-equality goal is met across the full quality range, not just d=1.
+- **369 tests passing, 3 skipped, 0 failures.**
+
 ---
 
 ## [0.8.0] — 2026 — Multi-AC-strategy + UMA backend
