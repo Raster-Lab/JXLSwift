@@ -1088,6 +1088,7 @@ public struct JXLDecoder: Sendable {
                     // a path we don't ship yet.
                     let strategyIDCTSupported =
                         strategy == .dct8x8
+                        || strategy == .hornuss
                         || strategy == .dct16x16
                         || strategy == .dct8x16
                         || strategy == .dct16x8
@@ -1403,6 +1404,76 @@ public struct JXLDecoder: Sendable {
                         planeXYB[0][dstRow + px] = coefX[srcRow + px]
                         planeXYB[1][dstRow + px] = coefY[srcRow + px]
                         planeXYB[2][dstRow + px] = coefB[srcRow + px]
+                    }
+                }
+            }
+        }
+
+        // IDENTITY ("hornuss", AC strategy 1) overlay. A single 8×8
+        // cell with no frequency transform — the dequantised block
+        // feeds `IdentityTransform.transformToPixels` directly (no
+        // IDCT, hence no transpose). Quant matrix is the libjxl
+        // `kQuantModeID` LIBRARY default.
+        let identityQweights = QuantWeights.getIdentityQuantWeights(
+            DefaultQuantBands.identity
+        )
+        for by in 0..<numBlocksYAC {
+            for bx in 0..<numBlocksXAC {
+                let entry = acsImage.at(x: bx, y: by)
+                guard entry.isFirstBlock, entry.strategy == .hornuss
+                else { continue }
+                let blockIdx = by * totalBlocksX + bx
+                let blockQF = blockIdx < perBlockQF.count
+                    ? perBlockQF[blockIdx] : qfRow
+                let blockInvQuantAC = invGlobalScale / Float(blockQF)
+                // DC dequant (XYB indexing) + DC-CFL.
+                var dcPixelXYB = [Float](repeating: 0, count: 3)
+                for storageSlot in 0..<3 {
+                    let xybC = storageToXYB[storageSlot]
+                    let dcQuant = Float(
+                        dcValues[storageSlot][by * dcWidth + bx]
+                    )
+                    dcPixelXYB[xybC] = dcQuant * mulDC[xybC] * dcExtraFactor
+                }
+                let dcY = dcPixelXYB[1]
+                let dcX = dcPixelXYB[0] + dcCflX * dcY
+                let dcB = dcPixelXYB[2] + dcCflB * dcY
+                // `acBlocks` is XYB-indexed (slot 0=X, 1=Y, 2=B).
+                let acXBlock = acBlocks[blockIdx][0]
+                let acYBlock = acBlocks[blockIdx][1]
+                let acBBlock = acBlocks[blockIdx][2]
+                var coefY = [Float](repeating: 0, count: 64)
+                var coefX = [Float](repeating: 0, count: 64)
+                var coefB = [Float](repeating: 0, count: 64)
+                coefY[0] = dcY; coefX[0] = dcX; coefB[0] = dcB
+                for np in 1..<64 {
+                    let acYDeq = AdjustQuantBias.adjust(
+                        channel: 1, quant: acYBlock[np]
+                    ) / identityQweights[1 * 64 + np] * blockInvQuantAC
+                    let acXDeq = AdjustQuantBias.adjust(
+                        channel: 0, quant: acXBlock[np]
+                    ) / identityQweights[0 * 64 + np] * blockInvQuantAC
+                        * xDmMultiplier
+                    let acBDeq = AdjustQuantBias.adjust(
+                        channel: 2, quant: acBBlock[np]
+                    ) / identityQweights[2 * 64 + np] * blockInvQuantAC
+                        * bDmMultiplier
+                    coefY[np] = acYDeq
+                    coefX[np] = acXDeq + xCCMul * acYDeq
+                    coefB[np] = acBDeq + bCCMul * acYDeq
+                }
+                let pixX = IdentityTransform.transformToPixels(coefX)
+                let pixY = IdentityTransform.transformToPixels(coefY)
+                let pixB = IdentityTransform.transformToPixels(coefB)
+                let xOrigin = bx * 8
+                let yOrigin = by * 8
+                for py in 0..<8 {
+                    let srcRow = py * 8
+                    let dstRow = (yOrigin + py) * planeWidth + xOrigin
+                    for px in 0..<8 {
+                        planeXYB[0][dstRow + px] = pixX[srcRow + px]
+                        planeXYB[1][dstRow + px] = pixY[srcRow + px]
+                        planeXYB[2][dstRow + px] = pixB[srcRow + px]
                     }
                 }
             }

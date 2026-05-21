@@ -152,6 +152,29 @@ public enum QuantWeightsError: Error, Sendable {
     case misshapedBands(String)
 }
 
+extension QuantWeights {
+
+    /// Build the 3×64 IDENTITY quant matrix. Mirrors libjxl
+    /// `quant_weights.cc::GetQuantWeightsIdentity`: every position
+    /// takes `idweights[c][0]`, except coefficient slots 1 and 8
+    /// (→ `idweights[c][1]`) and slot 9 (→ `idweights[c][2]`).
+    /// Output layout is `out[c * 64 + k]`.
+    public static func getIdentityQuantWeights(
+        _ idweights: (x: [Float], y: [Float], b: [Float])
+    ) -> [Float] {
+        let perChannel: [[Float]] = [idweights.x, idweights.y, idweights.b]
+        var out = [Float](repeating: 0, count: 3 * 64)
+        for c in 0..<3 {
+            let w = perChannel[c]
+            for k in 0..<64 { out[c * 64 + k] = w[0] }
+            out[c * 64 + 1] = w[1]
+            out[c * 64 + 8] = w[1]
+            out[c * 64 + 9] = w[2]
+        }
+        return out
+    }
+}
+
 /// libjxl-frozen distance bands for the default AC strategies.
 /// Each tuple's first entry is *raw* (not yet ×64) — call
 /// `scaledForBitstream(_:)` to apply the libjxl scaling that the
@@ -402,6 +425,17 @@ public enum DefaultQuantBands {
         x: [3072, 3072, 256, 256, 256, 414, 0, 0, 0],
         y: [1024, 1024,  50,  50,  50,  58, 0, 0, 0],
         b: [ 384,  384,  12,  12,  12,  22, -0.25, -0.25, -0.25]
+    )
+
+    /// IDENTITY ("hornuss") LIBRARY-default weights — libjxl
+    /// `quant_weights.cc::DequantMatricesLibraryDef::IDENTITY()`.
+    /// Three weights per channel: `[0]` fills all 64 positions,
+    /// `[1]` overrides coefficient positions 1 and 8, `[2]`
+    /// overrides position 9. Used raw (no ×64) for LIBRARY mode.
+    public static let identity: (x: [Float], y: [Float], b: [Float]) = (
+        x: [280.0, 3160.0, 3160.0],
+        y: [ 60.0,  864.0,  864.0],
+        b: [ 18.0,  200.0,  200.0]
     )
 }
 

@@ -115,6 +115,13 @@ The prior investigation's "**2.286× factor**" was a red herring: with the chann
 
 - **368 tests passing, 3 skipped, 0 failures.** (`testVarDCT_AdjustQuantBias_AllBranches` updated for the corrected per-channel `|q|==1` bias.)
 
+### v0.10.0j — AFV byte-equality confirmed + IDENTITY ("hornuss") transform
+
+- **AFV is now near-byte-exact.** The v0.10.0g probe's "catastrophic" `max=(R=156,G=244,B=232)` was entirely the three global bugs fixed in `v0.10.0i` (AC channel swap, spurious ×64, `AdjustQuantBias`) — AFV shares that dequant path. Re-running `testVarDCT_AFV_DjxlByteDiffProbe` after `v0.10.0i` shows AFV-using fixtures at **`max=(R=1..3, G=1..3, B=1..3)`** vs `djxl` (several byte-exact). No AFV-specific code change was needed.
+- **IDENTITY transform** (`Sources/JXLSwift/VarDCT/IdentityTransform.swift`) — AC strategy 1 ("hornuss" in our enum) previously threw `notImplemented` on any block with non-zero AC. Ported libjxl's `dec_transforms-inl.h::TransformToPixels` `Type::IDENTITY` case (four 4×4 quadrants, each a 2×2-DCT block-DC + 15 spatial residuals — no frequency transform, hence no transpose). Added `QuantWeights.getIdentityQuantWeights` (the `kQuantModeID` 64-position quant matrix) and `DefaultQuantBands.identity`, and an IDENTITY overlay in `JXLDecoder`. The `antiDiag` AFV-probe fixture (which uses 3 hornuss blocks) now decodes **byte-exact** (`max=(R=1,G=1,B=1)`).
+- Still unimplemented (decode throws on non-zero AC): `DCT2X2`, `DCT4X4`, `DCT4X8`, `DCT8X4`, `DCT32X8`, `DCT8X32`. libjxl `TransformToPixels` ports for each are the remaining close-out work.
+- **368 tests passing, 3 skipped, 0 failures.**
+
 ---
 
 ## [0.8.0] — 2026 — Multi-AC-strategy + UMA backend
