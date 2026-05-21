@@ -53,6 +53,26 @@ public enum VarDCTBitstreamWriter {
         let numGroupsY = (q.ysize + groupDim - 1) / groupDim
         let numGroups = numGroupsX * numGroupsY
 
+        // --- Alpha extra channel (RGBA) --------------------------
+        // A 4-channel frame's trailing channel is carried losslessly
+        // as one modular alpha extra channel in the LfGlobal `gi`
+        // sub-image. Single-section frames only — for frames > one AC
+        // group the alpha channel defers per-AC-group (not yet wired).
+        let hasAlpha = frame.channels >= 4
+        if hasAlpha && numGroups != 1 {
+            throw WriterError.unsupported(
+                "VarDCT encode: RGBA frames > 256 px (multi-section "
+                + "alpha) not implemented — \(q.xsize)×\(q.ysize)")
+        }
+        var alphaPix = [Int32]()
+        if hasAlpha {
+            let ch = frame.channels
+            alphaPix = [Int32](repeating: 0, count: q.xsize * q.ysize)
+            for i in 0..<(q.xsize * q.ysize) {
+                alphaPix[i] = Int32(frame.data[i * ch + 3])
+            }
+        }
+
         // --- Modular DC + ACMeta sub-images ----------------------
         // Both use the LfGlobal global tree; their residual tokens
         // share one pooled Huffman codebook. The DC modular image
@@ -93,6 +113,14 @@ public enum VarDCTBitstreamWriter {
                 ch.pix, width: ch.w, height: ch.h,
                 cfg: postCfg, histo: &modHisto, maxToken: &maxModToken)
             acMetaPacked.append(p)
+        }
+        // The alpha extra channel's residuals share the same pooled
+        // post-tree codebook (decoded with the LfGlobal global tree).
+        var alphaPacked: [UInt32] = []
+        if hasAlpha {
+            alphaPacked = modularResiduals(
+                alphaPix, width: q.xsize, height: q.ysize,
+                cfg: postCfg, histo: &modHisto, maxToken: &maxModToken)
         }
         let modAlphabet = maxModToken + 1
         let modLengths = lengthLimitedCanonicalHuffman(
@@ -157,7 +185,20 @@ public enum VarDCTBitstreamWriter {
             w.writeBit(true)               // has_tree
             try writeModularTreeSection(
                 to: &w, postHeader: modHeader, postCodebook: modCodebook)
-            // gi modular sub-image: 0 channels ⇒ nothing.
+            // gi modular sub-image: the alpha extra channel for RGBA
+            // frames. Plain RGB has 0 modular channels here, so the
+            // decoder's `ModularDecode` early-returns and nothing is
+            // written; a single alpha channel is emitted as a default
+            // GroupHeader followed by its gradient-predicted residual
+            // tokens (the inverse of the decoder's gi global pass).
+            if hasAlpha {
+                try GroupHeader.default.write(to: &w)
+                let giWriter = TokenStreamWriter(
+                    header: modHeader, codebook: modCodebook)
+                for v in alphaPacked {
+                    try giWriter.writeToken(context: 0, value: v, to: &w)
+                }
+            }
         }
         let writeDCGroup: (inout BitWriter) throws -> Void = { w in
             w.write(bits: 2, value: 0)     // dc_extra_precision = 0
@@ -234,7 +275,8 @@ public enum VarDCTBitstreamWriter {
 
         // --- Outer codestream (headers + TOC + sections) ---------
         return try writeOuterCodestream(
-            xsize: q.xsize, ysize: q.ysize, sections: sections)
+            xsize: q.xsize, ysize: q.ysize,
+            hasAlpha: hasAlpha, sections: sections)
     }
 
     // MARK: - Modular residual tokenisation
@@ -392,22 +434,30 @@ public enum VarDCTBitstreamWriter {
 
     /// Signature + SizeHeader + ImageMetadata + CustomTransformData +
     /// VarDCT FrameHeader + TOC (one entry per section) + the
-    /// concatenated section payloads.
+    /// concatenated section payloads. `hasAlpha` declares a single
+    /// 8-bit alpha extra channel (RGBA frames).
     static func writeOuterCodestream(
-        xsize: Int, ysize: Int, sections: [Data]
+        xsize: Int, ysize: Int, hasAlpha: Bool, sections: [Data]
     ) throws -> Data {
         var w = BitWriter()
         w.write(bits: 8, value: 0xFF)
         w.write(bits: 8, value: 0x0A)
         try SizeHeader(
             xsize: UInt32(xsize), ysize: UInt32(ysize)).write(to: &w)
+        // One default 8-bit alpha extra channel when the frame is RGBA.
+        let extraChannels: [ExtraChannelInfo] = hasAlpha
+            ? [ExtraChannelInfo(
+                type: .alpha,
+                bitDepth: BitDepth(floatingPoint: false, bitsPerSample: 8),
+                dimShift: 0, name: "")]
+            : []
         let meta = ImageMetadata(
             allDefault: false, orientation: 1,
             intrinsicSize: nil, preview: nil, animation: nil,
             bitDepth: BitDepth(
                 floatingPoint: false, bitsPerSample: 8),
             modular16BitBufferSufficient: true,
-            extraChannels: [],
+            extraChannels: extraChannels,
             xybEncoded: true,
             colorEncoding: .srgb,
             intensityTarget: 255.0, minNits: 0.0,
@@ -436,7 +486,7 @@ public enum VarDCTBitstreamWriter {
             loopFilter: LoopFilter(
                 allDefault: false, gab: false, epfIters: 0))
         try fh.write(to: &w, context: FrameHeaderContext(
-            xybEncoded: true, numExtraChannels: 0,
+            xybEncoded: true, numExtraChannels: hasAlpha ? 1 : 0,
             haveAnimation: false, haveTimecodes: false))
         var entrySizes = [UInt32]()
         var offsets: [UInt64] = [0]

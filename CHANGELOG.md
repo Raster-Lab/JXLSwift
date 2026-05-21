@@ -59,6 +59,15 @@ The encoder gains a quality control. `VarDCTEncoder.forward(frame:distance:)` an
 - **Verified.** `testVarDCTBitstreamWriter_DistanceKnob` encodes a 64×64 image at distances `[0.5, 1.0, 2.0, 6.0]`, confirms each is `djxl 0.11.2`-decodable, and asserts monotonicity: the `d = 0.5` file is larger than the `d = 6` file, and the `d = 6` round-trip error clearly exceeds `d = 0.5`.
 - **377 tests passing, 3 skipped, 0 failures.**
 
+### v0.11.0f — RGBA encode (alpha extra channel)
+
+The encoder accepted 4-channel frames but silently dropped the alpha. It now carries alpha through to the codestream as a genuine extra channel.
+
+- **Alpha as a modular extra channel.** A 4-channel `ImageFrame` declares one default 8-bit alpha `ExtraChannelInfo` in `ImageMetadata`, sets `num_extra_channels = 1` in the VarDCT FrameHeader, and emits the alpha plane as the LfGlobal `gi` modular sub-image — a default `GroupHeader` followed by gradient-predicted residual tokens sharing the pooled post-tree codebook. This is the exact inverse of `JXLDecoder`'s `gi` global-pass decode (the alpha channel fits the global pass for single-section frames). Alpha is **lossless** — a modular channel carries no quantisation; only the VarDCT RGB is lossy.
+- **Verified.** `testVarDCTBitstreamWriter_RGBA` encodes a 32×32 RGBA frame with a per-pixel alpha ramp and round-trips it through our decoder **and `djxl 0.11.2`**: RGB within `mean < 4`, alpha **byte-exact** at every pixel in both decoders.
+- **Scope.** Single-section frames (≤ 256 px); RGBA frames spanning more than one AC group throw a clear `unsupported` error (the deferred per-AC-group alpha decode is a follow-up).
+- **378 tests passing, 3 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)
