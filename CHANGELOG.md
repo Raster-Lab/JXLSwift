@@ -42,6 +42,15 @@ The DC-only stub is replaced with a genuine AC coefficient encoder — the encod
 - **Verified.** `testVarDCTBitstreamWriter_RoundTrip` now checks the **per-pixel** round-trip error of a strong within-block gradient — `mean < 4` via both our decoder and `djxl 0.11.2`. A DC-only encode would mean ~7+ on the same image, so the bound proves the AC stream carries real detail. The JXLSwift VarDCT encoder is now a working lossy compressor.
 - **375 tests passing, 3 skipped, 0 failures.**
 
+### v0.11.0d — multi-section encode (frames > 256 px)
+
+The encoder was limited to a single 256-px AC group. Frames up to one DC group (≤ 2048 px) now encode as a multi-section codestream.
+
+- **Section split.** When the frame spans more than one 256-px AC group the codestream is written as `LfGlobal + DC-group + HfGlobal + N × AC-group` TOC sections (mirroring `JXLDecoder`'s section indices), each byte-aligned with its size recorded in a multi-entry TOC. Single-group frames keep the contiguous one-section form. The sub-section writers (`writeLfGlobal` / `writeDCGroup` / `writeHfGlobal` / `writeACGroup`) are shared by both paths.
+- **Per-group AC tokens.** `generateACTokens` now returns one token stream per AC group, walking each group's block sub-grid; the nnz-prediction planes reset at every group boundary (matching the decoder's per-group `nzeros` state). HfGlobal writes `num_histograms = 1` as a raw 0 in `CeilLog2(numGroups)` bits.
+- **Verified.** `testVarDCTBitstreamWriter_MultiSection` encodes a 384×384 frame (2×2 AC groups) and round-trips it through our decoder **and `djxl 0.11.2`** at per-pixel `mean < 4`.
+- **376 tests passing, 3 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)
