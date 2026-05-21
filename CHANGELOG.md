@@ -129,6 +129,14 @@ The prior investigation's "**2.286× factor**" was a red herring: with the chann
 - Still unimplemented: `DCT4X8`, `DCT8X4`, `DCT32X8`, `DCT8X32` (transform ports remain).
 - **369 tests passing, 3 skipped, 0 failures.**
 
+### v0.10.0l — fix single-symbol prefix code (the real `checker4` bug)
+
+- **One-line entropy-decode bug.** `SimplePrefixCodeFormat.decode`'s `count == 1` case (a simple prefix code with a single symbol) returned an all-zero code-length array, **ignoring `symbols[0]`**. `PrefixCodeTable`'s degenerate-code decoder returns the first non-zero-length symbol — so an all-zero array always decodes to **symbol 0**, regardless of which symbol the code actually carries. Fixed by marking `lengths[symbols[0]]` non-zero.
+- **This — not `DecodeCoeffOrders` — was the `checker4` bug.** The `v0.10.0k` "`used_orders` gap" diagnosis was wrong. An instrumented-djxl per-token AC trace showed the AC-global is fully bit-synced (the permutation/`DecodeCoeffOrders` path is correct); the failure was that `checker4`'s AC histogram cluster 1 is a single-symbol prefix code on symbol **1** ("every dct2x2 block has exactly one nonzero AC coefficient"), which our decoder mis-decoded as symbol 0 → `nzeros = 0` everywhere → all-zero AC → grey output.
+- **`checker4` (64×64, all-dct2x2, `used_orders = 2`) now decodes byte-exact** vs `djxl` (`max = 0`). This also confirms **DCT2X2 with real AC is correct** (`checker4` is 64 dct2x2 blocks). The fix is global — it corrects any prefix-coded entropy stream (Modular or VarDCT) with a single-symbol cluster selecting a symbol other than 0.
+- `testSimplePrefixCode_RoundTrip_AllShapes` updated: the `count == 1` shape now pins `lengths[symbols[0]] != 0`, all others 0.
+- **369 tests passing, 3 skipped, 0 failures.**
+
 ---
 
 ## [0.8.0] — 2026 — Multi-AC-strategy + UMA backend

@@ -1582,8 +1582,13 @@ final class FoundationTests: XCTestCase {
             // Validate the lengths shape per spec.
             switch c.symbols.count {
             case 1:
-                // All zero (single-symbol degenerate).
-                XCTAssertTrue(lengths.allSatisfy { $0 == 0 })
+                // Single-symbol degenerate code: the lone symbol is
+                // marked with a non-zero length (so the decoder
+                // routes to it, not to symbol 0); all others zero.
+                XCTAssertNotEqual(lengths[c.symbols[0]], 0)
+                for (i, l) in lengths.enumerated() where i != c.symbols[0] {
+                    XCTAssertEqual(l, 0, "symbol \(i) should be length 0")
+                }
             case 2:
                 XCTAssertEqual(lengths[c.symbols[0]], 1)
                 XCTAssertEqual(lengths[c.symbols[1]], 1)

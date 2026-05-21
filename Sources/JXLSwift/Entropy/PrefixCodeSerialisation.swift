@@ -120,9 +120,15 @@ public struct SimplePrefixCodeFormat {
         var lengths = [UInt8](repeating: 0, count: alphabetSize)
         switch count {
         case 1:
-            // Degenerate: lengths[symbols[0]] = 0 (caller's lengths
-            // array already starts as all zeros). Effectively a
-            // "single symbol always emitted" code.
+            // Single-symbol code: `symbols[0]` is the only symbol and
+            // is always emitted with a zero-bit codeword. Mark it with
+            // a non-zero length so `PrefixCodeTable`'s degenerate
+            // branch routes the decode to `symbols[0]` — it returns
+            // the first non-zero-length symbol. A plain all-zero
+            // array would wrongly always decode to symbol 0 (the bug
+            // that broke `used_orders≠0` AC streams whose single-
+            // symbol clusters select a symbol other than 0).
+            lengths[symbols[0]] = 1
             return lengths
         case 2:
             lengths[symbols[0]] = 1
