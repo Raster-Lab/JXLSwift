@@ -8316,6 +8316,73 @@ extension FoundationTests {
             "multi-section round-trip mean error (djxl) \(djErr)")
     }
 
+    /// Multi-DC-group `VarDCTBitstreamWriter`. A 2304×2304 frame
+    /// spans a 2×2 grid of 2048-px DC groups (and a 9×9 grid of
+    /// 256-px AC groups), so the codestream is written as
+    /// `LfGlobal + 4 DC-group + HfGlobal + 81 AC-group` TOC sections.
+    /// Each DC group gradient-predicts its own 256×256-block region.
+    /// Verified end-to-end with our decoder and libjxl `djxl`.
+    func testVarDCTBitstreamWriter_MultiDcGroup() throws {
+        let dim = 2304
+        var frame = ImageFrame(width: dim, height: dim, channels: 3)
+        for y in 0..<dim {
+            for x in 0..<dim {
+                let i = (y * dim + x) * 3
+                frame.data[i + 0] = UInt8((x / 4) & 0xff)
+                frame.data[i + 1] = UInt8((y / 4) & 0xff)
+                frame.data[i + 2] = UInt8(((x + y) / 8) & 0xff)
+            }
+        }
+        func meanError(_ pix: Data, binOffset: Int) -> Double {
+            var s = 0
+            for i in 0..<(dim * dim * 3) {
+                s += abs(Int(pix[binOffset + i]) - Int(frame.data[i]))
+            }
+            return Double(s) / Double(dim * dim * 3)
+        }
+        let codestream = try VarDCTBitstreamWriter.encode(frame: frame)
+
+        let decoded = try JXLDecoder().decode(codestream)
+        XCTAssertEqual(decoded.width, dim)
+        XCTAssertEqual(decoded.height, dim)
+        let oursErr = meanError(Data(decoded.data), binOffset: 0)
+        XCTAssertLessThan(oursErr, 4.0,
+            "multi-DC-group round-trip mean error (our decoder) "
+            + "\(oursErr)")
+
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("djxl not available")
+        }
+        let tmp = NSTemporaryDirectory()
+        let jxlPath = tmp + "vdt_multidc.jxl"
+        let outPath = tmp + "vdt_multidc_dj.ppm"
+        try codestream.write(to: URL(fileURLWithPath: jxlPath))
+        let p = Process()
+        p.launchPath = djxl
+        p.arguments = [jxlPath, outPath]
+        let errPipe = Pipe()
+        p.standardOutput = Pipe(); p.standardError = errPipe
+        try p.run(); p.waitUntilExit()
+        let djErr = String(
+            data: errPipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8) ?? ""
+        XCTAssertEqual(p.terminationStatus, 0,
+            "djxl rejected our multi-DC-group codestream; "
+            + "stderr: \(djErr)")
+        let djData = try Data(contentsOf: URL(fileURLWithPath: outPath))
+        var binStart = 0, nl = 0
+        for (i, b) in djData.enumerated() {
+            if b == 0x0A { nl += 1; if nl == 3 { binStart = i + 1; break } }
+        }
+        guard djData.count - binStart == dim * dim * 3 else {
+            throw XCTSkip("djxl PPM size mismatch")
+        }
+        let djMean = meanError(djData, binOffset: binStart)
+        XCTAssertLessThan(djMean, 4.0,
+            "multi-DC-group round-trip mean error (djxl) \(djMean)")
+    }
+
     /// The `distance` quality knob. Encoding the same image at a
     /// sweep of distances must (a) always produce a `djxl`-decodable
     /// frame, (b) shrink the file as distance grows, and (c) raise

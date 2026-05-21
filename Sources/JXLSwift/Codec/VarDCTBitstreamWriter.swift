@@ -34,22 +34,22 @@ public enum VarDCTBitstreamWriter {
         (.literal(0x5F), .literal(0x13), .literal(0), .bits(13))
 
     /// Encode an 8-bit RGB/RGBA `ImageFrame` as a VarDCT JPEG XL
-    /// file (naked codestream). Frames up to one DC group (≤ 2048 px)
-    /// are supported; frames spanning more than one 256-px AC group
-    /// are written as a multi-section codestream.
+    /// file (naked codestream). Frames up to the 8192-px encoder cap
+    /// are supported: ≤ 256 px as a single contiguous section, larger
+    /// frames as a multi-section codestream with one AC group per
+    /// 256-px tile and one DC group per 2048-px tile.
     public static func encode(
         frame: ImageFrame, distance: Float = 1.0
     ) throws -> Data {
         let q = try VarDCTEncoder.forward(frame: frame, distance: distance)
         let groupDim = 256
-        guard q.xsize <= 2048, q.ysize <= 2048 else {
+        let sizeCap = 8192
+        guard q.xsize <= sizeCap, q.ysize <= sizeCap else {
             throw WriterError.unsupported(
-                "VarDCT encode: \(q.xsize)×\(q.ysize) exceeds one "
-                + "DC group (2048 px) — multi-DC-group encode not "
-                + "implemented")
+                "VarDCT encode: \(q.xsize)×\(q.ysize) exceeds the "
+                + "\(sizeCap)-px encoder cap")
         }
         let blocksX = q.blocksX, blocksY = q.blocksY
-        let nBlocks = blocksX * blocksY
         let blocksPerGroup = groupDim / 8        // 32
         let numGroupsX = (q.xsize + groupDim - 1) / groupDim
         let numGroupsY = (q.ysize + groupDim - 1) / groupDim
@@ -72,46 +72,82 @@ public enum VarDCTBitstreamWriter {
             }
         }
 
-        // --- Modular DC + ACMeta sub-images ----------------------
-        // Both use the LfGlobal global tree; their residual tokens
-        // share one pooled Huffman codebook. The DC modular image
-        // stores the 3 channels in storage order {Y, X, B}.
-        let dcChannels: [[Int32]] = [
+        // --- Modular DC + ACMeta sub-images, one set per DC group ---
+        // A DC group covers up to 256×256 blocks (2048 px). Each
+        // group's DC sub-image (3 channels {Y, X, B}) and ACMeta
+        // sub-image (4 channels) decode independently, so the encoder
+        // gradient-predicts each group's block sub-region on its own
+        // (group-local neighbourhood, matching the decoder). Frames
+        // ≤ 2048 px have a single DC group covering everything.
+        // Every group's residuals share the LfGlobal global tree and
+        // one pooled Huffman codebook.
+        let dcBlocksPerGroup = 256             // 2048 px / 8
+        let numDcGroupsX =
+            (blocksX + dcBlocksPerGroup - 1) / dcBlocksPerGroup
+        let numDcGroupsY =
+            (blocksY + dcBlocksPerGroup - 1) / dcBlocksPerGroup
+        let numDcGroups = numDcGroupsX * numDcGroupsY
+        // DC channel storage order is {Y, X, B}.
+        let dcStorage: [[Int32]] = [
             q.dcQuant[1], q.dcQuant[0], q.dcQuant[2],
         ]
-        // ACMeta: YToX, YToB (one per 64-px tile, all-zero default
-        // CfL), ACS+QF (count×2), EPF sharpness (all-zero).
-        let cW = max(1, (blocksX + 7) / 8)
-        let cH = max(1, (blocksY + 7) / 8)
-        var acsQF = [Int32](repeating: 0, count: nBlocks * 2)
-        for i in 0..<nBlocks {
-            acsQF[i] = 0                       // ACS = DCT8
-            acsQF[nBlocks + i] = q.qf - 1      // QF − 1 (decoder + 1)
-        }
-        let acMetaChannels: [(pix: [Int32], w: Int, h: Int)] = [
-            ([Int32](repeating: 0, count: cW * cH), cW, cH),
-            ([Int32](repeating: 0, count: cW * cH), cW, cH),
-            (acsQF, nBlocks, 2),
-            ([Int32](repeating: 0, count: nBlocks), blocksX, blocksY),
-        ]
 
-        // Pool residual tokens across every modular channel.
         let postCfg = HybridUintConfig.raw4
         var modHisto = [Int](repeating: 0, count: postCfg.maxToken + 1)
         var maxModToken = 0
-        var dcPacked: [[UInt32]] = []
-        for c in dcChannels {
-            let p = modularResiduals(
-                c, width: blocksX, height: blocksY,
-                cfg: postCfg, histo: &modHisto, maxToken: &maxModToken)
-            dcPacked.append(p)
-        }
-        var acMetaPacked: [[UInt32]] = []
-        for ch in acMetaChannels {
-            let p = modularResiduals(
-                ch.pix, width: ch.w, height: ch.h,
-                cfg: postCfg, histo: &modHisto, maxToken: &maxModToken)
-            acMetaPacked.append(p)
+        var dcPackedByGroup: [[[UInt32]]] = []     // [dcG][0..2]
+        var acMetaPackedByGroup: [[[UInt32]]] = []  // [dcG][0..3]
+        var dcGroupBlockCount: [Int] = []           // [dcG] block total
+        for dgY in 0..<numDcGroupsY {
+            for dgX in 0..<numDcGroupsX {
+                let bx0 = dgX * dcBlocksPerGroup
+                let by0 = dgY * dcBlocksPerGroup
+                let gW = min(dcBlocksPerGroup, blocksX - bx0)
+                let gH = min(dcBlocksPerGroup, blocksY - by0)
+                let gBlocks = gW * gH
+                dcGroupBlockCount.append(gBlocks)
+                // DC channels — this group's sub-region of each
+                // {Y, X, B} storage channel.
+                var dcPacked: [[UInt32]] = []
+                for chan in dcStorage {
+                    var sub = [Int32](repeating: 0, count: gBlocks)
+                    for yy in 0..<gH {
+                        let srcRow = (by0 + yy) * blocksX + bx0
+                        for xx in 0..<gW {
+                            sub[yy * gW + xx] = chan[srcRow + xx]
+                        }
+                    }
+                    dcPacked.append(modularResiduals(
+                        sub, width: gW, height: gH,
+                        cfg: postCfg, histo: &modHisto,
+                        maxToken: &maxModToken))
+                }
+                dcPackedByGroup.append(dcPacked)
+                // ACMeta: YToX, YToB (one per 64-px tile, all-zero
+                // default CfL), ACS+QF (count×2), EPF sharpness
+                // (all-zero) — all sized to the group's block region.
+                let cW = max(1, (gW + 7) / 8)
+                let cH = max(1, (gH + 7) / 8)
+                var acsQF = [Int32](repeating: 0, count: gBlocks * 2)
+                for i in 0..<gBlocks {
+                    acsQF[i] = 0                   // ACS = DCT8
+                    acsQF[gBlocks + i] = q.qf - 1  // QF − 1 (decoder +1)
+                }
+                let acMetaChannels: [(pix: [Int32], w: Int, h: Int)] = [
+                    ([Int32](repeating: 0, count: cW * cH), cW, cH),
+                    ([Int32](repeating: 0, count: cW * cH), cW, cH),
+                    (acsQF, gBlocks, 2),
+                    ([Int32](repeating: 0, count: gBlocks), gW, gH),
+                ]
+                var acMetaPacked: [[UInt32]] = []
+                for ch in acMetaChannels {
+                    acMetaPacked.append(modularResiduals(
+                        ch.pix, width: ch.w, height: ch.h,
+                        cfg: postCfg, histo: &modHisto,
+                        maxToken: &maxModToken))
+                }
+                acMetaPackedByGroup.append(acMetaPacked)
+            }
         }
         // The alpha extra channel's residuals share the same pooled
         // post-tree codebook (decoded with the LfGlobal global tree).
@@ -233,25 +269,27 @@ public enum VarDCTBitstreamWriter {
                 }
             }
         }
-        let writeDCGroup: (inout BitWriter) throws -> Void = { w in
+        func writeDCGroup(_ w: inout BitWriter, _ dcG: Int) throws {
             w.write(bits: 2, value: 0)     // dc_extra_precision = 0
             try GroupHeader.default.write(to: &w)
             let dcWriter = TokenStreamWriter(
                 header: modHeader, codebook: modCodebook)
-            for packed in dcPacked {
+            for packed in dcPackedByGroup[dcG] {
                 for v in packed {
                     try dcWriter.writeToken(context: 0, value: v, to: &w)
                 }
             }
-            // ACMetadata.
-            let acMetaBits = Int(ceilLog2(UInt32(max(1, nBlocks))))
+            // ACMetadata `count` — CeilLog2(group blocks) bits, the
+            // decoder reads it back as `count - 1`.
+            let gBlocks = dcGroupBlockCount[dcG]
+            let acMetaBits = Int(ceilLog2(UInt32(max(1, gBlocks))))
             if acMetaBits > 0 {
-                w.write(bits: acMetaBits, value: UInt32(nBlocks - 1))
+                w.write(bits: acMetaBits, value: UInt32(gBlocks - 1))
             }
             try GroupHeader.default.write(to: &w)
             let acMetaWriter = TokenStreamWriter(
                 header: modHeader, codebook: modCodebook)
-            for packed in acMetaPacked {
+            for packed in acMetaPackedByGroup[dcG] {
                 for v in packed {
                     try acMetaWriter.writeToken(
                         context: 0, value: v, to: &w)
@@ -295,20 +333,24 @@ public enum VarDCTBitstreamWriter {
         var sections: [Data] = []
         if numGroups == 1 {
             // Single-section: LfGlobal + DC group + HfGlobal + the
-            // one AC group, all contiguous in section 0.
+            // one AC group, all contiguous in section 0 (≤ 256 px, so
+            // exactly one DC group).
             var sec = BitWriter()
             try writeLfGlobal(&sec)
-            try writeDCGroup(&sec)
+            try writeDCGroup(&sec, 0)
             try writeHfGlobal(&sec)
             try writeACGroup(&sec, 0)
             sec.alignToByte()
             sections = [sec.finishToData()]
         } else {
-            // Multi-section: [LfGlobal, DC group, HfGlobal, AC×N].
+            // Multi-section TOC layout (libjxl `NumTocEntries`):
+            // [LfGlobal, DC×numDcGroups, HfGlobal, AC×numGroups].
             var lf = BitWriter(); try writeLfGlobal(&lf)
             lf.alignToByte(); sections.append(lf.finishToData())
-            var dcg = BitWriter(); try writeDCGroup(&dcg)
-            dcg.alignToByte(); sections.append(dcg.finishToData())
+            for dcG in 0..<numDcGroups {
+                var dcg = BitWriter(); try writeDCGroup(&dcg, dcG)
+                dcg.alignToByte(); sections.append(dcg.finishToData())
+            }
             var hf = BitWriter(); try writeHfGlobal(&hf)
             hf.alignToByte(); sections.append(hf.finishToData())
             for g in 0..<numGroups {

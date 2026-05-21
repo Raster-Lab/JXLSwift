@@ -86,6 +86,14 @@ RGBA encode (v0.11.0f) was limited to single-section frames (≤ 256 px) — lar
 - **Verified.** `testVarDCTBitstreamWriter_RGBA_MultiSection` encodes a 384×384 RGBA frame (2×2 groups) and round-trips it through our decoder **and `djxl 0.11.2`**: RGB within `mean < 4`, alpha **byte-exact** at every pixel in both decoders.
 - **381 tests passing, 3 skipped, 0 failures.**
 
+### v0.11.0i — multi-DC-group encode (frames > 2048 px)
+
+The encoder was capped at one DC group (2048 px). Frames now encode up to an 8192-px cap, split into one DC group per 2048-px tile.
+
+- **DC-group split.** A DC group covers up to 256×256 blocks. The encoder slices the quantised DC plane and the ACMeta planes into per-DC-group sub-regions, gradient-predicts each region on its own group-local neighbourhood, and writes one `DC-group` TOC section per group — so the multi-section codestream is `LfGlobal + DC×numDcGroups + HfGlobal + AC×numGroups` (libjxl's `NumTocEntries` layout). Each group's ACMeta `count` is sized to that group's block total. Frames ≤ 2048 px keep a single DC group; the per-group code path collapses to the previous behaviour.
+- **Verified.** `testVarDCTBitstreamWriter_MultiDcGroup` encodes a 2304×2304 frame — a 2×2 grid of DC groups and a 9×9 grid of AC groups, 87 TOC sections — and round-trips it through our decoder **and `djxl 0.11.2`** at per-pixel `mean < 4`.
+- **382 tests passing, 3 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)

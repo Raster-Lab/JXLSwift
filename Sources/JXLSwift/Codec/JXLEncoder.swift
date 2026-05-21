@@ -4,7 +4,7 @@
 //   • Lossless Modular — 8-bit and 16-bit integer samples (grayscale,
 //     RGB, RGBA), single-pass, any size up to the encoder's 8K cap.
 //   • Lossy VarDCT — 8-bit RGB / RGBA via `VarDCTBitstreamWriter`
-//     (DCT8×8, single DC group, ≤ 2048 px).
+//     (DCT8×8, multi-DC-group, ≤ 8192 px).
 // Output round-trips through `djxl 0.11.2`.
 //
 // Routing: `encode(_:)` picks the codec from `options.mode`.
