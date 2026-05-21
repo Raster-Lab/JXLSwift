@@ -51,6 +51,14 @@ The encoder was limited to a single 256-px AC group. Frames up to one DC group (
 - **Verified.** `testVarDCTBitstreamWriter_MultiSection` encodes a 384×384 frame (2×2 AC groups) and round-trips it through our decoder **and `djxl 0.11.2`** at per-pixel `mean < 4`.
 - **376 tests passing, 3 skipped, 0 failures.**
 
+### v0.11.0e — `distance` quality knob
+
+The encoder gains a quality control. `VarDCTEncoder.forward(frame:distance:)` and `VarDCTBitstreamWriter.encode(frame:distance:)` now take a `distance` parameter (default `1.0`).
+
+- **Mapping.** `VarDCTEncoder.globalScale(forDistance:)` maps `distance` to the frame's `global_scale` via `round(5111 / d)`, clamped to `[1, 65535]`. Smaller `distance` → larger `global_scale` → finer quantisation (bigger file, lower error); `distance = 1` reproduces the previous fixed quantiser exactly. This is a deliberately **crude global monotone** knob in the spirit of cjxl's `-d` — not the perceptual butteraugli-driven adaptive quant libjxl uses.
+- **Verified.** `testVarDCTBitstreamWriter_DistanceKnob` encodes a 64×64 image at distances `[0.5, 1.0, 2.0, 6.0]`, confirms each is `djxl 0.11.2`-decodable, and asserts monotonicity: the `d = 0.5` file is larger than the `d = 6` file, and the `d = 6` round-trip error clearly exceeds `d = 0.5`.
+- **377 tests passing, 3 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)

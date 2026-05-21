@@ -35,8 +35,10 @@ public enum VarDCTBitstreamWriter {
     /// file (naked codestream). Frames up to one DC group (≤ 2048 px)
     /// are supported; frames spanning more than one 256-px AC group
     /// are written as a multi-section codestream.
-    public static func encode(frame: ImageFrame) throws -> Data {
-        let q = try VarDCTEncoder.forward(frame: frame)
+    public static func encode(
+        frame: ImageFrame, distance: Float = 1.0
+    ) throws -> Data {
+        let q = try VarDCTEncoder.forward(frame: frame, distance: distance)
         let groupDim = 256
         guard q.xsize <= 2048, q.ysize <= 2048 else {
             throw WriterError.unsupported(

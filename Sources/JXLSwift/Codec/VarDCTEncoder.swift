@@ -64,10 +64,24 @@ public enum VarDCTEncoder {
     /// Run the forward transform. `frame` must be 8-bit RGB or RGBA
     /// (alpha is ignored by this DSP core — extra channels are a
     /// bitstream-layer concern).
+    /// Map a quality `distance` to the frame's global quantiser.
+    /// `distance` is a monotone quality knob in the spirit of cjxl's
+    /// `-d` (0.5 ≈ near-lossless, larger = smaller/lossier) — but a
+    /// **crude global** mapping, not the perceptual butteraugli-
+    /// driven adaptive quant libjxl uses. `distance = 1` reproduces
+    /// the previous fixed quantiser (`global_scale = 5111`).
+    public static func globalScale(forDistance distance: Float) -> UInt32 {
+        let d = max(0.05, distance)
+        let s = (5111.0 / d).rounded()
+        return UInt32(max(1.0, min(65535.0, s)))
+    }
+
     public static func forward(
-        frame: ImageFrame, globalScale: UInt32 = 5111,
-        quantDC: UInt32 = 17, qf: Int32 = 5
+        frame: ImageFrame, distance: Float = 1.0
     ) throws -> Quantized {
+        let globalScale = globalScale(forDistance: distance)
+        let quantDC: UInt32 = 17
+        let qf: Int32 = 5
         guard frame.pixelType == .uint8, frame.channels >= 3 else {
             throw EncoderError.unsupported(
                 "VarDCT encode: only 8-bit RGB/RGBA frames "

@@ -8316,6 +8316,60 @@ extension FoundationTests {
             "multi-section round-trip mean error (djxl) \(djErr)")
     }
 
+    /// The `distance` quality knob. Encoding the same image at a
+    /// sweep of distances must (a) always produce a `djxl`-decodable
+    /// frame, (b) shrink the file as distance grows, and (c) raise
+    /// the round-trip error as distance grows — i.e. a real,
+    /// monotone quality control.
+    func testVarDCTBitstreamWriter_DistanceKnob() throws {
+        let dim = 64
+        var frame = ImageFrame(width: dim, height: dim, channels: 3)
+        for y in 0..<dim {
+            for x in 0..<dim {
+                let i = (y * dim + x) * 3
+                frame.data[i + 0] = UInt8((x * 3 + y) & 0xff)
+                frame.data[i + 1] = UInt8((y * 5) & 0xff)
+                frame.data[i + 2] = UInt8(((x ^ y) * 4) & 0xff)
+            }
+        }
+        let djxl = "/opt/homebrew/bin/djxl"
+        let haveDjxl = FileManager.default.isExecutableFile(atPath: djxl)
+        let tmp = NSTemporaryDirectory()
+        var sizes: [Int] = []
+        var errors: [Double] = []
+        for d in [Float(0.5), 1.0, 2.0, 6.0] {
+            let cs = try VarDCTBitstreamWriter.encode(
+                frame: frame, distance: d)
+            sizes.append(cs.count)
+            // Round-trip error via our decoder.
+            let dec = try JXLDecoder().decode(cs)
+            var s = 0
+            for i in 0..<(dim * dim * 3) {
+                s += abs(Int(dec.data[i]) - Int(frame.data[i]))
+            }
+            errors.append(Double(s) / Double(dim * dim * 3))
+            // Every distance must stay djxl-decodable.
+            if haveDjxl {
+                let jxlPath = tmp + "vdt_dist\(d).jxl"
+                try cs.write(to: URL(fileURLWithPath: jxlPath))
+                let p = Process()
+                p.launchPath = djxl
+                p.arguments = [jxlPath, tmp + "vdt_dist\(d).ppm"]
+                p.standardOutput = Pipe(); p.standardError = Pipe()
+                try p.run(); p.waitUntilExit()
+                XCTAssertEqual(p.terminationStatus, 0,
+                    "djxl rejected distance \(d) codestream")
+            }
+        }
+        // Monotone: coarser distance → smaller file, larger error.
+        XCTAssertGreaterThan(sizes[0], sizes[3],
+            "distance 0.5 file (\(sizes[0])) should exceed "
+            + "distance 6 (\(sizes[3]))")
+        XCTAssertGreaterThan(errors[3], errors[0] + 1.0,
+            "distance 6 error (\(errors[3])) should clearly exceed "
+            + "distance 0.5 (\(errors[0]))")
+    }
+
     /// Probe a sweep of cjxl distances to see which quant modes
     /// each emits — informs which `QuantEncoding` modes are
     /// load-bearing for real-world cjxl output. Reports the

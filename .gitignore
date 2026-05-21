@@ -41,3 +41,6 @@ test-results.xml
 
 # Claude Code runtime state
 .claude/
+
+# Local-only test fixtures (large external datasets, e.g. DICOM WG26 demo)
+TestFixtures/
