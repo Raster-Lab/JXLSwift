@@ -655,6 +655,20 @@ public struct JXLDecoder: Sendable {
             FileHandle.standardError.write(Data(
                 "TRACE ACStrategyImage: \(acsImage.firstBlocks.count) first-blocks, strategies=\(counts)\n".utf8
             ))
+            // Per-block strategy raw-value grid (first-block cells show
+            // the strategy raw value; covered non-first cells show `.`).
+            var gridMsg = "TRACE strategy grid:\n"
+            for gy in 0..<ysizeBlocks {
+                var row = ""
+                for gx in 0..<xsizeBlocks {
+                    let e = acsImage.at(x: gx, y: gy)
+                    row += e.isFirstBlock
+                        ? String(format: "%3d", Int(e.strategy.rawValue))
+                        : "  ."
+                }
+                gridMsg += row + "\n"
+            }
+            FileHandle.standardError.write(Data(gridMsg.utf8))
         }
 
         // Build a per-CELL QF array (`perBlockQF`). The first-block-
@@ -1257,20 +1271,38 @@ public struct JXLDecoder: Sendable {
         //     on the per-color-tile slope from ACMeta channel 1).
         // We mirror that: DC pixel gets DC-CFL baked in, AC coefs get
         // AC-CFL baked in BEFORE the IDCT. After IDCT no further CFL
-        // is applied. (For our 8×8 fixture both slopes are 0 so DC
-        // and AC use the same factors and the bug was masked.)
+        // is applied.
         let dcCflX = cmapDC.ytoXRatio(slope: cmapDC.ytoxDC)
         let dcCflB = cmapDC.ytoBRatio(slope: cmapDC.ytobDC)
-        // AC slopes from ACMeta (per-color-tile; for our small fixtures
-        // it's a single tile covering the whole image).
-        let ytoxSlopeAC = acMetaValues[0].first ?? 0
-        let ytobSlopeAC = acMetaValues[1].first ?? 0
-        let xCCMul = cmapDC.ytoXRatio(slope: ytoxSlopeAC)
-        let bCCMul = cmapDC.ytoBRatio(slope: ytobSlopeAC)
+        // AC CFL slopes are stored **per 64×64-pixel colour tile** in
+        // ACMeta channels 0 (YToX) and 1 (YToB). A colour tile spans
+        // `kColorTileDimInBlocks` (= 8) blocks each way, so the 8×8
+        // block at (bx,by) belongs to tile (bx/8, by/8). libjxl
+        // `dec_group.cc:273-301` indexes the map row-major by tile.
+        // The maps are sized `cWidth × cHeight` (ceil(dcW/8) × …).
+        let acCmapWidth = max(1, (dcWidth + 7) / 8)
+        let acCmapHeight = max(1, (dcHeight + 7) / 8)
+        let ytoxMapAC = acMetaValues[0]
+        let ytobMapAC = acMetaValues[1]
+        // Per-block AC CFL multipliers — looked up at the block's
+        // colour tile. Replaces the earlier single-tile `.first`
+        // shortcut, which only held for frames ≤ 64 px (one tile).
+        @inline(__always)
+        func acCFLMul(bx: Int, by: Int) -> (x: Float, b: Float) {
+            let tileX = min(bx / kColorTileDimInBlocks, acCmapWidth - 1)
+            let tileY = min(by / kColorTileDimInBlocks, acCmapHeight - 1)
+            let idx = tileY * acCmapWidth + tileX
+            let xSlope = idx < ytoxMapAC.count ? ytoxMapAC[idx] : 0
+            let bSlope = idx < ytobMapAC.count ? ytobMapAC[idx] : 0
+            return (cmapDC.ytoXRatio(slope: xSlope),
+                    cmapDC.ytoBRatio(slope: bSlope))
+        }
         if trace {
-            FileHandle.standardError.write(Data(
-                "TRACE CFL: dc=(x=\(dcCflX), b=\(dcCflB)) ac=(x=\(xCCMul), b=\(bCCMul)) (slopes dc=(\(cmapDC.ytoxDC),\(cmapDC.ytobDC)) ac=(\(ytoxSlopeAC),\(ytobSlopeAC)))\n".utf8
-            ))
+            let cflMsg = "TRACE CFL: dc=(x=\(dcCflX), b=\(dcCflB)) "
+                + "ac maps \(acCmapWidth)×\(acCmapHeight) "
+                + "ytox=\(ytoxMapAC) ytob=\(ytobMapAC) "
+                + "(dc slopes=(\(cmapDC.ytoxDC),\(cmapDC.ytobDC)))\n"
+            FileHandle.standardError.write(Data(cflMsg.utf8))
         }
 
         let planeWidth = numBlocksXAC * 8
@@ -1282,6 +1314,8 @@ public struct JXLDecoder: Sendable {
         for by in 0..<numBlocksYAC {
             for bx in 0..<numBlocksXAC {
                 let blockIdx = by * numBlocksXAC + bx
+                // AC CFL multipliers for this cell's colour tile.
+                let (xCCMul, bCCMul) = acCFLMul(bx: bx, by: by)
                 // v0.9.0h: dump first block's quantised AC values for
                 // diagnostic vs djxl. Triggered by JXL_TRACE_AC env var.
                 if blockIdx == 0,
@@ -1468,6 +1502,7 @@ public struct JXLDecoder: Sendable {
                 let blockQF = blockIdx < perBlockQF.count
                     ? perBlockQF[blockIdx] : qfRow
                 let blockInvQuantAC = invGlobalScale / Float(blockQF)
+                let (xCCMul, bCCMul) = acCFLMul(bx: bx, by: by)
                 // DC dequant (XYB indexing) + DC-CFL.
                 var dcPixelXYB = [Float](repeating: 0, count: 3)
                 for storageSlot in 0..<3 {
@@ -1564,6 +1599,7 @@ public struct JXLDecoder: Sendable {
                 let blockQF = blockIdxFirst < perBlockQF.count
                     ? perBlockQF[blockIdxFirst] : qfRow
                 let blockInvQuantAC = invGlobalScale / Float(blockQF)
+                let (xCCMul, bCCMul) = acCFLMul(bx: bx, by: by)
                 // Per channel: build the 256-entry coefficient block,
                 // dequant + bridge + IDCT, then place into the plane.
                 var coef = [[Float]](
@@ -1695,6 +1731,7 @@ public struct JXLDecoder: Sendable {
                 let blockQF = blockIdxFirst < perBlockQF.count
                     ? perBlockQF[blockIdxFirst] : qfRow
                 let blockInvQuantAC = invGlobalScale / Float(blockQF)
+                let (xCCMul, bCCMul) = acCFLMul(bx: bx, by: by)
                 // Per-channel coef block (128 entries in 8-row × 16-col
                 // layout).
                 var coef = [[Float]](
@@ -1824,6 +1861,7 @@ public struct JXLDecoder: Sendable {
                 let blockQF = blockIdxFirst < perBlockQF.count
                     ? perBlockQF[blockIdxFirst] : qfRow
                 let blockInvQuantAC = invGlobalScale / Float(blockQF)
+                let (xCCMul, bCCMul) = acCFLMul(bx: bx, by: by)
                 // Per-channel coef block (32 cols × 16 rows = 512).
                 var coef = [[Float]](
                     repeating: [Float](repeating: 0, count: 512),
@@ -2004,6 +2042,7 @@ public struct JXLDecoder: Sendable {
                 let blockQF = blockIdxFirst < perBlockQF.count
                     ? perBlockQF[blockIdxFirst] : qfRow
                 let blockInvQuantAC = invGlobalScale / Float(blockQF)
+                let (xCCMul, bCCMul) = acCFLMul(bx: bx, by: by)
                 // Per-channel coef block (32 cols × 32 rows = 1024).
                 var coef = [[Float]](
                     repeating: [Float](repeating: 0, count: 1024),
@@ -2123,6 +2162,7 @@ public struct JXLDecoder: Sendable {
                 let blockQF = blockIdxFirst < perBlockQF.count
                     ? perBlockQF[blockIdxFirst] : qfRow
                 let blockInvQuantAC = invGlobalScale / Float(blockQF)
+                let (xCCMul, bCCMul) = acCFLMul(bx: bx, by: by)
                 // Per-channel coef block (64 cols × 32 rows = 2048).
                 var coef = [[Float]](
                     repeating: [Float](repeating: 0, count: 2048),
@@ -2258,6 +2298,7 @@ public struct JXLDecoder: Sendable {
                 let blockQF = blockIdxFirst < perBlockQF.count
                     ? perBlockQF[blockIdxFirst] : qfRow
                 let blockInvQuantAC = invGlobalScale / Float(blockQF)
+                let (xCCMul, bCCMul) = acCFLMul(bx: bx, by: by)
                 // Per-channel coef block (64 cols × 64 rows = 4096).
                 var coef = [[Float]](
                     repeating: [Float](repeating: 0, count: 4096),
@@ -2377,6 +2418,7 @@ public struct JXLDecoder: Sendable {
                 let blockQF = blockIdxFirst < perBlockQF.count
                     ? perBlockQF[blockIdxFirst] : qfRow
                 let blockInvQuantAC = invGlobalScale / Float(blockQF)
+                let (xCCMul, bCCMul) = acCFLMul(bx: bx, by: by)
                 let acYBlock = acBlocks[blockIdxFirst][1]
                 let acXBlock = acBlocks[blockIdxFirst][0]
                 let acBBlock = acBlocks[blockIdxFirst][2]

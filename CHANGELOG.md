@@ -153,6 +153,15 @@ Two bugs in the EPF (edge-preserving) restoration filter, surfaced by tracing th
 - **Result:** the 64×64 textured SWEEP fixture is now **byte-exact vs `djxl` at every distance** — d=0.5 / 1.0 / 2.0 / 5.0 / 10 all `max byte-diff = 1`. The v0.9.0 byte-equality goal is met across the full quality range, not just d=1.
 - **369 tests passing, 3 skipped, 0 failures.**
 
+### v0.10.0o — per-colour-tile AC chroma-from-luma (frames > 64 px)
+
+The VarDCT decoder applied a **single** YToX / YToB chroma-from-luma slope — `acMetaValues[c].first`, i.e. colour tile (0,0) — to the *whole* frame. JPEG XL stores the AC CfL map at one entry per **64×64-pixel colour tile** (`kColorTileDim`), so this was only correct for frames ≤ 64 px (one tile). Every frame larger than 64 px got the tile-(0,0) multiplier stamped onto all other tiles.
+
+- **Fix.** New `acCFLMul(bx:by:)` helper looks up the YToX/YToB slope at the block's colour tile — `(bx / kColorTileDimInBlocks, by / kColorTileDimInBlocks)`, indexed row-major into ACMeta channels 0/1 — and converts it via `cmapDC.ytoXRatio` / `ytoBRatio`. Wired into all **nine** dequant + IDCT passes (per-cell DCT8, the small-transform overlay, DCT16x16, DCT16x8/8x16, DCT32x16/16x32, DCT32x32, DCT64x32/32x64, DCT64x64, AFV). Matches libjxl `dec_group.cc:273-301`, where `x_cc_mul` / `b_cc_mul` are recomputed per colour tile. DC-CfL is unchanged — it has its own global `cmap.DecodeDC` scalars.
+- **Verified vs `djxl 0.11.2`.** A 192×192 textured fixture (3×3 colour tiles, YToB map `[127,16,12,0,127,0,16,1,127]` confirmed byte-identical to an instrumented djxl trace): mean B-error **17.1 → 0.34**. A smooth 192×192 fixture (9 DCT64x64 tiles, no AFV/small transforms) decodes essentially byte-exact — `max=(3,1,2)` at d=1, uniform across all 9 tiles.
+- **Known residual (next work).** On textured > 64 px frames, AFV blocks carrying real high-frequency AC still spike (the per-cell IDCT plane shows a 0/255 chequer where djxl is smooth) — a pre-existing AFV-path bug, distinct from CfL, exposed now that the bulk multi-tile error is cleared. The earlier AFV byte-equality was measured only on small synthetic probes that did not stress the AFV AC path.
+- **369 tests passing, 3 skipped, 0 failures.**
+
 ---
 
 ## [0.8.0] — 2026 — Multi-AC-strategy + UMA backend
