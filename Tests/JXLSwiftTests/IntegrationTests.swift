@@ -7922,6 +7922,94 @@ extension FoundationTests {
         }
     }
 
+    /// RGBA (extra-channel) VarDCT decode pin-down. A 64×64 frame
+    /// with a lossy XYB colour part and a lossless modular alpha
+    /// channel. Exercises: the `gi` meta-channels modular sub-image,
+    /// the Palette transform cjxl applies to the alpha (`numC == 1`
+    /// — previously a `1...0` range trap in `metaApplyPalette`), and
+    /// 4-channel RGBA assembly. Colour matches `djxl` to the ±1 sRGB
+    /// floor; the modular alpha is byte-exact.
+    func testVarDCT_RGBA_DjxlByteEquality() throws {
+        let cjxl = "/opt/homebrew/bin/cjxl"
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: cjxl),
+              FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("cjxl/djxl not available")
+        }
+        let dim = 64
+        let tmp = NSTemporaryDirectory()
+        let pamPath = tmp + "vdt_rgba.pam"
+        var pam = Data(
+            "P7\nWIDTH \(dim)\nHEIGHT \(dim)\nDEPTH 4\nMAXVAL 255\n"
+            .utf8)
+        pam.append(Data("TUPLTYPE RGB_ALPHA\nENDHDR\n".utf8))
+        for y in 0..<dim {
+            for x in 0..<dim {
+                pam.append(UInt8((x * 4) & 0xff))
+                pam.append(UInt8((y * 4) & 0xff))
+                pam.append(UInt8(((x ^ y) * 4) & 0xff))
+                pam.append(UInt8(
+                    ((x * 131 + y * 149) ^ (x * 7) ^ (y * 53)) & 0xff))
+            }
+        }
+        try pam.write(to: URL(fileURLWithPath: pamPath))
+
+        for d in ["0.5", "1.0", "3.0"] {
+            let jxlPath = tmp + "vdt_rgba_d\(d).jxl"
+            let refPath = tmp + "vdt_rgba_d\(d)_ref.pam"
+            let p1 = Process()
+            p1.launchPath = cjxl
+            p1.arguments = [pamPath, jxlPath, "-d", d]
+            p1.standardOutput = Pipe(); p1.standardError = Pipe()
+            try p1.run(); p1.waitUntilExit()
+            guard p1.terminationStatus == 0 else {
+                throw XCTSkip("cjxl encode failed for d=\(d)")
+            }
+            let p2 = Process()
+            p2.launchPath = djxl
+            p2.arguments = [jxlPath, refPath]
+            p2.standardOutput = Pipe(); p2.standardError = Pipe()
+            try p2.run(); p2.waitUntilExit()
+            guard p2.terminationStatus == 0 else {
+                throw XCTSkip("djxl decode failed for d=\(d)")
+            }
+            // Reference PAM — skip the line-based header (ends after
+            // "ENDHDR\n").
+            let refData = try Data(contentsOf: URL(fileURLWithPath: refPath))
+            guard let hdrEnd = refData.range(
+                of: Data("ENDHDR\n".utf8)) else {
+                throw XCTSkip("djxl PAM header not found for d=\(d)")
+            }
+            let ref = refData.subdata(
+                in: hdrEnd.upperBound..<refData.count)
+            guard ref.count == dim * dim * 4 else {
+                throw XCTSkip("djxl PAM size mismatch for d=\(d)")
+            }
+            let bytes = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
+            let frame = try JXLDecoder().decode(bytes)
+            XCTAssertEqual(frame.channels, 4,
+                           "RGBA frame should have 4 channels")
+            XCTAssertEqual(frame.alphaChannels, 1)
+            XCTAssertEqual(frame.data.count, dim * dim * 4)
+            var maxRGB = 0, maxA = 0
+            for i in 0..<(dim * dim) {
+                for c in 0..<3 {
+                    maxRGB = max(maxRGB, abs(
+                        Int(frame.data[i * 4 + c]) - Int(ref[i * 4 + c])))
+                }
+                maxA = max(maxA, abs(
+                    Int(frame.data[i * 4 + 3]) - Int(ref[i * 4 + 3])))
+            }
+            XCTAssertLessThanOrEqual(
+                maxRGB, 5,
+                "RGBA d=\(d): colour max byte-diff vs djxl \(maxRGB)")
+            XCTAssertEqual(
+                maxA, 0,
+                "RGBA d=\(d): modular alpha must be byte-exact "
+                + "(got max diff \(maxA))")
+        }
+    }
+
     /// Probe a sweep of cjxl distances to see which quant modes
     /// each emits — informs which `QuantEncoding` modes are
     /// load-bearing for real-world cjxl output. Reports the

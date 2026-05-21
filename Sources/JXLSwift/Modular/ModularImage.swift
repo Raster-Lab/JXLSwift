@@ -125,9 +125,11 @@ private func metaApplyPalette(
             channels: image.channels.count
         )
     }
-    // Check equal dims across the palette range.
+    // Check equal dims across the palette range. Half-open range so
+    // `numC == 1` (endC == beginC) is a no-op rather than a `1...0`
+    // range trap.
     let ref = image.channels[beginC]
-    for c in (beginC + 1)...endC {
+    for c in (beginC + 1)..<(endC + 1) {
         let ch = image.channels[c]
         if ch.width != ref.width || ch.height != ref.height
             || ch.hshift != ref.hshift || ch.vshift != ref.vshift {

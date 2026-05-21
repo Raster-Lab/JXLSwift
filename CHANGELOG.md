@@ -191,6 +191,16 @@ The decoder never applied **adaptive DC smoothing**. libjxl runs `AdaptiveDCSmoo
 - **Result.** `big1dc` (2040×512) and `dcg2080` (2080×2080) now decode **byte-exact vs `djxl 0.11.2`** — `max=(1,1,1)`. The multi-DC-group pin-down test's assertion is tightened to `max ≤ 5`. SWEEP / cfl192 / AFV fixtures stay byte-exact.
 - **371 tests passing, 3 skipped, 0 failures.**
 
+### v0.10.0s — extra-channel (alpha) decode for VarDCT
+
+The VarDCT decoder threw `notImplemented` on any frame with extra channels — so every RGBA image failed. The colour part of a VarDCT frame is XYB-coded; the extra channels (alpha, depth, …) are **Modular**-coded in the global `gi` sub-image (libjxl `dec_modular.cc::DecodeGlobalInfo`). That sub-image is now decoded.
+
+- **Meta-channels modular decode.** After the global tree, when the frame has extra channels the decoder reads the `gi` GroupHeader, builds the extra-channel modular image (sized per `extra_channel_upsampling`), applies meta-transforms, decodes the channels with the existing `decodeAllChannels`, and undoes the transforms — reusing the Modular machinery (`metaApplyTransforms` / `applyInverseTransforms`) already proven on the lossless path. A single alpha extra channel is interleaved behind the VarDCT-decoded RGB into a 4-channel RGBA `ImageFrame`.
+- **Palette `numC == 1` trap fixed.** cjxl routinely applies a 1-channel **Palette** transform to the alpha channel. `metaApplyPalette` walked the palette range with the closed range `(beginC + 1)...endC`, which for `numC == 1` is `1...0` — an invalid range that **traps** at runtime. Changed to the half-open `(beginC + 1)..<(endC + 1)` (empty for `numC == 1`). This also hardens the lossless Modular path against single-channel palettes.
+- **Scope.** Extra channels that fit in one modular group (frames ≤ `group_dim`, ~256 px) are decoded in this global pass. Larger frames defer their extra channels to per-group modular sections — not yet implemented; they throw a clear `notImplemented`. A single alpha channel is wired to RGBA output; other extra-channel types still throw.
+- **Result.** 64×64 RGBA fixtures decode **byte-exact vs `djxl 0.11.2`** at d=0.5/1.0/3.0 — colour `max=(1,1,1)` (±1 sRGB floor), modular **alpha exact** (`max=0`). New pin-down test `testVarDCT_RGBA_DjxlByteEquality`.
+- **372 tests passing, 3 skipped, 0 failures.**
+
 ---
 
 ## [0.8.0] — 2026 — Multi-AC-strategy + UMA backend

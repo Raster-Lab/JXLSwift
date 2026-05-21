@@ -351,22 +351,125 @@ public struct JXLDecoder: Sendable {
         // (= end of post-tree codebook) flows directly into
         // `DecodeVarDCTDC`'s `ReadFixedBits<2>()` for
         // `extra_precision`.
-        let nbColorChannels = 0  // VarDCT: do_color = false
+        // VarDCT: do_color = false, so `gi` carries only the extra
+        // channels (alpha / depth / …). When there are none, `gi` is
+        // empty and `ModularDecode` returns before reading anything.
+        // When there are extra channels, decode them here: each is a
+        // modular channel of the global sub-image, sized
+        // `DivCeil(xsize, ecups) × DivCeil(ysize, ecups)`.
         let nbExtraChannels = metadata.extraChannels.count
-        let metaChannelCount = nbColorChannels + nbExtraChannels
-        if metaChannelCount > 0 {
-            // Non-empty meta-channels image (e.g. extra channels):
-            // libjxl reads GroupHeader, transforms, etc. We don't
-            // implement that yet.
-            throw DecoderError.notImplemented(
-                "VarDCT decode: meta-channels modular sub-image with "
-                + "\(metaChannelCount) channel(s) — GroupHeader "
-                + "read + meta-transforms + decodeAllChannels not "
-                + "yet implemented (no test fixture currently "
-                + "exercises this path)."
-            )
+        // Decoded extra-channel planes (one `xsize × ysize` Int32
+        // array per channel); empty when the frame has none.
+        var extraChannelPlanes: [[Int32]] = []
+        if nbExtraChannels > 0 {
+            // `gi` GroupHeader (libjxl `ModularDecode` → `Bundle::Read`).
+            let giGH: GroupHeader
+            do { giGH = try GroupHeader.read(from: &r) }
+            catch let e as GroupHeaderError {
+                throw DecoderError.notImplemented(
+                    "VarDCT decode: meta-channels GroupHeader read "
+                    + "failed: \(e)")
+            }
+            guard giGH.useGlobalTree, let giTree = globalTree,
+                  let giPostHdr = globalPostHeader,
+                  let giPostCb = globalPostCodebook else {
+                throw DecoderError.notImplemented(
+                    "VarDCT decode: meta-channels image with a local "
+                    + "tree (use_global_tree=false / has_tree=false) "
+                    + "not implemented")
+            }
+            // Build the extra-channel modular image (no colour
+            // channels for VarDCT). Each extra channel is sized by
+            // its `extra_channel_upsampling` — see libjxl
+            // `dec_modular.cc::DecodeGlobalInfo`.
+            var giImage = ModularImage.fresh(
+                xsize: xsize, ysize: ysize,
+                nbColor: 0, nbExtra: nbExtraChannels)
+            let frameUps = max(1, Int(fh.upsampling))
+            let frameUpsLog = log2Floor(frameUps)
+            for ec in 0..<nbExtraChannels {
+                let ecUps = ec < fh.extraChannelUpsampling.count
+                    ? max(1, Int(fh.extraChannelUpsampling[ec])) : 1
+                let ecW = (xsize + ecUps - 1) / ecUps
+                let ecH = (ysize + ecUps - 1) / ecUps
+                let shift = log2Floor(ecUps) - frameUpsLog
+                giImage.channels[ec] = ModularChannel(
+                    width: ecW, height: ecH,
+                    hshift: max(0, shift), vshift: max(0, shift))
+            }
+            if trace {
+                let m = "TRACE gi GH: useGlobal=\(giGH.useGlobalTree) "
+                    + "transforms=\(giGH.transforms.map { ($0.id, $0.beginC, $0.numC) }) "
+                    + "preChans=\(giImage.channels.map { ($0.width, $0.height) })\n"
+                FileHandle.standardError.write(Data(m.utf8))
+            }
+            // Meta-transforms (Squeeze / RCT / Palette) reshape the
+            // channel list before the pixel decode.
+            do {
+                try metaApplyTransforms(
+                    image: &giImage, transforms: giGH.transforms)
+            } catch {
+                throw DecoderError.notImplemented(
+                    "VarDCT decode: meta-channels transform "
+                    + "(\(giGH.transforms.map { $0.id })) MetaApply "
+                    + "failed: \(error)")
+            }
+            // Every (possibly transformed) channel must fit one
+            // modular group so it decodes in this global pass;
+            // larger channels defer to per-group modular sections.
+            for ch in giImage.channels {
+                guard ch.width <= groupDim, ch.height <= groupDim else {
+                    throw DecoderError.notImplemented(
+                        "VarDCT decode: extra-channel modular channel "
+                        + "\(ch.width)×\(ch.height) exceeds one group "
+                        + "(\(groupDim) px) — per-group modular decode "
+                        + "not implemented")
+                }
+            }
+            if trace {
+                let m = "TRACE gi postMetaApply chans="
+                    + "\(giImage.channels.map { ($0.width, $0.height) })\n"
+                FileHandle.standardError.write(Data(m.utf8))
+            }
+            let geometries = giImage.channels.map {
+                ModularChannelGeometry(width: $0.width, height: $0.height)
+            }
+            var giStream = TokenStreamReader(
+                header: giPostHdr, codebook: giPostCb)
+            let decoded: [[Int32]]
+            do {
+                decoded = try decodeAllChannels(
+                    channels: geometries,
+                    groupId: 0,    // ModularStreamId::Global()
+                    tree: giTree, stream: &giStream,
+                    from: &r, wpHeader: giGH.wpHeader)
+            } catch let e as ModularChannelDecoderError {
+                throw DecoderError.notImplemented(
+                    "VarDCT decode: extra-channel decode failed: \(e)")
+            }
+            for i in 0..<giImage.channels.count {
+                giImage.channels[i].pixels = decoded[i]
+            }
+            // Undo the meta-transforms to reconstruct the extra
+            // channels at full resolution.
+            do {
+                try applyInverseTransforms(
+                    image: &giImage, transforms: giGH.transforms)
+            } catch {
+                throw DecoderError.notImplemented(
+                    "VarDCT decode: meta-channels inverse transform "
+                    + "failed: \(error)")
+            }
+            extraChannelPlanes = (0..<nbExtraChannels).map {
+                giImage.channels[$0].pixels
+            }
+            if trace {
+                let msg = "TRACE extra channels: \(nbExtraChannels) "
+                    + "decoded \(xsize)×\(ysize) "
+                    + "transforms=\(giGH.transforms.map { $0.id })\n"
+                FileHandle.standardError.write(Data(msg.utf8))
+            }
         }
-        let _ = (globalTree, globalPostHeader, globalPostCodebook)
         let _ = (kRequiredSizeX, kRequiredSizeY, DequantMatricesAC.self)
 
         // (7-11) DC groups. libjxl decodes each DC group as an
@@ -2589,8 +2692,34 @@ public struct JXLDecoder: Sendable {
         // both wired up — each DC group is decoded into its sub-region
         // of the full-frame planes above.
         let _ = (kRequiredSizeX, kRequiredSizeY)
-        var frame = ImageFrame(width: xsize, height: ysize, channels: 3)
-        frame.data = rgb8
+        if nbExtraChannels == 0 {
+            var frame = ImageFrame(width: xsize, height: ysize, channels: 3)
+            frame.data = rgb8
+            return frame
+        }
+        // A single alpha extra channel → RGBA output. The modular-
+        // decoded extra-channel samples are the alpha values directly
+        // (extra channels carry no colour transform); interleave them
+        // behind the VarDCT-decoded RGB.
+        guard nbExtraChannels == 1,
+              metadata.extraChannels[0].type == .alpha else {
+            throw DecoderError.notImplemented(
+                "VarDCT decode: \(nbExtraChannels) extra channel(s) of "
+                + "types \(metadata.extraChannels.map { $0.type }) — "
+                + "only a single alpha channel is wired to output")
+        }
+        let alpha = extraChannelPlanes[0]
+        var rgba = [UInt8](repeating: 0, count: xsize * ysize * 4)
+        for i in 0..<(xsize * ysize) {
+            rgba[i * 4 + 0] = rgb8[i * 3 + 0]
+            rgba[i * 4 + 1] = rgb8[i * 3 + 1]
+            rgba[i * 4 + 2] = rgb8[i * 3 + 2]
+            rgba[i * 4 + 3] = i < alpha.count
+                ? UInt8(clamping: alpha[i]) : 255
+        }
+        var frame = ImageFrame(
+            width: xsize, height: ysize, channels: 4, alphaChannels: 1)
+        frame.data = rgba
         return frame
     }
 
