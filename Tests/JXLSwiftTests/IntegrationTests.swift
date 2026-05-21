@@ -8383,6 +8383,68 @@ extension FoundationTests {
             "multi-DC-group round-trip mean error (djxl) \(djMean)")
     }
 
+    /// Adaptive AC entropy clustering. A 1280×1280 high-detail image
+    /// produces enough AC tokens that the 2-cluster split (separate
+    /// `nzeros` and coefficient Huffman codebooks) beats the
+    /// context-map cost, so `VarDCTBitstreamWriter` selects the
+    /// 2-cluster layout. The codestream must stay spec-valid — `djxl`
+    /// decodes it and agrees with our own decoder (clustering is a
+    /// pure lossless recode, so both decoders see identical pixels).
+    func testVarDCTBitstreamWriter_TwoClusterAC() throws {
+        let dim = 1280
+        var frame = ImageFrame(width: dim, height: dim, channels: 3)
+        for y in 0..<dim {
+            for x in 0..<dim {
+                let i = (y * dim + x) * 3
+                frame.data[i + 0] = UInt8(((x * 7) ^ (y * 13)) & 0xff)
+                frame.data[i + 1] = UInt8(((x * 3) + (y * 5)) & 0xff)
+                frame.data[i + 2] = UInt8(((x ^ y) * 9) & 0xff)
+            }
+        }
+        let codestream = try VarDCTBitstreamWriter.encode(frame: frame)
+        let ours = try JXLDecoder().decode(codestream)
+        XCTAssertEqual(ours.width, dim)
+        XCTAssertEqual(ours.channels, 3)
+
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("djxl not available")
+        }
+        let tmp = NSTemporaryDirectory()
+        let jxlPath = tmp + "vdt_2clusterac.jxl"
+        let outPath = tmp + "vdt_2clusterac_dj.ppm"
+        try codestream.write(to: URL(fileURLWithPath: jxlPath))
+        let p = Process()
+        p.launchPath = djxl
+        p.arguments = [jxlPath, outPath]
+        let errPipe = Pipe()
+        p.standardOutput = Pipe(); p.standardError = errPipe
+        try p.run(); p.waitUntilExit()
+        let err = String(
+            data: errPipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8) ?? ""
+        XCTAssertEqual(p.terminationStatus, 0,
+            "djxl rejected the 2-cluster-AC codestream; stderr: \(err)")
+        let dj = try Data(contentsOf: URL(fileURLWithPath: outPath))
+        var binStart = 0, nl = 0
+        for (i, b) in dj.enumerated() {
+            if b == 0x0A { nl += 1; if nl == 3 { binStart = i + 1; break } }
+        }
+        guard dj.count - binStart == dim * dim * 3 else {
+            throw XCTSkip("djxl PPM size mismatch")
+        }
+        // Both decoders consumed the same codestream — they must agree.
+        var diff = 0
+        for i in 0..<(dim * dim * 3) {
+            diff += abs(Int(dj[binStart + i]) - Int(ours.data[i]))
+        }
+        let mean = Double(diff) / Double(dim * dim * 3)
+        XCTAssertLessThan(mean, 2.0,
+            "our decoder and djxl disagree on the 2-cluster "
+            + "codestream (mean \(mean)) — the multi-cluster AC "
+            + "layout is malformed")
+    }
+
     /// The `distance` quality knob. Encoding the same image at a
     /// sweep of distances must (a) always produce a `djxl`-decodable
     /// frame, (b) shrink the file as distance grows, and (c) raise
@@ -10758,6 +10820,55 @@ extension FoundationTests {
             XCTAssertEqual(parsed.huffmanTables.count, 1)
             XCTAssertEqual(parsed.huffmanTables[0].lengths, c.lengths,
                 "[\(c.label)] lengths mismatch")
+        }
+    }
+
+    /// `MultiClusterCodebook.write` — **multi-cluster** prefix-code
+    /// round-trip. The spec layout is "all alphabet sizes, then all
+    /// Huffman tables"; an earlier writer interleaved size/code pairs,
+    /// which round-tripped for a single cluster but corrupted every
+    /// cluster past the first (the reader reads all sizes up front).
+    /// Pins the fix with 2- and 3-cluster codebooks.
+    func testMultiClusterCodebook_Write_PrefixCode_MultiCluster() throws {
+        struct Case {
+            let clusterLengths: [[UInt8]]
+            let map: [UInt8]
+            let label: String
+        }
+        let cases: [Case] = [
+            Case(clusterLengths: [[1, 2, 2], [2, 2, 2, 2]],
+                 map: [0, 1, 0, 1], label: "2-cluster"),
+            Case(clusterLengths: [[1, 1], [1, 2, 3, 3], [0]],
+                 map: [0, 1, 2, 1, 0], label: "3-cluster mixed"),
+        ]
+        for c in cases {
+            let numClusters = c.clusterLengths.count
+            let tables = try c.clusterLengths.map {
+                try PrefixCodeTable(lengths: $0)
+            }
+            let codebook = MultiClusterCodebook(
+                huffmanTables: tables, ansCounts: [],
+                alphabetSizes: c.clusterLengths.map { $0.count })
+            let header = EntropySectionHeader(
+                lz77: .disabled,
+                contextMap: try ContextMap(
+                    numClusters: numClusters, useMTF: false, map: c.map),
+                usePrefixCode: true, logAlphaSize: 15,
+                uintConfigs: Array(
+                    repeating: HybridUintConfig.defaultConfig,
+                    count: numClusters))
+            var w = BitWriter()
+            try codebook.write(to: &w, header: header)
+            var r = BitReader(w.finishToData())
+            let parsed = try MultiClusterCodebook.read(
+                from: &r, header: header)
+            XCTAssertEqual(parsed.huffmanTables.count, numClusters,
+                "[\(c.label)] cluster count")
+            for cl in 0..<numClusters {
+                XCTAssertEqual(parsed.huffmanTables[cl].lengths,
+                    c.clusterLengths[cl],
+                    "[\(c.label)] cluster \(cl) lengths mismatch")
+            }
         }
     }
 

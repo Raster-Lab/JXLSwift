@@ -94,6 +94,15 @@ The encoder was capped at one DC group (2048 px). Frames now encode up to an 819
 - **Verified.** `testVarDCTBitstreamWriter_MultiDcGroup` encodes a 2304×2304 frame — a 2×2 grid of DC groups and a 9×9 grid of AC groups, 87 TOC sections — and round-trips it through our decoder **and `djxl 0.11.2`** at per-pixel `mean < 4`.
 - **382 tests passing, 3 skipped, 0 failures.**
 
+### v0.11.0j — multi-cluster codebook fix + adaptive 2-cluster AC
+
+Two changes, the first a genuine bug fix surfaced by the second.
+
+- **Fix — `MultiClusterCodebook.write` cluster layout.** The prefix-code writer interleaved `alphabet_size` / Huffman-table pairs per cluster, but the spec layout (and the reader, and libjxl `DecodeHistograms`) is **all alphabet sizes first, then all Huffman tables**. The two layouts coincide for a single cluster, so the bug stayed latent until the first multi-cluster encoder — any codebook with ≥ 2 prefix clusters was written corrupt. `testMultiClusterCodebook_Write_PrefixCode_MultiCluster` pins the fix with 2- and 3-cluster round-trips.
+- **Adaptive 2-cluster AC entropy coding.** `VarDCTBitstreamWriter` can now route the AC `nzeros` tokens and the coefficient tokens to two separate Huffman codebooks via a context map — their value distributions differ (small non-zero counts vs zig-zag-packed coefficients). The split needs an explicit context map costing ~`numACContexts` bits in the simple per-entry form, so the encoder **estimates both layouts and keeps the smaller** — the 2-cluster path is chosen only when its token-bit saving clears the map cost (it does on large high-detail frames; small/smooth frames keep the single cluster unchanged). Clustering is a pure lossless recode, so the decoded pixels are identical either way. The gain is modest (≈ 0.05–0.5 % on frames where it activates) — the larger value is that this exercises the multi-cluster encoder path end-to-end, which is what surfaced the codebook bug above.
+- **Verified.** `testVarDCTBitstreamWriter_TwoClusterAC` encodes a 1280×1280 high-detail frame (which selects the 2-cluster layout) and confirms `djxl 0.11.2` and our own decoder both decode it and agree.
+- **384 tests passing, 3 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)

@@ -201,6 +201,12 @@ public struct MultiClusterCodebook: Sendable {
                                   + "expected \(n))")
                 )
             }
+            // The layout is **all alphabet sizes first, then all
+            // Huffman tables** — matching `read` and libjxl
+            // `DecodeHistograms` (NOT interleaved size/code pairs;
+            // for a single cluster the two layouts coincide, which
+            // is why the interleaved bug went unnoticed until the
+            // first multi-cluster encoder).
             for c in 0..<n {
                 let size = alphabetSizes[c]
                 guard size >= 1 && size <= (1 << 16) else {
@@ -212,6 +218,11 @@ public struct MultiClusterCodebook: Sendable {
                 catch let e as BitstreamError {
                     throw MultiClusterCodebookError.bitstream(e)
                 }
+            }
+            for c in 0..<n {
+                let size = alphabetSizes[c]
+                // size == 1 → no Huffman bits (the size alone is
+                // enough); otherwise emit the prefix-code table.
                 if size > 1 {
                     let lengths = huffmanTables[c].lengths
                     do {
@@ -222,7 +233,6 @@ public struct MultiClusterCodebook: Sendable {
                         throw MultiClusterCodebookError.prefix(e)
                     }
                 }
-                // size == 1 → no bits.
             }
             return
         }
