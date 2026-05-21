@@ -7729,6 +7729,89 @@ extension FoundationTests {
         }
     }
 
+    /// Byte-equality pin-down for a frame **larger than one 64×64
+    /// colour tile** carrying high-frequency texture. A 192×192
+    /// fixture spans a 3×3 colour-tile grid (exercising per-tile
+    /// AC chroma-from-luma, `acCFLMul`, v0.10.0o) and the `x ^ y`
+    /// term forces cjxl to pick AFV blocks with real high-frequency
+    /// AC content (exercising the AFV `IDCT4×4` transpose, v0.10.0p).
+    ///
+    /// Regression guard: before v0.10.0o the wrong colour tile's
+    /// CfL slope was stamped frame-wide (mean B-error ~17); before
+    /// v0.10.0p the AFV `IDCT4×4` sub-block was not transposed
+    /// (0/255 spikes, max byte-diff > 100). Both bugs are caught by
+    /// the `max ≤ 5` assertion below.
+    func testVarDCT_MultiTileAFV_DjxlByteEquality() throws {
+        let cjxl = "/opt/homebrew/bin/cjxl"
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: cjxl),
+              FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("cjxl/djxl not available")
+        }
+        let dim = 192
+        let tmp = NSTemporaryDirectory()
+        let pnmPath = tmp + "vdt_mtafv.ppm"
+        var ppm = Data("P6\n\(dim) \(dim)\n255\n".utf8)
+        for y in 0..<dim {
+            for x in 0..<dim {
+                ppm.append(contentsOf: [
+                    UInt8((x * 3 + y) & 0xff),
+                    UInt8((y * 3) & 0xff),
+                    UInt8(((x ^ y) * 5) & 0xff),
+                ])
+            }
+        }
+        try ppm.write(to: URL(fileURLWithPath: pnmPath))
+
+        for d in ["1.0", "2.0"] {
+            let jxlPath = tmp + "vdt_mtafv_d\(d).jxl"
+            let refPath = tmp + "vdt_mtafv_d\(d)_ref.ppm"
+            let p1 = Process()
+            p1.launchPath = cjxl
+            p1.arguments = [pnmPath, jxlPath, "-d", d]
+            p1.standardOutput = Pipe(); p1.standardError = Pipe()
+            try p1.run(); p1.waitUntilExit()
+            guard p1.terminationStatus == 0 else {
+                throw XCTSkip("cjxl encode failed for d=\(d)")
+            }
+            let p2 = Process()
+            p2.launchPath = djxl
+            p2.arguments = [jxlPath, refPath]
+            p2.standardOutput = Pipe(); p2.standardError = Pipe()
+            try p2.run(); p2.waitUntilExit()
+            guard p2.terminationStatus == 0 else {
+                throw XCTSkip("djxl decode failed for d=\(d)")
+            }
+            let refData = try Data(contentsOf: URL(fileURLWithPath: refPath))
+            var binStart = 0, newlines = 0
+            for (i, b) in refData.enumerated() {
+                if b == 0x0A { newlines += 1; if newlines == 3 {
+                    binStart = i + 1; break
+                } }
+            }
+            guard refData.count - binStart == dim * dim * 3 else {
+                throw XCTSkip("djxl PPM size mismatch for d=\(d)")
+            }
+            let ref = refData.subdata(in: binStart..<refData.count)
+            let bytes = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
+            let frame = try JXLDecoder().decode(bytes)
+            XCTAssertEqual(frame.width, dim)
+            XCTAssertEqual(frame.height, dim)
+            XCTAssertEqual(frame.channels, 3)
+            XCTAssertEqual(frame.data.count, dim * dim * 3)
+            var maxDiff = 0
+            for i in 0..<(dim * dim * 3) {
+                maxDiff = max(maxDiff,
+                              abs(Int(frame.data[i]) - Int(ref[i])))
+            }
+            XCTAssertLessThanOrEqual(
+                maxDiff, 5,
+                "192×192 multi-tile AFV fixture d=\(d): max byte-diff "
+                + "vs djxl is \(maxDiff) (per-tile CfL / AFV IDCT4×4 "
+                + "transpose regression)")
+        }
+    }
+
     /// Probe a sweep of cjxl distances to see which quant modes
     /// each emits — informs which `QuantEncoding` modes are
     /// load-bearing for real-world cjxl output. Reports the

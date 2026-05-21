@@ -2466,7 +2466,14 @@ public struct JXLDecoder: Sendable {
 
                 // 3) AFV transform → 8×8 pixels via the 3-sub-block
                 //    decomposition (AFV 4×4 + IDCT 4×4 + IDCT 4×8).
+                // The IDCT4×4 sub-block is SQUARE, so libjxl's
+                // `ComputeScaledIDCT<4,4>` emits the transposed
+                // layout (ROWS≥COLS) — the coefficient block must be
+                // transposed before the un-transposed `idct2D`, same
+                // as the DCT8/16/32/64 square overlays. The 4×8
+                // sub-block (ROWS<COLS) needs no transpose.
                 let idct4x4Backend: (inout [Float]) -> Void = { block in
+                    JXLDecoder.transposeSquareInPlace(&block, size: 4)
                     AccelerateDCT.idct2D(&block, size: 4)
                 }
                 let idct4x8Backend: (inout [Float]) -> Void = { block in

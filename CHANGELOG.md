@@ -159,8 +159,17 @@ The VarDCT decoder applied a **single** YToX / YToB chroma-from-luma slope — `
 
 - **Fix.** New `acCFLMul(bx:by:)` helper looks up the YToX/YToB slope at the block's colour tile — `(bx / kColorTileDimInBlocks, by / kColorTileDimInBlocks)`, indexed row-major into ACMeta channels 0/1 — and converts it via `cmapDC.ytoXRatio` / `ytoBRatio`. Wired into all **nine** dequant + IDCT passes (per-cell DCT8, the small-transform overlay, DCT16x16, DCT16x8/8x16, DCT32x16/16x32, DCT32x32, DCT64x32/32x64, DCT64x64, AFV). Matches libjxl `dec_group.cc:273-301`, where `x_cc_mul` / `b_cc_mul` are recomputed per colour tile. DC-CfL is unchanged — it has its own global `cmap.DecodeDC` scalars.
 - **Verified vs `djxl 0.11.2`.** A 192×192 textured fixture (3×3 colour tiles, YToB map `[127,16,12,0,127,0,16,1,127]` confirmed byte-identical to an instrumented djxl trace): mean B-error **17.1 → 0.34**. A smooth 192×192 fixture (9 DCT64x64 tiles, no AFV/small transforms) decodes essentially byte-exact — `max=(3,1,2)` at d=1, uniform across all 9 tiles.
-- **Known residual (next work).** On textured > 64 px frames, AFV blocks carrying real high-frequency AC still spike (the per-cell IDCT plane shows a 0/255 chequer where djxl is smooth) — a pre-existing AFV-path bug, distinct from CfL, exposed now that the bulk multi-tile error is cleared. The earlier AFV byte-equality was measured only on small synthetic probes that did not stress the AFV AC path.
+- **Known residual.** On textured > 64 px frames, AFV blocks carrying real high-frequency AC still spike — fixed immediately after in `v0.10.0p`.
 - **369 tests passing, 3 skipped, 0 failures.**
+
+### v0.10.0p — AFV `IDCT4×4` transpose (high-frequency AFV blocks)
+
+The AFV transform decomposes its 8×8 cell into three sub-blocks — a 4×4 AFV-basis corner, a **4×4 IDCT** corner, and a 4×8 IDCT half. The 4×4 IDCT sub-block is *square*, so libjxl's `ComputeScaledIDCT<4,4>` emits the transposed layout (the ROWS≥COLS convention, same as DCT8/16/32/64) — `ComputeScaledIDCT(C) = IDCTSlow(Cᵀ)`. The decoder's `idct4x4Backend` closure called the un-transposed `AccelerateDCT.idct2D` directly, so the 4×4 IDCT sub-region of every AFV block was reconstructed transposed.
+
+- **Fix.** `idct4x4Backend` now transposes the coefficient block (`transposeSquareInPlace(_:size: 4)`) before `idct2D`, mirroring the square DCT overlays. The 4×8 sub-block (ROWS<COLS) correctly needs no transpose and is unchanged.
+- **Why the v0.10.0g/j AFV probes missed it.** The synthetic edge/dot/line probe fixtures put almost no energy in the AFV block's (odd-col, even-row) coefficient positions — the IDCT4×4 sub-region was near-DC, and a transpose of a near-constant block is a no-op. Textured content (`x ^ y`) is the first fixture to load that sub-region; its transposed reconstruction produced a 0/255 chequer that the EPF restoration filter then smeared into ±100 pixel spikes.
+- **Result.** The 192×192 textured multi-tile fixture now decodes **byte-exact vs `djxl 0.11.2`** — `max=(1,1,1)` at d=1, `max=(3,1,3)` at d=2 (the same sub-±3 rounding floor as SWEEP/DCT64x64). New pin-down test `testVarDCT_MultiTileAFV_DjxlByteEquality` asserts `max ≤ 5` and would fail at >100 on either the v0.10.0o CfL or v0.10.0p transpose regression. SWEEP + AFV-probe fixtures stay byte-exact.
+- **370 tests passing, 3 skipped, 0 failures.**
 
 ---
 
