@@ -4,11 +4,11 @@
 // This is the inverse of `JXLDecoder.decodeVarDCTPartial`, written
 // section-for-section against that decoder's read sequence.
 //
-// **First cut — DC-only.** Every block's AC coefficients are emitted
-// as `nzeros = 0`: any image therefore encodes to a valid (blocky,
-// DC-only) lossy frame that round-trips through the decoder. Real AC
-// coefficient tokens (the `ZeroDensityContext` coefficient stream)
-// are the next increment.
+// Quantised DC **and AC** coefficients are written: the AC token
+// stream (`generateACTokens`) is the exact inverse of
+// `ACDecoder.decodeBlock` — per (block, channel) an `nzeros` token
+// then `ZeroDensityContext`-routed coefficient tokens — so the
+// frame is a genuine lossy compression, not just block averages.
 //
 // Scope: single-section frames (one AC group, one DC group, one
 // pass — i.e. xsize, ysize ≤ group_dim ≈ 256 px), DCT8×8 only,
@@ -99,16 +99,27 @@ public enum VarDCTBitstreamWriter {
             uintConfigs: [postCfg])
 
         // --- AC token codebook (HfGlobal) ------------------------
-        // DC-only ⇒ every AC token is value 0 (`nzeros = 0`).
+        // Generate the per-block AC tokens (nzeros + coefficients),
+        // then pool their HybridUint symbols into one Huffman.
         let bctx = BlockCtxMap()
         let acContexts = bctx.numACContexts
         let acCfg = HybridUintConfig.raw4
-        // DC-only emits only token 0; symbol 1 is a never-written
-        // phantom that keeps the Huffman alphabet ≥ 2 (the canonical
-        // Huffman builder is undefined for a 1-symbol alphabet).
-        let acAlphabet = 2
+        let acTokens = generateACTokens(q: q, bctx: bctx)
+        var acHisto = [Int](repeating: 0, count: acCfg.maxToken + 1)
+        var maxAcToken = 0
+        for tok in acTokens {
+            let t = Int(acCfg.encode(tok.value).token)
+            acHisto[t] += 1
+            if t > maxAcToken { maxAcToken = t }
+        }
+        // Keep the Huffman alphabet ≥ 2 (the canonical builder is
+        // undefined for a single symbol — a flat image emits only
+        // token 0).
+        var acAlphabet = maxAcToken + 1
+        var acCounts = Array(acHisto[0..<acAlphabet])
+        if acAlphabet < 2 { acAlphabet = 2; acCounts.append(1) }
         let acLengths = lengthLimitedCanonicalHuffman(
-            counts: [nBlocks * 3, 1], maxLength: 15, alphabetSize: 2)
+            counts: acCounts, maxLength: 15, alphabetSize: acAlphabet)
         let acCodebook = MultiClusterCodebook(
             huffmanTables: [try PrefixCodeTable(lengths: acLengths)],
             ansCounts: [], alphabetSizes: [acAlphabet])
@@ -165,23 +176,12 @@ public enum VarDCTBitstreamWriter {
         try acHeader.write(to: &sec, numContexts: acContexts)
         try acCodebook.write(to: &sec, header: acHeader)
 
-        // AC group — `nzeros = 0` per (block, channel).
+        // AC group — the per-block AC token stream.
         let acWriter = TokenStreamWriter(
             header: acHeader, codebook: acCodebook)
-        for by in 0..<blocksY {
-            for bx in 0..<blocksX {
-                let predNnz: UInt32 =
-                    (bx == 0 && by == 0) ? 32 : 0
-                // libjxl storage iteration order {Y, X, B}.
-                for storageC in [1, 0, 2] {
-                    let blockCtx = bctx.context(
-                        dcIdx: 0, qf: UInt32(q.qf), ord: 0, c: storageC)
-                    let nzCtx = bctx.nonZeroContext(
-                        nonZeros: predNnz, blockCtx: blockCtx)
-                    try acWriter.writeToken(
-                        context: nzCtx, value: 0, to: &sec)
-                }
-            }
+        for tok in acTokens {
+            try acWriter.writeToken(
+                context: tok.context, value: tok.value, to: &sec)
         }
         sec.alignToByte()
         let section0 = sec.finishToData()
@@ -215,6 +215,75 @@ public enum VarDCTBitstreamWriter {
             }
         }
         return packed
+    }
+
+    // MARK: - AC token generation
+
+    /// Generate the per-block AC token stream — the exact inverse of
+    /// `ACDecoder.decodeBlock` driven over the AC-group block grid.
+    /// Each (block, channel) emits one `nzeros` token followed by
+    /// coefficient tokens up to the last non-zero. Channels are
+    /// visited in libjxl's storage iteration order {Y, X, B}.
+    static func generateACTokens(
+        q: VarDCTEncoder.Quantized, bctx: BlockCtxMap
+    ) -> [(context: Int, value: UInt32)] {
+        var tokens: [(context: Int, value: UInt32)] = []
+        let order = naturalCoeffOrderDCT8
+        let bX = q.blocksX, bY = q.blocksY
+        // Per-iteration-index nnz prediction planes.
+        var nzPlanes = [[Int32]](
+            repeating: [Int32](repeating: 0, count: bX * bY), count: 3)
+        let iterToXYB = [1, 0, 2]                 // {Y, X, B}
+        for by in 0..<bY {
+            for bx in 0..<bX {
+                let blk = by * bX + bx
+                for iterIdx in 0..<3 {
+                    let c = iterToXYB[iterIdx]
+                    let ac = q.acQuant[blk][c]
+                    var nnz = 0
+                    for k in 1..<64 where ac[order[k]] != 0 { nnz += 1 }
+                    // Predicted nnz from decoded neighbours
+                    // (`ACDecoder.predictNnz`).
+                    let plane = nzPlanes[iterIdx]
+                    let predNnz: UInt32
+                    if by == 0 {
+                        predNnz = UInt32(bx == 0 ? 32 : plane[blk - 1])
+                    } else if bx == 0 {
+                        predNnz = UInt32(plane[(by - 1) * bX + bx])
+                    } else {
+                        predNnz = UInt32(
+                            (plane[(by - 1) * bX + bx]
+                             + plane[blk - 1] + 1) >> 1)
+                    }
+                    let blockCtx = bctx.context(
+                        dcIdx: 0, qf: UInt32(q.qf), ord: 0, c: c)
+                    tokens.append((
+                        bctx.nonZeroContext(
+                            nonZeros: predNnz, blockCtx: blockCtx),
+                        UInt32(nnz)))
+                    // Coefficient tokens, scan order, until the last
+                    // non-zero (the decoder stops when nzeros hits 0).
+                    let histoOffset = bctx.zeroDensityContextsOffset(
+                        blockCtx: blockCtx)
+                    var prev = (nnz > 64 / 16) ? 0 : 1
+                    var rem = nnz
+                    var k = 1
+                    while k < 64 && rem != 0 {
+                        let ctx = histoOffset + zeroDensityContext(
+                            nonzerosLeft: rem, k: k,
+                            coveredBlocks: 1, log2CoveredBlocks: 0,
+                            prev: prev)
+                        let u = ZigZag.pack(ac[order[k]])
+                        tokens.append((ctx, u))
+                        prev = (u != 0) ? 1 : 0
+                        if u != 0 { rem -= 1 }
+                        k += 1
+                    }
+                    nzPlanes[iterIdx][blk] = Int32(nnz)
+                }
+            }
+        }
+        return tokens
     }
 
     /// Write the LfGlobal global modular tree (a single

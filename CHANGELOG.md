@@ -33,6 +33,15 @@ New `Sources/JXLSwift/Codec/VarDCTBitstreamWriter.swift` — the serialisation l
 - **Scope.** Single-section frames (≤ ~256 px), DCT8×8, RGB. Multi-section and real AC follow.
 - **375 tests passing, 3 skipped, 0 failures.**
 
+### v0.11.0c — real AC coefficient encoding
+
+The DC-only stub is replaced with a genuine AC coefficient encoder — the encoder now compresses real detail, not just per-block averages.
+
+- **`generateACTokens`** is the exact inverse of `ACDecoder.decodeBlock`, driven over the AC-group block grid. Per (block, channel), in libjxl's storage iteration order {Y, X, B}: count the non-zero AC coefficients → emit one `nzeros` token at `nonZeroContext(predictedNnz, blockCtx)`, then walk the natural scan order emitting `ZigZag`-packed coefficient tokens at `zeroDensityContext`-routed contexts until the last non-zero. `predictedNnz` replicates the decoder's neighbour-prediction (`ACDecoder.predictNnz`) via per-channel nnz planes.
+- **Two-pass entropy.** Pass 1 generates every AC token and pools their HybridUint symbols into one histogram; the AC Huffman codebook is built from it and written in HfGlobal; pass 2 emits the tokens. (A flat image emitting only token 0 keeps the ≥ 2-symbol phantom guard.)
+- **Verified.** `testVarDCTBitstreamWriter_RoundTrip` now checks the **per-pixel** round-trip error of a strong within-block gradient — `mean < 4` via both our decoder and `djxl 0.11.2`. A DC-only encode would mean ~7+ on the same image, so the bound proves the AC stream carries real detail. The JXLSwift VarDCT encoder is now a working lossy compressor.
+- **375 tests passing, 3 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)

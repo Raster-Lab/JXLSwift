@@ -8186,55 +8186,45 @@ extension FoundationTests {
             "VarDCT encoder round-trip max error \(maxErr)")
     }
 
-    /// `VarDCTBitstreamWriter` end-to-end. Encodes a 24×24 image to a
-    /// VarDCT codestream and verifies it both with our own decoder
-    /// **and with libjxl `djxl`** — i.e. our encoder emits a genuinely
-    /// spec-compliant JPEG XL frame. This first cut is DC-only, so
-    /// each 8×8 block decodes to its average colour; the per-block
-    /// mean is checked against the source.
+    /// `VarDCTBitstreamWriter` end-to-end. Encodes a 24×24 gradient
+    /// to a VarDCT codestream and verifies it both with our own
+    /// decoder **and with libjxl `djxl`** — our encoder emits a
+    /// genuinely spec-compliant JPEG XL frame. The image has strong
+    /// within-block variation, so the **per-pixel** round-trip error
+    /// is bounded: a DC-only encode (block averages) would mean ~7+
+    /// here — passing `< 4` proves the AC coefficient stream is
+    /// carrying real detail.
     func testVarDCTBitstreamWriter_RoundTrip() throws {
         let dim = 24
         var frame = ImageFrame(width: dim, height: dim, channels: 3)
         for y in 0..<dim {
             for x in 0..<dim {
                 let i = (y * dim + x) * 3
-                frame.data[i + 0] = UInt8(60 + x * 4)
-                frame.data[i + 1] = UInt8(70 + y * 4)
-                frame.data[i + 2] = UInt8(90 + (x + y) * 2)
+                frame.data[i + 0] = UInt8(40 + x * 3)
+                frame.data[i + 1] = UInt8(50 + y * 3)
+                frame.data[i + 2] = UInt8(70 + (x + y) * 2)
             }
         }
-        // Expected per-block average of the source.
-        func srcMean(_ bx: Int, _ by: Int, _ c: Int) -> Int {
+        func meanError(_ pix: Data, binOffset: Int) -> Double {
             var s = 0
-            for yy in 0..<8 {
-                for xx in 0..<8 {
-                    s += Int(frame.data[
-                        ((by * 8 + yy) * dim + (bx * 8 + xx)) * 3 + c])
-                }
+            for i in 0..<(dim * dim * 3) {
+                s += abs(Int(pix[binOffset + i]) - Int(frame.data[i]))
             }
-            return s / 64
+            return Double(s) / Double(dim * dim * 3)
         }
 
         let codestream = try VarDCTBitstreamWriter.encode(frame: frame)
         XCTAssertGreaterThan(codestream.count, 0)
 
-        // (1) Our own decoder.
+        // (1) Our own decoder — per-pixel round-trip error.
         let decoded = try JXLDecoder().decode(codestream)
         XCTAssertEqual(decoded.width, dim)
         XCTAssertEqual(decoded.height, dim)
         XCTAssertEqual(decoded.channels, 3)
-        var maxOurs = 0
-        for by in 0..<3 {
-            for bx in 0..<3 {
-                for c in 0..<3 {
-                    let v = Int(decoded.data[
-                        ((by * 8 + 3) * dim + (bx * 8 + 3)) * 3 + c])
-                    maxOurs = max(maxOurs, abs(v - srcMean(bx, by, c)))
-                }
-            }
-        }
-        XCTAssertLessThan(maxOurs, 24,
-            "DC-only block-mean diff (our decoder) \(maxOurs)")
+        let oursErr = meanError(Data(decoded.data), binOffset: 0)
+        XCTAssertLessThan(oursErr, 4.0,
+            "VarDCT encode round-trip mean error (our decoder) "
+            + "\(oursErr) — AC stream not carrying detail")
 
         // (2) libjxl djxl — confirms genuine spec compliance.
         let djxl = "/opt/homebrew/bin/djxl"
@@ -8260,19 +8250,9 @@ extension FoundationTests {
         guard djData.count - binStart == dim * dim * 3 else {
             throw XCTSkip("djxl PPM size mismatch")
         }
-        let dj = djData.subdata(in: binStart..<djData.count)
-        var maxDj = 0
-        for by in 0..<3 {
-            for bx in 0..<3 {
-                for c in 0..<3 {
-                    let v = Int(dj[((by * 8 + 3) * dim
-                                    + (bx * 8 + 3)) * 3 + c])
-                    maxDj = max(maxDj, abs(v - srcMean(bx, by, c)))
-                }
-            }
-        }
-        XCTAssertLessThan(maxDj, 24,
-            "DC-only block-mean diff (djxl) \(maxDj)")
+        let djErr = meanError(djData, binOffset: binStart)
+        XCTAssertLessThan(djErr, 4.0,
+            "VarDCT encode round-trip mean error (djxl) \(djErr)")
     }
 
     /// Probe a sweep of cjxl distances to see which quant modes
