@@ -95,3 +95,93 @@ public enum DCT4x4Transform {
         return pixels
     }
 }
+
+/// `ComputeScaledIDCT<ROWS, COLS>` over a flat coefficient block —
+/// returns a `ROWS × COLS` row-major pixel block. For `ROWS ≥ COLS`
+/// the coefficient block is in `COLS × ROWS` transposed layout
+/// (libjxl's `ComputeScaledDCT` omits the final transpose for those
+/// strategies); for `ROWS < COLS` it is in natural `ROWS × COLS`
+/// layout. Both reduce to the untransposed `idct2D`.
+enum ScaledIDCT {
+    static func transform(
+        _ coef: [Float], rows R: Int, cols C: Int
+    ) -> [Float] {
+        if R >= C {
+            // `coef` is C×R — transpose to R×C, then untransposed IDCT.
+            var t = [Float](repeating: 0, count: R * C)
+            for r in 0..<R {
+                for c in 0..<C { t[r * C + c] = coef[c * R + r] }
+            }
+            AccelerateDCT.idct2D(&t, rows: R, cols: C)
+            return t
+        }
+        var b = coef
+        AccelerateDCT.idct2D(&b, rows: R, cols: C)
+        return b
+    }
+}
+
+/// DCT4X8 / DCT8X4 — the half-8×8 asymmetric transforms. Each splits
+/// the 8×8 cell into two 4×8 (DCT4X8, stacked) or 8×4 (DCT8X4, side-
+/// by-side) halves; each half carries a 1-D-DCT-2 combined DC plus a
+/// strided gather of its 31 AC coefficients, reconstructed with a
+/// `ComputeScaledIDCT<4,8>` / `<8,4>`. Ports of libjxl
+/// `dec_transforms-inl.h::TransformToPixels` (`Type::DCT4X8` /
+/// `Type::DCT8X4`).
+public enum DCT4x8Transform {
+
+    /// Inverse DCT4X8: dequantised 8×8 coefficient block → 8×8
+    /// pixels. Two 4-tall × 8-wide halves stacked vertically.
+    public static func transformToPixels(_ coef: [Float]) -> [Float] {
+        precondition(coef.count == 64)
+        var pixels = [Float](repeating: 0, count: 64)
+        let dcs: [Float] = [coef[0] + coef[8], coef[0] - coef[8]]
+        for y in 0..<2 {
+            var block = [Float](repeating: 0, count: 32)   // 4×8
+            block[0] = dcs[y]
+            for iy in 0..<4 {
+                for ix in 0..<8 {
+                    if ix == 0 && iy == 0 { continue }
+                    block[iy * 8 + ix] = coef[(y + iy * 2) * 8 + ix]
+                }
+            }
+            // ComputeScaledIDCT<4,8> — ROWS<COLS, no transpose.
+            let half = ScaledIDCT.transform(block, rows: 4, cols: 8)
+            for py in 0..<4 {
+                for px in 0..<8 {
+                    pixels[(y * 4 + py) * 8 + px] = half[py * 8 + px]
+                }
+            }
+        }
+        return pixels
+    }
+}
+
+public enum DCT8x4Transform {
+
+    /// Inverse DCT8X4: dequantised 8×8 coefficient block → 8×8
+    /// pixels. Two 8-tall × 4-wide halves placed side by side.
+    public static func transformToPixels(_ coef: [Float]) -> [Float] {
+        precondition(coef.count == 64)
+        var pixels = [Float](repeating: 0, count: 64)
+        let dcs: [Float] = [coef[0] + coef[8], coef[0] - coef[8]]
+        for x in 0..<2 {
+            var block = [Float](repeating: 0, count: 32)   // 4×8 (C×R)
+            block[0] = dcs[x]
+            for iy in 0..<4 {
+                for ix in 0..<8 {
+                    if ix == 0 && iy == 0 { continue }
+                    block[iy * 8 + ix] = coef[(x + iy * 2) * 8 + ix]
+                }
+            }
+            // ComputeScaledIDCT<8,4> — ROWS≥COLS, coef block is 4×8.
+            let half = ScaledIDCT.transform(block, rows: 8, cols: 4)
+            for py in 0..<8 {
+                for px in 0..<4 {
+                    pixels[py * 8 + x * 4 + px] = half[py * 4 + px]
+                }
+            }
+        }
+        return pixels
+    }
+}

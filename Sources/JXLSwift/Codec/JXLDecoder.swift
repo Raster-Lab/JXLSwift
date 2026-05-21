@@ -1091,6 +1091,8 @@ public struct JXLDecoder: Sendable {
                         || strategy == .hornuss
                         || strategy == .dct2x2
                         || strategy == .dct4x4
+                        || strategy == .dct4x8
+                        || strategy == .dct8x4
                         || strategy == .dct16x16
                         || strategy == .dct8x16
                         || strategy == .dct16x8
@@ -1424,13 +1426,17 @@ public struct JXLDecoder: Sendable {
             DefaultQuantBands.dct2x2
         )
         let dct4Qweights: [Float]
+        let dct4x8Qweights: [Float]
         do {
             dct4Qweights = try QuantWeights.getDCT4QuantWeights(
                 bands: DefaultQuantBands.dct4x4
             )
+            dct4x8Qweights = try QuantWeights.getDCT4X8QuantWeights(
+                bands: DefaultQuantBands.dct4x8
+            )
         } catch {
             throw DecoderError.notImplemented(
-                "VarDCT decode: DCT4X4 quant weights failed: \(error)"
+                "VarDCT decode: DCT4X4/DCT4X8 quant weights failed: \(error)"
             )
         }
         for by in 0..<numBlocksYAC {
@@ -1449,6 +1455,12 @@ public struct JXLDecoder: Sendable {
                 case .dct4x4:
                     qw = dct4Qweights
                     transform = DCT4x4Transform.transformToPixels
+                case .dct4x8:
+                    qw = dct4x8Qweights
+                    transform = DCT4x8Transform.transformToPixels
+                case .dct8x4:
+                    qw = dct4x8Qweights
+                    transform = DCT8x4Transform.transformToPixels
                 default:
                     continue
                 }

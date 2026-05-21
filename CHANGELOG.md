@@ -137,6 +137,12 @@ The prior investigation's "**2.286× factor**" was a red herring: with the chann
 - `testSimplePrefixCode_RoundTrip_AllShapes` updated: the `count == 1` shape now pins `lengths[symbols[0]] != 0`, all others 0.
 - **369 tests passing, 3 skipped, 0 failures.**
 
+### v0.10.0m — DCT4X8 + DCT8X4 transforms
+
+- **DCT4X8 and DCT8X4 transforms** (`SmallACTransforms.swift`) — ports of libjxl `dec_transforms-inl.h::TransformToPixels` (`Type::DCT4X8` / `Type::DCT8X4`). Each splits the 8×8 cell into two 4×8 / 8×4 halves; each half carries a 1-D-DCT-2-combined DC plus a strided gather of 31 AC coefficients, reconstructed with a `ComputeScaledIDCT<4,8>` / `<8,4>`. New `ScaledIDCT.transform(_:rows:cols:)` helper handles the asymmetric `ComputeScaledIDCT` layout (transpose for ROWS≥COLS). Quant matrix: `QuantWeights.getDCT4X8QuantWeights` (the `kQuantModeDCT4X8` 4×8-table row-axis upsample, shared by both). Wired into the single-cell decoder overlay.
+- **Verified byte-exact vs `djxl`** — a random-noise 64×64 fixture (cjxl picks DCT4X8) and a 4-pixel checkerboard (DCT4X8 + DCT8X4) both decode at `max byte-diff = 1`.
+- **369 tests passing, 3 skipped, 0 failures.**
+
 ---
 
 ## [0.8.0] — 2026 — Multi-AC-strategy + UMA backend

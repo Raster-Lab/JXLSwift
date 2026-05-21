@@ -233,6 +233,26 @@ extension QuantWeights {
         }
         return out
     }
+
+    /// Build the 3×64 DCT4X8 quant matrix (shared by DCT4X8 and
+    /// DCT8X4). Mirrors libjxl `kQuantModeDCT4X8`: a 4×8
+    /// `getQuantWeights` table fanned out 2× along the row axis
+    /// only. The LIBRARY-default DCT4X8 multiplier is 1.
+    public static func getDCT4X8QuantWeights(
+        bands: (x: [Float], y: [Float], b: [Float])
+    ) throws -> [Float] {
+        let w48 = try getQuantWeights(rows: 4, cols: 8, bands: bands)
+        var out = [Float](repeating: 0, count: 3 * 64)
+        for c in 0..<3 {
+            for y in 0..<8 {
+                for x in 0..<8 {
+                    out[c * 64 + y * 8 + x] =
+                        w48[c * 32 + (y / 2) * 8 + x]
+                }
+            }
+        }
+        return out
+    }
 }
 
 /// libjxl-frozen distance bands for the default AC strategies.
