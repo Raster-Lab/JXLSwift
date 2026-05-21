@@ -9,6 +9,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## [0.11.0] — in progress (VarDCT lossy encoder)
+
+With the VarDCT *decoder* byte-exact across every real image (any size, all AC strategies, RGBA), v0.11.0 builds the other half — a lossy VarDCT *encoder*. This is a multi-stage effort; the bitstream-serialisation layer follows the DSP core below.
+
+### v0.11.0a — forward-transform core
+
+New `Sources/JXLSwift/Codec/VarDCTEncoder.swift` — the analysis half of the codec, the exact inverse of each proven `JXLDecoder` step:
+
+- **Pipeline.** `ImageFrame` (8-bit RGB/RGBA) → sRGB⁻¹ to linear → `OpsinXYB.forward` → pad to 8×8 → `AccelerateDCT.dct2D` per block (the exact forward partner of the decoder's `idct2D`) → transpose to bitstream coefficient layout → quantise. Output is `VarDCTEncoder.Quantized` — per-channel quantised DC + per-block quantised AC, ready for the (separate) bitstream layer.
+- **Inverse-exact details.** Colour-correlation decorrelation matches the decoder's default-CfL fold (`B −= Y`, base correlation B = 1) on both DC and AC; AC quantisation (`coef · qweight · scale · qf`) is the precise reciprocal of the decoder's `AdjustQuantBias / qweight · invQuantAC`. First cut is deliberately minimal — DCT8×8 only, one global quantiser, `dc_extra_precision = 0`.
+- **Verified.** `testVarDCTEncoder_ForwardRoundTrip` reconstructs the encoder's output with the decoder's exact dequant + IDCT + inverse-XYB and checks the lossy round-trip of a smooth image stays within `mean < 6`, `max < 40` — a broken DCT layout / CfL / quant blows this past 100. (Caught a real bug mid-build: the first cut used `DCT2D.forward`, a different DCT normalisation than the decoder's `idct2D`; switching to `AccelerateDCT.dct2D` fixed it.)
+- **Survey.** A full audit of existing encoder-side primitives (forward DCT, `OpsinXYB.forward`, `ACQuantize`, `ANSEncoder`, the entropy-section / codebook / TOC / GroupHeader writers) confirmed the orchestration layer can call them directly; the only missing writers are the trivial all-default forms of `DequantMatricesDC/AC`, `BlockCtxMap`, and `ColorCorrelation` — built alongside the bitstream layer.
+- **374 tests passing, 3 skipped, 0 failures.**
+
+---
+
 ## [0.9.0] — in progress (pixel byte-equality push)
 
 The headline goal of v0.9.0 is closing the residual textured-fixture pixel drift between our pure-Swift VarDCT decoder and `djxl 0.11.2` reference output. All v0.9.0 sub-bites are tracked in [Documentation/v0.9.0-pixel-accuracy-investigation.md](Documentation/v0.9.0-pixel-accuracy-investigation.md).

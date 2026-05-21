@@ -8092,6 +8092,100 @@ extension FoundationTests {
             + "(got max diff \(maxA))")
     }
 
+    /// `VarDCTEncoder` forward-transform round-trip. Runs the
+    /// encoder's RGB→XYB→DCT8×8→quantise pipeline, then reconstructs
+    /// with the *decoder's* exact dequant + IDCT + inverse-XYB math.
+    /// A correct forward pipeline (the exact inverse of each proven
+    /// decoder step) round-trips a smooth image with only modest
+    /// lossy error. This pins the encoder's DSP core ahead of the
+    /// bitstream-serialisation layer.
+    func testVarDCTEncoder_ForwardRoundTrip() throws {
+        let dim = 64
+        var frame = ImageFrame(width: dim, height: dim, channels: 3)
+        for y in 0..<dim {
+            for x in 0..<dim {
+                let i = (y * dim + x) * 3
+                // Smooth gradients — quantisation error stays small
+                // when the forward pipeline is correct.
+                frame.data[i + 0] = UInt8(40 + x * 2)
+                frame.data[i + 1] = UInt8(50 + y * 2)
+                frame.data[i + 2] = UInt8(60 + (x + y) / 2)
+            }
+        }
+        let q = try VarDCTEncoder.forward(frame: frame)
+        XCTAssertEqual(q.blocksX, 8)
+        XCTAssertEqual(q.blocksY, 8)
+
+        // Decoder-side reconstruction (mirrors `JXLDecoder` exactly).
+        let qw = try QuantWeights.getQuantWeights(
+            rows: 8, cols: 8, bands: DefaultQuantBands.dct8x8)
+        let invGlobalScale = 65536.0 / Float(q.globalScale)
+        let invQuantDC = invGlobalScale / Float(q.quantDC)
+        let mulDC: [Float] = (0..<3).map {
+            invQuantDC / VarDCTEncoder.kInvDCQuant[$0]
+        }
+        let invQuantAC = invGlobalScale / Float(q.qf)
+        var maxErr = 0, sumErr = 0
+        let order = naturalCoeffOrderDCT8
+        for by in 0..<q.blocksY {
+            for bx in 0..<q.blocksX {
+                let blk = by * q.blocksX + bx
+                var coef: [[Float]] = [[Float]](
+                    repeating: [Float](repeating: 0, count: 64), count: 3)
+                for c in 0..<3 {
+                    for k in 1..<64 {
+                        let np = order[k]
+                        coef[c][np] = AdjustQuantBias.adjust(
+                            channel: c, quant: q.acQuant[blk][c][np])
+                            / qw[c * 64 + np] * invQuantAC
+                    }
+                }
+                // Inverse CfL: X unchanged, B += Y (base corr. B = 1).
+                for k in 1..<64 { coef[2][k] += coef[1][k] }
+                // DC dequant + inverse CfL.
+                let dcX = Float(q.dcQuant[0][blk]) * mulDC[0]
+                let dcY = Float(q.dcQuant[1][blk]) * mulDC[1]
+                let dcB = Float(q.dcQuant[2][blk]) * mulDC[2]
+                coef[0][0] = dcX
+                coef[1][0] = dcY
+                coef[2][0] = dcB + dcY
+                for c in 0..<3 {
+                    JXLDecoder.transposeSquareInPlace(&coef[c], size: 8)
+                    AccelerateDCT.idct2D(&coef[c], size: 8)
+                }
+                for r in 0..<8 {
+                    for cc in 0..<8 {
+                        let lin = OpsinXYB.inverse((
+                            X: coef[0][r * 8 + cc],
+                            Y: coef[1][r * 8 + cc],
+                            B: coef[2][r * 8 + cc]))
+                        let px = bx * 8 + cc, py = by * 8 + r
+                        let oi = (py * dim + px) * 3
+                        let rgb = [lin.R, lin.G, lin.B]
+                        for ci in 0..<3 {
+                            let s = rgb[ci] <= 0.0031308
+                                ? rgb[ci] * 12.92
+                                : 1.055 * powf(rgb[ci], 1.0 / 2.4) - 0.055
+                            let v = Int((s * 255.0).rounded())
+                            let out = max(0, min(255, v))
+                            let d = abs(out - Int(frame.data[oi + ci]))
+                            maxErr = max(maxErr, d)
+                            sumErr += d
+                        }
+                    }
+                }
+            }
+        }
+        let meanErr = Float(sumErr) / Float(dim * dim * 3)
+        // Lossy round-trip — a correct forward pipeline keeps a
+        // smooth image close. A broken inverse (wrong DCT layout,
+        // CfL, or quant) blows this far past the bound.
+        XCTAssertLessThan(meanErr, 6.0,
+            "VarDCT encoder round-trip mean error \(meanErr)")
+        XCTAssertLessThan(maxErr, 40,
+            "VarDCT encoder round-trip max error \(maxErr)")
+    }
+
     /// Probe a sweep of cjxl distances to see which quant modes
     /// each emits — informs which `QuantEncoding` modes are
     /// load-bearing for real-world cjxl output. Reports the
