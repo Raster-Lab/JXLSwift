@@ -992,8 +992,13 @@ public struct JXLDecoder: Sendable {
                         return computed
                     }()
                     let acBlockQF = UInt32(entry.qf)
-                    var blockChannels: [[Int32]] = []
-                    blockChannels.reserveCapacity(3)
+                    // `blockChannels` is XYB-indexed: slot 0 = X,
+                    // 1 = Y, 2 = B. libjxl decodes channels in stream
+                    // order {1, 0, 2} (Y, X, B), so the i-th decoded
+                    // block is stored at its XYB slot `storageC`, not
+                    // at iteration index `i`. (Verified against an
+                    // instrumented djxl 0.11.2 `dec_group.cc` trace.)
+                    var blockChannels: [[Int32]] = [[], [], []]
                     let cellsX = strategy.blockCells.cellsX
                     let cellsY = strategy.blockCells.cellsY
                     // libjxl `dec_group.cc:554` iterates channels in
@@ -1003,8 +1008,11 @@ public struct JXLDecoder: Sendable {
                     // Iteration index `iterIdx` is also the XYB channel
                     // index after this mapping (0=X, 1=Y, 2=B).
                     for iterIdx in 0..<3 {
-                        let storageC = [1, 0, 2][iterIdx]  // libjxl storage c
-                        let xybC = iterIdx                  // 0=X, 1=Y, 2=B
+                        // `storageC` is the XYB channel index of the
+                        // i-th decoded block: iter 0 → 1 (Y), iter 1 →
+                        // 0 (X), iter 2 → 2 (B).
+                        let storageC = [1, 0, 2][iterIdx]
+                        let xybC = storageC                 // 0=X, 1=Y, 2=B
                         var blk = [Int32](repeating: 0, count: strategySize)
                         let predNnz = nzPredict(
                             c: iterIdx, gx: groupColIdx, gy: groupRowIdx
@@ -1069,7 +1077,7 @@ public struct JXLDecoder: Sendable {
                                     + (groupColIdx + cx)] = nzPerCell
                             }
                         }
-                        blockChannels.append(blk)
+                        blockChannels[storageC] = blk
                     }
                     // Per-strategy IDCT support frontier: DCT8x8 is
                     // primary, DCT16x16 ships in v0.8.0d. Other multi-
@@ -1218,9 +1226,12 @@ public struct JXLDecoder: Sendable {
         // DCT8 default quant weights: 3 × 64 floats. `qweights[c*64+k]`
         // is the QUANT weight (libjxl stores its inverse in `Matrix()`,
         // so `dequant_matrix = 1 / qweights`). Indexed by XYB channel.
-        let dct8Bands = DefaultQuantBands.scaledForBitstream(
-            DefaultQuantBands.dct8x8
-        )
+        // libjxl's LIBRARY-default quant matrices use the raw band
+        // seeds directly (no ×64). The ×64 in `DecodeDctParams`
+        // applies only to *bitstream-decoded* custom DCT params, not
+        // the library defaults — verified against an instrumented
+        // djxl 0.11.2 (`dequant_matrix[Y][0] = 1/560`, not 1/35840).
+        let dct8Bands = DefaultQuantBands.dct8x8
         let qweights: [Float]
         do {
             qweights = try QuantWeights.getQuantWeights(
@@ -1369,7 +1380,16 @@ public struct JXLDecoder: Sendable {
                         "TRACE_AC qweights[0,1] (X,Y,B)=(\(qwx), \(qwy), \(qwb)) blockInvQuantAC=\(blockInvQuantAC) xDmMul=\(xDmMultiplier) bDmMul=\(bDmMultiplier)\n".utf8
                     ))
                 }
-                // 5) libjxl-convention IDCT.
+                // 5) libjxl-convention IDCT. libjxl's encoder
+                //    `ComputeScaledDCT<8,8>` emits coefficients in
+                //    TRANSPOSED layout (it omits the final transpose
+                //    for ROWS≥COLS strategies). Our `idct2D` is the
+                //    untransposed `IDCTSlow`, so undo the transpose
+                //    on the coefficient block first —
+                //    `ComputeScaledIDCT(C) = IDCTSlow(Cᵀ)`.
+                JXLDecoder.transposeSquareInPlace(&coefY, size: 8)
+                JXLDecoder.transposeSquareInPlace(&coefX, size: 8)
+                JXLDecoder.transposeSquareInPlace(&coefB, size: 8)
                 AccelerateDCT.idct2D(&coefY, size: 8)
                 AccelerateDCT.idct2D(&coefX, size: 8)
                 AccelerateDCT.idct2D(&coefB, size: 8)
@@ -1395,9 +1415,7 @@ public struct JXLDecoder: Sendable {
         // 16x8/8x16, etc.). Solid-colour content (all-zero AC) was
         // already correct from the per-cell pass; the overlay just
         // handles textured content.
-        let dct16Bands = DefaultQuantBands.scaledForBitstream(
-            DefaultQuantBands.dct16x16
-        )
+        let dct16Bands = DefaultQuantBands.dct16x16
         let qweights16: [Float]
         do {
             qweights16 = try QuantWeights.getQuantWeights(
@@ -1506,8 +1524,11 @@ public struct JXLDecoder: Sendable {
                     coef[0][np] = acXDeq + xCCMul * acYDeq
                     coef[2][np] = acBDeq + bCCMul * acYDeq
                 }
-                // libjxl-convention IDCT (no bridge needed —
-                // LibjxlIDCT inverts the libjxl scaled DCT directly).
+                // libjxl-convention IDCT — `ComputeScaledIDCT<16,16>`
+                // = `IDCTSlow(coefᵀ)` for the ROWS≥COLS (square) case.
+                JXLDecoder.transposeSquareInPlace(&coef[0], size: 16)
+                JXLDecoder.transposeSquareInPlace(&coef[1], size: 16)
+                JXLDecoder.transposeSquareInPlace(&coef[2], size: 16)
                 AccelerateDCT.idct2D(&coef[0], size: 16)
                 AccelerateDCT.idct2D(&coef[1], size: 16)
                 AccelerateDCT.idct2D(&coef[2], size: 16)
@@ -1533,9 +1554,7 @@ public struct JXLDecoder: Sendable {
         // difference is pixel placement: DCT8x16 outputs 16w × 8h
         // pixels (matches coef layout), DCT16x8 outputs 8w × 16h
         // pixels (transposed from coef layout).
-        let dct8x16Bands = DefaultQuantBands.scaledForBitstream(
-            DefaultQuantBands.dct8x16
-        )
+        let dct8x16Bands = DefaultQuantBands.dct8x16
         let qweights8x16: [Float]
         do {
             qweights8x16 = try QuantWeights.getQuantWeights(
@@ -1664,9 +1683,7 @@ public struct JXLDecoder: Sendable {
         // DCT32x16 / DCT16x32 IDCT overlay (libjxl ord 6). Same
         // template as DCT16x8/DCT8x16 but on a 32×16 coef layout
         // with 8 LLF coefficients (4 cols × 2 rows in coef space).
-        let dct16x32Bands = DefaultQuantBands.scaledForBitstream(
-            DefaultQuantBands.dct16x32
-        )
+        let dct16x32Bands = DefaultQuantBands.dct16x32
         let qweights16x32: [Float]
         do {
             qweights16x32 = try QuantWeights.getQuantWeights(
@@ -1843,9 +1860,7 @@ public struct JXLDecoder: Sendable {
         // with cellsX = cellsY = 4. LLF region is the 4×4 corner of
         // the 32×32 coef block (16 LLF positions). Bridge factor is
         // the square root of the area = √(32×32) = 32 (uniform).
-        let dct32Bands = DefaultQuantBands.scaledForBitstream(
-            DefaultQuantBands.dct32x32
-        )
+        let dct32Bands = DefaultQuantBands.dct32x32
         let qweights32: [Float]
         do {
             qweights32 = try QuantWeights.getQuantWeights(
@@ -1935,7 +1950,11 @@ public struct JXLDecoder: Sendable {
                     coef[0][np] = acXDeq + xCCMul * acYDeq
                     coef[2][np] = acBDeq + bCCMul * acYDeq
                 }
-                // libjxl-convention IDCT (replaces bridge×32 + ortho IDCT).
+                // libjxl-convention IDCT — `ComputeScaledIDCT<32,32>`
+                // = `IDCTSlow(coefᵀ)` for the square case.
+                JXLDecoder.transposeSquareInPlace(&coef[0], size: 32)
+                JXLDecoder.transposeSquareInPlace(&coef[1], size: 32)
+                JXLDecoder.transposeSquareInPlace(&coef[2], size: 32)
                 AccelerateDCT.idct2D(&coef[0], size: 32)
                 AccelerateDCT.idct2D(&coef[1], size: 32)
                 AccelerateDCT.idct2D(&coef[2], size: 32)
@@ -1958,9 +1977,7 @@ public struct JXLDecoder: Sendable {
         // 64×32 coef layout (after CoefficientLayout swap). LLF is
         // the top-left 8×4 corner of that grid (32 LLF positions).
         // Pattern mirrors DCT32x16/16x32.
-        let dct32x64Bands = DefaultQuantBands.scaledForBitstream(
-            DefaultQuantBands.dct32x64
-        )
+        let dct32x64Bands = DefaultQuantBands.dct32x64
         let qweights32x64: [Float]
         do {
             qweights32x64 = try QuantWeights.getQuantWeights(
@@ -2100,9 +2117,7 @@ public struct JXLDecoder: Sendable {
         // with cellsX = cellsY = 8 (covers 8×8 = 64 cells = 64×64 px).
         // LLF region is the 8×8 corner of the 64×64 coef block (64
         // LLF positions). Pattern mirrors DCT32x32.
-        let dct64Bands = DefaultQuantBands.scaledForBitstream(
-            DefaultQuantBands.dct64x64
-        )
+        let dct64Bands = DefaultQuantBands.dct64x64
         let qweights64: [Float]
         do {
             qweights64 = try QuantWeights.getQuantWeights(
@@ -2189,7 +2204,11 @@ public struct JXLDecoder: Sendable {
                     coef[0][np] = acXDeq + xCCMul * acYDeq
                     coef[2][np] = acBDeq + bCCMul * acYDeq
                 }
-                // 64×64 IDCT per channel (libjxl-convention).
+                // 64×64 IDCT per channel — `ComputeScaledIDCT<64,64>`
+                // = `IDCTSlow(coefᵀ)` for the square case.
+                JXLDecoder.transposeSquareInPlace(&coef[0], size: 64)
+                JXLDecoder.transposeSquareInPlace(&coef[1], size: 64)
+                JXLDecoder.transposeSquareInPlace(&coef[2], size: 64)
                 AccelerateDCT.idct2D(&coef[0], size: 64)
                 AccelerateDCT.idct2D(&coef[1], size: 64)
                 AccelerateDCT.idct2D(&coef[2], size: 64)
@@ -2216,21 +2235,12 @@ public struct JXLDecoder: Sendable {
         // libjxl-trace close-out lands, AFV decode is approximate.
         let afvWeights: [Float]
         do {
-            let dct8x4 = DefaultQuantBands.scaledForBitstream(
-                DefaultQuantBands.dct4x8)
-            let dct4x4 = DefaultQuantBands.scaledForBitstream(
-                DefaultQuantBands.dct4x4)
-            // Note: `afv` only ×64s the [5] seed, since that's the
-            // band[0] that `getAFVQuantWeights` interprets as the
-            // bands[0] seed (per libjxl `DecodeDctParams` semantics).
-            // The other 8 entries are direct weight values for
-            // specific positions and don't get scaled.
-            var afv = DefaultQuantBands.afv
-            afv.x[5] *= 64; afv.y[5] *= 64; afv.b[5] *= 64
+            // LIBRARY-default bands are used raw (no ×64) — see the
+            // DCT8 note above.
             afvWeights = try QuantWeights.getAFVQuantWeights(
-                dct4x8Bands: dct8x4,
-                dct4x4Bands: dct4x4,
-                afvWeights: afv)
+                dct4x8Bands: DefaultQuantBands.dct4x8,
+                dct4x4Bands: DefaultQuantBands.dct4x4,
+                afvWeights: DefaultQuantBands.afv)
         } catch {
             throw DecoderError.notImplemented(
                 "VarDCT decode: AFV quant weights computation failed: \(error)"

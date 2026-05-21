@@ -94,9 +94,26 @@ The headline of v0.10.0 is extracting the family-parity protocol surface to a st
 - Latent bug, fixed for correctness. **Net byte-diff vs djxl on the v0.10.0g probe is unchanged** — confirms the pair-swap was *not* the source of the catastrophic AFV residual. Investigation continues; next candidates are the `ComputeScaledIDCT<4, 4>` / `<4, 8>` backend convention and the per-cell DC-CFL application path inside the AFV overlay.
 - Pin-down test extended with unique marker values 100..500 in `afv[0..4]` so a future pair-swap regression would fail.
 
+### v0.10.0i — 🎉 VarDCT pixel byte-equality achieved
+
+The v0.9.0 headline goal — closing the textured-fixture pixel drift vs `djxl 0.11.2` — is **done**. An instrumented libjxl 0.11.2 (`dec_group.cc::DequantBlock` + `TransformToPixels` printf trace) was built and run side-by-side against our decoder on the gradient + SWEEP fixtures. The side-by-side trace exposed **seven** distinct decoder bugs, all now fixed:
+
+1. **AC channel swap.** libjxl decodes AC channels in stream order `{1, 0, 2}` (Y, X, B); our decoder stored the i-th decoded block at iteration index `i`, mislabelling Y as X and vice-versa. Fixed by storing each block at its XYB slot `storageC`. (`JXLDecoder.decodeVarDCT`.)
+2. **Spurious ×64 on LIBRARY quant matrices.** `DefaultQuantBands.scaledForBitstream(_:)` multiplied the seed band by 64 — but libjxl's `*= 64` in `DecodeDctParams` applies *only* to bitstream-decoded custom DCT params, never the LIBRARY defaults. djxl's `dequant_matrix[Y][0]` traced to `1/560`, not `1/35840`. All `scaledForBitstream` call sites removed.
+3. **IDCT transpose.** libjxl's `ComputeScaledIDCT<R,C>` emits a transposed layout for ROWS≥COLS strategies; our `AccelerateDCT.idct2D` is the un-transposed `IDCTSlow`. Fixed by transposing the coefficient block before the IDCT for the square strategies (`ComputeScaledIDCT(C) = IDCTSlow(Cᵀ)`).
+4. **Wrong LLF resample scales.** `kScales2to16` / `kScales4to32` / `kScales2to32` in `LowestFrequenciesFromDC` held the `<FULL, LF>` *downscale* values (`0.901764…`) instead of the `<LF, FULL>` *upscale* values (`1.108937…`). Corrected against libjxl `dct_scales.h::DCTResampleScales`.
+5. **LLF block-ordering transpose.** `LowestFrequenciesFromDC.dct16x16` / `dct32x32` / `dct64x64` produced the LF region from a *vanilla* small DCT; libjxl's `ReinterpretingDCT` uses `ComputeScaledDCT<N,N>` (transposed). Fixed by swapping/transposing the LF block.
+6. **`scaledDCT4` scaling.** The 1-D scaled DCT-4 applied a uniform `1/4` to all four coefficients; libjxl's convention scales the odd-index coefficients by `√2/4`. (Affected DCT32x32 and the ord-6 asymmetric LLF.)
+7. **`AdjustQuantBias` `|q| == 1` bias.** The decoder used the encoder-side `kZeroBiasDefault = 0.5`; libjxl's decoder dequant uses the per-channel `kDefaultQuantBias` (`X≈0.945`, `Y≈0.930`, `B≈0.950`). The `0.95/0.5 = 1.9×` error on every ±1-quantized coefficient was the dominant textured-fixture residual.
+
+The prior investigation's "**2.286× factor**" was a red herring: with the channels swapped, the standalone diagnostic compared cjxl's actual X-channel quantised value (−7) against its prediction for the Y channel (≈−16); `16/7 ≈ 2.286`. No mysterious scaling factor exists.
+
+- **Results vs `djxl 0.11.2`:** gradient 8×8 (`testVarDCT_GradientBlock`) max byte-diff **58 → 1**. SWEEP 64×64 textured: **d=0.5 and d=1.0 byte-exact** (max 1); d=2.0/5.0/10 max 12–14 on a handful of B-channel pixels (mean < 0.7). DCT8x8 / DCT16x16 / DCT32x32 / DCT64x64 fixtures all byte-exact (`g16`/`g32`/`g64` max ≤ 2).
+- **Method note:** the instrumented libjxl lives at `/tmp/libjxl-trace` (not committed); the probe points are documented in [Documentation/NEXT-STEP-libjxl-trace.md](Documentation/NEXT-STEP-libjxl-trace.md).
+
 ### Tests
 
-- **365 tests passing, 3 skipped, 0 failures.** (+5 from v0.10.0a-c: ImageMetrics correctness, ImageMetrics JSON output. +1 from v0.10.0g: real-fixture AFV probe. Net since v0.9.0z: -2 due to test consolidation in v0.10.0a-f doc-refresh sub-bites.)
+- **368 tests passing, 3 skipped, 0 failures.** (`testVarDCT_AdjustQuantBias_AllBranches` updated for the corrected per-channel `|q|==1` bias.)
 
 ---
 

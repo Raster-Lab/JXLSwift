@@ -1,5 +1,15 @@
 # Next Step: libjxl Side-by-Side Trace for Byte-Equality
 
+> **✅ DONE (v0.10.0i).** This playbook was executed. libjxl 0.11.2
+> was cloned to `/tmp/libjxl-trace`, `dec_group.cc` instrumented with
+> `JXL_TRACE_DEC` printf probes in `DequantBlock` / `TransformToPixels`,
+> and traced side-by-side against our decoder. Seven decoder bugs were
+> found and fixed — see CHANGELOG `v0.10.0i`. SWEEP d=0.5/d=1.0 are
+> now byte-exact vs `djxl`. The instrumentation steps below remain a
+> useful reference for any future per-coefficient trace work.
+
+---
+
 **Audience:** Engineer picking up the v0.9.0 byte-equality close-out.
 **Prerequisite reading:** [v0.9.0-pixel-accuracy-investigation.md](v0.9.0-pixel-accuracy-investigation.md)
 

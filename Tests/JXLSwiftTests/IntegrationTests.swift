@@ -6850,17 +6850,24 @@ extension FoundationTests {
                 "q=0 should return exactly 0 for channel \(c)"
             )
         }
-        // q == ±1 returns ±zeroBias[c]; default zeroBias = 0.5.
+        // q == ±1 returns ±biases[c] — the decoder uses libjxl's
+        // per-channel `kDefaultQuantBias` (not the encoder-side
+        // 0.5 thresholds).
+        let qb: [Float] = [
+            1.0 - 0.05465007330715401,
+            1.0 - 0.07005449891748593,
+            1.0 - 0.049935103337343655,
+        ]
         for c in 0..<3 {
             XCTAssertEqual(
                 AdjustQuantBias.adjust(channel: c, quant: 1),
-                0.5, accuracy: 1e-7,
-                "q=+1 should return +0.5 for channel \(c)"
+                qb[c], accuracy: 1e-6,
+                "q=+1 should return +kDefaultQuantBias[\(c)]"
             )
             XCTAssertEqual(
                 AdjustQuantBias.adjust(channel: c, quant: -1),
-                -0.5, accuracy: 1e-7,
-                "q=-1 should return -0.5 for channel \(c)"
+                -qb[c], accuracy: 1e-6,
+                "q=-1 should return -kDefaultQuantBias[\(c)]"
             )
         }
         // |q| >= 2 returns q − 0.145 / q.

@@ -27,10 +27,12 @@ public enum LowestFrequenciesFromDC {
 
     /// libjxl `dct_scales.h::DCTResampleScales<2, 16>::kScales`.
     /// Used to scale the 2×2 forward-DCT outputs when reinterpreting
-    /// them as the LLF region of a 16×16 transform.
+    /// them as the LLF region of a 16×16 transform. (The upscale
+    /// `<LF, FULL>` direction — ascending, not the `<FULL, LF>`
+    /// downscale.)
     private static let kScales2to16: [Float] = [
         1.0,
-        0.901764195028874394,
+        1.108937353592731823,
     ]
 
     /// libjxl `dct_scales.h::DCTResampleScales<1, 8>::kScales`.
@@ -60,7 +62,10 @@ public enum LowestFrequenciesFromDC {
         let d10 = dc[2]
         let d11 = dc[3]
         // 2×2 forward "scaled" DCT (libjxl convention; 1-D primitive
-        // is `(a+b)/N, (a-b)/N` for N=2 → divide by 2).
+        // is `(a+b)/N, (a-b)/N` for N=2 → divide by 2). This is the
+        // vanilla DCT; libjxl's `ComputeScaledDCT<2,2>` (ROWS≥COLS)
+        // emits the TRANSPOSED layout, so `s01` and `s10` swap
+        // positions in the output below.
         let s00 = (d00 + d01 + d10 + d11) * 0.25
         let s01 = (d00 - d01 + d10 - d11) * 0.25
         let s10 = (d00 + d01 - d10 - d11) * 0.25
@@ -73,8 +78,8 @@ public enum LowestFrequenciesFromDC {
         let sY1 = kScales2to16[1]
         return [
             s00 * sX0 * sY0,
-            s01 * sX1 * sY0,
-            s10 * sX0 * sY1,
+            s10 * sX1 * sY0,
+            s01 * sX0 * sY1,
             s11 * sX1 * sY1,
         ]
     }
@@ -103,24 +108,29 @@ public enum LowestFrequenciesFromDC {
         return [s0 * kScales2to16[0], s1 * kScales2to16[1]]
     }
 
-    /// libjxl `dct_scales.h::DCTResampleScales<4, 32>::kScales`.
+    /// libjxl `dct_scales.h::DCTResampleScales<4, 32>::kScales`
+    /// (the `<LF, FULL>` upscale direction — ascending).
     static let kScales4to32: [Float] = [
         1.0,
-        0.974886821136879522,
-        0.901764195028874394,
-        0.787054918159101335,
+        1.025760096781116015,
+        1.108937353592731823,
+        1.270559368765487251,
     ]
 
     /// libjxl `dct_scales.h::DCTResampleScales<2, 16>` indexed
     /// table; alias for `kScales2to16` to keep ord 6 maths readable.
     private static let kScales2to32: [Float] = [
         1.0,
-        0.901764195028874394,
+        1.108937353592731823,
     ]
 
-    /// 1-D forward "scaled" DCT-4: divide-by-N (=4) un-normalised
-    /// DCT-II of length 4. Matches libjxl's
-    /// `CoeffBundle::StoreToBlockAndScale` post-pass scaling.
+    /// 1-D forward "scaled" DCT-4 in libjxl's convention. The
+    /// `dct_for_test.h::DCT1D` per-coefficient scale is
+    /// `alpha(u) · √2/N` (`alpha(0) = 1/√2`, `alpha(u>0) = 1`).
+    /// For N=4 that resolves to `1/4` for the even-index
+    /// coefficients (0, 2 — whose cosines collapse to ±1 / ±√2⁄2
+    /// in the simplified sums below) and `√2/4` for the odd-index
+    /// coefficients (1, 3).
     @inline(__always)
     static func scaledDCT4(_ x: [Float]) -> [Float] {
         precondition(x.count == 4)
@@ -133,8 +143,9 @@ public enum LowestFrequenciesFromDC {
         let d12 = x[1] - x[2]
         let s1 = d03 * c1 + d12 * c3
         let s3 = d03 * c3 - d12 * c1
-        let inv: Float = 0.25
-        return [s0 * inv, s1 * inv, s2 * inv, s3 * inv]
+        let invEven: Float = 0.25                  // 1/N
+        let invOdd: Float = 0.3535533905932738     // √2/N
+        return [s0 * invEven, s1 * invOdd, s2 * invEven, s3 * invOdd]
     }
 
     /// DCT32x16 / DCT16x32 (libjxl ord 6) path: 8 DC values from the
@@ -271,11 +282,13 @@ public enum LowestFrequenciesFromDC {
         // 2-D forward scaled DCT-8 on the 8×8 DC values.
         var scaled = dc
         AccelerateDCT.dct2D(&scaled, size: 8)
-        // Per-axis resample with kScales<8, 64>.
+        // Per-axis resample with kScales<8, 64>, then transpose:
+        // libjxl's `ComputeScaledDCT<8,8>` (ROWS≥COLS) emits the
+        // transposed layout.
         var result = [Float](repeating: 0, count: 64)
         for y in 0..<8 {
             for x in 0..<8 {
-                result[y * 8 + x] = scaled[y * 8 + x]
+                result[x * 8 + y] = scaled[y * 8 + x]
                     * kScales8to64[x] * kScales8to64[y]
             }
         }
@@ -312,11 +325,13 @@ public enum LowestFrequenciesFromDC {
                 dct[y * 4 + x] = dctRow[x]
             }
         }
-        // Per-axis resample with kScales<4, 32>.
+        // Per-axis resample with kScales<4, 32>, then transpose:
+        // libjxl's `ComputeScaledDCT<4,4>` (ROWS≥COLS) emits the
+        // transposed layout.
         var result = [Float](repeating: 0, count: 16)
         for y in 0..<4 {
             for x in 0..<4 {
-                result[y * 4 + x] = dct[y * 4 + x]
+                result[x * 4 + y] = dct[y * 4 + x]
                     * kScales4to32[x] * kScales4to32[y]
             }
         }

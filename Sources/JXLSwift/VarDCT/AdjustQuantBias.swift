@@ -14,22 +14,36 @@
 //     |q| == 1:  return ±biases[c]            (sign of q)
 //     |q| >= 2:  return q − biases[3] / q
 //
-// `biases[0..2]` are the per-channel zero-bias values
-// (`kZeroBiasDefault = {0.5, 0.5, 0.5}`); `biases[3]` is the
-// bias *numerator* (`kBiasNumerator = 0.145`). For all the
-// LIBRARY-mode (`all_default = 1`) fixtures we ship today the
-// bitstream does not override these.
+// The decoder's `biases[0..2]` are the per-channel `|q| == 1`
+// values from libjxl `kDefaultQuantBias` (`image_metadata.cc`
+// seeds `opsin_params.quant_biases` from this array, and the
+// bitstream does not override it for LIBRARY-mode fixtures);
+// `biases[3]` is the bias *numerator* (`0.145`). These are NOT
+// the encoder-side `kZeroBiasDefault = {0.5, 0.5, 0.5}`
+// thresholds — that array drives `enc_group.cc` quantisation
+// thresholds, not the decoder's dequant bias. (Verified against
+// an instrumented djxl 0.11.2 `DequantLane` trace.)
 //
 // Spec: ISO/IEC 18181-1 §F.2.4 and §K.7. libjxl:
-// `lib/jxl/quantizer.h::kZeroBiasDefault` /
-// `kBiasNumerator`, `lib/jxl/quantizer-inl.h::AdjustQuantBias`.
+// `lib/jxl/quantizer.h::kDefaultQuantBias`,
+// `lib/jxl/quantizer-inl.h::AdjustQuantBias`.
 
 import Foundation
 
 public enum AdjustQuantBias {
 
-    /// Per-XYB-channel zero bias (libjxl `kZeroBiasDefault`).
-    /// Indexed by XYB channel: `[X, Y, B] = [0.5, 0.5, 0.5]`.
+    /// Per-XYB-channel `|q| == 1` dequant bias — libjxl
+    /// `quantizer.h::kDefaultQuantBias[0..2]`. Indexed by XYB
+    /// channel (0=X, 1=Y, 2=B).
+    public static let kDefaultQuantBias: [Float] = [
+        1.0 - 0.05465007330715401,    // X → 0.94534992…
+        1.0 - 0.07005449891748593,    // Y → 0.92994550…
+        1.0 - 0.049935103337343655,   // B → 0.95006490…
+    ]
+
+    /// Per-XYB-channel zero bias (libjxl `kZeroBiasDefault`) —
+    /// the *encoder*-side quantisation threshold. Kept for
+    /// reference; the decoder dequant uses `kDefaultQuantBias`.
     public static let kZeroBiasDefault: [Float] = [0.5, 0.5, 0.5]
 
     /// Bias numerator for `|q| >= 2` (libjxl `kBiasNumerator`).
@@ -43,7 +57,7 @@ public enum AdjustQuantBias {
     @inlinable
     public static func adjust(
         channel: Int, quant: Int32,
-        zeroBias: [Float] = kZeroBiasDefault,
+        zeroBias: [Float] = kDefaultQuantBias,
         biasNumerator: Float = kBiasNumerator
     ) -> Float {
         if quant == 0 { return 0 }
