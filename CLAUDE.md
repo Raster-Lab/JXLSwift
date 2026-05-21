@@ -4,11 +4,11 @@ Guidance for Claude Code when working in this repository.
 
 ## Project
 
-**JXLSwift** is a ground-up, independent implementation of the JPEG XL Image Coding System (ISO/IEC 18181) written in 100% pure Swift 6.2 with strict concurrency. **No native code, no C dependency, no transitive runtime libraries.** See [ROADMAP.md](ROADMAP.md) for the full project summary; the load-bearing constraints are repeated here.
+**JXLSwift** is a ground-up, independent implementation of the JPEG XL Image Coding System (ISO/IEC 18181). The codec is **Swift-first** — written in Swift 6.2 with strict concurrency — and **C/C++ is permitted only as an optional optimisation layer** (see constraint 1). See [ROADMAP.md](ROADMAP.md) for the full project summary; the load-bearing constraints are repeated here.
 
 ### Hard constraints (do not relax)
 
-1. **Pure Swift 6.2.** No C/C++/Objective-C in the runtime. The only acceptable foreign code is at testing time.
+1. **Swift-first; C/C++ permitted only for measured optimisation.** The codec is implemented in Swift 6.2. New code defaults to Swift. C/C++ *is* allowed in the runtime, but **only** for a performance-critical hot path that profiling has shown to matter, and **only** behind a clean abstraction with a correct scalar-Swift implementation that remains the source of truth (see Design priorities — "the scalar Swift path is always the source of truth"). A C path must be byte-equivalent to the Swift path within a documented epsilon and deletable without disturbing the core. Do not reach for C for correctness-only logic (parsers, transforms, bitstream) — that stays Swift. libjxl specifically remains test-only (constraint 4): "allow C" does not mean "vendor libjxl". *(Amended 2026-05 — the original constraint was "no C/C++/Objective-C in the runtime"; relaxed by the project owner to permit an optional native optimisation layer.)*
 2. **Strict concurrency complete.** Every public API is `Sendable` where applicable. No `nonisolated(unsafe)` mutable state outside narrow, audited situations (e.g. SIGINT handler flag in `JXLTool/Batch` from the libjxl-backend branch — that pattern is not allowed in `Sources/JXLSwift/`).
 3. **No shared mutable global state.** Use `actor` for shared mutability; pass dependencies explicitly otherwise.
 4. **libjxl is a test-only oracle.** It must never be a runtime dependency, never a fallback codec backend, never imported from `Sources/`. Acceptable usage: tests can shell out to `cjxl`/`djxl`/`jxlinfo` to validate output bytes; benchmarks can compare against libjxl numbers (but the comparison numbers must not be published in the repo's user-facing docs — see the legal-exposure scrub from earlier rounds).
@@ -34,6 +34,7 @@ Configurable trade-offs (`EncodingOptions`) must let callers pick which dimensio
 - ARM NEON / Swift SIMD types — primary optimisation path.
 - Apple Accelerate framework for vectorised operations where applicable.
 - Metal GPU compute for large-scale parallel workloads (optional).
+- **C/C++ hot-path layer** — permitted for performance-critical routines (per constraint 1): a measured hot path may be reimplemented in C/C++ behind a clean SwiftPM `target` boundary, with the scalar Swift implementation kept as the always-correct reference.
 - Vulkan on non-Apple platforms (future, optional).
 
 None of these are required for correctness; the scalar Swift path is always the source of truth.

@@ -325,6 +325,7 @@ These are added once a corresponding scalar Swift path is correct. The scalar pa
 |---|---|---|
 | ARM NEON / Swift SIMD types | ⏳ | primary optimisation target on Apple Silicon |
 | Apple Accelerate (vDSP / vImage) | ⏳ | for vectorisable transforms (DCT, colour conversions) |
+| C/C++ hot-path layer | ⏳ | permitted (CLAUDE.md constraint 1, amended 2026-05) for measured hot paths, behind a clean SwiftPM target boundary; scalar Swift stays the reference |
 | Metal GPU compute | ⏳ | optional, for large-scale parallel workloads |
 | Vulkan compute (Linux / non-Apple) | ⏳ | future, optional, modular |
 | x86 SSE / AVX | ⏳ | modular; cleanly removable from the core |
