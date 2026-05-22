@@ -8186,6 +8186,74 @@ extension FoundationTests {
             "VarDCT encoder round-trip max error \(maxErr)")
     }
 
+    /// DCT16×16 encoder DSP foundation (AC-strategy milestone 1).
+    /// `dcFromLowestFrequencies16x16` must exactly invert the
+    /// decoder's `dct16x16`, so the encoder can split a DCT16 block's
+    /// 4 low-frequency coefficients into the 4 DC-plane cell values.
+    func testLowestFrequenciesFromDC_DCT16x16_Inverse() throws {
+        let cases: [[Float]] = [
+            [100, 100, 100, 100],          // flat
+            [10, 20, 30, 40],
+            [-5, 17, -33, 8],
+            [0, 0, 0, 0],
+            [255, -128, 64, -200],
+        ]
+        for dc in cases {
+            let llf = LowestFrequenciesFromDC.dct16x16(dc: dc)
+            let back = LowestFrequenciesFromDC
+                .dcFromLowestFrequencies16x16(llf: llf)
+            for i in 0..<4 {
+                XCTAssertEqual(back[i], dc[i], accuracy: 1e-3,
+                    "DCT16x16 LLF inverse mismatch at \(i): "
+                    + "dc=\(dc) → llf=\(llf) → \(back)")
+            }
+        }
+    }
+
+    /// DCT16×16 encoder DSP foundation (AC-strategy milestone 1).
+    /// A 16×16 patch put through the encoder-side forward DCT16 plus
+    /// the LLF→DC split must be reconstructed exactly by the decoder's
+    /// own DCT16 primitives (`dct16x16` + transpose + `idct2D`) — the
+    /// forward transform is the precise inverse of the decoder path.
+    func testVarDCT_DCT16_ForwardInverse_DSP() throws {
+        var patch = [Float](repeating: 0, count: 256)
+        for y in 0..<16 {
+            for x in 0..<16 {
+                patch[y * 16 + x] =
+                    Float((x * 7 + y * 3) % 50) * 0.1
+                    + Float((x ^ y) % 9) * 0.05
+            }
+        }
+        // Forward DCT16: `coef = transpose(dct2D(patch))` — the
+        // bitstream coefficient layout (the pre-transpose form the
+        // decoder reads back).
+        var coef = patch
+        AccelerateDCT.dct2D(&coef, size: 16)
+        JXLDecoder.transposeSquareInPlace(&coef, size: 16)
+        // Split the 4 LLF coefficients (grid positions 0,1,16,17)
+        // into the 4 DC-plane cell values.
+        let llfPositions = [0, 1, 16, 17]
+        let llf = llfPositions.map { coef[$0] }
+        let dc = LowestFrequenciesFromDC
+            .dcFromLowestFrequencies16x16(llf: llf)
+        // Decoder reconstruction: LLF rebuilt from DC, AC kept,
+        // transpose, IDCT16.
+        var recon = coef
+        let llf2 = LowestFrequenciesFromDC.dct16x16(dc: dc)
+        for (i, pos) in llfPositions.enumerated() {
+            recon[pos] = llf2[i]
+        }
+        JXLDecoder.transposeSquareInPlace(&recon, size: 16)
+        AccelerateDCT.idct2D(&recon, size: 16)
+        var maxErr: Float = 0
+        for i in 0..<256 {
+            maxErr = max(maxErr, abs(recon[i] - patch[i]))
+        }
+        XCTAssertLessThan(maxErr, 1e-2,
+            "DCT16 forward + LLF split must round-trip through the "
+            + "decoder's DCT16 primitives — max error \(maxErr)")
+    }
+
     /// `VarDCTBitstreamWriter` end-to-end. Encodes a 24×24 gradient
     /// to a VarDCT codestream and verifies it both with our own
     /// decoder **and with libjxl `djxl`** — our encoder emits a

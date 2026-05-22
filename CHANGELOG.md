@@ -109,6 +109,15 @@ Documentation only — no code change. The `README.md` status sections still des
 
 A chroma-from-luma (CfL) encoder slope-estimator was prototyped this cycle and **dropped**: measured across varied content it gained ≤ 1.2 % (best case, on maximally luma-correlated synthetic input) and was neutral on typical images, while a per-tile cost search made encode ≈ 4× slower — the wrong trade against the project's speed-first priority. The remaining genuine encoder win is AC-strategy selection.
 
+### v0.11.0l — AC-strategy encode: DCT16×16 DSP foundation
+
+First milestone of VarDCT AC-strategy selection (variable DCT block sizes). The decoder already supports every strategy; the encoder is DCT8×8-only. This lands the DCT16×16 *forward* DSP, self-contained and ahead of the bitstream integration.
+
+- **`LowestFrequenciesFromDC.dcFromLowestFrequencies16x16`** — the encoder-direction inverse of `dct16x16`. A DCT16×16 block produces 256 coefficients; its 4 lowest-frequency coefficients are stored in the DC plane (one per covered 8×8 cell) and the decoder reconstructs them via `dct16x16`. This function recovers those 4 DC-plane values from the 4 LLF coefficients — undoing the `<2,16>` resample scales and inverting the 2×2 scaled DCT (whose sign matrix `M` satisfies `M·M = 4·I`, so the inverse is `d = M·s`).
+- **Verified.** `testLowestFrequenciesFromDC_DCT16x16_Inverse` confirms `dct16x16 ∘ dcFromLowestFrequencies16x16 = identity`; `testVarDCT_DCT16_ForwardInverse_DSP` puts a 16×16 patch through the encoder-side forward DCT16 (`dct2D` + transpose) plus the LLF→DC split and confirms the decoder's own DCT16 primitives reconstruct it exactly.
+- **Scope.** DSP foundation only — no bitstream change, encoder output is byte-identical to v0.11.0k. The bitstream integration (ACS-plane encoding, multi-block AC tokens, strategy selection) follows.
+- **386 tests passing, 3 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)

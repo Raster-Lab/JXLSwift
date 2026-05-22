@@ -84,6 +84,41 @@ public enum LowestFrequenciesFromDC {
         ]
     }
 
+    /// Inverse of `dct16x16` — the **encoder** direction. Given a
+    /// DCT16x16 block's 4 LLF coefficients (the coefficients at grid
+    /// positions (0,0), (1,0), (0,1), (1,1)), recover the 4 DC-plane
+    /// cell values the encoder must store so the decoder's
+    /// `dct16x16` reconstructs those same LLF coefficients.
+    ///
+    /// `llf[0..3]` and the returned `dc[0..3]` are both row-major
+    /// over the 2×2 covered cells — exactly the layout `dct16x16`
+    /// consumes/produces, so `dct16x16(dcFromLowestFrequencies16x16(
+    /// llf)) == llf` (within float epsilon).
+    public static func dcFromLowestFrequencies16x16(
+        llf: [Float]
+    ) -> [Float] {
+        precondition(llf.count == 4,
+                     "DCT16x16 LLF needs 4 coefficients")
+        // Undo the per-axis `<2, 16>` resample scales applied by the
+        // forward direction (`s00·1`, `s10·sX1`, `s01·sY1`,
+        // `s11·sX1·sY1`).
+        let sX1 = kScales2to16[1]
+        let sY1 = kScales2to16[1]
+        let s00 = llf[0]
+        let s10 = llf[1] / sX1
+        let s01 = llf[2] / sY1
+        let s11 = llf[3] / (sX1 * sY1)
+        // Invert the 2×2 scaled DCT. The forward sign matrix `M`
+        // (`s = M·d / 4`) is symmetric with `M·M = 4·I`, so the
+        // inverse is simply `d = M·s`.
+        return [
+            s00 + s01 + s10 + s11,    // d(0,0)
+            s00 - s01 + s10 - s11,    // d(1,0)
+            s00 + s01 - s10 - s11,    // d(0,1)
+            s00 - s01 - s10 + s11,    // d(1,1)
+        ]
+    }
+
     /// DCT16x8 / DCT8x16 (libjxl ord 4) path: 2 DC values from the
     /// 2 covered cells (vertically stacked for DCT16x8, horizontally
     /// stacked for DCT8x16) reinterpret to 2 LLF coefficients at
