@@ -156,31 +156,41 @@ public enum VarDCTEncoder {
         var acStrategy = [UInt8](repeating: 0, count: nBlocks)
         let dct16Raw = ACStrategy.dct16x16.rawValue
 
-        // DCT16×16 quant weights (3 channels × 256) for the
-        // AC-strategy DCT16 path.
+        // DCT16×16 / DCT32×32 quant weights (3 channels each) for
+        // the AC-strategy multi-block transforms.
         let qweights16: [Float]
+        let qweights32: [Float]
         do {
             qweights16 = try QuantWeights.getQuantWeights(
                 rows: 16, cols: 16, bands: DefaultQuantBands.dct16x16)
+            qweights32 = try QuantWeights.getQuantWeights(
+                rows: 32, cols: 32, bands: DefaultQuantBands.dct32x32)
         } catch {
             throw EncoderError.unsupported(
-                "VarDCT encode: DCT16 quant weights failed: \(error)")
+                "VarDCT encode: DCT16/32 quant weights failed: "
+                + "\(error)")
         }
+        let dct32Raw = ACStrategy.dct32x32.rawValue
 
-        // (3) Forward-transform + quantise, choosing an AC strategy
-        // per even-aligned 16×16 region by a **trial encode**: the
-        // region is quantised both as one DCT16×16 and as four
-        // DCT8×8 blocks, and whichever has the lower estimated token
-        // cost is kept. Even-grid alignment keeps a transform inside
-        // its group; edges that cannot fit a 2×2 region use DCT8×8.
+        // (3) Forward-transform + quantise with a hierarchical
+        // **trial encode**. Every even-aligned 16×16 region is
+        // quantised both as one DCT16×16 and as four DCT8×8s, the
+        // cheaper kept; every 4-aligned 32×32 region additionally
+        // trials one DCT32×32 against its four sub-regions' chosen
+        // cost. Block-aligned grids keep a transform inside its
+        // group; edges that cannot fit fall back to smaller blocks.
         let order8 = naturalCoeffOrderDCT8
         let order16 = CoeffOrders.naturalCoeffOrder(for: .dct16x16)
+        let order32 = CoeffOrders.naturalCoeffOrder(for: .dct32x32)
         let qw8X = Array(qweights[0..<64])
         let qw8Y = Array(qweights[64..<128])
         let qw8B = Array(qweights[128..<192])
         let qw16X = Array(qweights16[0..<256])
         let qw16Y = Array(qweights16[256..<512])
         let qw16B = Array(qweights16[512..<768])
+        let qw32X = Array(qweights32[0..<1024])
+        let qw32Y = Array(qweights32[1024..<2048])
+        let qw32B = Array(qweights32[2048..<3072])
         var covered = [Bool](repeating: false, count: nBlocks)
 
         // Extract a `size`×`size` single-channel patch at block
@@ -251,56 +261,122 @@ public enum VarDCTEncoder {
             return (dc, [rX.ac, rY.ac, rB.ac])
         }
 
+        // DCT32×32 of one region — quantised DC (3 × 16 cells) +
+        // AC (3 × 1024).
+        func dct32Region(_ bx: Int, _ by: Int)
+            -> (dc: [[Int32]], ac: [[Int32]]) {
+            let rX = forwardDCT32Block(
+                patch: patch(planeX, bx, by, 32), quantWeights: qw32X,
+                scale: acScale, qf: qf)
+            let rY = forwardDCT32Block(
+                patch: patch(planeY, bx, by, 32), quantWeights: qw32Y,
+                scale: acScale, qf: qf)
+            let rB = forwardDCT32Block(
+                patch: patchBmY(bx, by, 32), quantWeights: qw32B,
+                scale: acScale, qf: qf)
+            var dc = [[Int32]](
+                repeating: [Int32](repeating: 0, count: 16), count: 3)
+            for i in 0..<16 {
+                dc[0][i] = Int32((rX.dc[i] / mulDC[0]).rounded())
+                dc[1][i] = Int32((rY.dc[i] / mulDC[1]).rounded())
+                dc[2][i] = Int32((rB.dc[i] / mulDC[2]).rounded())
+            }
+            return (dc, [rX.ac, rY.ac, rB.ac])
+        }
+
         let cellOffsets = [(0, 0), (1, 0), (0, 1), (1, 1)]
-        // Region pass — trial DCT16×16 against four DCT8×8s.
-        for ry in stride(from: 0, to: blocksY - 1, by: 2) {
-            for rx in stride(from: 0, to: blocksX - 1, by: 2) {
-                let r16 = dct16Region(rx, ry)
-                let c8 = cellOffsets.map {
-                    dct8Cell(rx + $0.0, ry + $0.1)
-                }
-                var cost16 = 0, cost8 = 0
-                for c in 0..<3 {
-                    cost16 += tokenCost(r16.ac[c], order: order16)
-                    for cell in c8 {
-                        cost8 += tokenCost(cell.ac[c], order: order8)
-                    }
-                }
-                let firstIdx = ry * blocksX + rx
-                if cost16 <= cost8 {
-                    for (i, off) in cellOffsets.enumerated() {
-                        let cIdx = (ry + off.1) * blocksX
-                            + (rx + off.0)
-                        acStrategy[cIdx] = dct16Raw
-                        dcQuant[0][cIdx] = r16.dc[0][i]
-                        dcQuant[1][cIdx] = r16.dc[1][i]
-                        dcQuant[2][cIdx] = r16.dc[2][i]
-                        covered[cIdx] = true
-                    }
-                    acQuant[firstIdx] = r16.ac
-                } else {
-                    for (i, off) in cellOffsets.enumerated() {
-                        let cIdx = (ry + off.1) * blocksX
-                            + (rx + off.0)
-                        dcQuant[0][cIdx] = c8[i].dc[0]
-                        dcQuant[1][cIdx] = c8[i].dc[1]
-                        dcQuant[2][cIdx] = c8[i].dc[2]
-                        acQuant[cIdx] = c8[i].ac
-                        covered[cIdx] = true
-                    }
+        // Commit one DCT8×8 block.
+        func commitDCT8(_ bx: Int, _ by: Int) {
+            let idx = by * blocksX + bx
+            let cell = dct8Cell(bx, by)
+            dcQuant[0][idx] = cell.dc[0]
+            dcQuant[1][idx] = cell.dc[1]
+            dcQuant[2][idx] = cell.dc[2]
+            acQuant[idx] = cell.ac
+            acStrategy[idx] = 0
+            covered[idx] = true
+        }
+        // Evaluate + commit one 16×16 region as the cheaper of
+        // DCT16×16 / four DCT8×8s; returns the chosen token cost.
+        func eval16Region(_ rx: Int, _ ry: Int) -> Int {
+            let r16 = dct16Region(rx, ry)
+            let c8 = cellOffsets.map { dct8Cell(rx + $0.0, ry + $0.1) }
+            var cost16 = 0, cost8 = 0
+            for c in 0..<3 {
+                cost16 += tokenCost(r16.ac[c], order: order16)
+                for cell in c8 {
+                    cost8 += tokenCost(cell.ac[c], order: order8)
                 }
             }
+            let firstIdx = ry * blocksX + rx
+            if cost16 <= cost8 {
+                for (i, off) in cellOffsets.enumerated() {
+                    let cIdx = (ry + off.1) * blocksX + (rx + off.0)
+                    acStrategy[cIdx] = dct16Raw
+                    dcQuant[0][cIdx] = r16.dc[0][i]
+                    dcQuant[1][cIdx] = r16.dc[1][i]
+                    dcQuant[2][cIdx] = r16.dc[2][i]
+                    acQuant[cIdx] = [[], [], []]
+                    covered[cIdx] = true
+                }
+                acQuant[firstIdx] = r16.ac
+                return cost16
+            }
+            for (i, off) in cellOffsets.enumerated() {
+                let cIdx = (ry + off.1) * blocksX + (rx + off.0)
+                let cell = c8[i]
+                acStrategy[cIdx] = 0
+                dcQuant[0][cIdx] = cell.dc[0]
+                dcQuant[1][cIdx] = cell.dc[1]
+                dcQuant[2][cIdx] = cell.dc[2]
+                acQuant[cIdx] = cell.ac
+                covered[cIdx] = true
+            }
+            return cost8
         }
-        // Edge pass — blocks no 2×2 region covered keep DCT8×8.
+
+        // 16 sub-cell offsets `(col, row)` within a 32×32 region.
+        var cell16: [(Int, Int)] = []
+        for r in 0..<4 { for c in 0..<4 { cell16.append((c, r)) } }
+        // 32×32 pass — trial DCT32×32 against the four sub-regions
+        // (each already the cheaper of DCT16×16 / four DCT8×8s).
+        for ry in stride(from: 0, to: blocksY - 3, by: 4) {
+            for rx in stride(from: 0, to: blocksX - 3, by: 4) {
+                let r32 = dct32Region(rx, ry)
+                var cost32 = 0
+                for c in 0..<3 {
+                    cost32 += tokenCost(r32.ac[c], order: order32)
+                }
+                var cost16group = 0
+                for (sx, sy) in [(0, 0), (2, 0), (0, 2), (2, 2)] {
+                    cost16group += eval16Region(rx + sx, ry + sy)
+                }
+                guard cost32 <= cost16group else { continue }
+                // DCT32×32 wins — overwrite the 16 committed cells.
+                let firstIdx = ry * blocksX + rx
+                for (i, off) in cell16.enumerated() {
+                    let cIdx = (ry + off.1) * blocksX + (rx + off.0)
+                    acStrategy[cIdx] = dct32Raw
+                    dcQuant[0][cIdx] = r32.dc[0][i]
+                    dcQuant[1][cIdx] = r32.dc[1][i]
+                    dcQuant[2][cIdx] = r32.dc[2][i]
+                    acQuant[cIdx] = [[], [], []]
+                }
+                acQuant[firstIdx] = r32.ac
+            }
+        }
+        // 16×16 pass — even-aligned regions not already covered.
+        for ry in stride(from: 0, to: blocksY - 1, by: 2) {
+            for rx in stride(from: 0, to: blocksX - 1, by: 2) {
+                if covered[ry * blocksX + rx] { continue }
+                _ = eval16Region(rx, ry)
+            }
+        }
+        // Edge pass — any block still uncovered keeps DCT8×8.
         for by in 0..<blocksY {
             for bx in 0..<blocksX {
-                let idx = by * blocksX + bx
-                if covered[idx] { continue }
-                let cell = dct8Cell(bx, by)
-                dcQuant[0][idx] = cell.dc[0]
-                dcQuant[1][idx] = cell.dc[1]
-                dcQuant[2][idx] = cell.dc[2]
-                acQuant[idx] = cell.ac
+                if covered[by * blocksX + bx] { continue }
+                commitDCT8(bx, by)
             }
         }
 

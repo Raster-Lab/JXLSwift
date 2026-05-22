@@ -167,6 +167,16 @@ First step of DCT32×32 support — the forward-transform DSP, self-contained ah
 - **Scope.** DSP foundation only — no bitstream change, encoder output byte-identical to v0.11.0p. The DCT32 bitstream wiring (a hierarchical DCT8 / DCT16 / DCT32 trial encode) follows.
 - **391 tests passing, 3 skipped, 0 failures.**
 
+### v0.11.0r — AC-strategy encode: DCT32×32 emission
+
+The VarDCT encoder now emits DCT32×32 blocks — the AC-strategy trial encode became **hierarchical**.
+
+- **`VarDCTEncoder.forward`** gains a 32×32 pass over the 4-block-aligned grid: each region is quantised as one DCT32×32, and that cost is compared against the sum of its four 16×16 sub-regions' chosen costs (each already the cheaper of DCT16×16 / four DCT8×8s). The cheaper wins; because every level includes the smaller-transform option, the choice **never regresses**. Block-aligned grids keep a DCT32×32 inside its group. `forwardDCT32Block` (v0.11.0q) supplies the analysis; new `forwardDCT8Block`/`dct32Region` round it out.
+- **`VarDCTBitstreamWriter`** — `generateACTokens` and the ACS-plane writer became fully strategy-generic, driven by `ACStrategy.coveredBlocks` / `.blockCells` / `.orderBucket`, so a DCT32×32 first-block emits its 1008 multi-block AC tokens (`coveredBlocks = 16`) with no special-casing.
+- **Measured.** Encoding smooth gradients at the previous (DCT8/16) build vs DCT8/16/32: **−5.5 % to −11 %** on smooth 512×512 frames (e.g. 7.3 → 6.5 KB); neutral on content DCT32 doesn't suit.
+- **Verified.** `testVarDCTBitstreamWriter_DCT32` encodes a very smooth 128×128 frame — confirmed to select DCT32×32 — and round-trips it through our decoder **and `djxl 0.11.2`** at per-pixel `mean < 4`.
+- **392 tests passing, 3 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)

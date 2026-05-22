@@ -99,7 +99,6 @@ public enum VarDCTBitstreamWriter {
         var acMetaPackedByGroup: [[[UInt32]]] = []  // [dcG][0..3]
         var dcGroupBlockCount: [Int] = []           // [dcG] cell total
         var dcGroupFirstCount: [Int] = []           // [dcG] first-blocks
-        let acsDCT16Raw = ACStrategy.dct16x16.rawValue
         for dgY in 0..<numDcGroupsY {
             for dgX in 0..<numDcGroupsX {
                 let bx0 = dgX * dcBlocksPerGroup
@@ -145,8 +144,10 @@ public enum VarDCTBitstreamWriter {
                         let raw = q.acStrategy[gIdx]
                         acsList.append(Int32(raw))
                         qfList.append(q.qf - 1)
-                        let cx = raw == acsDCT16Raw ? 2 : 1
-                        let cy = raw == acsDCT16Raw ? 2 : 1
+                        let strat = ACStrategy(rawValue: raw)
+                            ?? .dct8x8
+                        let cx = strat.blockCells.cellsX
+                        let cy = strat.blockCells.cellsY
                         for iy in 0..<cy {
                             for ix in 0..<cx
                             where ly + iy < gH && lx + ix < gW {
@@ -507,8 +508,7 @@ public enum VarDCTBitstreamWriter {
           nnzContexts: Set<Int>) {
         let orderDCT8 = naturalCoeffOrderDCT8
         let orderDCT16 = CoeffOrders.naturalCoeffOrder(for: .dct16x16)
-        let dct16Raw = ACStrategy.dct16x16.rawValue
-        let dct16Ord = ACStrategy.dct16x16.orderBucket
+        let orderDCT32 = CoeffOrders.naturalCoeffOrder(for: .dct32x32)
         let bX = q.blocksX, bY = q.blocksY
         let iterToXYB = [1, 0, 2]                 // {Y, X, B}
         var result: [[(context: Int, value: UInt32)]] = []
@@ -530,13 +530,19 @@ public enum VarDCTBitstreamWriter {
                     for lx in 0..<gW {
                         if covered[ly * gW + lx] { continue }
                         let blk = (by0 + ly) * bX + (bx0 + lx)
-                        let isDCT16 = (q.acStrategy[blk] == dct16Raw)
-                        let coveredBlocks = isDCT16 ? 4 : 1
-                        let log2Covered = isDCT16 ? 2 : 0
-                        let order = isDCT16 ? orderDCT16 : orderDCT8
-                        let ordBucket = isDCT16 ? dct16Ord : 0
-                        let cellsX = isDCT16 ? 2 : 1
-                        let cellsY = isDCT16 ? 2 : 1
+                        let strat = ACStrategy(
+                            rawValue: q.acStrategy[blk]) ?? .dct8x8
+                        let coveredBlocks = strat.coveredBlocks
+                        let log2Covered = strat.log2CoveredBlocks
+                        let order: [Int]
+                        switch strat {
+                        case .dct16x16: order = orderDCT16
+                        case .dct32x32: order = orderDCT32
+                        default:        order = orderDCT8
+                        }
+                        let ordBucket = strat.orderBucket
+                        let cellsX = strat.blockCells.cellsX
+                        let cellsY = strat.blockCells.cellsY
                         for iterIdx in 0..<3 {
                             let c = iterToXYB[iterIdx]
                             let ac = q.acQuant[blk][c]

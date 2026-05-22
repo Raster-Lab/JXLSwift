@@ -8112,16 +8112,19 @@ extension FoundationTests {
                 frame.data[i + 2] = UInt8(60 + (x + y) / 2)
             }
         }
-        // The forward transform picks an AC strategy per 16×16
-        // region; this smooth gradient is flat enough that DCT16×16
-        // is selected for at least one region.
+        // The forward transform picks an AC strategy per region;
+        // this smooth gradient is flat enough that a multi-block
+        // transform (DCT16×16 or DCT32×32) wins the trial encode.
         let q = try VarDCTEncoder.forward(frame: frame)
         XCTAssertEqual(q.blocksX, 8)
         XCTAssertEqual(q.blocksY, 8)
         XCTAssertTrue(
-            q.acStrategy.contains(ACStrategy.dct16x16.rawValue),
-            "a smooth 64×64 gradient should select DCT16×16")
-        // Full encode → decode round-trip (mixed DCT8/DCT16). A
+            q.acStrategy.contains {
+                $0 != ACStrategy.dct8x8.rawValue
+            },
+            "a smooth 64×64 gradient should select a multi-block "
+            + "AC strategy")
+        // Full encode → decode round-trip (mixed strategies). A
         // correct forward pipeline keeps a smooth image close; a
         // broken inverse (DCT layout, CfL, quant, DCT16 LLF split)
         // blows the error far past the bound.
@@ -8414,6 +8417,76 @@ extension FoundationTests {
         }
         XCTAssertLessThan(meanError(djData, binOffset: binStart), 4.0,
             "DCT16 round-trip mean error (djxl)")
+    }
+
+    /// VarDCT AC-strategy — DCT32×32 end-to-end. A very smooth
+    /// 128×128 frame is flat enough that the hierarchical trial
+    /// encode selects DCT32×32 (one transform over a 4×4 block
+    /// region); the codestream must decode correctly through our
+    /// decoder **and `djxl`**.
+    func testVarDCTBitstreamWriter_DCT32() throws {
+        let dim = 128
+        var frame = ImageFrame(width: dim, height: dim, channels: 3)
+        for y in 0..<dim {
+            for x in 0..<dim {
+                let i = (y * dim + x) * 3
+                frame.data[i + 0] = UInt8(40 + x / 4)
+                frame.data[i + 1] = UInt8(70 + y / 5)
+                frame.data[i + 2] = UInt8(100 + (x + y) / 6)
+            }
+        }
+        // Confirm DCT32×32 is actually exercised.
+        let q = try VarDCTEncoder.forward(frame: frame)
+        let dct32Count = q.acStrategy.filter {
+            $0 == ACStrategy.dct32x32.rawValue
+        }.count
+        XCTAssertGreaterThan(dct32Count, 0,
+            "a very smooth 128×128 frame should select DCT32×32")
+
+        func meanError(_ pix: Data, binOffset: Int) -> Double {
+            var s = 0
+            for i in 0..<(dim * dim * 3) {
+                s += abs(Int(pix[binOffset + i]) - Int(frame.data[i]))
+            }
+            return Double(s) / Double(dim * dim * 3)
+        }
+        let codestream = try VarDCTBitstreamWriter.encode(frame: frame)
+        let decoded = try JXLDecoder().decode(codestream)
+        XCTAssertLessThan(
+            meanError(Data(decoded.data), binOffset: 0), 4.0,
+            "DCT32 round-trip mean error (our decoder)")
+
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("djxl not available")
+        }
+        let tmp = NSTemporaryDirectory()
+        let jxlPath = tmp + "vdt_dct32.jxl"
+        let outPath = tmp + "vdt_dct32_dj.ppm"
+        try codestream.write(to: URL(fileURLWithPath: jxlPath))
+        let p = Process()
+        p.launchPath = djxl
+        p.arguments = [jxlPath, outPath]
+        let errPipe = Pipe()
+        p.standardOutput = Pipe(); p.standardError = errPipe
+        try p.run(); p.waitUntilExit()
+        let djErr = String(
+            data: errPipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8) ?? ""
+        XCTAssertEqual(p.terminationStatus, 0,
+            "djxl rejected the DCT32 codestream; stderr: \(djErr)")
+        let djData = try Data(contentsOf: URL(fileURLWithPath: outPath))
+        var binStart = 0, nl = 0
+        for (i, b) in djData.enumerated() {
+            if b == 0x0A {
+                nl += 1; if nl == 3 { binStart = i + 1; break }
+            }
+        }
+        guard djData.count - binStart == dim * dim * 3 else {
+            throw XCTSkip("djxl PPM size mismatch")
+        }
+        XCTAssertLessThan(meanError(djData, binOffset: binStart), 4.0,
+            "DCT32 round-trip mean error (djxl)")
     }
 
     /// `VarDCTBitstreamWriter` end-to-end. Encodes a 24×24 gradient
