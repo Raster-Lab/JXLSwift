@@ -559,4 +559,66 @@ public enum VarDCTEncoder {
         }
         return (dc, ac)
     }
+
+    /// Forward + quantise one 8-row × 16-col patch as a DCT8×16
+    /// block (libjxl ord 4). The patch shares its layout with the
+    /// decoder's `idct2D(rows: 8, cols: 16)` output for DCT8×16, so
+    /// no transpose is needed. Returns the 2 LLF-derived DC values
+    /// in the strategy's natural cell order (left-then-right) and
+    /// 126 quantised AC coefficients (positions 0, 1 left 0).
+    static func forwardDCT8x16Block(
+        patch: [Float], quantWeights: [Float],
+        scale: Float, qf: Int32
+    ) -> (dc: [Float], ac: [Int32]) {
+        precondition(patch.count == 128
+                     && quantWeights.count == 128,
+                     "DCT8x16 block needs a 128-entry patch "
+                     + "+ 128 weights")
+        var coef = patch
+        AccelerateDCT.dct2D(&coef, rows: 8, cols: 16)
+        let dc = LowestFrequenciesFromDC
+            .dcFromLowestFrequenciesOrd4Pair(llf: [coef[0], coef[1]])
+        var ac = [Int32](repeating: 0, count: 128)
+        for k in 2..<128 {
+            ac[k] = quantizeAC(
+                coef[k], weight: quantWeights[k],
+                scale: scale, qf: qf)
+        }
+        return (dc, ac)
+    }
+
+    /// Forward + quantise one 16-row × 8-col patch as a DCT16×8
+    /// block (libjxl ord 4). Pixel layout is 16h × 8w; the coef
+    /// layout the decoder consumes is 8-row × 16-col, so the
+    /// encoder transposes the patch before the DCT (the decoder
+    /// transposes the IDCT output back to pixels). Returns the 2
+    /// LLF-derived DC values (top-then-bottom) and 126 quantised
+    /// AC coefficients (positions 0, 1 left 0).
+    static func forwardDCT16x8Block(
+        patch: [Float], quantWeights: [Float],
+        scale: Float, qf: Int32
+    ) -> (dc: [Float], ac: [Int32]) {
+        precondition(patch.count == 128
+                     && quantWeights.count == 128,
+                     "DCT16x8 block needs a 128-entry patch "
+                     + "+ 128 weights")
+        // Transpose 16-row × 8-col → 8-row × 16-col so the DCT's
+        // coefficient layout matches the decoder's.
+        var ar = [Float](repeating: 0, count: 128)
+        for r in 0..<8 {
+            for c in 0..<16 {
+                ar[r * 16 + c] = patch[c * 8 + r]
+            }
+        }
+        AccelerateDCT.dct2D(&ar, rows: 8, cols: 16)
+        let dc = LowestFrequenciesFromDC
+            .dcFromLowestFrequenciesOrd4Pair(llf: [ar[0], ar[1]])
+        var ac = [Int32](repeating: 0, count: 128)
+        for k in 2..<128 {
+            ac[k] = quantizeAC(
+                ar[k], weight: quantWeights[k],
+                scale: scale, qf: qf)
+        }
+        return (dc, ac)
+    }
 }

@@ -177,6 +177,17 @@ The VarDCT encoder now emits DCT32×32 blocks — the AC-strategy trial encode b
 - **Verified.** `testVarDCTBitstreamWriter_DCT32` encodes a very smooth 128×128 frame — confirmed to select DCT32×32 — and round-trips it through our decoder **and `djxl 0.11.2`** at per-pixel `mean < 4`.
 - **392 tests passing, 3 skipped, 0 failures.**
 
+### v0.11.0s — AC-strategy encode: DCT16×8 / DCT8×16 DSP foundation
+
+The square AC strategies (DCT8 / DCT16 / DCT32) are emitted; the next AC-strategy axis is the **asymmetric** pair — DCT16×8 (vertical pair, `8w × 16h`) and DCT8×16 (horizontal pair, `16w × 8h`), libjxl ord 4. This milestone lands their forward-transform DSP, self-contained ahead of the bitstream integration.
+
+- **`LowestFrequenciesFromDC.dcFromLowestFrequenciesOrd4Pair`** — encoder-direction inverse of `ord4Pair`. Undoes the `<2, 16>` resample on each half then the 2×2 Hadamard (`d0+d1` / `d0-d1`), recovering the 2 DC-plane cell values from a block's 2 LLF coefficients (top-then-bottom for DCT16×8, left-then-right for DCT8×16).
+- **`VarDCTEncoder.forwardDCT8x16Block`** — direct `dct2D(rows: 8, cols: 16)` on the 128-entry patch; the coef layout matches the decoder's, so no transpose.
+- **`VarDCTEncoder.forwardDCT16x8Block`** — transposes the 16h × 8w patch into the 8-row × 16-col coef layout, then `dct2D(rows: 8, cols: 16)`. The decoder transposes the IDCT output back to pixels; the encoder takes the symmetric path.
+- **Verified.** `testLowestFrequenciesFromDC_Ord4Pair_Inverse` confirms `ord4Pair ∘ dcFromLowestFrequenciesOrd4Pair = identity`; two block round-trip tests put 8×16 and 16×8 patches through `forwardDCT…Block` and the decoder's `idct2D(rows: 8, cols: 16)` (with the right transpose for DCT16×8) within bounded error.
+- **Scope.** DSP foundation only — no bitstream change, encoder output byte-identical to v0.11.0r. The trial-encode wiring (extending `eval16Region` to four partitionings: DCT16×16, 2×DCT16×8, 2×DCT8×16, 4×DCT8×8) follows.
+- **395 tests passing, 3 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)

@@ -143,6 +143,25 @@ public enum LowestFrequenciesFromDC {
         return [s0 * kScales2to16[0], s1 * kScales2to16[1]]
     }
 
+    /// Inverse of `ord4Pair` — the **encoder** direction. Recovers
+    /// the 2 DC-plane cell values (in the strategy's natural cell
+    /// order: top-then-bottom for DCT16x8, left-then-right for
+    /// DCT8x16) from a block's 2 LLF coefficients.
+    /// `ord4Pair(dcFromLowestFrequenciesOrd4Pair(llf)) == llf`
+    /// within float epsilon.
+    public static func dcFromLowestFrequenciesOrd4Pair(
+        llf: [Float]
+    ) -> [Float] {
+        precondition(llf.count == 2,
+                     "ord 4 LLF needs 2 coefficients")
+        // Undo the per-axis `<2, 16>` resample (scale 0 is 1, so a
+        // no-op; scale 1 is √(1 + 1/√2)).
+        let s0 = llf[0] / kScales2to16[0]
+        let s1 = llf[1] / kScales2to16[1]
+        // Invert the 2×2 Hadamard (`s0 = (d0+d1)/2`, `s1 = (d0-d1)/2`).
+        return [s0 + s1, s0 - s1]
+    }
+
     /// libjxl `dct_scales.h::DCTResampleScales<4, 32>::kScales`
     /// (the `<LF, FULL>` upscale direction — ascending).
     static let kScales4to32: [Float] = [
