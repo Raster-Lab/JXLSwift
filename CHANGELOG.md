@@ -127,6 +127,15 @@ Second milestone — the complete DCT16×16 *analysis* path (forward transform +
 - **Scope.** Analysis primitive only — still no bitstream change; encoder output byte-identical to v0.11.0k. The remaining DCT16 milestones are the ACS-plane writer, multi-block AC token emission (`ACEncoder.encodeBlock` already handles `coveredBlocks = 4`), and a strategy-selection heuristic.
 - **388 tests passing, 3 skipped, 0 failures.**
 
+### v0.11.0n — AC-strategy encode: shared AC tokeniser
+
+Third milestone — a behaviour-preserving refactor that consolidates AC tokenisation, so the upcoming DCT16×16 bitstream wiring reuses one spec-verified path instead of duplicating it.
+
+- **`ACEncoder.tokenize`** — the per-block AC tokeniser, extracted from `ACEncoder.encodeBlock`. It returns the `(context, value)` token pairs plus the non-zero count, and is generic over `coveredBlocks` (1 for DCT8×8, 4 for DCT16×16) — the exact inverse of `ACDecoder.decodeBlock`. `encodeBlock` now delegates to it.
+- **`VarDCTBitstreamWriter.generateACTokens`** previously inlined its own copy of the DCT8 token logic; it now calls `ACEncoder.tokenize` (`coveredBlocks: 1`). When DCT16 first-blocks are wired in, the same call with `coveredBlocks: 4` handles them — no second implementation.
+- **Behaviour-preserving.** The token sequence is identical; encoder output is byte-for-byte unchanged. All 388 tests pass, including every VarDCT round-trip and `djxl` cross-check.
+- **388 tests passing, 3 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)

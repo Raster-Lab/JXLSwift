@@ -194,10 +194,16 @@ public enum ACDecoder {
 /// encoder is still pending.
 public enum ACEncoder {
 
-    /// Tokenise one block's AC coefficients into `writer`'s token
-    /// buffer. Caller is responsible for ensuring the context map
-    /// + codebook the writer was built with covers the contexts
-    /// emitted here.
+    /// Tokenise one VarDCT block's AC coefficients into
+    /// `(context, value)` pairs — the exact inverse of
+    /// `ACDecoder.decodeBlock`. Handles single-block transforms
+    /// (`coveredBlocks = 1`, DCT8×8) and multi-block transforms
+    /// (e.g. DCT16×16 → `coveredBlocks = 4`, `size = 256`)
+    /// uniformly: the first `coveredBlocks` scan positions are the
+    /// LLF (carried by the DC plane) and are skipped.
+    ///
+    /// Returns the token pairs and the non-zero AC count — callers
+    /// driving an nnz-prediction plane need the latter.
     ///
     /// - Parameters:
     ///   - block: natural-order coefficient buffer, length
@@ -207,20 +213,19 @@ public enum ACEncoder {
     ///     `order[k]` is the natural-order index of the `k`-th
     ///     scan-order coefficient.
     ///   - others: same semantics as `ACDecoder.decodeBlock`.
-    public static func encodeBlock(
+    public static func tokenize(
         block: [Int32],
         order: [Int],
         coveredBlocks: Int, log2CoveredBlocks: Int,
         blockCtx: Int, predictedNnz: UInt32,
         ctxOffset: Int, ctxMap: BlockCtxMap,
-        shift: Int = 0,
-        writer: TokenStreamWriter,
-        to w: inout BitWriter
-    ) throws {
+        shift: Int = 0
+    ) -> (tokens: [(context: Int, value: UInt32)], nonZeros: Int) {
         precondition(coveredBlocks == (1 << log2CoveredBlocks))
         let size = coveredBlocks * 64
         precondition(block.count == size && order.count == size)
 
+        var tokens: [(context: Int, value: UInt32)] = []
         // Count nonzeros across AC positions.
         var nzeros = 0
         for k in coveredBlocks..<size where block[order[k]] != 0 {
@@ -229,10 +234,8 @@ public enum ACEncoder {
         let nzeroCtx =
             ctxMap.nonZeroContext(nonZeros: predictedNnz, blockCtx: blockCtx)
             + ctxOffset
-        try writer.writeToken(
-            context: nzeroCtx, value: UInt32(nzeros), to: &w
-        )
-        if nzeros == 0 { return }
+        tokens.append((nzeroCtx, UInt32(nzeros)))
+        if nzeros == 0 { return (tokens, 0) }
 
         let histoOffset =
             ctxOffset + ctxMap.zeroDensityContextsOffset(blockCtx: blockCtx)
@@ -252,11 +255,39 @@ public enum ACEncoder {
             // ZigZag-pack the signed residual to the unsigned token.
             let raw = block[order[k]] >> Int32(shift)
             let u = ZigZag.pack(raw)
-            try writer.writeToken(context: ctx, value: u, to: &w)
+            tokens.append((ctx, u))
             // libjxl convention (mirrors decoder): prev = u != 0.
             prev = (u != 0) ? 1 : 0
             if u != 0 { remaining -= 1 }
             k += 1
+        }
+        return (tokens, nzeros)
+    }
+
+    /// Tokenise one block (via `tokenize`) and write the resulting
+    /// `(context, value)` pairs through `writer`. Caller ensures the
+    /// writer's context map + codebook cover the emitted contexts.
+    public static func encodeBlock(
+        block: [Int32],
+        order: [Int],
+        coveredBlocks: Int, log2CoveredBlocks: Int,
+        blockCtx: Int, predictedNnz: UInt32,
+        ctxOffset: Int, ctxMap: BlockCtxMap,
+        shift: Int = 0,
+        writer: TokenStreamWriter,
+        to w: inout BitWriter
+    ) throws {
+        let result = tokenize(
+            block: block, order: order,
+            coveredBlocks: coveredBlocks,
+            log2CoveredBlocks: log2CoveredBlocks,
+            blockCtx: blockCtx, predictedNnz: predictedNnz,
+            ctxOffset: ctxOffset, ctxMap: ctxMap, shift: shift
+        )
+        for t in result.tokens {
+            try writer.writeToken(
+                context: t.context, value: t.value, to: &w
+            )
         }
     }
 }

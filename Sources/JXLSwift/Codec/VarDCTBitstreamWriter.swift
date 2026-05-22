@@ -496,9 +496,6 @@ public enum VarDCTBitstreamWriter {
                         for iterIdx in 0..<3 {
                             let c = iterToXYB[iterIdx]
                             let ac = q.acQuant[blk][c]
-                            var nnz = 0
-                            for k in 1..<64
-                            where ac[order[k]] != 0 { nnz += 1 }
                             // Predicted nnz from group-local
                             // neighbours (`ACDecoder.predictNnz`).
                             let plane = nzPlanes[iterIdx]
@@ -516,29 +513,20 @@ public enum VarDCTBitstreamWriter {
                             let blockCtx = bctx.context(
                                 dcIdx: 0, qf: UInt32(q.qf),
                                 ord: 0, c: c)
-                            let nnzCtx = bctx.nonZeroContext(
-                                nonZeros: predNnz, blockCtx: blockCtx)
-                            nnzContexts.insert(nnzCtx)
-                            tokens.append((nnzCtx, UInt32(nnz)))
-                            let histoOffset =
-                                bctx.zeroDensityContextsOffset(
-                                    blockCtx: blockCtx)
-                            var prev = (nnz > 64 / 16) ? 0 : 1
-                            var rem = nnz
-                            var k = 1
-                            while k < 64 && rem != 0 {
-                                let ctx = histoOffset
-                                    + zeroDensityContext(
-                                        nonzerosLeft: rem, k: k,
-                                        coveredBlocks: 1,
-                                        log2CoveredBlocks: 0,
-                                        prev: prev)
-                                let u = ZigZag.pack(ac[order[k]])
-                                tokens.append((ctx, u))
-                                prev = (u != 0) ? 1 : 0
-                                if u != 0 { rem -= 1 }
-                                k += 1
+                            // One DCT8×8 block's AC tokens —
+                            // `ACEncoder.tokenize` is the shared,
+                            // spec-verified inverse of
+                            // `ACDecoder.decodeBlock`.
+                            let (blockTokens, nnz) = ACEncoder.tokenize(
+                                block: ac, order: order,
+                                coveredBlocks: 1, log2CoveredBlocks: 0,
+                                blockCtx: blockCtx,
+                                predictedNnz: predNnz,
+                                ctxOffset: 0, ctxMap: bctx, shift: 0)
+                            if let first = blockTokens.first {
+                                nnzContexts.insert(first.context)
                             }
+                            tokens.append(contentsOf: blockTokens)
                             nzPlanes[iterIdx][ly * gW + lx] = Int32(nnz)
                         }
                     }
