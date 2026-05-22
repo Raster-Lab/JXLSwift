@@ -8,9 +8,18 @@ JXLSwift is intended for integration into the **DICOMkit** ecosystem but is full
 
 See [ROADMAP.md](ROADMAP.md) for the full project summary and design constraints.
 
-## Status: pre-codec spec layer complete
+## Status: working codec — decode + encode
 
-The codec layer (Modular tree, VarDCT, rANS entropy coding, color transforms) is the multi-person-year project ahead. Done today: every part of ISO/IEC 18181 that can be implemented *without* entropy coding.
+JXLSwift decodes and encodes JPEG XL today, in pure Swift, with no libjxl at runtime:
+
+- **VarDCT decoder — byte-exact against `djxl 0.11.2`** across every real image tested (any size, all AC strategies, RGB and RGBA). Multi-AC-group, multi-DC-group, adaptive DC smoothing, EPF restoration, AFV.
+- **VarDCT lossy encoder** — `VarDCTBitstreamWriter` emits genuine spec-compliant JPEG XL that `djxl` decodes: 8-bit RGB / RGBA up to 8192 px, a `distance` quality knob, single- and multi-section codestreams, multi-DC-group. (DCT8×8 only — AC-strategy search is the next encoder feature.)
+- **Modular lossless decoder + encoder** — 8/16-bit grayscale / RGB / RGBA, byte-exact round-trips through `cjxl`/`djxl`.
+- **`JXLEncoder` / `JXLDecoder` public API** — `encode(_:)` picks VarDCT (lossy modes) or Modular (`.lossless`); `decode(_:)` returns pixels. Both are real, not stubs.
+
+The remaining headline encoder feature is VarDCT **AC-strategy selection** (variable DCT block sizes — DCT16/32 etc.); the decoder already supports every strategy. See [CHANGELOG.md](CHANGELOG.md) for the v0.5.0 → v0.11.0 trajectory and [ROADMAP.md](ROADMAP.md) for the phase grid.
+
+The spec-layer foundation the codec is built on:
 
 **Phase F — Foundation (§2.4, §C.2, §C.3.1–§C.3.2):**
 - LSB-first bitstream reader / writer
@@ -72,9 +81,9 @@ Cross-validation tests added against `cjxl`-emitted Linear, sRGB, PQ, and HLG tr
 
 The codestream reader chain now walks **thirteen spec layers deep** into a real cjxl-emitted Modular lossless file and runs all 1024 pixels of a 32×32 channel through the **complete** per-pixel pipeline (rANS state init + 1024 token reads + 1024 tree walks with property 15 from WP + 1024 predictor/offset/multiplier applications including predictor 6 sourced from the WP state machine). Layers: signature → SizeHeader → ImageMetadata → FrameHeader → TOC → DequantMatrices DC flag → Modular `has_tree` → tree-section EntropySectionHeader → per-cluster Huffman tables → MA-tree token stream → typed `ModularTree` → post-tree pixel-data EntropySectionHeader → byte-aligned **`GroupHeader`** → **per-pixel `decodeModularChannel` with WP**. The remaining work for byte-equality with djxl is multi-channel iteration + Modular Transform application (RCT inverse, Squeeze inverse) on the reconstructed channel arrays.
 
-`JXLDecoder.inspect(_:)` parses any spec-compliant `.jxl` and reports container form, box list, dimensions, bit depth, channel count, alpha, animation, and HDR metadata — useful as a JXL info tool today.
+`JXLDecoder.inspect(_:)` parses any spec-compliant `.jxl` and reports container form, box list, dimensions, bit depth, channel count, alpha, animation, and HDR metadata.
 
-`JXLEncoder.encode(_:)` / `JXLDecoder.decode(_:)` throw `.notImplemented` because the codec layer isn't done yet.
+`JXLEncoder.encode(_:)` and `JXLDecoder.decode(_:)` are fully wired: encode produces a spec-compliant codestream (lossy VarDCT or lossless Modular per `EncodingOptions.mode`), decode reconstructs pixels into an `ImageFrame`.
 
 See [ROADMAP.md](ROADMAP.md) for the spec-section status grid.
 
@@ -82,9 +91,14 @@ See [ROADMAP.md](ROADMAP.md) for the spec-section status grid.
 
 ```bash
 swift build -c release
-swift test  -c release           # 249 tests (foundation + headers + entropy primitives + frame header + TOC + entropy section bodies + streaming rANS with AliasTable + Modular tree + tree walk + properties + GroupHeader + per-pixel decoder + WeightedPredictor + ModularImage / metaApply + SpecRCT 42 types + SpecSqueeze inverse + JXLDecoder.decodeModular + 🎉 byte-exact cjxl cross-validation), ~50 ms
+swift test  -c release           # 384 tests — foundation, headers, entropy,
+                                 # Modular + VarDCT decode/encode, byte-exact
+                                 # cjxl/djxl cross-validation
 .build/release/jxl-tool --version
 .build/release/jxl-tool info path/to/file.jxl
+.build/release/jxl-tool encode -i in.ppm -o out.jxl       # lossy VarDCT
+.build/release/jxl-tool encode -i in.ppm -o out.jxl --lossless
+.build/release/jxl-tool decode -i out.jxl -o out.ppm
 ```
 
 Requires Swift 6.2+ on macOS 13+. **No external dependencies.** (`swift-argument-parser` for the CLI is the only Swift-package dep.)
@@ -133,7 +147,7 @@ Sample compression ratios on synthetic data:
 | 8-bit correlated RGBA (RCT + alpha, 16×16)      | 1184 B    |  294 B   |  27 % |
 | 8-bit natural-shaped grayscale (gradient+noise, 128×128) | 16 384 B | 6.9 KB | **43 %** |
 
-The pipeline is `optional RCT (R/G/B only when channels ≥ 3) → per-channel predictor selection → ZigZag-packed residuals → auto-selected distribution shape (simple / flat / full per histogram bit-cost estimate) → SimpleEntropyStream`. **Output is NOT a JPEG XL file** — it has a 'M0' marker so a future spec-compliant decoder rejects it cleanly. The real codec (`encode` / `decode`) still throws `.notImplemented`.
+The pipeline is `optional RCT (R/G/B only when channels ≥ 3) → per-channel predictor selection → ZigZag-packed residuals → auto-selected distribution shape (simple / flat / full per histogram bit-cost estimate) → SimpleEntropyStream`. **M0 output is NOT a JPEG XL file** — it has a 'M0' marker so a spec-compliant decoder rejects it cleanly. M0 predates the real codec and is kept for benchmark continuity; for genuine JPEG XL output use `jxl-tool encode` / `JXLEncoder`, which emit spec-compliant codestreams.
 
 #### M0 throughput
 
@@ -191,15 +205,25 @@ var w2 = BitWriter()
 try w2.writeU32(50_000, distributions: dists)
 ```
 
-## What does NOT work yet
-
-Calling these throws `.notImplemented` — the codec layer is the multi-year project ahead:
+## Encoding and decoding
 
 ```swift
-try JXLEncoder().encode(frame)         // throws
-try JXLDecoder().decode(jxlData)       // throws
-try JXLDecoder().decodeAll(jxlData)    // throws
+import JXLSwift
+
+// Decode a JPEG XL file to pixels.
+let jxlData = try Data(contentsOf: URL(fileURLWithPath: "image.jxl"))
+let frame = try JXLDecoder().decode(jxlData)
+print("\(frame.width)×\(frame.height), \(frame.channels)ch")
+
+// Encode — lossy VarDCT (default) or lossless Modular.
+let lossy = try JXLEncoder().encode(frame)                       // VarDCT
+let lossless = try JXLEncoder(
+    options: EncodingOptions(mode: .lossless)).encode(frame)     // Modular
 ```
+
+`encode(_:)` routes 8-bit RGB/RGBA through the VarDCT lossy codec for lossy modes (falling back to lossless Modular for inputs VarDCT cannot take); `.lossless` always uses Modular. Every codestream JXLSwift emits is decodable by `djxl 0.11.2`.
+
+**Not yet implemented:** VarDCT AC-strategy selection (variable DCT block sizes), multi-frame / animation encoding, and JPEG ↔ JXL transcoding — these throw `.notImplemented` or fall back where a fallback exists.
 
 ## Why pure Swift
 
@@ -222,12 +246,15 @@ Sources/JXLSwift/Codestream/  Signature + headers (SizeHeader, BitDepth,
                               ImageMetadata)
 Sources/JXLSwift/Entropy/     HybridUint, PrefixCodeTable, rANS encoder/
                               decoder, ANSDistribution
-Sources/JXLSwift/Codec/       JXLEncoder / JXLDecoder (currently stubs;
-                              JXLDecoder.inspect(_:) IS implemented),
+Sources/JXLSwift/Modular/     Predictors, RCT, ZigZag, ModularImage
+Sources/JXLSwift/VarDCT/      AC strategies, IDCT/DCT, quant weights,
+                              colour correlation, EPF, AFV
+Sources/JXLSwift/Codec/       JXLEncoder / JXLDecoder (working codec),
+                              VarDCTEncoder / VarDCTBitstreamWriter,
                               ImageFrame, EncodingOptions
-Sources/JXLTool/              jxl-tool CLI (info works; encode/decode
-                              throw .notImplemented until the codec lands)
-Tests/JXLSwiftTests/          163 tests across foundation, headers, entropy
+Sources/JXLTool/              jxl-tool CLI (info / encode / decode / …)
+Tests/JXLSwiftTests/          384 tests across foundation, headers, entropy,
+                              Modular + VarDCT decode/encode
 ```
 
 JXLSwift is **not DICOM-aware** — DICOM file format / metadata / transfer-syntax handling lives in DICOMkit, not here. JXLSwift accepts and emits raw pixel buffers (`ImageFrame`) at the bit depths medical imaging needs (8/10/12/16-bit, grayscale or RGB).

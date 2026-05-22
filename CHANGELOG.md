@@ -103,6 +103,12 @@ Two changes, the first a genuine bug fix surfaced by the second.
 - **Verified.** `testVarDCTBitstreamWriter_TwoClusterAC` encodes a 1280×1280 high-detail frame (which selects the 2-cluster layout) and confirms `djxl 0.11.2` and our own decoder both decode it and agree.
 - **384 tests passing, 3 skipped, 0 failures.**
 
+### v0.11.0k — README brought in line with the working codec
+
+Documentation only — no code change. The `README.md` status sections still described JXLSwift as a "pre-codec spec layer" whose `JXLEncoder.encode` / `JXLDecoder.decode` "throw `.notImplemented`". That has been false since the v0.5.0 VarDCT decoder and the entire v0.11.0 encoder line. The README now states the actual state — a byte-exact VarDCT decoder and a working VarDCT-lossy + Modular-lossless encoder — with accurate test count (384), `jxl-tool encode`/`decode` usage, and source layout.
+
+A chroma-from-luma (CfL) encoder slope-estimator was prototyped this cycle and **dropped**: measured across varied content it gained ≤ 1.2 % (best case, on maximally luma-correlated synthetic input) and was neutral on typical images, while a per-tile cost search made encode ≈ 4× slower — the wrong trade against the project's speed-first priority. The remaining genuine encoder win is AC-strategy selection.
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)
