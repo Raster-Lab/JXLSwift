@@ -183,6 +183,29 @@ public enum LowestFrequenciesFromDC {
         return [s0 * invEven, s1 * invOdd, s2 * invEven, s3 * invOdd]
     }
 
+    /// Inverse of `scaledDCT4` — the 4-point scaled IDCT-4.
+    /// Recovers `x` from `X = scaledDCT4(x)`. Used by the encoder
+    /// to invert the DCT32×32 LLF transform.
+    @inline(__always)
+    static func inverseScaledDCT4(_ X: [Float]) -> [Float] {
+        precondition(X.count == 4)
+        let c1: Float = 0.9238795325112867   // cos(π/8)
+        let c3: Float = 0.3826834323650898   // cos(3π/8)
+        let invOdd: Float = 0.3535533905932738
+        // X0 = (x0+x1+x2+x3)/4, X2 = (x0-x1-x2+x3)/4, so
+        //   a = x0+x3 = 2(X0+X2), b = x1+x2 = 2(X0-X2).
+        let a = 2 * (X[0] + X[2])
+        let b = 2 * (X[0] - X[2])
+        // X1 / X3 carry (x0-x3, x1-x2) through an orthogonal 2×2
+        // map (`[[c1,c3],[c3,-c1]]`, its own inverse since
+        // `c1² + c3² = 1`) scaled by `invOdd`.
+        let u = X[1] / invOdd
+        let v = X[3] / invOdd
+        let p = c1 * u + c3 * v     // x0 - x3
+        let q = c3 * u - c1 * v     // x1 - x2
+        return [(a + p) / 2, (b + q) / 2, (b - q) / 2, (a - p) / 2]
+    }
+
     /// DCT32x16 / DCT16x32 (libjxl ord 6) path: 8 DC values from the
     /// covered 4×2 (or 2×4) cells reinterpret to 8 LLF coefficients
     /// at the top-left 4×2 corner of the 32×16 coef block.
@@ -371,5 +394,43 @@ public enum LowestFrequenciesFromDC {
             }
         }
         return result
+    }
+
+    /// Inverse of `dct32x32` — the **encoder** direction. Recovers
+    /// the 16 DC-plane cell values (row-major over the 4×4 covered
+    /// cells) from a DCT32×32 block's 16 LLF coefficients, so the
+    /// decoder's `dct32x32` reconstructs those same coefficients.
+    /// `dct32x32(dcFromLowestFrequencies32x32(llf)) == llf` within
+    /// float epsilon.
+    public static func dcFromLowestFrequencies32x32(
+        llf: [Float]
+    ) -> [Float] {
+        precondition(llf.count == 16,
+                     "DCT32x32 LLF needs 16 coefficients")
+        // Undo the transpose + per-axis `<4, 32>` resample.
+        var dct = [Float](repeating: 0, count: 16)
+        for y in 0..<4 {
+            for x in 0..<4 {
+                dct[y * 4 + x] = llf[x * 4 + y]
+                    / (kScales4to32[x] * kScales4to32[y])
+            }
+        }
+        // Undo the 1-D scaled DCT-4 along rows.
+        var tmp = [Float](repeating: 0, count: 16)
+        for y in 0..<4 {
+            let inv = inverseScaledDCT4([
+                dct[y * 4 + 0], dct[y * 4 + 1],
+                dct[y * 4 + 2], dct[y * 4 + 3]])
+            for x in 0..<4 { tmp[y * 4 + x] = inv[x] }
+        }
+        // Undo the 1-D scaled DCT-4 along columns.
+        var dc = [Float](repeating: 0, count: 16)
+        for x in 0..<4 {
+            let inv = inverseScaledDCT4([
+                tmp[0 * 4 + x], tmp[1 * 4 + x],
+                tmp[2 * 4 + x], tmp[3 * 4 + x]])
+            for y in 0..<4 { dc[y * 4 + x] = inv[y] }
+        }
+        return dc
     }
 }

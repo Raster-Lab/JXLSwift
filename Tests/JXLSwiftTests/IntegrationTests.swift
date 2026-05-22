@@ -8271,6 +8271,80 @@ extension FoundationTests {
             "DCT16 block round-trip max error \(maxErr)")
     }
 
+    /// DCT32×32 encoder DSP foundation. `dcFromLowestFrequencies32x32`
+    /// must exactly invert the decoder's `dct32x32`, so the encoder
+    /// can split a DCT32×32 block's 16 low-frequency coefficients
+    /// into the 16 DC-plane cell values.
+    func testLowestFrequenciesFromDC_DCT32x32_Inverse() throws {
+        let cases: [[Float]] = [
+            [Float](repeating: 100, count: 16),         // flat
+            (0..<16).map { Float($0) * 3 - 20 },
+            (0..<16).map { Float(($0 * 7) % 13) - 6 },
+            [Float](repeating: 0, count: 16),
+        ]
+        for dc in cases {
+            let llf = LowestFrequenciesFromDC.dct32x32(dc: dc)
+            let back = LowestFrequenciesFromDC
+                .dcFromLowestFrequencies32x32(llf: llf)
+            for i in 0..<16 {
+                XCTAssertEqual(back[i], dc[i], accuracy: 1e-2,
+                    "DCT32x32 LLF inverse mismatch at \(i): "
+                    + "dc=\(dc) → \(back)")
+            }
+        }
+    }
+
+    /// DCT32×32 encoder DSP foundation. `forwardDCT32Block`
+    /// (forward DCT32 + LLF→DC split + AC quantise) round-trips a
+    /// smooth 32×32 patch through the decoder's DCT32 reconstruction
+    /// (`dct32x32` LLF + dequant + transpose + IDCT32) within a
+    /// bounded error.
+    func testVarDCTEncoder_ForwardDCT32Block_RoundTrip() throws {
+        var patch = [Float](repeating: 0, count: 1024)
+        for y in 0..<32 {
+            for x in 0..<32 {
+                patch[y * 32 + x] = 0.12 + Float(x + y) * 0.006
+            }
+        }
+        let qw = try QuantWeights.getQuantWeights(
+            rows: 32, cols: 32, bands: DefaultQuantBands.dct32x32)
+        let yWeights = Array(qw[1024..<2048])         // Y channel
+        let globalScale: UInt32 = 5111
+        let qf: Int32 = 5
+        let acScale = Float(globalScale) / 65536.0
+        let (dc, ac) = VarDCTEncoder.forwardDCT32Block(
+            patch: patch, quantWeights: yWeights,
+            scale: acScale, qf: qf)
+        XCTAssertEqual(dc.count, 16)
+        XCTAssertEqual(ac.count, 1024)
+        // Decoder reconstruction: LLF from DC, dequant AC, IDCT32.
+        var coef = [Float](repeating: 0, count: 1024)
+        let llf = LowestFrequenciesFromDC.dct32x32(dc: dc)
+        for r in 0..<4 {
+            for c in 0..<4 { coef[r * 32 + c] = llf[r * 4 + c] }
+        }
+        let invQuantAC = 65536.0 / Float(globalScale) / Float(qf)
+        for np in 0..<1024 {
+            let r = np / 32, c = np % 32
+            if r < 4 && c < 4 { continue }
+            coef[np] = AdjustQuantBias.adjust(channel: 1, quant: ac[np])
+                / yWeights[np] * invQuantAC
+        }
+        JXLDecoder.transposeSquareInPlace(&coef, size: 32)
+        AccelerateDCT.idct2D(&coef, size: 32)
+        var meanErr: Float = 0, maxErr: Float = 0
+        for i in 0..<1024 {
+            let e = abs(coef[i] - patch[i])
+            meanErr += e
+            maxErr = max(maxErr, e)
+        }
+        meanErr /= 1024
+        XCTAssertLessThan(meanErr, 0.03,
+            "DCT32 block round-trip mean error \(meanErr)")
+        XCTAssertLessThan(maxErr, 0.12,
+            "DCT32 block round-trip max error \(maxErr)")
+    }
+
     /// VarDCT AC-strategy — DCT16×16 end-to-end (AC-strategy
     /// milestone 4). A smooth 96×96 frame is flat enough that the
     /// encoder selects DCT16×16 for its regions; the codestream —

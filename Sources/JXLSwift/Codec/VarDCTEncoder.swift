@@ -446,4 +446,41 @@ public enum VarDCTEncoder {
         }
         return (dc, ac)
     }
+
+    /// Forward-transform + quantise one 32×32 single-channel patch
+    /// as a DCT32×32 block. A DCT32×32 covers a 4×4 grid of 8×8
+    /// cells; its 16 lowest-frequency coefficients (the 4×4 corner
+    /// of the 32×32 grid) become 16 DC-plane cell values via
+    /// `dcFromLowestFrequencies32x32`. Returns those 16 float DC
+    /// values (row-major over the covered cells — the caller
+    /// quantises DC) and the 1008 quantised AC coefficients in the
+    /// 1024-entry natural grid (the 16 LLF positions left 0).
+    static func forwardDCT32Block(
+        patch: [Float], quantWeights: [Float],
+        scale: Float, qf: Int32
+    ) -> (dc: [Float], ac: [Int32]) {
+        precondition(patch.count == 1024
+                     && quantWeights.count == 1024,
+                     "DCT32 block needs a 32×32 patch + 1024 weights")
+        var coef = patch
+        AccelerateDCT.dct2D(&coef, size: 32)
+        transposeSquare(&coef, size: 32)
+        // The 16 LLF coefficients — the 4×4 low-frequency corner.
+        var llf = [Float](repeating: 0, count: 16)
+        for r in 0..<4 {
+            for c in 0..<4 { llf[r * 4 + c] = coef[r * 32 + c] }
+        }
+        let dc = LowestFrequenciesFromDC
+            .dcFromLowestFrequencies32x32(llf: llf)
+        var ac = [Int32](repeating: 0, count: 1024)
+        for r in 0..<32 {
+            for c in 0..<32 where !(r < 4 && c < 4) {
+                let np = r * 32 + c
+                ac[np] = quantizeAC(
+                    coef[np], weight: quantWeights[np],
+                    scale: scale, qf: qf)
+            }
+        }
+        return (dc, ac)
+    }
 }

@@ -156,6 +156,17 @@ Fifth milestone — the DCT8 / DCT16 choice is now a **trial encode** rather tha
 - **Verified.** All 389 tests pass — every VarDCT round-trip and `djxl 0.11.2` cross-check, with the trial-encode driving strategy selection.
 - **389 tests passing, 3 skipped, 0 failures.**
 
+### v0.11.0q — AC-strategy encode: DCT32×32 DSP foundation
+
+First step of DCT32×32 support — the forward-transform DSP, self-contained ahead of the bitstream wiring (the same pattern the DCT16×16 milestones followed).
+
+- **`LowestFrequenciesFromDC.inverseScaledDCT4`** — the 4-point scaled IDCT-4, the inverse of `scaledDCT4` (its odd half is an orthogonal 2×2 map that is its own inverse since `cos²(π/8) + cos²(3π/8) = 1`).
+- **`LowestFrequenciesFromDC.dcFromLowestFrequencies32x32`** — the encoder-direction inverse of `dct32x32`: undoes the transpose + `<4,32>` resample, then the row and column scaled DCT-4 passes, recovering the 16 DC-plane cell values from a DCT32×32 block's 16 low-frequency coefficients.
+- **`VarDCTEncoder.forwardDCT32Block`** — forward `dct2D` size 32 → transpose → split the 4×4 LLF corner into DC-plane values → quantise the 1008 AC coefficients with the DCT32 matrix.
+- **Verified.** `testLowestFrequenciesFromDC_DCT32x32_Inverse` confirms `dct32x32 ∘ dcFromLowestFrequencies32x32 = identity`; `testVarDCTEncoder_ForwardDCT32Block_RoundTrip` round-trips a smooth 32×32 patch through `forwardDCT32Block` and the decoder's full DCT32 reconstruction within a bounded error.
+- **Scope.** DSP foundation only — no bitstream change, encoder output byte-identical to v0.11.0p. The DCT32 bitstream wiring (a hierarchical DCT8 / DCT16 / DCT32 trial encode) follows.
+- **391 tests passing, 3 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)
