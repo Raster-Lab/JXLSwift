@@ -136,6 +136,16 @@ Third milestone — a behaviour-preserving refactor that consolidates AC tokenis
 - **Behaviour-preserving.** The token sequence is identical; encoder output is byte-for-byte unchanged. All 388 tests pass, including every VarDCT round-trip and `djxl` cross-check.
 - **388 tests passing, 3 skipped, 0 failures.**
 
+### v0.11.0o — AC-strategy encode: DCT16×16 emission 🎉
+
+Fourth milestone — the VarDCT encoder now **emits DCT16×16 blocks**. A frame is no longer DCT8×8-only; smooth 16×16 regions are coded with one DCT16×16 transform, and `djxl` decodes the result.
+
+- **`VarDCTEncoder.forward`** builds an AC-strategy plane: even-aligned 16×16 regions flat enough (a conservative variance test) use `dct16x16`, the rest stay `dct8x8`; edges that cannot fit a 2×2 region keep DCT8. Even-grid alignment guarantees a transform never straddles a group boundary. Each DCT16×16 first-block is forward-transformed via `forwardDCT16Block` — its 4 low-frequency coefficients populate the DC plane's four covered cells, its 252 AC coefficients are quantised with the DCT16 matrix. `Quantized` gained a per-block `acStrategy` plane; `acQuant` inner arrays are now 64 (DCT8) or 256 (DCT16).
+- **`VarDCTBitstreamWriter`** writes a variable-`count` ACS plane — a raster walk over each DC group's cells emits one `(strategy, QF−1)` entry per transform first-block (`count` = number of first-blocks, not cell total). `generateACTokens` dispatches per strategy: a DCT16 first-block emits multi-block AC tokens (`ACEncoder.tokenize` with `coveredBlocks = 4`), covered cells emit nothing, and `⌈nnz / coveredBlocks⌉` is stamped across the covered cells of the nnz-prediction plane.
+- **Verified.** `testVarDCTBitstreamWriter_DCT16` encodes a smooth 96×96 frame — confirmed to select DCT16×16 — and round-trips it through our decoder **and `djxl 0.11.2`** at per-pixel `mean < 4`. `testVarDCTEncoder_ForwardRoundTrip` likewise confirms a 64×64 gradient selects DCT16 and round-trips.
+- **Scope.** DCT16×16 only; the selection heuristic is a deliberately conservative variance test (a rate-distortion search, and DCT32/asymmetric strategies, are later milestones).
+- **389 tests passing, 3 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)

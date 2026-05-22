@@ -97,7 +97,9 @@ public enum VarDCTBitstreamWriter {
         var maxModToken = 0
         var dcPackedByGroup: [[[UInt32]]] = []     // [dcG][0..2]
         var acMetaPackedByGroup: [[[UInt32]]] = []  // [dcG][0..3]
-        var dcGroupBlockCount: [Int] = []           // [dcG] block total
+        var dcGroupBlockCount: [Int] = []           // [dcG] cell total
+        var dcGroupFirstCount: [Int] = []           // [dcG] first-blocks
+        let acsDCT16Raw = ACStrategy.dct16x16.rawValue
         for dgY in 0..<numDcGroupsY {
             for dgX in 0..<numDcGroupsX {
                 let bx0 = dgX * dcBlocksPerGroup
@@ -124,19 +126,43 @@ public enum VarDCTBitstreamWriter {
                 }
                 dcPackedByGroup.append(dcPacked)
                 // ACMeta: YToX, YToB (one per 64-px tile, all-zero
-                // default CfL), ACS+QF (count×2), EPF sharpness
-                // (all-zero) — all sized to the group's block region.
+                // default CfL), ACS+QF, EPF sharpness (all-zero).
                 let cW = max(1, (gW + 7) / 8)
                 let cH = max(1, (gH + 7) / 8)
-                var acsQF = [Int32](repeating: 0, count: gBlocks * 2)
-                for i in 0..<gBlocks {
-                    acsQF[i] = 0                   // ACS = DCT8
-                    acsQF[gBlocks + i] = q.qf - 1  // QF − 1 (decoder +1)
+                // ACS+QF: walk the group's cells in raster order,
+                // tracking covered cells; emit one (strategy, QF−1)
+                // entry per transform first-block. The channel is
+                // `count × 2` — `[ACS_0…, QF_0…]` (libjxl
+                // `DecodeAcMetadata` / `ACStrategyImage`).
+                var acsList: [Int32] = []
+                var qfList: [Int32] = []
+                var dgCovered = [Bool](
+                    repeating: false, count: gBlocks)
+                for ly in 0..<gH {
+                    for lx in 0..<gW {
+                        if dgCovered[ly * gW + lx] { continue }
+                        let gIdx = (by0 + ly) * blocksX + (bx0 + lx)
+                        let raw = q.acStrategy[gIdx]
+                        acsList.append(Int32(raw))
+                        qfList.append(q.qf - 1)
+                        let cx = raw == acsDCT16Raw ? 2 : 1
+                        let cy = raw == acsDCT16Raw ? 2 : 1
+                        for iy in 0..<cy {
+                            for ix in 0..<cx
+                            where ly + iy < gH && lx + ix < gW {
+                                dgCovered[(ly + iy) * gW
+                                    + (lx + ix)] = true
+                            }
+                        }
+                    }
                 }
+                let firstCount = acsList.count
+                dcGroupFirstCount.append(firstCount)
+                let acsQF = acsList + qfList
                 let acMetaChannels: [(pix: [Int32], w: Int, h: Int)] = [
                     ([Int32](repeating: 0, count: cW * cH), cW, cH),
                     ([Int32](repeating: 0, count: cW * cH), cW, cH),
-                    (acsQF, gBlocks, 2),
+                    (acsQF, firstCount, 2),
                     ([Int32](repeating: 0, count: gBlocks), gW, gH),
                 ]
                 var acMetaPacked: [[UInt32]] = []
@@ -345,12 +371,16 @@ public enum VarDCTBitstreamWriter {
                     try dcWriter.writeToken(context: 0, value: v, to: &w)
                 }
             }
-            // ACMetadata `count` — CeilLog2(group blocks) bits, the
-            // decoder reads it back as `count - 1`.
+            // ACMetadata `count` (number of transform first-blocks)
+            // — CeilLog2(group cell count) bits, read back as
+            // `count - 1`. The bit width is sized by the cell total;
+            // the value is the (smaller) first-block count.
             let gBlocks = dcGroupBlockCount[dcG]
+            let firstCount = dcGroupFirstCount[dcG]
             let acMetaBits = Int(ceilLog2(UInt32(max(1, gBlocks))))
             if acMetaBits > 0 {
-                w.write(bits: acMetaBits, value: UInt32(gBlocks - 1))
+                w.write(bits: acMetaBits,
+                        value: UInt32(max(0, firstCount - 1)))
             }
             try GroupHeader.default.write(to: &w)
             let acMetaWriter = TokenStreamWriter(
@@ -475,7 +505,10 @@ public enum VarDCTBitstreamWriter {
         numGroupsX: Int, numGroupsY: Int, blocksPerGroup bpg: Int
     ) -> (perGroup: [[(context: Int, value: UInt32)]],
           nnzContexts: Set<Int>) {
-        let order = naturalCoeffOrderDCT8
+        let orderDCT8 = naturalCoeffOrderDCT8
+        let orderDCT16 = CoeffOrders.naturalCoeffOrder(for: .dct16x16)
+        let dct16Raw = ACStrategy.dct16x16.rawValue
+        let dct16Ord = ACStrategy.dct16x16.orderBucket
         let bX = q.blocksX, bY = q.blocksY
         let iterToXYB = [1, 0, 2]                 // {Y, X, B}
         var result: [[(context: Int, value: UInt32)]] = []
@@ -485,14 +518,25 @@ public enum VarDCTBitstreamWriter {
                 let bx0 = gx * bpg, by0 = gy * bpg
                 let gW = min(bpg, bX - bx0)
                 let gH = min(bpg, bY - by0)
-                // Per-group, per-channel nnz prediction planes.
+                // Per-group, per-channel nnz prediction planes, and a
+                // covered-cell mask so a multi-block transform's
+                // covered cells emit no tokens of their own.
                 var nzPlanes = [[Int32]](
                     repeating: [Int32](repeating: 0, count: gW * gH),
                     count: 3)
+                var covered = [Bool](repeating: false, count: gW * gH)
                 var tokens: [(context: Int, value: UInt32)] = []
                 for ly in 0..<gH {
                     for lx in 0..<gW {
+                        if covered[ly * gW + lx] { continue }
                         let blk = (by0 + ly) * bX + (bx0 + lx)
+                        let isDCT16 = (q.acStrategy[blk] == dct16Raw)
+                        let coveredBlocks = isDCT16 ? 4 : 1
+                        let log2Covered = isDCT16 ? 2 : 0
+                        let order = isDCT16 ? orderDCT16 : orderDCT8
+                        let ordBucket = isDCT16 ? dct16Ord : 0
+                        let cellsX = isDCT16 ? 2 : 1
+                        let cellsY = isDCT16 ? 2 : 1
                         for iterIdx in 0..<3 {
                             let c = iterToXYB[iterIdx]
                             let ac = q.acQuant[blk][c]
@@ -512,14 +556,16 @@ public enum VarDCTBitstreamWriter {
                             }
                             let blockCtx = bctx.context(
                                 dcIdx: 0, qf: UInt32(q.qf),
-                                ord: 0, c: c)
-                            // One DCT8×8 block's AC tokens —
+                                ord: ordBucket, c: c)
+                            // One transform's AC tokens —
                             // `ACEncoder.tokenize` is the shared,
                             // spec-verified inverse of
-                            // `ACDecoder.decodeBlock`.
+                            // `ACDecoder.decodeBlock`, generic over
+                            // `coveredBlocks` (1 = DCT8, 4 = DCT16).
                             let (blockTokens, nnz) = ACEncoder.tokenize(
                                 block: ac, order: order,
-                                coveredBlocks: 1, log2CoveredBlocks: 0,
+                                coveredBlocks: coveredBlocks,
+                                log2CoveredBlocks: log2Covered,
                                 blockCtx: blockCtx,
                                 predictedNnz: predNnz,
                                 ctxOffset: 0, ctxMap: bctx, shift: 0)
@@ -527,7 +573,26 @@ public enum VarDCTBitstreamWriter {
                                 nnzContexts.insert(first.context)
                             }
                             tokens.append(contentsOf: blockTokens)
-                            nzPlanes[iterIdx][ly * gW + lx] = Int32(nnz)
+                            // Stamp ⌈nnz / coveredBlocks⌉ over every
+                            // covered cell so later first-blocks see
+                            // consistent neighbours (libjxl
+                            // `dec_group.cc` post-decode stamp).
+                            let nzPerCell = Int32(
+                                (nnz + coveredBlocks - 1)
+                                    / coveredBlocks)
+                            for cy in 0..<cellsY {
+                                for cx in 0..<cellsX {
+                                    nzPlanes[iterIdx][
+                                        (ly + cy) * gW + (lx + cx)]
+                                        = nzPerCell
+                                }
+                            }
+                        }
+                        for cy in 0..<cellsY {
+                            for cx in 0..<cellsX {
+                                covered[(ly + cy) * gW + (lx + cx)]
+                                    = true
+                            }
                         }
                     }
                 }

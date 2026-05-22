@@ -8112,74 +8112,28 @@ extension FoundationTests {
                 frame.data[i + 2] = UInt8(60 + (x + y) / 2)
             }
         }
+        // The forward transform picks an AC strategy per 16×16
+        // region; this smooth gradient is flat enough that DCT16×16
+        // is selected for at least one region.
         let q = try VarDCTEncoder.forward(frame: frame)
         XCTAssertEqual(q.blocksX, 8)
         XCTAssertEqual(q.blocksY, 8)
-
-        // Decoder-side reconstruction (mirrors `JXLDecoder` exactly).
-        let qw = try QuantWeights.getQuantWeights(
-            rows: 8, cols: 8, bands: DefaultQuantBands.dct8x8)
-        let invGlobalScale = 65536.0 / Float(q.globalScale)
-        let invQuantDC = invGlobalScale / Float(q.quantDC)
-        let mulDC: [Float] = (0..<3).map {
-            invQuantDC / VarDCTEncoder.kInvDCQuant[$0]
-        }
-        let invQuantAC = invGlobalScale / Float(q.qf)
+        XCTAssertTrue(
+            q.acStrategy.contains(ACStrategy.dct16x16.rawValue),
+            "a smooth 64×64 gradient should select DCT16×16")
+        // Full encode → decode round-trip (mixed DCT8/DCT16). A
+        // correct forward pipeline keeps a smooth image close; a
+        // broken inverse (DCT layout, CfL, quant, DCT16 LLF split)
+        // blows the error far past the bound.
+        let codestream = try VarDCTBitstreamWriter.encode(frame: frame)
+        let decoded = try JXLDecoder().decode(codestream)
         var maxErr = 0, sumErr = 0
-        let order = naturalCoeffOrderDCT8
-        for by in 0..<q.blocksY {
-            for bx in 0..<q.blocksX {
-                let blk = by * q.blocksX + bx
-                var coef: [[Float]] = [[Float]](
-                    repeating: [Float](repeating: 0, count: 64), count: 3)
-                for c in 0..<3 {
-                    for k in 1..<64 {
-                        let np = order[k]
-                        coef[c][np] = AdjustQuantBias.adjust(
-                            channel: c, quant: q.acQuant[blk][c][np])
-                            / qw[c * 64 + np] * invQuantAC
-                    }
-                }
-                // Inverse CfL: X unchanged, B += Y (base corr. B = 1).
-                for k in 1..<64 { coef[2][k] += coef[1][k] }
-                // DC dequant + inverse CfL.
-                let dcX = Float(q.dcQuant[0][blk]) * mulDC[0]
-                let dcY = Float(q.dcQuant[1][blk]) * mulDC[1]
-                let dcB = Float(q.dcQuant[2][blk]) * mulDC[2]
-                coef[0][0] = dcX
-                coef[1][0] = dcY
-                coef[2][0] = dcB + dcY
-                for c in 0..<3 {
-                    JXLDecoder.transposeSquareInPlace(&coef[c], size: 8)
-                    AccelerateDCT.idct2D(&coef[c], size: 8)
-                }
-                for r in 0..<8 {
-                    for cc in 0..<8 {
-                        let lin = OpsinXYB.inverse((
-                            X: coef[0][r * 8 + cc],
-                            Y: coef[1][r * 8 + cc],
-                            B: coef[2][r * 8 + cc]))
-                        let px = bx * 8 + cc, py = by * 8 + r
-                        let oi = (py * dim + px) * 3
-                        let rgb = [lin.R, lin.G, lin.B]
-                        for ci in 0..<3 {
-                            let s = rgb[ci] <= 0.0031308
-                                ? rgb[ci] * 12.92
-                                : 1.055 * powf(rgb[ci], 1.0 / 2.4) - 0.055
-                            let v = Int((s * 255.0).rounded())
-                            let out = max(0, min(255, v))
-                            let d = abs(out - Int(frame.data[oi + ci]))
-                            maxErr = max(maxErr, d)
-                            sumErr += d
-                        }
-                    }
-                }
-            }
+        for i in 0..<(dim * dim * 3) {
+            let d = abs(Int(decoded.data[i]) - Int(frame.data[i]))
+            maxErr = max(maxErr, d)
+            sumErr += d
         }
         let meanErr = Float(sumErr) / Float(dim * dim * 3)
-        // Lossy round-trip — a correct forward pipeline keeps a
-        // smooth image close. A broken inverse (wrong DCT layout,
-        // CfL, or quant) blows this far past the bound.
         XCTAssertLessThan(meanErr, 6.0,
             "VarDCT encoder round-trip mean error \(meanErr)")
         XCTAssertLessThan(maxErr, 40,
@@ -8315,6 +8269,77 @@ extension FoundationTests {
             "DCT16 block round-trip mean error \(meanErr)")
         XCTAssertLessThan(maxErr, 0.10,
             "DCT16 block round-trip max error \(maxErr)")
+    }
+
+    /// VarDCT AC-strategy — DCT16×16 end-to-end (AC-strategy
+    /// milestone 4). A smooth 96×96 frame is flat enough that the
+    /// encoder selects DCT16×16 for its regions; the codestream —
+    /// with a variable-`count` ACS plane and multi-block
+    /// (`coveredBlocks = 4`) AC tokens — must decode correctly
+    /// through our decoder **and `djxl`**.
+    func testVarDCTBitstreamWriter_DCT16() throws {
+        let dim = 96
+        var frame = ImageFrame(width: dim, height: dim, channels: 3)
+        for y in 0..<dim {
+            for x in 0..<dim {
+                let i = (y * dim + x) * 3
+                frame.data[i + 0] = UInt8(40 + x / 2)
+                frame.data[i + 1] = UInt8(60 + y / 3)
+                frame.data[i + 2] = UInt8(80 + (x + y) / 4)
+            }
+        }
+        // Confirm DCT16×16 is actually exercised.
+        let q = try VarDCTEncoder.forward(frame: frame)
+        let dct16Count = q.acStrategy.filter {
+            $0 == ACStrategy.dct16x16.rawValue
+        }.count
+        XCTAssertGreaterThan(dct16Count, 0,
+            "a smooth 96×96 frame should select DCT16×16")
+
+        func meanError(_ pix: Data, binOffset: Int) -> Double {
+            var s = 0
+            for i in 0..<(dim * dim * 3) {
+                s += abs(Int(pix[binOffset + i]) - Int(frame.data[i]))
+            }
+            return Double(s) / Double(dim * dim * 3)
+        }
+        let codestream = try VarDCTBitstreamWriter.encode(frame: frame)
+        let decoded = try JXLDecoder().decode(codestream)
+        XCTAssertLessThan(
+            meanError(Data(decoded.data), binOffset: 0), 4.0,
+            "DCT16 round-trip mean error (our decoder)")
+
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("djxl not available")
+        }
+        let tmp = NSTemporaryDirectory()
+        let jxlPath = tmp + "vdt_dct16.jxl"
+        let outPath = tmp + "vdt_dct16_dj.ppm"
+        try codestream.write(to: URL(fileURLWithPath: jxlPath))
+        let p = Process()
+        p.launchPath = djxl
+        p.arguments = [jxlPath, outPath]
+        let errPipe = Pipe()
+        p.standardOutput = Pipe(); p.standardError = errPipe
+        try p.run(); p.waitUntilExit()
+        let djErr = String(
+            data: errPipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8) ?? ""
+        XCTAssertEqual(p.terminationStatus, 0,
+            "djxl rejected the DCT16 codestream; stderr: \(djErr)")
+        let djData = try Data(contentsOf: URL(fileURLWithPath: outPath))
+        var binStart = 0, nl = 0
+        for (i, b) in djData.enumerated() {
+            if b == 0x0A {
+                nl += 1; if nl == 3 { binStart = i + 1; break }
+            }
+        }
+        guard djData.count - binStart == dim * dim * 3 else {
+            throw XCTSkip("djxl PPM size mismatch")
+        }
+        XCTAssertLessThan(meanError(djData, binOffset: binStart), 4.0,
+            "DCT16 round-trip mean error (djxl)")
     }
 
     /// `VarDCTBitstreamWriter` end-to-end. Encodes a 24×24 gradient
