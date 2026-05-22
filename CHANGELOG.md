@@ -146,6 +146,16 @@ Fourth milestone — the VarDCT encoder now **emits DCT16×16 blocks**. A frame 
 - **Scope.** DCT16×16 only; the selection heuristic is a deliberately conservative variance test (a rate-distortion search, and DCT32/asymmetric strategies, are later milestones).
 - **389 tests passing, 3 skipped, 0 failures.**
 
+### v0.11.0p — AC-strategy encode: trial-encode selection
+
+Fifth milestone — the DCT8 / DCT16 choice is now a **trial encode** rather than a conservative variance guess.
+
+- **`VarDCTEncoder.forward`** quantises every even-aligned 16×16 region *both* ways — once as a single DCT16×16, once as four DCT8×8 blocks — estimates the token cost of each via `tokenCost` (`nzeros` token + run structure to the last non-zero scan position + magnitude bits, the terms that actually drive the AC coder), and keeps whichever is cheaper. Because the choice is per-region and includes the DCT8 option, it **never regresses** below all-DCT8; and unlike the variance test it picks up DCT16-favourable detailed/structured regions, not just flat ones.
+- New `forwardDCT8Block` mirrors `forwardDCT16Block`, so the trial path is symmetric; the old `regionUsesDCT16` variance test is removed.
+- **Measured.** Encoding the same images at the previous (variance-heuristic) build vs the trial-encode: neutral on smooth gradients, **−2.2 % on a detailed/structured 512×512 image** (217.4 → 212.6 KB). Encode time roughly doubles (both transforms are computed) — ~0.08 s for 512×512, still well within the speed budget.
+- **Verified.** All 389 tests pass — every VarDCT round-trip and `djxl 0.11.2` cross-check, with the trial-encode driving strategy selection.
+- **389 tests passing, 3 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)

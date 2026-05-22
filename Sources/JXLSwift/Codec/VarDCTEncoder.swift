@@ -167,124 +167,140 @@ public enum VarDCTEncoder {
                 "VarDCT encode: DCT16 quant weights failed: \(error)")
         }
 
-        // (3a) AC-strategy plane. A 16×16 region uses DCT16×16 when
-        // it is flat enough that one large transform codes it better
-        // than four DCT8×8 blocks. Regions sit on the even 2×2 block
-        // grid, so a transform never straddles a group boundary
-        // (group dims are multiples of 2 blocks). Edges that cannot
-        // fit a 2×2 region keep DCT8×8.
+        // (3) Forward-transform + quantise, choosing an AC strategy
+        // per even-aligned 16×16 region by a **trial encode**: the
+        // region is quantised both as one DCT16×16 and as four
+        // DCT8×8 blocks, and whichever has the lower estimated token
+        // cost is kept. Even-grid alignment keeps a transform inside
+        // its group; edges that cannot fit a 2×2 region use DCT8×8.
+        let order8 = naturalCoeffOrderDCT8
+        let order16 = CoeffOrders.naturalCoeffOrder(for: .dct16x16)
+        let qw8X = Array(qweights[0..<64])
+        let qw8Y = Array(qweights[64..<128])
+        let qw8B = Array(qweights[128..<192])
+        let qw16X = Array(qweights16[0..<256])
+        let qw16Y = Array(qweights16[256..<512])
+        let qw16B = Array(qweights16[512..<768])
+        var covered = [Bool](repeating: false, count: nBlocks)
+
+        // Extract a `size`×`size` single-channel patch at block
+        // origin `(bx, by)`.
+        func patch(_ plane: [Float], _ bx: Int, _ by: Int,
+                   _ size: Int) -> [Float] {
+            let px0 = bx * 8, py0 = by * 8
+            var out = [Float](repeating: 0, count: size * size)
+            for r in 0..<size {
+                let row = (py0 + r) * pw + px0
+                for c in 0..<size {
+                    out[r * size + c] = plane[row + c]
+                }
+            }
+            return out
+        }
+        // The same, colour-decorrelated as `B − Y` for the B channel.
+        func patchBmY(_ bx: Int, _ by: Int, _ size: Int) -> [Float] {
+            let px0 = bx * 8, py0 = by * 8
+            var out = [Float](repeating: 0, count: size * size)
+            for r in 0..<size {
+                let row = (py0 + r) * pw + px0
+                for c in 0..<size {
+                    out[r * size + c] =
+                        planeB[row + c] - planeY[row + c]
+                }
+            }
+            return out
+        }
+        // DCT8×8 of one block — quantised DC (3) + AC (3 × 64).
+        func dct8Cell(_ bx: Int, _ by: Int)
+            -> (dc: [Int32], ac: [[Int32]]) {
+            let rX = forwardDCT8Block(
+                patch: patch(planeX, bx, by, 8), quantWeights: qw8X,
+                scale: acScale, qf: qf)
+            let rY = forwardDCT8Block(
+                patch: patch(planeY, bx, by, 8), quantWeights: qw8Y,
+                scale: acScale, qf: qf)
+            let rB = forwardDCT8Block(
+                patch: patchBmY(bx, by, 8), quantWeights: qw8B,
+                scale: acScale, qf: qf)
+            return ([
+                Int32((rX.dc / mulDC[0]).rounded()),
+                Int32((rY.dc / mulDC[1]).rounded()),
+                Int32((rB.dc / mulDC[2]).rounded()),
+            ], [rX.ac, rY.ac, rB.ac])
+        }
+        // DCT16×16 of one region — quantised DC (3 × 4 cells) +
+        // AC (3 × 256).
+        func dct16Region(_ bx: Int, _ by: Int)
+            -> (dc: [[Int32]], ac: [[Int32]]) {
+            let rX = forwardDCT16Block(
+                patch: patch(planeX, bx, by, 16), quantWeights: qw16X,
+                scale: acScale, qf: qf)
+            let rY = forwardDCT16Block(
+                patch: patch(planeY, bx, by, 16), quantWeights: qw16Y,
+                scale: acScale, qf: qf)
+            let rB = forwardDCT16Block(
+                patch: patchBmY(bx, by, 16), quantWeights: qw16B,
+                scale: acScale, qf: qf)
+            var dc = [[Int32]](
+                repeating: [Int32](repeating: 0, count: 4), count: 3)
+            for i in 0..<4 {
+                dc[0][i] = Int32((rX.dc[i] / mulDC[0]).rounded())
+                dc[1][i] = Int32((rY.dc[i] / mulDC[1]).rounded())
+                dc[2][i] = Int32((rB.dc[i] / mulDC[2]).rounded())
+            }
+            return (dc, [rX.ac, rY.ac, rB.ac])
+        }
+
+        let cellOffsets = [(0, 0), (1, 0), (0, 1), (1, 1)]
+        // Region pass — trial DCT16×16 against four DCT8×8s.
         for ry in stride(from: 0, to: blocksY - 1, by: 2) {
             for rx in stride(from: 0, to: blocksX - 1, by: 2) {
-                guard regionUsesDCT16(
-                    planeY: planeY, bx: rx, by: ry, pw: pw) else {
-                    continue
+                let r16 = dct16Region(rx, ry)
+                let c8 = cellOffsets.map {
+                    dct8Cell(rx + $0.0, ry + $0.1)
                 }
-                for (cdx, cdy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
-                    acStrategy[(ry + cdy) * blocksX + (rx + cdx)]
-                        = dct16Raw
+                var cost16 = 0, cost8 = 0
+                for c in 0..<3 {
+                    cost16 += tokenCost(r16.ac[c], order: order16)
+                    for cell in c8 {
+                        cost8 += tokenCost(cell.ac[c], order: order8)
+                    }
+                }
+                let firstIdx = ry * blocksX + rx
+                if cost16 <= cost8 {
+                    for (i, off) in cellOffsets.enumerated() {
+                        let cIdx = (ry + off.1) * blocksX
+                            + (rx + off.0)
+                        acStrategy[cIdx] = dct16Raw
+                        dcQuant[0][cIdx] = r16.dc[0][i]
+                        dcQuant[1][cIdx] = r16.dc[1][i]
+                        dcQuant[2][cIdx] = r16.dc[2][i]
+                        covered[cIdx] = true
+                    }
+                    acQuant[firstIdx] = r16.ac
+                } else {
+                    for (i, off) in cellOffsets.enumerated() {
+                        let cIdx = (ry + off.1) * blocksX
+                            + (rx + off.0)
+                        dcQuant[0][cIdx] = c8[i].dc[0]
+                        dcQuant[1][cIdx] = c8[i].dc[1]
+                        dcQuant[2][cIdx] = c8[i].dc[2]
+                        acQuant[cIdx] = c8[i].ac
+                        covered[cIdx] = true
+                    }
                 }
             }
         }
-
-        // (3b) Per block: forward-transform + quantise. Walk blocks
-        // in raster order tracking covered cells; an uncovered cell
-        // is a transform's first-block.
-        var covered = [Bool](repeating: false, count: nBlocks)
-        var blkX = [Float](repeating: 0, count: 64)
-        var blkY = [Float](repeating: 0, count: 64)
-        var blkB = [Float](repeating: 0, count: 64)
-        var patchX = [Float](repeating: 0, count: 256)
-        var patchY = [Float](repeating: 0, count: 256)
-        var patchBmY = [Float](repeating: 0, count: 256)
+        // Edge pass — blocks no 2×2 region covered keep DCT8×8.
         for by in 0..<blocksY {
             for bx in 0..<blocksX {
-                let blockIdx = by * blocksX + bx
-                if covered[blockIdx] { continue }
-                if acStrategy[blockIdx] == dct16Raw {
-                    // --- DCT16×16 first-block --------------------
-                    let px0 = bx * 8, py0 = by * 8
-                    for r in 0..<16 {
-                        let row = (py0 + r) * pw + px0
-                        for c in 0..<16 {
-                            let yv = planeY[row + c]
-                            patchX[r * 16 + c] = planeX[row + c]
-                            patchY[r * 16 + c] = yv
-                            patchBmY[r * 16 + c] = planeB[row + c] - yv
-                        }
-                    }
-                    let resX = forwardDCT16Block(
-                        patch: patchX,
-                        quantWeights: Array(qweights16[0..<256]),
-                        scale: acScale, qf: qf)
-                    let resY = forwardDCT16Block(
-                        patch: patchY,
-                        quantWeights: Array(qweights16[256..<512]),
-                        scale: acScale, qf: qf)
-                    let resB = forwardDCT16Block(
-                        patch: patchBmY,
-                        quantWeights: Array(qweights16[512..<768]),
-                        scale: acScale, qf: qf)
-                    // The 4 covered cells take their LLF-derived DC.
-                    for (i, off) in [(0, 0), (1, 0), (0, 1), (1, 1)]
-                        .enumerated() {
-                        let cIdx = (by + off.1) * blocksX
-                            + (bx + off.0)
-                        dcQuant[0][cIdx] =
-                            Int32((resX.dc[i] / mulDC[0]).rounded())
-                        dcQuant[1][cIdx] =
-                            Int32((resY.dc[i] / mulDC[1]).rounded())
-                        dcQuant[2][cIdx] =
-                            Int32((resB.dc[i] / mulDC[2]).rounded())
-                        covered[cIdx] = true
-                    }
-                    acQuant[blockIdx] = [resX.ac, resY.ac, resB.ac]
-                } else {
-                    // --- DCT8×8 block ----------------------------
-                    // The decoder runs `idct2D(transpose(coef))` for
-                    // ROWS≥COLS, so `coef = transpose(dct2D(pixels))`.
-                    let ox = bx * 8, oy = by * 8
-                    for r in 0..<8 {
-                        let row = (oy + r) * pw + ox
-                        for c in 0..<8 {
-                            blkX[r * 8 + c] = planeX[row + c]
-                            blkY[r * 8 + c] = planeY[row + c]
-                            blkB[r * 8 + c] = planeB[row + c]
-                        }
-                    }
-                    AccelerateDCT.dct2D(&blkX, size: 8)
-                    AccelerateDCT.dct2D(&blkY, size: 8)
-                    AccelerateDCT.dct2D(&blkB, size: 8)
-                    transpose8(&blkX)
-                    transpose8(&blkY)
-                    transpose8(&blkB)
-                    // DC (coefficient 0). Default CfL: decoder folds
-                    // `B += Y` (base correlation B = 1), `X += 0·Y`.
-                    let dcBStored = blkB[0] - blkY[0]
-                    dcQuant[0][blockIdx] =
-                        Int32((blkX[0] / mulDC[0]).rounded())
-                    dcQuant[1][blockIdx] =
-                        Int32((blkY[0] / mulDC[1]).rounded())
-                    dcQuant[2][blockIdx] =
-                        Int32((dcBStored / mulDC[2]).rounded())
-                    // AC (1..63), B decorrelated (`B − Y`).
-                    var acX = [Int32](repeating: 0, count: 64)
-                    var acY = [Int32](repeating: 0, count: 64)
-                    var acB = [Int32](repeating: 0, count: 64)
-                    for k in 1..<64 {
-                        acX[k] = quantizeAC(
-                            blkX[k], weight: qweights[0 * 64 + k],
-                            scale: acScale, qf: qf)
-                        acY[k] = quantizeAC(
-                            blkY[k], weight: qweights[1 * 64 + k],
-                            scale: acScale, qf: qf)
-                        acB[k] = quantizeAC(
-                            blkB[k] - blkY[k],
-                            weight: qweights[2 * 64 + k],
-                            scale: acScale, qf: qf)
-                    }
-                    acQuant[blockIdx] = [acX, acY, acB]
-                    covered[blockIdx] = true
-                }
+                let idx = by * blocksX + bx
+                if covered[idx] { continue }
+                let cell = dct8Cell(bx, by)
+                dcQuant[0][idx] = cell.dc[0]
+                dcQuant[1][idx] = cell.dc[1]
+                dcQuant[2][idx] = cell.dc[2]
+                acQuant[idx] = cell.ac
             }
         }
 
@@ -296,29 +312,30 @@ public enum VarDCTEncoder {
             dcQuant: dcQuant, acStrategy: acStrategy, acQuant: acQuant)
     }
 
-    /// AC-strategy selection — true when the 16×16 Y region whose
-    /// top-left 8×8 cell is block `(bx, by)` is flat enough to
-    /// favour one DCT16×16 over four DCT8×8 transforms. A
-    /// deliberately conservative variance test; a rate-distortion
-    /// search is a later milestone.
-    static func regionUsesDCT16(
-        planeY: [Float], bx: Int, by: Int, pw: Int
-    ) -> Bool {
-        let px0 = bx * 8, py0 = by * 8
-        var sum: Float = 0, sumSq: Float = 0
-        for r in 0..<16 {
-            let row = (py0 + r) * pw + px0
-            for c in 0..<16 {
-                let v = planeY[row + c]
-                sum += v
-                sumSq += v * v
+    /// Estimated token cost (in rough bit units) of one block's
+    /// quantised AC coefficients — `4` for the `nzeros` token, `2`
+    /// per scan position up to the last non-zero (the run
+    /// structure), plus the magnitude bits of each non-zero. The AC
+    /// coder emits a token for every scan position up to the last
+    /// non-zero, so the cost is dominated by that position; this
+    /// drives the DCT8 / DCT16 trial-encode choice.
+    static func tokenCost(_ ac: [Int32], order: [Int]) -> Int {
+        let size = ac.count
+        let coveredBlocks = size / 64
+        var lastNZ = 0
+        for s in coveredBlocks..<size where ac[order[s]] != 0 {
+            lastNZ = s
+        }
+        var cost = 4 + 2 * lastNZ
+        if lastNZ >= coveredBlocks {
+            for s in coveredBlocks...lastNZ {
+                let q = ac[order[s]]
+                if q != 0 {
+                    cost += 32 - q.magnitude.leadingZeroBitCount
+                }
             }
         }
-        let n: Float = 256
-        let mean = sum / n
-        let variance = max(0, sumSq / n - mean * mean)
-        // XYB-Y spans ~0…1; a near-flat region has tiny variance.
-        return variance < 0.0008
+        return cost
     }
 
     // MARK: - Primitives
@@ -364,7 +381,29 @@ public enum VarDCTEncoder {
         }
     }
 
-    // MARK: - DCT16×16 block (AC-strategy foundation)
+    // MARK: - DCT block analysis (AC strategy)
+
+    /// Forward-transform + quantise one 8×8 single-channel patch as
+    /// a DCT8×8 block. Returns the DC coefficient (float — the
+    /// caller quantises DC) and the 63 quantised AC coefficients in
+    /// natural grid layout (position 0 left 0). Pass a `B − Y` patch
+    /// for the B channel to bake in the default colour correlation.
+    static func forwardDCT8Block(
+        patch: [Float], quantWeights: [Float],
+        scale: Float, qf: Int32
+    ) -> (dc: Float, ac: [Int32]) {
+        precondition(patch.count == 64 && quantWeights.count == 64,
+                     "DCT8 block needs an 8×8 patch + 64 weights")
+        var coef = patch
+        AccelerateDCT.dct2D(&coef, size: 8)
+        transpose8(&coef)
+        var ac = [Int32](repeating: 0, count: 64)
+        for k in 1..<64 {
+            ac[k] = quantizeAC(
+                coef[k], weight: quantWeights[k], scale: scale, qf: qf)
+        }
+        return (coef[0], ac)
+    }
 
     /// Forward-transform + quantise one 16×16 single-channel patch
     /// as a DCT16×16 block — the analysis half of an `dct16x16`
