@@ -118,6 +118,15 @@ First milestone of VarDCT AC-strategy selection (variable DCT block sizes). The 
 - **Scope.** DSP foundation only — no bitstream change, encoder output is byte-identical to v0.11.0k. The bitstream integration (ACS-plane encoding, multi-block AC tokens, strategy selection) follows.
 - **386 tests passing, 3 skipped, 0 failures.**
 
+### v0.11.0m — AC-strategy encode: DCT16×16 block analysis
+
+Second milestone — the complete DCT16×16 *analysis* path (forward transform + quantise), self-contained ahead of the bitstream integration.
+
+- **`VarDCTEncoder.forwardDCT16Block`** — forward-transforms and quantises one 16×16 single-channel patch as a `dct16x16` block: `dct2D` size 16 → transpose to the bitstream coefficient layout → split the 4 lowest-frequency coefficients (grid positions 0/1/16/17) into DC-plane cell values via `dcFromLowestFrequencies16x16` → quantise the 252 AC coefficients with the channel's DCT16 quant matrix. The 252-entry AC array uses the natural grid layout the multi-block AC coder consumes.
+- **Verified.** `testVarDCT_DCT16NaturalOrder_LLFPrefix` confirms `CoeffOrders.naturalCoeffOrder(for: .dct16x16)` lists the 4 LLF grid positions first — so the AC coder's "skip the first `coveredBlocks` scan positions" rule skips exactly the LLF. `testVarDCTEncoder_ForwardDCT16Block_RoundTrip` round-trips a smooth 16×16 patch through `forwardDCT16Block` and the decoder's full DCT16 reconstruction (LLF-from-DC + dequant + IDCT16) within a bounded error.
+- **Scope.** Analysis primitive only — still no bitstream change; encoder output byte-identical to v0.11.0k. The remaining DCT16 milestones are the ACS-plane writer, multi-block AC token emission (`ACEncoder.encodeBlock` already handles `coveredBlocks = 4`), and a strategy-selection heuristic.
+- **388 tests passing, 3 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)

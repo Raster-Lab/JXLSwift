@@ -8254,6 +8254,69 @@ extension FoundationTests {
             + "decoder's DCT16 primitives — max error \(maxErr)")
     }
 
+    /// DCT16×16 encoder DSP foundation (AC-strategy milestone 2).
+    /// The DCT16 natural coefficient order must list the 4 LLF grid
+    /// positions first, so the AC coder — which skips the first
+    /// `coveredBlocks` scan positions — skips exactly the LLF.
+    func testVarDCT_DCT16NaturalOrder_LLFPrefix() throws {
+        let order = CoeffOrders.naturalCoeffOrder(for: .dct16x16)
+        XCTAssertEqual(order.count, 256)
+        XCTAssertEqual(Set(order[0..<4]), Set([0, 1, 16, 17]),
+            "DCT16 natural order must start with the 4 LLF positions")
+    }
+
+    /// DCT16×16 encoder DSP foundation (AC-strategy milestone 2).
+    /// `VarDCTEncoder.forwardDCT16Block` (forward DCT16 + LLF→DC
+    /// split + AC quantise) round-trips a smooth 16×16 patch through
+    /// the decoder's DCT16 reconstruction within a bounded error —
+    /// the complete DCT16 *analysis* path is correct.
+    func testVarDCTEncoder_ForwardDCT16Block_RoundTrip() throws {
+        var patch = [Float](repeating: 0, count: 256)
+        for y in 0..<16 {
+            for x in 0..<16 {
+                patch[y * 16 + x] = 0.12 + Float(x + y) * 0.012
+            }
+        }
+        let qw = try QuantWeights.getQuantWeights(
+            rows: 16, cols: 16, bands: DefaultQuantBands.dct16x16)
+        let yWeights = Array(qw[256..<512])          // Y channel
+        let globalScale: UInt32 = 5111
+        let qf: Int32 = 5
+        let acScale = Float(globalScale) / 65536.0
+        let (dc, ac) = VarDCTEncoder.forwardDCT16Block(
+            patch: patch, quantWeights: yWeights,
+            scale: acScale, qf: qf)
+        XCTAssertEqual(dc.count, 4)
+        XCTAssertEqual(ac.count, 256)
+        for p in [0, 1, 16, 17] {
+            XCTAssertEqual(ac[p], 0,
+                "LLF grid position \(p) must be 0 in the AC array")
+        }
+        // Decoder reconstruction: LLF from DC, dequant AC, IDCT16.
+        var coef = [Float](repeating: 0, count: 256)
+        let llf = LowestFrequenciesFromDC.dct16x16(dc: dc)
+        let llfPos = [0, 1, 16, 17]
+        for (i, p) in llfPos.enumerated() { coef[p] = llf[i] }
+        let invQuantAC = 65536.0 / Float(globalScale) / Float(qf)
+        for np in 0..<256 where !llfPos.contains(np) {
+            coef[np] = AdjustQuantBias.adjust(channel: 1, quant: ac[np])
+                / yWeights[np] * invQuantAC
+        }
+        JXLDecoder.transposeSquareInPlace(&coef, size: 16)
+        AccelerateDCT.idct2D(&coef, size: 16)
+        var meanErr: Float = 0, maxErr: Float = 0
+        for i in 0..<256 {
+            let e = abs(coef[i] - patch[i])
+            meanErr += e
+            maxErr = max(maxErr, e)
+        }
+        meanErr /= 256
+        XCTAssertLessThan(meanErr, 0.03,
+            "DCT16 block round-trip mean error \(meanErr)")
+        XCTAssertLessThan(maxErr, 0.10,
+            "DCT16 block round-trip max error \(maxErr)")
+    }
+
     /// `VarDCTBitstreamWriter` end-to-end. Encodes a 24×24 gradient
     /// to a VarDCT codestream and verifies it both with our own
     /// decoder **and with libjxl `djxl`** — our encoder emits a

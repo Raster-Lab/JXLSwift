@@ -240,4 +240,58 @@ public enum VarDCTEncoder {
             }
         }
     }
+
+    /// In-place N×N square transpose.
+    @inline(__always)
+    static func transposeSquare(_ b: inout [Float], size n: Int) {
+        for r in 0..<n {
+            for c in (r + 1)..<n {
+                b.swapAt(r * n + c, c * n + r)
+            }
+        }
+    }
+
+    // MARK: - DCT16×16 block (AC-strategy foundation)
+
+    /// Forward-transform + quantise one 16×16 single-channel patch
+    /// as a DCT16×16 block — the analysis half of an `dct16x16`
+    /// AC-strategy block.
+    ///
+    /// A DCT16×16 covers a 2×2 grid of 8×8 cells. Its 4
+    /// lowest-frequency coefficients (grid positions 0, 1, 16, 17)
+    /// are not AC-coded; they are converted to 4 DC-plane cell
+    /// values via `dcFromLowestFrequencies16x16`. The returned
+    /// `dc` holds those 4 float values (row-major over the covered
+    /// cells — the caller quantises DC). `ac` is the 252 quantised
+    /// AC coefficients laid out in the 256-entry natural grid (the
+    /// 4 LLF positions are left 0; the AC coder skips them).
+    ///
+    /// `quantWeights` is this channel's 256-entry DCT16×16 quant
+    /// matrix; `scale` and `qf` match `quantizeAC` for DCT8×8.
+    static func forwardDCT16Block(
+        patch: [Float], quantWeights: [Float],
+        scale: Float, qf: Int32
+    ) -> (dc: [Float], ac: [Int32]) {
+        precondition(patch.count == 256 && quantWeights.count == 256,
+                     "DCT16 block needs a 16×16 patch + 256 weights")
+        // Forward DCT16: `coef = transpose(dct2D(patch))` — the
+        // bitstream coefficient layout (inverse of the decoder's
+        // `transpose` + `idct2D` reconstruction).
+        var coef = patch
+        AccelerateDCT.dct2D(&coef, size: 16)
+        transposeSquare(&coef, size: 16)
+        // Split the 4 LLF coefficients into the DC-plane cells.
+        let llf = [coef[0], coef[1], coef[16], coef[17]]
+        let dc = LowestFrequenciesFromDC
+            .dcFromLowestFrequencies16x16(llf: llf)
+        // Quantise the 252 AC coefficients in place.
+        var ac = [Int32](repeating: 0, count: 256)
+        for np in 0..<256
+        where np != 0 && np != 1 && np != 16 && np != 17 {
+            ac[np] = quantizeAC(
+                coef[np], weight: quantWeights[np],
+                scale: scale, qf: qf)
+        }
+        return (dc, ac)
+    }
 }
