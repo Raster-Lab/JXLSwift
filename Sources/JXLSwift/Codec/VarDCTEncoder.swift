@@ -156,21 +156,26 @@ public enum VarDCTEncoder {
         var acStrategy = [UInt8](repeating: 0, count: nBlocks)
         let dct16Raw = ACStrategy.dct16x16.rawValue
 
-        // DCT16×16 / DCT32×32 quant weights (3 channels each) for
-        // the AC-strategy multi-block transforms.
+        // DCT16×16 / DCT32×32 / DCT8×16 quant weights (3 channels
+        // each) for the AC-strategy multi-block transforms.
         let qweights16: [Float]
         let qweights32: [Float]
+        let qweights8x16: [Float]
         do {
             qweights16 = try QuantWeights.getQuantWeights(
                 rows: 16, cols: 16, bands: DefaultQuantBands.dct16x16)
             qweights32 = try QuantWeights.getQuantWeights(
                 rows: 32, cols: 32, bands: DefaultQuantBands.dct32x32)
+            qweights8x16 = try QuantWeights.getQuantWeights(
+                rows: 8, cols: 16, bands: DefaultQuantBands.dct8x16)
         } catch {
             throw EncoderError.unsupported(
-                "VarDCT encode: DCT16/32 quant weights failed: "
+                "VarDCT encode: multi-block quant weights failed: "
                 + "\(error)")
         }
         let dct32Raw = ACStrategy.dct32x32.rawValue
+        let dct16x8Raw = ACStrategy.dct16x8.rawValue
+        let dct8x16Raw = ACStrategy.dct8x16.rawValue
 
         // (3) Forward-transform + quantise with a hierarchical
         // **trial encode**. Every even-aligned 16×16 region is
@@ -182,6 +187,7 @@ public enum VarDCTEncoder {
         let order8 = naturalCoeffOrderDCT8
         let order16 = CoeffOrders.naturalCoeffOrder(for: .dct16x16)
         let order32 = CoeffOrders.naturalCoeffOrder(for: .dct32x32)
+        let order8x16 = CoeffOrders.naturalCoeffOrder(for: .dct8x16)
         let qw8X = Array(qweights[0..<64])
         let qw8Y = Array(qweights[64..<128])
         let qw8B = Array(qweights[128..<192])
@@ -191,6 +197,9 @@ public enum VarDCTEncoder {
         let qw32X = Array(qweights32[0..<1024])
         let qw32Y = Array(qweights32[1024..<2048])
         let qw32B = Array(qweights32[2048..<3072])
+        let qw8x16X = Array(qweights8x16[0..<128])
+        let qw8x16Y = Array(qweights8x16[128..<256])
+        let qw8x16B = Array(qweights8x16[256..<384])
         var covered = [Bool](repeating: false, count: nBlocks)
 
         // Extract a `size`×`size` single-channel patch at block
@@ -215,6 +224,33 @@ public enum VarDCTEncoder {
                 let row = (py0 + r) * pw + px0
                 for c in 0..<size {
                     out[r * size + c] =
+                        planeB[row + c] - planeY[row + c]
+                }
+            }
+            return out
+        }
+        // Rectangular extracts (asymmetric AC strategies). `wpx`/`hpx`
+        // are pixel-space width / height.
+        func patchRect(_ plane: [Float], _ bx: Int, _ by: Int,
+                       _ wpx: Int, _ hpx: Int) -> [Float] {
+            let px0 = bx * 8, py0 = by * 8
+            var out = [Float](repeating: 0, count: wpx * hpx)
+            for r in 0..<hpx {
+                let row = (py0 + r) * pw + px0
+                for c in 0..<wpx {
+                    out[r * wpx + c] = plane[row + c]
+                }
+            }
+            return out
+        }
+        func patchBmYRect(_ bx: Int, _ by: Int,
+                          _ wpx: Int, _ hpx: Int) -> [Float] {
+            let px0 = bx * 8, py0 = by * 8
+            var out = [Float](repeating: 0, count: wpx * hpx)
+            for r in 0..<hpx {
+                let row = (py0 + r) * pw + px0
+                for c in 0..<wpx {
+                    out[r * wpx + c] =
                         planeB[row + c] - planeY[row + c]
                 }
             }
@@ -261,6 +297,54 @@ public enum VarDCTEncoder {
             return (dc, [rX.ac, rY.ac, rB.ac])
         }
 
+        // DCT16x8 of one vertical pair (cells stacked top + bottom)
+        // — quantised DC (3 × 2 cells) + AC (3 × 128). The pair's
+        // first-block sits at `(bx, by)`, its covered cell at
+        // `(bx, by + 1)`; `dc[c][0]` is the top cell, `dc[c][1]` the
+        // bottom.
+        func dct16x8Pair(_ bx: Int, _ by: Int)
+            -> (dc: [[Int32]], ac: [[Int32]]) {
+            let rX = forwardDCT16x8Block(
+                patch: patchRect(planeX, bx, by, 8, 16),
+                quantWeights: qw8x16X, scale: acScale, qf: qf)
+            let rY = forwardDCT16x8Block(
+                patch: patchRect(planeY, bx, by, 8, 16),
+                quantWeights: qw8x16Y, scale: acScale, qf: qf)
+            let rB = forwardDCT16x8Block(
+                patch: patchBmYRect(bx, by, 8, 16),
+                quantWeights: qw8x16B, scale: acScale, qf: qf)
+            var dc = [[Int32]](
+                repeating: [Int32](repeating: 0, count: 2), count: 3)
+            for i in 0..<2 {
+                dc[0][i] = Int32((rX.dc[i] / mulDC[0]).rounded())
+                dc[1][i] = Int32((rY.dc[i] / mulDC[1]).rounded())
+                dc[2][i] = Int32((rB.dc[i] / mulDC[2]).rounded())
+            }
+            return (dc, [rX.ac, rY.ac, rB.ac])
+        }
+        // DCT8x16 of one horizontal pair (cells side-by-side, left +
+        // right). First-block at `(bx, by)`, covered at `(bx+1, by)`;
+        // `dc[c][0]` is the left cell, `dc[c][1]` the right.
+        func dct8x16Pair(_ bx: Int, _ by: Int)
+            -> (dc: [[Int32]], ac: [[Int32]]) {
+            let rX = forwardDCT8x16Block(
+                patch: patchRect(planeX, bx, by, 16, 8),
+                quantWeights: qw8x16X, scale: acScale, qf: qf)
+            let rY = forwardDCT8x16Block(
+                patch: patchRect(planeY, bx, by, 16, 8),
+                quantWeights: qw8x16Y, scale: acScale, qf: qf)
+            let rB = forwardDCT8x16Block(
+                patch: patchBmYRect(bx, by, 16, 8),
+                quantWeights: qw8x16B, scale: acScale, qf: qf)
+            var dc = [[Int32]](
+                repeating: [Int32](repeating: 0, count: 2), count: 3)
+            for i in 0..<2 {
+                dc[0][i] = Int32((rX.dc[i] / mulDC[0]).rounded())
+                dc[1][i] = Int32((rY.dc[i] / mulDC[1]).rounded())
+                dc[2][i] = Int32((rB.dc[i] / mulDC[2]).rounded())
+            }
+            return (dc, [rX.ac, rY.ac, rB.ac])
+        }
         // DCT32×32 of one region — quantised DC (3 × 16 cells) +
         // AC (3 × 1024).
         func dct32Region(_ bx: Int, _ by: Int)
@@ -296,20 +380,72 @@ public enum VarDCTEncoder {
             acStrategy[idx] = 0
             covered[idx] = true
         }
-        // Evaluate + commit one 16×16 region as the cheaper of
-        // DCT16×16 / four DCT8×8s; returns the chosen token cost.
+        // Commit one DCT16×8 vertical pair (top + bottom cells) —
+        // first-block at (bx, by), covered cell at (bx, by+1).
+        func commitDCT16x8Pair(
+            _ bx: Int, _ by: Int,
+            _ pair: (dc: [[Int32]], ac: [[Int32]])
+        ) {
+            let firstIdx = by * blocksX + bx
+            let coverIdx = (by + 1) * blocksX + bx
+            for c in 0..<3 {
+                dcQuant[c][firstIdx] = pair.dc[c][0]
+                dcQuant[c][coverIdx] = pair.dc[c][1]
+            }
+            acStrategy[firstIdx] = dct16x8Raw
+            acStrategy[coverIdx] = dct16x8Raw
+            acQuant[firstIdx] = pair.ac
+            acQuant[coverIdx] = [[], [], []]
+            covered[firstIdx] = true
+            covered[coverIdx] = true
+        }
+        // Commit one DCT8×16 horizontal pair (left + right cells) —
+        // first-block at (bx, by), covered cell at (bx+1, by).
+        func commitDCT8x16Pair(
+            _ bx: Int, _ by: Int,
+            _ pair: (dc: [[Int32]], ac: [[Int32]])
+        ) {
+            let firstIdx = by * blocksX + bx
+            let coverIdx = by * blocksX + (bx + 1)
+            for c in 0..<3 {
+                dcQuant[c][firstIdx] = pair.dc[c][0]
+                dcQuant[c][coverIdx] = pair.dc[c][1]
+            }
+            acStrategy[firstIdx] = dct8x16Raw
+            acStrategy[coverIdx] = dct8x16Raw
+            acQuant[firstIdx] = pair.ac
+            acQuant[coverIdx] = [[], [], []]
+            covered[firstIdx] = true
+            covered[coverIdx] = true
+        }
+        // Evaluate + commit one 16×16 region as the cheapest of four
+        // partitionings: DCT16×16, two DCT16×8s (vertical split),
+        // two DCT8×16s (horizontal split), or four DCT8×8s.
         func eval16Region(_ rx: Int, _ ry: Int) -> Int {
             let r16 = dct16Region(rx, ry)
-            let c8 = cellOffsets.map { dct8Cell(rx + $0.0, ry + $0.1) }
-            var cost16 = 0, cost8 = 0
+            let c8 = cellOffsets.map {
+                dct8Cell(rx + $0.0, ry + $0.1)
+            }
+            // Vertical split — two DCT16×8 pairs (left + right cols).
+            let pairV1 = dct16x8Pair(rx, ry)
+            let pairV2 = dct16x8Pair(rx + 1, ry)
+            // Horizontal split — two DCT8×16 pairs (top + bottom).
+            let pairH1 = dct8x16Pair(rx, ry)
+            let pairH2 = dct8x16Pair(rx, ry + 1)
+            var cost16 = 0, cost8 = 0, costV = 0, costH = 0
             for c in 0..<3 {
                 cost16 += tokenCost(r16.ac[c], order: order16)
                 for cell in c8 {
                     cost8 += tokenCost(cell.ac[c], order: order8)
                 }
+                costV += tokenCost(pairV1.ac[c], order: order8x16)
+                costV += tokenCost(pairV2.ac[c], order: order8x16)
+                costH += tokenCost(pairH1.ac[c], order: order8x16)
+                costH += tokenCost(pairH2.ac[c], order: order8x16)
             }
+            let minCost = min(min(cost16, cost8), min(costV, costH))
             let firstIdx = ry * blocksX + rx
-            if cost16 <= cost8 {
+            if minCost == cost16 {
                 for (i, off) in cellOffsets.enumerated() {
                     let cIdx = (ry + off.1) * blocksX + (rx + off.0)
                     acStrategy[cIdx] = dct16Raw
@@ -321,6 +457,16 @@ public enum VarDCTEncoder {
                 }
                 acQuant[firstIdx] = r16.ac
                 return cost16
+            }
+            if minCost == costV {
+                commitDCT16x8Pair(rx, ry, pairV1)
+                commitDCT16x8Pair(rx + 1, ry, pairV2)
+                return costV
+            }
+            if minCost == costH {
+                commitDCT8x16Pair(rx, ry, pairH1)
+                commitDCT8x16Pair(rx, ry + 1, pairH2)
+                return costH
             }
             for (i, off) in cellOffsets.enumerated() {
                 let cIdx = (ry + off.1) * blocksX + (rx + off.0)

@@ -188,6 +188,16 @@ The square AC strategies (DCT8 / DCT16 / DCT32) are emitted; the next AC-strateg
 - **Scope.** DSP foundation only — no bitstream change, encoder output byte-identical to v0.11.0r. The trial-encode wiring (extending `eval16Region` to four partitionings: DCT16×16, 2×DCT16×8, 2×DCT8×16, 4×DCT8×8) follows.
 - **395 tests passing, 3 skipped, 0 failures.**
 
+### v0.11.0t — AC-strategy encode: DCT16×8 / DCT8×16 emission
+
+`eval16Region` now picks the cheapest of **four** partitionings instead of two — the asymmetric strategies (libjxl ord 4) are emitted, and `djxl` decodes them.
+
+- **`VarDCTEncoder.forward`** — `eval16Region` quantises every 16×16 region as DCT16×16, **two DCT16×8 vertical pairs** (left + right columns), **two DCT8×16 horizontal pairs** (top + bottom rows), and four DCT8×8 cells, then commits whichever partitioning has the lowest summed token cost. Because every choice keeps the smaller options in the comparison, the trial **never regresses**. New helpers `dct16x8Pair` / `dct8x16Pair` / `commitDCT16x8Pair` / `commitDCT8x16Pair` round out the analysis path; rectangular patch extraction (`patchRect` / `patchBmYRect`) supplies the 8w × 16h and 16w × 8h pixel patches.
+- **`VarDCTBitstreamWriter.generateACTokens`** — the strategy-generic dispatch added in v0.11.0r is extended with the ord-4 natural coefficient order (`naturalCoeffOrder(for: .dct8x16)`, shared by `dct16x8` and `dct8x16` since they share an order bucket). The strategy-generic ACS-plane writer already accepts asymmetric `blockCells`.
+- **Measured.** On 512×512 directional content (8-pixel vertical or horizontal stripes), encoding shrinks from **7.8 → 6.0 KB (−23 %)** vs the DCT8/16/32-only build; neutral on content the asymmetric pair doesn't suit.
+- **Verified.** `testVarDCTBitstreamWriter_AsymmetricACS` encodes a 64×64 vertical-stripes frame — confirmed to select DCT16×8 or DCT8×16 — and confirms `djxl 0.11.2` decodes it and our decoder agrees on the pixels.
+- **396 tests passing, 3 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)

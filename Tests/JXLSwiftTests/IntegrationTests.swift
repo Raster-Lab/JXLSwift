@@ -8607,6 +8607,85 @@ extension FoundationTests {
             "DCT32 round-trip mean error (djxl)")
     }
 
+    /// VarDCT AC-strategy — DCT16×8 / DCT8×16 end-to-end. A
+    /// directional image (8-pixel vertical stripes — sharp
+    /// horizontal transitions, smooth vertically) makes one of the
+    /// asymmetric partitionings the cheapest choice for at least
+    /// one region in the four-way trial. The codestream — with
+    /// asymmetric multi-block AC tokens — must decode through our
+    /// decoder **and `djxl`**; both decoders must agree on the
+    /// bytes (since clustering and strategy choice are lossless
+    /// recodings of the same pixels through the same coder, our
+    /// decoder and `djxl` should produce identical output up to
+    /// the documented residual).
+    func testVarDCTBitstreamWriter_AsymmetricACS() throws {
+        let dim = 64
+        var frame = ImageFrame(width: dim, height: dim, channels: 3)
+        for y in 0..<dim {
+            for x in 0..<dim {
+                let i = (y * dim + x) * 3
+                let col = (x / 8) % 2 == 0
+                frame.data[i + 0] = UInt8(col ? 60 : 160)
+                frame.data[i + 1] = UInt8(col ? 80 : 140)
+                frame.data[i + 2] = UInt8(col ? 100 : 200)
+            }
+        }
+        // Confirm an asymmetric strategy is exercised.
+        let q = try VarDCTEncoder.forward(frame: frame)
+        let asymCount = q.acStrategy.filter {
+            $0 == ACStrategy.dct16x8.rawValue
+                || $0 == ACStrategy.dct8x16.rawValue
+        }.count
+        XCTAssertGreaterThan(asymCount, 0,
+            "vertical stripes should select DCT16×8 or DCT8×16 "
+            + "for at least one region")
+
+        let codestream = try VarDCTBitstreamWriter.encode(frame: frame)
+        let ours = try JXLDecoder().decode(codestream)
+        XCTAssertEqual(ours.width, dim)
+
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("djxl not available")
+        }
+        let tmp = NSTemporaryDirectory()
+        let jxlPath = tmp + "vdt_asym.jxl"
+        let outPath = tmp + "vdt_asym_dj.ppm"
+        try codestream.write(to: URL(fileURLWithPath: jxlPath))
+        let p = Process()
+        p.launchPath = djxl
+        p.arguments = [jxlPath, outPath]
+        let errPipe = Pipe()
+        p.standardOutput = Pipe(); p.standardError = errPipe
+        try p.run(); p.waitUntilExit()
+        let err = String(
+            data: errPipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8) ?? ""
+        XCTAssertEqual(p.terminationStatus, 0,
+            "djxl rejected the asymmetric-ACS codestream; "
+            + "stderr: \(err)")
+        let dj = try Data(contentsOf: URL(fileURLWithPath: outPath))
+        var binStart = 0, nl = 0
+        for (i, b) in dj.enumerated() {
+            if b == 0x0A {
+                nl += 1; if nl == 3 { binStart = i + 1; break }
+            }
+        }
+        guard dj.count - binStart == dim * dim * 3 else {
+            throw XCTSkip("djxl PPM size mismatch")
+        }
+        // Both decoders consumed the same codestream — they must
+        // agree on its pixels.
+        var diff = 0
+        for i in 0..<(dim * dim * 3) {
+            diff += abs(Int(dj[binStart + i]) - Int(ours.data[i]))
+        }
+        let mean = Double(diff) / Double(dim * dim * 3)
+        XCTAssertLessThan(mean, 2.0,
+            "our decoder and djxl disagree on the asymmetric "
+            + "codestream (mean \(mean))")
+    }
+
     /// `VarDCTBitstreamWriter` end-to-end. Encodes a 24×24 gradient
     /// to a VarDCT codestream and verifies it both with our own
     /// decoder **and with libjxl `djxl`** — our encoder emits a

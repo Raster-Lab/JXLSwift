@@ -509,6 +509,7 @@ public enum VarDCTBitstreamWriter {
         let orderDCT8 = naturalCoeffOrderDCT8
         let orderDCT16 = CoeffOrders.naturalCoeffOrder(for: .dct16x16)
         let orderDCT32 = CoeffOrders.naturalCoeffOrder(for: .dct32x32)
+        let orderDCT8x16 = CoeffOrders.naturalCoeffOrder(for: .dct8x16)
         let bX = q.blocksX, bY = q.blocksY
         let iterToXYB = [1, 0, 2]                 // {Y, X, B}
         var result: [[(context: Int, value: UInt32)]] = []
@@ -536,9 +537,10 @@ public enum VarDCTBitstreamWriter {
                         let log2Covered = strat.log2CoveredBlocks
                         let order: [Int]
                         switch strat {
-                        case .dct16x16: order = orderDCT16
-                        case .dct32x32: order = orderDCT32
-                        default:        order = orderDCT8
+                        case .dct16x16:           order = orderDCT16
+                        case .dct32x32:           order = orderDCT32
+                        case .dct16x8, .dct8x16:  order = orderDCT8x16
+                        default:                  order = orderDCT8
                         }
                         let ordBucket = strat.orderBucket
                         let cellsX = strat.blockCells.cellsX
