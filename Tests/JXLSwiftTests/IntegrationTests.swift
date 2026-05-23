@@ -9149,6 +9149,77 @@ extension FoundationTests {
             + "codestream (mean \(mean))")
     }
 
+    /// VarDCT AC-strategy — DCT64×32 / DCT32×64 end-to-end (ord 8).
+    /// A 64×64 frame split by a single vertical seam at `x = 32`
+    /// (left half flat one colour, right half flat another) makes
+    /// two `DCT64×32` vertical halves the cheapest partitioning:
+    /// each half is constant → ~zero AC, while `DCT64×64` carries
+    /// strong horizontal-frequency AC across the seam. The
+    /// codestream must decode through our decoder **and `djxl`**
+    /// with both agreeing on the pixels.
+    func testVarDCTBitstreamWriter_AsymmetricOrd8() throws {
+        let dim = 64
+        var frame = ImageFrame(width: dim, height: dim, channels: 3)
+        for y in 0..<dim {
+            for x in 0..<dim {
+                let i = (y * dim + x) * 3
+                let leftHalf = x < 32
+                frame.data[i + 0] = UInt8(leftHalf ? 60 : 160)
+                frame.data[i + 1] = UInt8(leftHalf ? 80 : 140)
+                frame.data[i + 2] = UInt8(leftHalf ? 100 : 200)
+            }
+        }
+        let q = try VarDCTEncoder.forward(frame: frame)
+        let ord8Count = q.acStrategy.filter {
+            $0 == ACStrategy.dct64x32.rawValue
+                || $0 == ACStrategy.dct32x64.rawValue
+        }.count
+        XCTAssertGreaterThan(ord8Count, 0,
+            "a single-seam 64×64 frame should select DCT64×32 "
+            + "or DCT32×64 for at least one region")
+
+        let codestream = try VarDCTBitstreamWriter.encode(frame: frame)
+        let ours = try JXLDecoder().decode(codestream)
+
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("djxl not available")
+        }
+        let tmp = NSTemporaryDirectory()
+        let jxlPath = tmp + "vdt_ord8.jxl"
+        let outPath = tmp + "vdt_ord8_dj.ppm"
+        try codestream.write(to: URL(fileURLWithPath: jxlPath))
+        let p = Process()
+        p.launchPath = djxl
+        p.arguments = [jxlPath, outPath]
+        let errPipe = Pipe()
+        p.standardOutput = Pipe(); p.standardError = errPipe
+        try p.run(); p.waitUntilExit()
+        let err = String(
+            data: errPipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8) ?? ""
+        XCTAssertEqual(p.terminationStatus, 0,
+            "djxl rejected the ord-8 codestream; stderr: \(err)")
+        let dj = try Data(contentsOf: URL(fileURLWithPath: outPath))
+        var binStart = 0, nl = 0
+        for (i, b) in dj.enumerated() {
+            if b == 0x0A {
+                nl += 1; if nl == 3 { binStart = i + 1; break }
+            }
+        }
+        guard dj.count - binStart == dim * dim * 3 else {
+            throw XCTSkip("djxl PPM size mismatch")
+        }
+        var diff = 0
+        for i in 0..<(dim * dim * 3) {
+            diff += abs(Int(dj[binStart + i]) - Int(ours.data[i]))
+        }
+        let mean = Double(diff) / Double(dim * dim * 3)
+        XCTAssertLessThan(mean, 2.0,
+            "our decoder and djxl disagree on the ord-8 "
+            + "codestream (mean \(mean))")
+    }
+
     /// `VarDCTBitstreamWriter` end-to-end. Encodes a 24×24 gradient
     /// to a VarDCT codestream and verifies it both with our own
     /// decoder **and with libjxl `djxl`** — our encoder emits a

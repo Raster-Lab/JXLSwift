@@ -249,6 +249,15 @@ Asymmetric ord-8 DSP, the next axis after ord-6. A DCT64×32 / DCT32×64 covers 
 - **Scope.** DSP foundation only — no bitstream change, encoder output byte-identical to v0.11.0x.
 - **406 tests passing, 3 skipped, 0 failures.**
 
+### v0.11.0z — AC-strategy encode: DCT64×32 / DCT32×64 emission
+
+The hierarchical trial gains an ord-8 fork — DCT64×32 (libjxl ord 8 vertical-half pair) and DCT32×64 (ord 8 horizontal-half pair) are now emitted on content where a 32-pixel-scale axis seam dominates a 64×64 region, and `djxl` decodes them.
+
+- **`VarDCTEncoder.forward`** — the 64×64 pass becomes a four-way trial. Each 8-block-aligned 64×64 region quantises DCT64×64 (one block, 64 cells), two vertical DCT64×32 halves (32 + 32 cells, left/right), two horizontal DCT32×64 halves (32 + 32 cells, top/bottom), and the four sub-32×32-region cost (each itself a full four-way trial). The cheapest commits its cells; on a single-seam region the two-half ord-8 cost beats DCT64×64 (no cross-seam AC) and 4×DCT32×32 (half the token overhead). Two new commit helpers stamp the cell-strategy map and DC plane in the libjxl-canonical orderings — DCT64×32 cells in a 4-col × 8-row arrangement with `dc[r*8+c]` ↔ cell `(bx+r, by+c)`; DCT32×64 cells in an 8-col × 4-row arrangement with `dc[r*8+c]` ↔ cell `(bx+c, by+r)`.
+- **`VarDCTBitstreamWriter.generateACTokens`** — the strategy-generic dispatch is extended with the DCT32×64 natural coefficient order (shared by DCT64×32 — the coef plane has the same `32-row × 64-col` shape for both).
+- **Verified.** `testVarDCTBitstreamWriter_AsymmetricOrd8` encodes a 64×64 frame split by a single vertical seam at `x = 32` (two flat colours), asserts at least one cell picks `DCT64×32` or `DCT32×64`, and confirms `djxl 0.11.2` decodes the codestream within `mean < 2` of our decoder.
+- **404 tests passing, 3 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)
