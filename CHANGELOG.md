@@ -267,6 +267,15 @@ The small-block axis. DCT4×4 covers one 8×8 cell as four 4×4 DCTs — its coe
 - **Scope.** DSP foundation only — no bitstream change, encoder output byte-identical to v0.11.0z. Trial-encode wiring follows in v0.11.0ab.
 - **405 tests passing, 3 skipped, 0 failures.**
 
+### v0.11.0ab — AC-strategy encode: DCT4×4 emission
+
+DCT4×4 joins the trial as a per-cell alternative to DCT8×8. Unlike the multi-cell strategies (DCT16/32/64/asymmetric), DCT4×4 covers a single 8×8 cell — so its choice is independent per cell, slotted into both the leaf of the 16×16-region trial and the edge pass.
+
+- **`VarDCTEncoder.forward`** — `commitDCT8` becomes a per-cell trial: compute DCT8×8 and DCT4×4, sum each strategy's three-channel `tokenCost`, commit the cheaper. `eval16Region`'s "four DCT8" branch is extended in the same way — each of the four cells independently picks min(DCT8, DCT4×4), the small-cell cost is the sum, and the commit-loop writes the per-cell choice. Because the trial only ever picks the cheaper option, including DCT4×4 cannot make any region worse.
+- **No bitstream-writer change.** DCT4×4 uses the standard 8×8 zigzag (its `naturalCoeffOrder` matches DCT8×8); the block-context map already routes ord-bucket 1 contexts (shared with Hornuss / DCT2×2); `ACEncoder.tokenize` handles `coveredBlocks == 1` generically.
+- **Verified.** `testVarDCTBitstreamWriter_SmallBlockDCT4x4` encodes a 16×16 frame whose four 8×8 cells each have a per-4×4-quadrant flat-colour pattern (varying per cell so no multi-cell strategy compresses better) — asserts at least one cell picks DCT4×4 and confirms `djxl 0.11.2` decodes the codestream within `mean < 2` of our decoder.
+- **406 tests passing, 3 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)

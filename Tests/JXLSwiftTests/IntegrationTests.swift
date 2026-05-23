@@ -9281,6 +9281,94 @@ extension FoundationTests {
             + "codestream (mean \(mean))")
     }
 
+    /// VarDCT AC-strategy — DCT4×4 end-to-end (small-block, ord 1).
+    /// A 16×16 frame composed of four 8×8 cells where each cell has
+    /// a per-4×4-quadrant flat-colour pattern that varies cell-to-
+    /// cell makes DCT4×4 the cheapest per-cell choice — DCT8×8 has
+    /// strong cross-quadrant AC, DCT4×4 has only 3 non-zero ACs per
+    /// cell (the inverse Haar of the four quadrant DCs), and the
+    /// per-cell variation means no multi-cell strategy (DCT16,
+    /// ord-4 pairs) helps. The codestream must decode through our
+    /// decoder **and `djxl`** with both agreeing on the pixels.
+    func testVarDCTBitstreamWriter_SmallBlockDCT4x4() throws {
+        let dim = 16
+        var frame = ImageFrame(width: dim, height: dim, channels: 3)
+        // Each 8×8 cell: four flat 4×4 quadrants — UInt8 per pixel.
+        // Quadrants laid out top-left, top-right, bottom-left,
+        // bottom-right, with a different rotation per cell so
+        // DCT16×16 can't share LLF compactly.
+        let cellQuads: [[(R: UInt8, G: UInt8, B: UInt8)]] = [
+            [(210, 60, 80), (60, 210, 80), (80, 60, 210), (210, 80, 60)],
+            [(60, 210, 80), (210, 80, 60), (210, 60, 80), (80, 60, 210)],
+            [(80, 60, 210), (210, 60, 80), (60, 210, 80), (210, 80, 60)],
+            [(210, 80, 60), (80, 60, 210), (210, 60, 80), (60, 210, 80)],
+        ]
+        for cy in 0..<2 {
+            for cx in 0..<2 {
+                let qs = cellQuads[cy * 2 + cx]
+                for py in 0..<8 {
+                    for px in 0..<8 {
+                        let qIdx = (py / 4) * 2 + (px / 4)
+                        let q = qs[qIdx]
+                        let x = cx * 8 + px, y = cy * 8 + py
+                        let i = (y * dim + x) * 3
+                        frame.data[i + 0] = q.R
+                        frame.data[i + 1] = q.G
+                        frame.data[i + 2] = q.B
+                    }
+                }
+            }
+        }
+        let q = try VarDCTEncoder.forward(frame: frame)
+        let dct4x4Count = q.acStrategy.filter {
+            $0 == ACStrategy.dct4x4.rawValue
+        }.count
+        XCTAssertGreaterThan(dct4x4Count, 0,
+            "per-quadrant flat-colour 8×8 cells should select "
+            + "DCT4×4 for at least one cell")
+
+        let codestream = try VarDCTBitstreamWriter.encode(frame: frame)
+        let ours = try JXLDecoder().decode(codestream)
+
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("djxl not available")
+        }
+        let tmp = NSTemporaryDirectory()
+        let jxlPath = tmp + "vdt_dct4x4.jxl"
+        let outPath = tmp + "vdt_dct4x4_dj.ppm"
+        try codestream.write(to: URL(fileURLWithPath: jxlPath))
+        let p = Process()
+        p.launchPath = djxl
+        p.arguments = [jxlPath, outPath]
+        let errPipe = Pipe()
+        p.standardOutput = Pipe(); p.standardError = errPipe
+        try p.run(); p.waitUntilExit()
+        let err = String(
+            data: errPipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8) ?? ""
+        XCTAssertEqual(p.terminationStatus, 0,
+            "djxl rejected the DCT4×4 codestream; stderr: \(err)")
+        let dj = try Data(contentsOf: URL(fileURLWithPath: outPath))
+        var binStart = 0, nl = 0
+        for (i, b) in dj.enumerated() {
+            if b == 0x0A {
+                nl += 1; if nl == 3 { binStart = i + 1; break }
+            }
+        }
+        guard dj.count - binStart == dim * dim * 3 else {
+            throw XCTSkip("djxl PPM size mismatch")
+        }
+        var diff = 0
+        for i in 0..<(dim * dim * 3) {
+            diff += abs(Int(dj[binStart + i]) - Int(ours.data[i]))
+        }
+        let mean = Double(diff) / Double(dim * dim * 3)
+        XCTAssertLessThan(mean, 2.0,
+            "our decoder and djxl disagree on the DCT4×4 "
+            + "codestream (mean \(mean))")
+    }
+
     /// `VarDCTBitstreamWriter` end-to-end. Encodes a 24×24 gradient
     /// to a VarDCT codestream and verifies it both with our own
     /// decoder **and with libjxl `djxl`** — our encoder emits a
