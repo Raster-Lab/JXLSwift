@@ -229,6 +229,15 @@ The square AC-strategy progression continues — DCT64×64 (libjxl ord 7) covers
 - **Scope.** DSP foundation only — no bitstream change, encoder output byte-identical to v0.11.0v.
 - **402 tests passing, 3 skipped, 0 failures.**
 
+### v0.11.0x — AC-strategy encode: DCT64×64 emission
+
+The hierarchical trial gains a 64×64 level — DCT64×64 (libjxl ord 7) is now emitted on flat large-scale content, and `djxl` decodes it.
+
+- **`VarDCTEncoder.forward`** — the per-level trial is restructured as nested helpers. `eval32Region` extracts the previous 32×32-pass body (returns the chosen cost; commits its 16 cells). A new 64×64 pass quantises every 8-block-aligned 64×64 region as one DCT64×64 and compares against the sum of its four sub-32×32-region costs (each itself a full four-way trial). If DCT64 wins it overwrites the 64 committed cells; otherwise the sub-region commits stand. A trailing 32×32 pass handles 4-aligned regions outside the 64-grid, then 16×16, then DCT8 edges.
+- **`VarDCTBitstreamWriter.generateACTokens`** — the strategy-generic dispatch is extended with the DCT64×64 natural coefficient order.
+- **Verified.** `testVarDCTBitstreamWriter_DCT64` encodes a near-constant 128×128 frame (where DCT64×64 wins on token-overhead alone — one `nzeros` token vs four for 4×DCT32×32) and confirms `djxl 0.11.2` decodes it and our decoder agrees on the pixels.
+- **403 tests passing, 3 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)

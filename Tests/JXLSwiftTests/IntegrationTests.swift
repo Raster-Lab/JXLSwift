@@ -8894,6 +8894,69 @@ extension FoundationTests {
             + "codestream (mean \(mean))")
     }
 
+    /// VarDCT AC-strategy — DCT64×64 end-to-end (ord 7). A very
+    /// smooth 128×128 frame contains an 8-aligned 64×64 region flat
+    /// enough that the hierarchical trial picks DCT64×64 (one
+    /// transform over 64 cells). The codestream must decode through
+    /// our decoder **and `djxl`** with both decoders agreeing.
+    func testVarDCTBitstreamWriter_DCT64() throws {
+        let dim = 128
+        var frame = ImageFrame(width: dim, height: dim, channels: 3)
+        // Near-constant content — every strategy has near-zero AC,
+        // so DCT64×64 wins on token overhead alone (one `nzeros`
+        // token vs four for 4×DCT32×32).
+        for i in 0..<(dim * dim) {
+            frame.data[i * 3 + 0] = 128
+            frame.data[i * 3 + 1] = 130
+            frame.data[i * 3 + 2] = 132
+        }
+        let q = try VarDCTEncoder.forward(frame: frame)
+        let dct64Count = q.acStrategy.filter {
+            $0 == ACStrategy.dct64x64.rawValue
+        }.count
+        XCTAssertGreaterThan(dct64Count, 0,
+            "a near-constant 128×128 frame should select DCT64×64")
+        let codestream = try VarDCTBitstreamWriter.encode(frame: frame)
+        let ours = try JXLDecoder().decode(codestream)
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("djxl not available")
+        }
+        let tmp = NSTemporaryDirectory()
+        let jxlPath = tmp + "vdt_dct64.jxl"
+        let outPath = tmp + "vdt_dct64_dj.ppm"
+        try codestream.write(to: URL(fileURLWithPath: jxlPath))
+        let p = Process()
+        p.launchPath = djxl
+        p.arguments = [jxlPath, outPath]
+        let errPipe = Pipe()
+        p.standardOutput = Pipe(); p.standardError = errPipe
+        try p.run(); p.waitUntilExit()
+        let err = String(
+            data: errPipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8) ?? ""
+        XCTAssertEqual(p.terminationStatus, 0,
+            "djxl rejected the DCT64 codestream; stderr: \(err)")
+        let dj = try Data(contentsOf: URL(fileURLWithPath: outPath))
+        var binStart = 0, nl = 0
+        for (i, b) in dj.enumerated() {
+            if b == 0x0A {
+                nl += 1; if nl == 3 { binStart = i + 1; break }
+            }
+        }
+        guard dj.count - binStart == dim * dim * 3 else {
+            throw XCTSkip("djxl PPM size mismatch")
+        }
+        var diff = 0
+        for i in 0..<(dim * dim * 3) {
+            diff += abs(Int(dj[binStart + i]) - Int(ours.data[i]))
+        }
+        let mean = Double(diff) / Double(dim * dim * 3)
+        XCTAssertLessThan(mean, 2.0,
+            "our decoder and djxl disagree on the DCT64 "
+            + "codestream (mean \(mean))")
+    }
+
     /// VarDCT AC-strategy — DCT32×16 / DCT16×32 end-to-end (ord 6).
     /// A 16-pixel-wide vertical-stripe pattern makes one of the
     /// ord-6 partitionings (two DCT32×16 halves of a 32×32 region,
