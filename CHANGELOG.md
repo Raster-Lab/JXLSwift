@@ -412,6 +412,16 @@ The two new `EncodingOptions` knobs are now reachable from the `jxl encode` CLI.
 - **End-to-end verified manually.** Encoding the same 32×32 PPM four ways (defaults, `--no-gaborish`, `--no-adaptive-qf`, both off) produces four distinct codestreams (454 B / 217 B / 361 B respectively for the test fixture). All decode through `djxl 0.11.2`. Test coverage is via the existing `testJXLEncoder_GaborishAndAdaptiveQFOptions` parity test — same options surface, same option-threading guarantee.
 - **420 tests passing, 3 skipped, 0 failures** (no new test added — the CLI is a thin layer over the already-tested `EncodingOptions` surface).
 
+### v0.11.0ar — `JXLEncoder.encode([ImageFrame])` single-frame delegation
+
+The multi-frame `encode(_ frames: [ImageFrame])` API previously threw `notImplemented` for any input. v0.11.0ar refines this:
+
+- **Empty array** — throws `EncoderError.unsupportedFrame("encode(_:) on empty frame array")`.
+- **Single-element array** — delegates to `encode(_ frame:)` on `frames[0]`. The codestream is byte-identical to the direct single-frame call.
+- **Multi-frame array (count ≥ 2)** — still throws `notImplemented` until the animation infrastructure lands (shared `ImageMetadata.animation`, sequential `FrameHeader`s with `isLast` flags, per-frame duration). The error message now points callers at the single-frame workaround.
+- **Verified.** `testJXLEncoder_MultiFrameDispatch` exercises all three branches: empty array throws `unsupportedFrame`, single-element matches `encode(_:)` byte-for-byte, two-element throws `notImplemented`.
+- **421 tests passing, 3 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)

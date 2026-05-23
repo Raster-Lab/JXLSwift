@@ -9995,6 +9995,45 @@ extension FoundationTests {
     /// is bounded: a DC-only encode (block averages) would mean ~7+
     /// here — passing `< 4` proves the AC coefficient stream is
     /// carrying real detail.
+    /// `JXLEncoder.encode([ImageFrame])` API surface. Empty array
+    /// throws `.unsupportedFrame`; single-element array delegates
+    /// to `encode(_ frame:)` and produces a normal codestream;
+    /// multi-frame arrays throw `.notImplemented` (true animation
+    /// encoding is a future bite).
+    func testJXLEncoder_MultiFrameDispatch() throws {
+        let dim = 16
+        var frame = ImageFrame(width: dim, height: dim, channels: 3)
+        for i in 0..<(dim * dim * 3) { frame.data[i] = UInt8(i & 0xff) }
+
+        // (1) Empty array — unsupported.
+        do {
+            _ = try JXLEncoder().encode([ImageFrame]())
+            XCTFail("empty array must throw")
+        } catch EncoderError.unsupportedFrame {
+            // expected
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+
+        // (2) Single-frame array — must match `encode(_ frame:)`.
+        let multiResult = try JXLEncoder().encode([frame])
+        let soloResult = try JXLEncoder().encode(frame)
+        XCTAssertEqual(multiResult.data, soloResult.data,
+            "single-frame array must produce the same codestream "
+            + "as the single-frame encode")
+        XCTAssertGreaterThan(multiResult.data.count, 0)
+
+        // (3) Multi-frame array — not yet implemented.
+        do {
+            _ = try JXLEncoder().encode([frame, frame])
+            XCTFail("multi-frame array must throw notImplemented")
+        } catch EncoderError.notImplemented {
+            // expected
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+    }
+
     /// JXLEncoder API surface: the new `gaborish` and `adaptiveQF`
     /// EncodingOptions knobs are honoured all the way through to
     /// the VarDCT encoder. Toggling each must produce a different

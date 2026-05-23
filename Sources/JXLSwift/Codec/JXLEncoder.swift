@@ -223,9 +223,27 @@ public struct JXLEncoder: Sendable {
         }
     }
 
-    /// Encode multiple frames as a multi-frame .jxl. **Not yet implemented.**
+    /// Encode multiple frames into a single `.jxl`. Currently only
+    /// supports the single-frame case (delegates to `encode(_:)`
+    /// over `frames[0]`). True multi-frame / animation encoding —
+    /// shared `ImageMetadata.animation`, sequential FrameHeaders
+    /// with `isLast` flags, frame durations — needs the animation
+    /// header writer and per-frame TOC plumbing, which is tracked
+    /// as a future bite. Empty arrays throw an `unsupportedFrame`
+    /// error; arrays with more than one frame throw
+    /// `notImplemented` until the animation infrastructure lands.
     public func encode(_ frames: [ImageFrame]) throws -> EncodedImage {
-        throw EncoderError.notImplemented("multi-frame encoding")
+        switch frames.count {
+        case 0:
+            throw EncoderError.unsupportedFrame(
+                "encode(_:) on empty frame array")
+        case 1:
+            return try encode(frames[0])
+        default:
+            throw EncoderError.notImplemented(
+                "multi-frame (animation) encoding — single-frame "
+                + "arrays work via `encode(frames[0])`")
+        }
     }
 }
 
