@@ -341,6 +341,16 @@ The last decoder-supported AC strategy: AFV (Asymmetric Frequency Variable), fou
 - **Scope.** DSP foundation only — no bitstream change, encoder output byte-identical to v0.11.0ah. Trial-encode wiring follows in v0.11.0aj.
 - **414 tests passing, 3 skipped, 0 failures.**
 
+### v0.11.0aj — AC-strategy encode: AFV emission
+
+The four AFV orientations join `bestSmallCell` as candidates 7–10. This is the **last** decoder-supported AC strategy — the encoder now considers every transform the decoder can reconstruct. As with the other small-block additions, adding more candidates to a min-of-N cost comparison cannot regress any cell.
+
+- **`VarDCTEncoder.forward`** — `bestSmallCell` is extended to score the four AFV variants alongside DCT8/DCT4×4/DCT4×8/DCT8×4/DCT2×2/Hornuss; the cheapest wins. AFV per-channel quant weights come from `getAFVQuantWeights` (built from the DCT4×8, DCT4×4, and AFV-specific band tables).
+- **No bitstream-writer change.** AFV strategies share ord-bucket 1 with the rest of the single-cell pool and use the standard 8×8 zigzag.
+- **Verified.** `testVarDCTBitstreamWriter_SmallBlockAFV` is an integration-safety check — a 16×16 frame with per-cell directional edges (each 8×8 cell carries a diagonal step at a different position, mimicking the edge variety AFV is designed for) is encoded with the four AFV variants in the pool, and the codestream must still decode through our decoder **and `djxl`** at `mean < 2`. Whether any cell *actually* picks an AFV variant on this fixture is a heuristic outcome.
+- **Coverage.** With AFV in place, every decoder-supported AC strategy is now emitted: all multi-cell DCTs (DCT16/32/64 + asymmetric ord-4/6/8) and all single-cell strategies (DCT8, DCT4×4, DCT4×8, DCT8×4, DCT2×2, Hornuss, AFV0–3). DCT128 / DCT256 / DCT32×8 / DCT8×32 remain out of scope — the decoder doesn't reconstruct them yet, so the encoder doesn't emit them.
+- **415 tests passing, 3 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)

@@ -9627,6 +9627,83 @@ extension FoundationTests {
             + "codestream (mean \(mean))")
     }
 
+    /// VarDCT AC-strategy — AFV (Asymmetric Frequency Variable)
+    /// emission integration check. The four AFV orientations are
+    /// in the `bestSmallCell` pool; this verifies that the
+    /// integration is **byte-safe** — a directional-edge fixture
+    /// still round-trips through our decoder and `djxl` at
+    /// `mean < 2` with AFV in play. The AFV forward primitives are
+    /// independently exercised by
+    /// `testVarDCTEncoder_ForwardAFVBlock_RoundTrip` for every
+    /// `afvKind ∈ 0..3`.
+    func testVarDCTBitstreamWriter_SmallBlockAFV() throws {
+        let dim = 16
+        var frame = ImageFrame(width: dim, height: dim, channels: 3)
+        // Per-cell unique directional pattern — each 8×8 cell has a
+        // diagonal step at a different position, mimicking edge
+        // variety that AFV is designed for.
+        for cy in 0..<2 {
+            for cx in 0..<2 {
+                let off = cy * 2 + cx
+                for py in 0..<8 {
+                    for px in 0..<8 {
+                        let above = (py + px) >= (3 + off)
+                        let R = above ? 220 - off * 10 : 60 + off * 8
+                        let G = above ? 60 + off * 12 : 200 - off * 8
+                        let B = above ? 100 + off * 6 : 150 - off * 5
+                        let x = cx * 8 + px, y = cy * 8 + py
+                        let i = (y * dim + x) * 3
+                        frame.data[i + 0] = UInt8(clamping: R)
+                        frame.data[i + 1] = UInt8(clamping: G)
+                        frame.data[i + 2] = UInt8(clamping: B)
+                    }
+                }
+            }
+        }
+        let codestream = try VarDCTBitstreamWriter.encode(frame: frame)
+        let ours = try JXLDecoder().decode(codestream)
+
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("djxl not available")
+        }
+        let tmp = NSTemporaryDirectory()
+        let jxlPath = tmp + "vdt_afv.jxl"
+        let outPath = tmp + "vdt_afv_dj.ppm"
+        try codestream.write(to: URL(fileURLWithPath: jxlPath))
+        let p = Process()
+        p.launchPath = djxl
+        p.arguments = [jxlPath, outPath]
+        let errPipe = Pipe()
+        p.standardOutput = Pipe(); p.standardError = errPipe
+        try p.run(); p.waitUntilExit()
+        let err = String(
+            data: errPipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8) ?? ""
+        XCTAssertEqual(p.terminationStatus, 0,
+            "djxl rejected the directional-edge codestream; "
+            + "stderr: \(err)")
+        let dj = try Data(contentsOf: URL(fileURLWithPath: outPath))
+        var binStart = 0, nl = 0
+        for (i, b) in dj.enumerated() {
+            if b == 0x0A {
+                nl += 1; if nl == 3 { binStart = i + 1; break }
+            }
+        }
+        guard dj.count - binStart == dim * dim * 3 else {
+            throw XCTSkip("djxl PPM size mismatch")
+        }
+        var diff = 0
+        for i in 0..<(dim * dim * 3) {
+            diff += abs(Int(dj[binStart + i]) - Int(ours.data[i]))
+        }
+        let mean = Double(diff) / Double(dim * dim * 3)
+        XCTAssertLessThan(mean, 2.0,
+            "our decoder and djxl disagree on the "
+            + "directional-edge codestream after AFV join "
+            + "(mean \(mean))")
+    }
+
     /// VarDCT AC-strategy — Hornuss emission integration check.
     /// Hornuss has a narrow sweet spot (flat / smooth blocks where
     /// a full DCT wastes bits on noise-floor coefficients) and

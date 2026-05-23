@@ -194,6 +194,7 @@ public enum VarDCTEncoder {
         let qweights4x8: [Float]
         let qweights2x2: [Float]
         let qweightsHornuss: [Float]
+        let qweightsAFV: [Float]
         do {
             qweights4x4 = try QuantWeights.getDCT4QuantWeights(
                 bands: DefaultQuantBands.dct4x4)
@@ -203,6 +204,10 @@ public enum VarDCTEncoder {
                 DefaultQuantBands.dct2x2)
             qweightsHornuss = QuantWeights.getIdentityQuantWeights(
                 DefaultQuantBands.identity)
+            qweightsAFV = try QuantWeights.getAFVQuantWeights(
+                dct4x8Bands: DefaultQuantBands.dct4x8,
+                dct4x4Bands: DefaultQuantBands.dct4x4,
+                afvWeights: DefaultQuantBands.afv)
         } catch {
             throw EncoderError.unsupported(
                 "VarDCT encode: small-block quant weights failed: \(error)")
@@ -220,6 +225,12 @@ public enum VarDCTEncoder {
         let dct8x4Raw = ACStrategy.dct8x4.rawValue
         let dct2x2Raw = ACStrategy.dct2x2.rawValue
         let hornussRaw = ACStrategy.hornuss.rawValue
+        let afvRawByKind: [UInt8] = [
+            ACStrategy.afv0.rawValue,
+            ACStrategy.afv1.rawValue,
+            ACStrategy.afv2.rawValue,
+            ACStrategy.afv3.rawValue,
+        ]
 
         // (3) Forward-transform + quantise with a hierarchical
         // **trial encode**. Every even-aligned 16×16 region is
@@ -268,6 +279,9 @@ public enum VarDCTEncoder {
         let qwHornX = Array(qweightsHornuss[0..<64])
         let qwHornY = Array(qweightsHornuss[64..<128])
         let qwHornB = Array(qweightsHornuss[128..<192])
+        let qwAFVX = Array(qweightsAFV[0..<64])
+        let qwAFVY = Array(qweightsAFV[64..<128])
+        let qwAFVB = Array(qweightsAFV[128..<192])
         var covered = [Bool](repeating: false, count: nBlocks)
 
         // Extract a `size`×`size` single-channel patch at block
@@ -431,6 +445,28 @@ public enum VarDCTEncoder {
                 scale: acScale, qf: qf)
             let rB = forwardHornussBlock(
                 patch: patchBmY(bx, by, 8), quantWeights: qwHornB,
+                scale: acScale, qf: qf)
+            return ([
+                Int32((rX.dc / mulDC[0]).rounded()),
+                Int32((rY.dc / mulDC[1]).rounded()),
+                Int32((rB.dc / mulDC[2]).rounded()),
+            ], [rX.ac, rY.ac, rB.ac])
+        }
+        // AFV (Asymmetric Frequency Variable) of one block at the
+        // given `afvKind` orientation. Same outputs as `dct8Cell`.
+        func afvCell(_ bx: Int, _ by: Int, kind: Int)
+            -> (dc: [Int32], ac: [[Int32]]) {
+            let rX = forwardAFVBlock(
+                afvKind: kind,
+                patch: patch(planeX, bx, by, 8), quantWeights: qwAFVX,
+                scale: acScale, qf: qf)
+            let rY = forwardAFVBlock(
+                afvKind: kind,
+                patch: patch(planeY, bx, by, 8), quantWeights: qwAFVY,
+                scale: acScale, qf: qf)
+            let rB = forwardAFVBlock(
+                afvKind: kind,
+                patch: patchBmY(bx, by, 8), quantWeights: qwAFVB,
                 scale: acScale, qf: qf)
             return ([
                 Int32((rX.dc / mulDC[0]).rounded()),
@@ -651,8 +687,8 @@ public enum VarDCTEncoder {
         let cellOffsets = [(0, 0), (1, 0), (0, 1), (1, 1)]
         // Commit one DCT8×8 block.
         // Per-cell trial — pick the cheapest single-cell strategy
-        // among DCT8×8, DCT4×4, DCT4×8, DCT8×4, DCT2×2, Hornuss.
-        // Each transform has a distinct sweet spot:
+        // among DCT8×8, DCT4×4, DCT4×8, DCT8×4, DCT2×2, Hornuss,
+        // and the four AFV orientations. Sweet spots:
         //   • DCT8×8     — smooth gradients (low overall AC energy).
         //   • DCT4×4     — within-quadrant detail (cross-quadrant
         //                  high-freq wasted by DCT8×8).
@@ -663,6 +699,8 @@ public enum VarDCTEncoder {
         //   • Hornuss    — near-spatial transform for flat / smooth
         //                  blocks where a full DCT would waste bits
         //                  on noise-floor high-frequency coefficients.
+        //   • AFV0..3    — directional luminance edge concentrated
+        //                  in one 4×4 corner (4 orientations).
         func bestSmallCell(_ bx: Int, _ by: Int)
             -> (strat: UInt8,
                 dc: [Int32], ac: [[Int32]],
@@ -673,8 +711,10 @@ public enum VarDCTEncoder {
             let c84 = dct8x4Cell(bx, by)
             let c22 = dct2x2Cell(bx, by)
             let cH = hornussCell(bx, by)
+            let cAFV = (0..<4).map { afvCell(bx, by, kind: $0) }
             var cost8 = 0, cost44 = 0, cost48 = 0
             var cost84 = 0, cost22 = 0, costH = 0
+            var costAFV = [Int](repeating: 0, count: 4)
             for c in 0..<3 {
                 cost8 += tokenCost(c8.ac[c], order: order8)
                 cost44 += tokenCost(c44.ac[c], order: order8)
@@ -682,11 +722,19 @@ public enum VarDCTEncoder {
                 cost84 += tokenCost(c84.ac[c], order: order8)
                 cost22 += tokenCost(c22.ac[c], order: order8)
                 costH += tokenCost(cH.ac[c], order: order8)
+                for k in 0..<4 {
+                    costAFV[k] += tokenCost(cAFV[k].ac[c], order: order8)
+                }
             }
-            let minCost = min(
+            var minCost = min(
                 min(min(min(cost8, cost44), min(cost48, cost84)),
                     cost22),
                 costH)
+            for k in 0..<4 { minCost = min(minCost, costAFV[k]) }
+            for k in 0..<4 where minCost == costAFV[k] {
+                return (afvRawByKind[k],
+                        cAFV[k].dc, cAFV[k].ac, costAFV[k])
+            }
             if minCost == costH {
                 return (hornussRaw, cH.dc, cH.ac, costH)
             }
