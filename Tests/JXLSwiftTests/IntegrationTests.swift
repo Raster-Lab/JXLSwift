@@ -9995,6 +9995,66 @@ extension FoundationTests {
     /// is bounded: a DC-only encode (block averages) would mean ~7+
     /// here — passing `< 4` proves the AC coefficient stream is
     /// carrying real detail.
+    /// VarDCT encoder 3-cluster AC histogram smoke test. The
+    /// writer estimates 1 / 2 / 3 AC histogram clusters and picks
+    /// the cheapest — cluster 0 holds nzeros tokens, cluster 1
+    /// small-block coefficient tokens, cluster 2 (optional)
+    /// big-block (ord ≥ 2) coefficient tokens. This test verifies
+    /// the round-trip works through our decoder and `djxl` on a
+    /// frame large enough to exercise both single-cell and
+    /// multi-cell strategies (so the 3-cluster path has a chance
+    /// to win) — confirms the bigBlockCoefContexts tracking and
+    /// 3-cluster codebook header don't break decoding.
+    func testVarDCTBitstreamWriter_ThreeClusterACSmoke() throws {
+        let dim = 80
+        var frame = ImageFrame(width: dim, height: dim, channels: 3)
+        // Top half: smooth gradient (gets DCT16/32-large with mostly
+        // zero AC). Bottom half: textured detail (gets DCT8 with
+        // non-trivial AC). The mix spreads tokens across both
+        // small-block and big-block coefficient contexts.
+        for y in 0..<dim {
+            for x in 0..<dim {
+                let i = (y * dim + x) * 3
+                if y < dim / 2 {
+                    frame.data[i + 0] = UInt8(50 + (x + y) / 2)
+                    frame.data[i + 1] = UInt8(60 + (x + y) / 3)
+                    frame.data[i + 2] = UInt8(80 + (x + y) / 4)
+                } else {
+                    let det = ((x / 2 + y) * 17) % 41
+                    frame.data[i + 0] = UInt8(clamping: 120 + det - 20)
+                    frame.data[i + 1] = UInt8(clamping: 140 - det)
+                    frame.data[i + 2] = UInt8(clamping: 100 + det / 2)
+                }
+            }
+        }
+        let cs = try VarDCTBitstreamWriter.encode(frame: frame)
+        XCTAssertGreaterThan(cs.count, 0)
+        let ours = try JXLDecoder().decode(cs)
+        XCTAssertEqual(ours.width, dim)
+        XCTAssertEqual(ours.height, dim)
+
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("djxl not available")
+        }
+        let tmp = NSTemporaryDirectory()
+        let jxlPath = tmp + "vdt_3cluster.jxl"
+        let outPath = tmp + "vdt_3cluster_dj.ppm"
+        try cs.write(to: URL(fileURLWithPath: jxlPath))
+        let p = Process()
+        p.launchPath = djxl
+        p.arguments = [jxlPath, outPath]
+        let errPipe = Pipe()
+        p.standardOutput = Pipe(); p.standardError = errPipe
+        try p.run(); p.waitUntilExit()
+        let err = String(
+            data: errPipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8) ?? ""
+        XCTAssertEqual(p.terminationStatus, 0,
+            "djxl rejected the codestream (3-cluster path may "
+            + "have been chosen); stderr: \(err)")
+    }
+
     /// VarDCT encoder adaptive-QF smoke test. The default encode
     /// path is `adaptiveQF: true` — each 8×8 cell gets a
     /// variance-driven QF (smooth cells coarser, textured cells

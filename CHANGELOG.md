@@ -383,6 +383,16 @@ The encoder used a uniform `qf = 5` for every block; v0.11.0am makes the QF per-
 - **Verified.** `testVarDCTBitstreamWriter_AdaptiveQFSmoke` encodes a 32×32 frame with a smooth-gradient left half and a high-frequency checkerboard right half — asserts `qfPerBlock` carries ≥ 2 distinct values (adaptive on); asserts the codestream differs from the `adaptiveQF: false` sibling (proving the flag flows through to the on-wire QF plane). All existing round-trip / `djxl 0.11.2`-byte-equality tests pass unchanged.
 - **418 tests passing, 3 skipped, 0 failures.**
 
+### v0.11.0an — VarDCT encoder: 3-cluster AC histograms (split by ord-bucket)
+
+v0.11.0j added an adaptive 2-cluster AC split (nzeros vs coefficient tokens). v0.11.0an extends this to 3 clusters when the saving is worthwhile: cluster 0 = nzeros, cluster 1 = small-block (ord 0–1) coefficient tokens, cluster 2 = big-block (ord ≥ 2 — DCT16/32/64 and the asymmetric variants) coefficient tokens. Coefficient distributions differ sharply between small and big blocks (small blocks tend to spike at near-zero, big blocks have flatter tails) — giving each its own Huffman codebook can shrink the AC stream on mixed-content frames.
+
+- **`VarDCTBitstreamWriter.generateACTokens`** — returns an additional `bigBlockCoefContexts: Set<Int>` set, populated with the context IDs of every coefficient (non-`nzeros`) token emitted from a strategy with `orderBucket ≥ 2`. Tracking is conditional on `blockTokens.count > 1` so the existing nzeros-only path is unaffected.
+- **`VarDCTBitstreamWriter.encode`** — the AC clustering decision is now a 3-way comparison. The writer estimates 1-cluster, 2-cluster, and 3-cluster total cost (token bits + context-map cost + per-cluster codebook header slack `[0, 1024, 1536]`), picks the cheapest with a "fewer clusters first" tiebreak. 3-cluster is skipped when `bigBlockCoefContexts` is empty (frame has no multi-block strategies).
+- **No spec change.** The bitstream's `EntropySectionHeader.contextMap.numClusters` already supports any value ≤ 64; the existing `MultiClusterCodebook` already takes an arbitrary `huffmanTables` array. The writer just gains one more branch.
+- **Verified.** `testVarDCTBitstreamWriter_ThreeClusterACSmoke` encodes an 80×80 frame with a smooth-gradient top half (gets large-DCT-strategy big-block tokens) and a textured bottom half (gets DCT8 small-block tokens) — the 3-cluster path may or may not be chosen by the estimator (heuristic outcome), but the codestream **must** still round-trip through `djxl 0.11.2`. All existing 2-cluster and 1-cluster paths still exercise their original code via the other end-to-end tests.
+- **419 tests passing, 3 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)

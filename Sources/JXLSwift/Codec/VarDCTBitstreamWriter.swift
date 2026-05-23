@@ -251,10 +251,11 @@ public enum VarDCTBitstreamWriter {
         let bctx = BlockCtxMap()
         let acContexts = bctx.numACContexts
         let acCfg = HybridUintConfig.raw4
-        let (acTokensPerGroup, nnzContexts) = generateACTokens(
-            q: q, bctx: bctx,
-            numGroupsX: numGroupsX, numGroupsY: numGroupsY,
-            blocksPerGroup: blocksPerGroup)
+        let (acTokensPerGroup, nnzContexts, bigBlockCoefContexts) =
+            generateACTokens(
+                q: q, bctx: bctx,
+                numGroupsX: numGroupsX, numGroupsY: numGroupsY,
+                blocksPerGroup: blocksPerGroup)
         // Build Huffman lengths + the token-bit cost for a histogram.
         func acHuff(_ histo: [Int], _ maxTok: Int)
             -> (lengths: [UInt8], alphabet: Int, bits: Int) {
@@ -269,47 +270,89 @@ public enum VarDCTBitstreamWriter {
             for t in 0..<alphabet { bits += counts[t] * Int(lengths[t]) }
             return (lengths, alphabet, bits)
         }
-        // Cluster 0 = nzeros contexts, cluster 1 = coefficient
-        // contexts (the default for any context with no nzeros token).
-        var clusterMap = [UInt8](repeating: 1, count: acContexts)
+        // Cluster 0 = nzeros contexts. For 2-cluster: cluster 1 =
+        // coefficient contexts. For 3-cluster: cluster 1 = small-
+        // block coefficient contexts, cluster 2 = big-block (ord ≥
+        // 2 — DCT16+) coefficient contexts.
+        var cluster2Map = [UInt8](repeating: 1, count: acContexts)
         for ctx in nnzContexts where ctx >= 0 && ctx < acContexts {
-            clusterMap[ctx] = 0
+            cluster2Map[ctx] = 0
+        }
+        var cluster3Map = cluster2Map
+        for ctx in bigBlockCoefContexts
+        where ctx >= 0 && ctx < acContexts && cluster3Map[ctx] == 1 {
+            cluster3Map[ctx] = 2
         }
         var acHisto1 = [Int](repeating: 0, count: acCfg.maxToken + 1)
         var maxTok1 = 0
-        var clHisto = [[Int]](repeating:
+        var cl2Histo = [[Int]](repeating:
             [Int](repeating: 0, count: acCfg.maxToken + 1), count: 2)
-        var clMax = [0, 0]
+        var cl2Max = [0, 0]
+        var cl3Histo = [[Int]](repeating:
+            [Int](repeating: 0, count: acCfg.maxToken + 1), count: 3)
+        var cl3Max = [0, 0, 0]
         for grp in acTokensPerGroup {
             for tok in grp {
                 let t = Int(acCfg.encode(tok.value).token)
                 acHisto1[t] += 1
                 if t > maxTok1 { maxTok1 = t }
-                let cl = Int(clusterMap[tok.context])
-                clHisto[cl][t] += 1
-                if t > clMax[cl] { clMax[cl] = t }
+                let cl2 = Int(cluster2Map[tok.context])
+                cl2Histo[cl2][t] += 1
+                if t > cl2Max[cl2] { cl2Max[cl2] = t }
+                let cl3 = Int(cluster3Map[tok.context])
+                cl3Histo[cl3][t] += 1
+                if t > cl3Max[cl3] { cl3Max[cl3] = t }
             }
         }
         let h1 = acHuff(acHisto1, maxTok1)
-        let h2a = acHuff(clHisto[0], clMax[0])
-        let h2b = acHuff(clHisto[1], clMax[1])
-        // Use 2 clusters only when the token-bit saving clears the
-        // context-map cost (`acContexts` bits) plus a 1024-bit slack
-        // covering the extra per-cluster codebook header — so the
-        // 2-cluster path is chosen strictly when it shrinks the file.
-        let useTwoClusters =
-            (h1.bits - h2a.bits - h2b.bits) > acContexts + 1024
+        let h2a = acHuff(cl2Histo[0], cl2Max[0])
+        let h2b = acHuff(cl2Histo[1], cl2Max[1])
+        let h3a = acHuff(cl3Histo[0], cl3Max[0])
+        let h3b = acHuff(cl3Histo[1], cl3Max[1])
+        let h3c = acHuff(cl3Histo[2], cl3Max[2])
+        // Per-cluster codebook header slack: ≈ 512 bits per extra
+        // cluster (canonical-Huffman lengths-of-lengths preamble +
+        // RLE-packed cll stream). Context map is `acContexts` bits
+        // simple-per-entry. Clustering is lossless — file size only.
+        let twoBits = h2a.bits + h2b.bits + acContexts + 1024
+        let threeBits =
+            h3a.bits + h3b.bits + h3c.bits + acContexts + 1536
+        let oneBits = h1.bits
+        // Pick the cheapest of 1 / 2 / 3 clusters. Tie-breaker
+        // prefers fewer clusters (smaller codebook overhead).
+        let useThreeClusters =
+            threeBits < twoBits && threeBits < oneBits
+            && bigBlockCoefContexts.count > 0
+        let useTwoClusters = !useThreeClusters
+            && twoBits < oneBits
         if ProcessInfo.processInfo.environment["JXL_TRACE"] != nil {
             FileHandle.standardError.write(Data(
                 ("TRACE AC clustering: 1-cluster=\(h1.bits)b "
                  + "2-cluster=\(h2a.bits + h2b.bits)b "
+                 + "3-cluster=\(h3a.bits + h3b.bits + h3c.bits)b "
                  + "mapCost≈\(acContexts)b → "
-                 + "\(useTwoClusters ? "2 clusters" : "1 cluster")\n")
+                 + "\(useThreeClusters ? "3 clusters" : (useTwoClusters ? "2 clusters" : "1 cluster"))\n")
                 .utf8))
         }
         let acCodebook: MultiClusterCodebook
         let acHeader: EntropySectionHeader
-        if useTwoClusters {
+        if useThreeClusters {
+            acCodebook = MultiClusterCodebook(
+                huffmanTables: [
+                    try PrefixCodeTable(lengths: h3a.lengths),
+                    try PrefixCodeTable(lengths: h3b.lengths),
+                    try PrefixCodeTable(lengths: h3c.lengths),
+                ],
+                ansCounts: [],
+                alphabetSizes: [
+                    h3a.alphabet, h3b.alphabet, h3c.alphabet])
+            acHeader = EntropySectionHeader(
+                lz77: .disabled,
+                contextMap: try ContextMap(
+                    numClusters: 3, useMTF: false, map: cluster3Map),
+                usePrefixCode: true, logAlphaSize: 15,
+                uintConfigs: [acCfg, acCfg, acCfg])
+        } else if useTwoClusters {
             acCodebook = MultiClusterCodebook(
                 huffmanTables: [
                     try PrefixCodeTable(lengths: h2a.lengths),
@@ -320,7 +363,7 @@ public enum VarDCTBitstreamWriter {
             acHeader = EntropySectionHeader(
                 lz77: .disabled,
                 contextMap: try ContextMap(
-                    numClusters: 2, useMTF: false, map: clusterMap),
+                    numClusters: 2, useMTF: false, map: cluster2Map),
                 usePrefixCode: true, logAlphaSize: 15,
                 uintConfigs: [acCfg, acCfg])
         } else {
@@ -512,7 +555,8 @@ public enum VarDCTBitstreamWriter {
         q: VarDCTEncoder.Quantized, bctx: BlockCtxMap,
         numGroupsX: Int, numGroupsY: Int, blocksPerGroup bpg: Int
     ) -> (perGroup: [[(context: Int, value: UInt32)]],
-          nnzContexts: Set<Int>) {
+          nnzContexts: Set<Int>,
+          bigBlockCoefContexts: Set<Int>) {
         let orderDCT8 = naturalCoeffOrderDCT8
         let orderDCT16 = CoeffOrders.naturalCoeffOrder(for: .dct16x16)
         let orderDCT32 = CoeffOrders.naturalCoeffOrder(for: .dct32x32)
@@ -524,6 +568,7 @@ public enum VarDCTBitstreamWriter {
         let iterToXYB = [1, 0, 2]                 // {Y, X, B}
         var result: [[(context: Int, value: UInt32)]] = []
         var nnzContexts = Set<Int>()
+        var bigBlockCoefContexts = Set<Int>()
         for gy in 0..<numGroupsY {
             for gx in 0..<numGroupsX {
                 let bx0 = gx * bpg, by0 = gy * bpg
@@ -597,6 +642,18 @@ public enum VarDCTBitstreamWriter {
                             if let first = blockTokens.first {
                                 nnzContexts.insert(first.context)
                             }
+                            // Tag coefficient-token contexts for the
+                            // optional 3-cluster split — big-block
+                            // (DCT16+) coefficient tokens often have
+                            // a different distribution to small-block
+                            // ones, and a separate codebook can pack
+                            // them tighter on textured content.
+                            if ordBucket >= 2 && blockTokens.count > 1 {
+                                for t in blockTokens.dropFirst() {
+                                    bigBlockCoefContexts.insert(
+                                        t.context)
+                                }
+                            }
                             tokens.append(contentsOf: blockTokens)
                             // Stamp ⌈nnz / coveredBlocks⌉ over every
                             // covered cell so later first-blocks see
@@ -624,7 +681,7 @@ public enum VarDCTBitstreamWriter {
                 result.append(tokens)
             }
         }
-        return (result, nnzContexts)
+        return (result, nnzContexts, bigBlockCoefContexts)
     }
 
     /// Write the LfGlobal global modular tree (a single
