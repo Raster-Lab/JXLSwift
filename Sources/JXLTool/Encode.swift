@@ -35,6 +35,16 @@ struct Encode: ParsableCommand {
     @Option(name: .shortAndLong, help: "Effort 1–9 (currently advisory)")
     var effort: Int = 7
 
+    @Flag(name: .long,
+          inversion: .prefixedNo,
+          help: "Apply the inverse-Gaborish 5×5 sharpening pre-pass (lossy only). Default: on.")
+    var gaborish: Bool = true
+
+    @Flag(name: .customLong("adaptive-qf"),
+          inversion: .prefixedNo,
+          help: "Per-block variance-driven adaptive quantisation (lossy only). Default: on.")
+    var adaptiveQF: Bool = true
+
     func run() throws {
         let inputURL = URL(fileURLWithPath: input)
         let outputURL = URL(fileURLWithPath: output)
@@ -59,7 +69,8 @@ struct Encode: ParsableCommand {
         let effortLevel = EncodingEffort(
             rawValue: max(1, min(effort, 9))) ?? .squirrel
         let encoder = JXLEncoder(options: EncodingOptions(
-            mode: mode, effort: effortLevel))
+            mode: mode, effort: effortLevel,
+            gaborish: gaborish, adaptiveQF: adaptiveQF))
         let encoded: EncodedImage
         do { encoded = try encoder.encode(frame) }
         catch let e as EncoderError {

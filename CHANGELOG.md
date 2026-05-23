@@ -403,6 +403,15 @@ The new VarDCT encoder knobs from v0.11.0al (Gaborish pre-pass) and v0.11.0am (a
 - **Verified.** `testJXLEncoder_GaborishAndAdaptiveQFOptions` encodes the same 32×32 frame four ways (defaults, gaborish-off, adaptiveQF-off, both-off) and confirms each combination produces a distinct codestream — proving the options thread end-to-end.
 - **420 tests passing, 3 skipped, 0 failures.**
 
+### v0.11.0ap — CLI: `--no-gaborish` / `--no-adaptive-qf` flags
+
+The two new `EncodingOptions` knobs are now reachable from the `jxl encode` CLI. Defaults match the public API (`--gaborish` / `--adaptive-qf`, both on); `--no-gaborish` and `--no-adaptive-qf` opt out of the libjxl-default behaviours, useful for byte-deterministic reproducibility and diagnostic encodes.
+
+- **`jxl encode --[no-]gaborish`** — toggle the inverse-Gaborish pre-pass.
+- **`jxl encode --[no-]adaptive-qf`** — toggle per-block variance-driven QF.
+- **End-to-end verified manually.** Encoding the same 32×32 PPM four ways (defaults, `--no-gaborish`, `--no-adaptive-qf`, both off) produces four distinct codestreams (454 B / 217 B / 361 B respectively for the test fixture). All decode through `djxl 0.11.2`. Test coverage is via the existing `testJXLEncoder_GaborishAndAdaptiveQFOptions` parity test — same options surface, same option-threading guarantee.
+- **420 tests passing, 3 skipped, 0 failures** (no new test added — the CLI is a thin layer over the already-tested `EncodingOptions` surface).
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)
