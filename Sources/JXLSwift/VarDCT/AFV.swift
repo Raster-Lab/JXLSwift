@@ -141,6 +141,22 @@ public enum AFV {
         }
     }
 
+    /// Apply the AFV 4×4 forward transform: coeffs = basis · pixels.
+    /// Exact inverse of `idct4x4` — the basis is orthonormal, so the
+    /// forward direction is the same matrix viewed as `(row-vector
+    /// of basis function j) · pixels`.
+    public static func fdct4x4(_ pixels: [Float], _ coeffs: inout [Float]) {
+        precondition(pixels.count == 16, "AFV pixels must be 16 floats")
+        precondition(coeffs.count == 16, "AFV coeffs must be 16 floats")
+        for j in 0..<16 {
+            var c: Float = 0
+            for i in 0..<16 {
+                c += pixels[i] * k4x4AFVBasis[j][i]
+            }
+            coeffs[j] = c
+        }
+    }
+
     /// Apply the full AFV inverse transform for a single 8×8 cell to
     /// pixel-domain output. Direct port of libjxl
     /// `dec_transforms-inl.h::AFVTransformToPixels<afv_kind>`.

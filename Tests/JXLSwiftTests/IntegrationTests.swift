@@ -8288,6 +8288,77 @@ extension FoundationTests {
             "DCT4×4 block round-trip max error \(maxErr)")
     }
 
+    /// AFV (Asymmetric Frequency Variable) encoder DSP foundation.
+    /// `forwardAFVBlock` packs an 8×8 patch into the AFV three-region
+    /// coefficient layout (4×4 AFV corner via `AFV.fdct4x4`, 4×4
+    /// IDCT-4×4 corner, 4×8 IDCT-4×8 half) and must reconstruct the
+    /// patch within bounded error through `AFV.transformToPixels`
+    /// (the decoder dispatch) for every `afvKind ∈ 0..3`.
+    func testVarDCTEncoder_ForwardAFVBlock_RoundTrip() throws {
+        // Directional-edge patch: a smooth gradient + diagonal step.
+        // Each AFV orientation will see this as a different "corner
+        // with detail" pattern, but the round-trip must hold for all.
+        var patch = [Float](repeating: 0, count: 64)
+        for y in 0..<8 {
+            for x in 0..<8 {
+                let v: Float = (x + y) >= 7 ? 0.65 : 0.30
+                patch[y * 8 + x] = v + Float(x) * 0.005
+                    + Float(y) * 0.003
+            }
+        }
+        let qw = try QuantWeights.getAFVQuantWeights(
+            dct4x8Bands: DefaultQuantBands.dct4x8,
+            dct4x4Bands: DefaultQuantBands.dct4x4,
+            afvWeights: DefaultQuantBands.afv)
+        let yWeights = Array(qw[64..<128])
+        let globalScale: UInt32 = 5111
+        let qf: Int32 = 5
+        let acScale = Float(globalScale) / 65536.0
+        let invQuantAC = 65536.0 / Float(globalScale) / Float(qf)
+
+        for afvKind in 0..<4 {
+            let (dc, ac) = VarDCTEncoder.forwardAFVBlock(
+                afvKind: afvKind, patch: patch,
+                quantWeights: yWeights, scale: acScale, qf: qf)
+            XCTAssertEqual(ac[0], 0)
+            // Decoder reconstruction: place DC, dequant 63 ACs,
+            // dispatch through `AFV.transformToPixels`.
+            var coef = [Float](repeating: 0, count: 64)
+            coef[0] = dc
+            for np in 1..<64 {
+                let weight = yWeights[np]
+                guard weight > 0 else { continue }
+                coef[np] =
+                    AdjustQuantBias.adjust(channel: 1, quant: ac[np])
+                    / weight * invQuantAC
+            }
+            var recon = [Float](repeating: 0, count: 64)
+            let idct4x4Backend: (inout [Float]) -> Void = { block in
+                JXLDecoder.transposeSquareInPlace(&block, size: 4)
+                AccelerateDCT.idct2D(&block, size: 4)
+            }
+            let idct4x8Backend: (inout [Float]) -> Void = { block in
+                AccelerateDCT.idct2D(&block, rows: 4, cols: 8)
+            }
+            AFV.transformToPixels(
+                afvKind: afvKind, coefficients: coef, pixels: &recon,
+                idct4x4Backend: idct4x4Backend,
+                idct4x8Backend: idct4x8Backend)
+            var meanErr: Float = 0, maxErr: Float = 0
+            for i in 0..<64 {
+                let e = abs(recon[i] - patch[i])
+                meanErr += e; maxErr = max(maxErr, e)
+            }
+            meanErr /= 64
+            XCTAssertLessThan(meanErr, 0.04,
+                "AFV kind \(afvKind) round-trip mean error "
+                + "\(meanErr)")
+            XCTAssertLessThan(maxErr, 0.20,
+                "AFV kind \(afvKind) round-trip max error "
+                + "\(maxErr)")
+        }
+    }
+
     /// IDENTITY ("hornuss") encoder DSP foundation. `forwardHornussBlock`
     /// packs an 8×8 patch into the spatial residual layout (per-
     /// quadrant 2×2-DCT-combined block DC + 15 residuals around the

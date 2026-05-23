@@ -1203,6 +1203,120 @@ public enum VarDCTEncoder {
         return (coef[0], ac)
     }
 
+    /// Forward AFV (Asymmetric Frequency Variable) transform — the
+    /// analysis half of an `afv{0,1,2,3}` AC-strategy cell. AFV
+    /// partitions the 8×8 cell into three sub-regions:
+    ///   • 4×4 AFV-corner at `(afvY·4, afvX·4)` — uses `AFV.fdct4x4`
+    ///     (orthonormal matrix transform).
+    ///   • 4×4 IDCT-corner at the opposite-x half, same y-range —
+    ///     uses forward DCT4×4 (`dct2D(4) → transpose`).
+    ///   • 4×8 IDCT half at the opposite-y range, full width —
+    ///     uses `dct2D(rows: 4, cols: 8)`.
+    /// Three sub-DCs (`dc0`, `dc1`, `dc2`) — one per sub-region —
+    /// combine into the top-left 2×2 (`coef[0]`, `coef[1]`, `coef[8]`)
+    /// via the inverse of the decoder's mix `(dc0 = 4·(c[0]+c[8]+c[1])`,
+    /// `dc1 = c[0]+c[8]−c[1]`, `dc2 = c[0]−c[8])`. Exact inverse of
+    /// `AFV.transformToPixels(afvKind:)`.
+    static func forwardAFVBlock(
+        afvKind: Int, patch: [Float], quantWeights: [Float],
+        scale: Float, qf: Int32
+    ) -> (dc: Float, ac: [Int32]) {
+        precondition(patch.count == 64 && quantWeights.count == 64,
+                     "AFV block needs an 8×8 patch + 64 weights")
+        precondition(afvKind >= 0 && afvKind < 4,
+                     "AFV kind must be 0..3")
+        let afvX = afvKind & 1
+        let afvY = afvKind / 2
+        var coef = [Float](repeating: 0, count: 64)
+
+        // (1) AFV 4×4 corner. Extract the 4×4 patch (with the
+        // libjxl orientation flip), forward-AFV, scatter the 15
+        // ACs to (iy·2, ix·2) positions, capture dc0.
+        var afvPix = [Float](repeating: 0, count: 16)
+        for iy in 0..<4 {
+            for ix in 0..<4 {
+                let srcY = (afvY == 1) ? (3 - iy) : iy
+                let srcX = (afvX == 1) ? (3 - ix) : ix
+                afvPix[srcY * 4 + srcX] =
+                    patch[(iy + afvY * 4) * 8 + afvX * 4 + ix]
+            }
+        }
+        var afvCoeffs = [Float](repeating: 0, count: 16)
+        AFV.fdct4x4(afvPix, &afvCoeffs)
+        let dc0 = afvCoeffs[0]
+        for iy in 0..<4 {
+            for ix in 0..<4 {
+                if ix == 0 && iy == 0 { continue }
+                coef[iy * 2 * 8 + ix * 2] = afvCoeffs[iy * 4 + ix]
+            }
+        }
+
+        // (2) IDCT-4×4 corner (opposite-x, same y-range). Extract,
+        // forward DCT4×4 with the transpose convention matching the
+        // decoder's `transposeSquareInPlace → idct2D`, scatter the
+        // 15 ACs to (iy·2, ix·2+1) positions, capture dc1.
+        let idct4x4ColOrigin = (afvX == 1) ? 0 : 4
+        var dct44Pix = [Float](repeating: 0, count: 16)
+        for iy in 0..<4 {
+            for ix in 0..<4 {
+                dct44Pix[iy * 4 + ix] =
+                    patch[(iy + afvY * 4) * 8 + idct4x4ColOrigin + ix]
+            }
+        }
+        AccelerateDCT.dct2D(&dct44Pix, size: 4)
+        transposeSquare(&dct44Pix, size: 4)
+        let dc1 = dct44Pix[0]
+        for iy in 0..<4 {
+            for ix in 0..<4 {
+                if ix == 0 && iy == 0 { continue }
+                coef[iy * 2 * 8 + ix * 2 + 1] = dct44Pix[iy * 4 + ix]
+            }
+        }
+
+        // (3) IDCT-4×8 half (opposite-y, full width). Extract,
+        // forward `dct2D(rows: 4, cols: 8)` (ROWS<COLS, natural =
+        // storage), scatter the 31 ACs to (1 + iy·2, ix) positions,
+        // capture dc2.
+        let idct4x8RowOrigin = (afvY == 1) ? 0 : 4
+        var dct48Pix = [Float](repeating: 0, count: 32)
+        for iy in 0..<4 {
+            for ix in 0..<8 {
+                dct48Pix[iy * 8 + ix] =
+                    patch[(iy + idct4x8RowOrigin) * 8 + ix]
+            }
+        }
+        AccelerateDCT.dct2D(&dct48Pix, rows: 4, cols: 8)
+        let dc2 = dct48Pix[0]
+        for iy in 0..<4 {
+            for ix in 0..<8 {
+                if ix == 0 && iy == 0 { continue }
+                coef[(1 + iy * 2) * 8 + ix] = dct48Pix[iy * 8 + ix]
+            }
+        }
+
+        // (4) Inverse the DC decomposition. Decoder:
+        //   dc0 = 4·(c[0] + c[8] + c[1])
+        //   dc1 = c[0] + c[8] − c[1]
+        //   dc2 = c[0] − c[8]
+        // Solving for (c[0], c[1], c[8]):
+        //   q = dc0 / 4 = c[0] + c[8] + c[1]
+        //   c[1] = (q − dc1) / 2
+        //   c[0] = (q + dc1 + 2·dc2) / 4
+        //   c[8] = (q + dc1 − 2·dc2) / 4
+        let q = dc0 * 0.25
+        coef[0] = (q + dc1 + 2 * dc2) * 0.25
+        coef[1] = (q - dc1) * 0.5
+        coef[8] = (q + dc1 - 2 * dc2) * 0.25
+
+        var ac = [Int32](repeating: 0, count: 64)
+        for np in 1..<64 {
+            ac[np] = quantizeAC(
+                coef[np], weight: quantWeights[np],
+                scale: scale, qf: qf)
+        }
+        return (coef[0], ac)
+    }
+
     /// Forward IDENTITY ("hornuss") transform — the analysis half
     /// of a `hornuss` AC-strategy cell. Each 4×4 quadrant carries a
     /// 2×2-DCT-combined block DC plus 15 spatial residuals around a

@@ -331,6 +331,16 @@ Hornuss joins `bestSmallCell` as the sixth single-cell candidate. Same byte-safe
 - **Verified.** `testVarDCTBitstreamWriter_SmallBlockHornuss` is an integration-safety check — a flat-ish dithered fixture is encoded with Hornuss in the pool, and the codestream must still decode through our decoder **and `djxl`** at `mean < 2`. Whether any cell *actually* picks Hornuss on this particular fixture is a heuristic outcome, not an integration requirement.
 - **413 tests passing, 3 skipped, 0 failures.**
 
+### v0.11.0ai — AC-strategy encode: AFV DSP foundation
+
+The last decoder-supported AC strategy: AFV (Asymmetric Frequency Variable), four orientations sharing one transform. Each AFV variant partitions the 8×8 cell into three sub-regions — a 4×4 AFV corner (orthonormal basis), a 4×4 IDCT corner, and a 4×8 IDCT half — with three sub-DCs combined into the top-left 2×2 (`coef[0]`, `coef[1]`, `coef[8]`). Sweet spot: directional luminance edges where a normal DCT would spread the edge across many high-frequency coefficients.
+
+- **`AFV.fdct4x4`** — orthonormal forward matrix multiply (`coeffs = basis · pixels`), the exact inverse of `AFV.idct4x4`.
+- **`VarDCTEncoder.forwardAFVBlock(afvKind:, …)`** — exact inverse of `AFV.transformToPixels(afvKind:)`. Pulls the AFV-corner 4×4 patch (with libjxl's per-`afvKind` orientation flip), forward-AFV-transforms it; pulls the opposite-x IDCT4×4 corner, forward-DCTs it (transpose convention matches the decoder); pulls the opposite-y IDCT4×8 half, forward-`dct2D(rows:4, cols:8)`. Three sub-DCs (`dc0 = 4·(c[0]+c[8]+c[1])`, `dc1 = c[0]+c[8]−c[1]`, `dc2 = c[0]−c[8]`) are inverted into `coef[0]`, `coef[1]`, `coef[8]`; the 15 AFV ACs scatter to (even,even), 15 IDCT-4×4 ACs to (even,odd), 31 IDCT-4×8 ACs to (odd, any). Then the 63 ACs are quantised via the libjxl `kQuantModeAFV` weights table (`getAFVQuantWeights`).
+- **Verified.** `testVarDCTEncoder_ForwardAFVBlock_RoundTrip` iterates `afvKind ∈ 0..3` over a directional-edge patch (diagonal step + smooth gradient) — `forwardAFVBlock` then `AFV.transformToPixels` with dequant — every orientation round-trips within `mean < 0.04`, `max < 0.20`.
+- **Scope.** DSP foundation only — no bitstream change, encoder output byte-identical to v0.11.0ah. Trial-encode wiring follows in v0.11.0aj.
+- **414 tests passing, 3 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)
