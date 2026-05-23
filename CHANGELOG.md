@@ -372,6 +372,17 @@ The decoder has applied the forward Gaborish smoothing pass (`lf.gab=true`) end-
 - **Verified.** `testVarDCTBitstreamWriter_GaborishSmoke` exercises the new path — a 16×16 frame encoded with `gaborish: true` (default) round-trips through our decoder at the right dimensions, and the codestream differs from the `gaborish: false` sibling (proving the flag flows through). The existing 24×24 `…_RoundTrip` test also exercises the gaborish-on path with `djxl 0.11.2`-verified byte equality.
 - **417 tests passing, 3 skipped, 0 failures.**
 
+### v0.11.0am — VarDCT encoder: adaptive per-block QF (variance-driven)
+
+The encoder used a uniform `qf = 5` for every block; v0.11.0am makes the QF per-block, variance-driven. Smoother cells get a coarser QF (= fewer bits spent on near-zero AC), textured cells get a finer one (= preserve detail). The decoder already reads per-block QF from ACMetadata channel 2 — only the encoder side needed wiring.
+
+- **`Quantized.qfPerBlock: [Int32]`** — per-cell quantisation factor, row-major `[by · blocksX + bx]`. Populated by `VarDCTEncoder.forward` from the per-cell Y-plane variance: `qf = clamp(5 + round(50·√variance), [3, 16])` for textured cells, qf=5 for flat content. Multi-block strategies use the first-block's QF; the trial-encode uses each cell's own QF (a slight unfairness — a covered cell of a hypothetical DCT16 doesn't share the first-block's QF during cost evaluation — but tolerable in practice and trivially correctable in a future bite).
+- **`VarDCTEncoder.forward(frame:distance:gaborish:adaptiveQF:)`** — new `adaptiveQF: Bool = true` parameter. When `false`, every block gets the base QF (= 5). Defaults are libjxl-like behaviour.
+- **`VarDCTBitstreamWriter.encode(frame:distance:gaborish:adaptiveQF:)`** — same parameter; threads through. The ACMetadata QF list emits `qfPerBlock[firstBlockIdx] − 1` per first-block (was `q.qf − 1`); the AC block-context lookup uses `qfPerBlock[blk]` (was `q.qf`).
+- **Test bound shifts.** The DCT4×4 strategy-selection test (`testVarDCTBitstreamWriter_SmallBlockDCT4x4`) now passes `adaptiveQF: false`. The mixed-quadrant fixture's high Y-variance pushes adaptive QF upward, which shifts the per-cell strategy trial away from DCT4×4 for that specific fixture; the test still verifies the DCT4×4 selection mechanism (just with a uniform QF as in pre-v0.11.0am).
+- **Verified.** `testVarDCTBitstreamWriter_AdaptiveQFSmoke` encodes a 32×32 frame with a smooth-gradient left half and a high-frequency checkerboard right half — asserts `qfPerBlock` carries ≥ 2 distinct values (adaptive on); asserts the codestream differs from the `adaptiveQF: false` sibling (proving the flag flows through to the on-wire QF plane). All existing round-trip / `djxl 0.11.2`-byte-equality tests pass unchanged.
+- **418 tests passing, 3 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)

@@ -9610,7 +9610,11 @@ extension FoundationTests {
                 }
             }
         }
-        let q = try VarDCTEncoder.forward(frame: frame)
+        // Adaptive-QF off so the trial-encode sees the same QF for
+        // every cell — the test verifies the DCT4×4 selection
+        // mechanism, not adaptive-QF interplay.
+        let q = try VarDCTEncoder.forward(
+            frame: frame, adaptiveQF: false)
         let dct4x4Count = q.acStrategy.filter {
             $0 == ACStrategy.dct4x4.rawValue
         }.count
@@ -9618,7 +9622,8 @@ extension FoundationTests {
             "per-quadrant flat-colour 8×8 cells should select "
             + "DCT4×4 for at least one cell")
 
-        let codestream = try VarDCTBitstreamWriter.encode(frame: frame)
+        let codestream = try VarDCTBitstreamWriter.encode(
+            frame: frame, adaptiveQF: false)
         let ours = try JXLDecoder().decode(codestream)
 
         let djxl = "/opt/homebrew/bin/djxl"
@@ -9990,6 +9995,63 @@ extension FoundationTests {
     /// is bounded: a DC-only encode (block averages) would mean ~7+
     /// here — passing `< 4` proves the AC coefficient stream is
     /// carrying real detail.
+    /// VarDCT encoder adaptive-QF smoke test. The default encode
+    /// path is `adaptiveQF: true` — each 8×8 cell gets a
+    /// variance-driven QF (smooth cells coarser, textured cells
+    /// finer), emitted through ACMetadata's per-block QF plane.
+    /// This test verifies (1) the encoder produces a non-empty
+    /// codestream, (2) the per-block QF actually varies for a
+    /// frame with mixed-variance content, (3) our decoder reads
+    /// the result at the right dimensions, and (4) the on-wire
+    /// codestream differs from the `adaptiveQF: false` sibling.
+    func testVarDCTBitstreamWriter_AdaptiveQFSmoke() throws {
+        let dim = 32
+        var frame = ImageFrame(width: dim, height: dim, channels: 3)
+        // Left half: smooth gradient. Right half: high-frequency
+        // checkerboard. The adaptive heuristic should give a low
+        // QF on the left half and a high QF on the right.
+        for y in 0..<dim {
+            for x in 0..<dim {
+                let i = (y * dim + x) * 3
+                if x < dim / 2 {
+                    frame.data[i + 0] = UInt8(50 + x * 4)
+                    frame.data[i + 1] = UInt8(60 + y * 4)
+                    frame.data[i + 2] = UInt8(80 + (x + y))
+                } else {
+                    let checker = (x + y).isMultiple(of: 2)
+                    frame.data[i + 0] = checker ? 220 : 30
+                    frame.data[i + 1] = checker ? 30 : 220
+                    frame.data[i + 2] = checker ? 180 : 70
+                }
+            }
+        }
+        // Adaptive QF on — verify the per-block QF varies.
+        let qOn = try VarDCTEncoder.forward(frame: frame)
+        let unique = Set(qOn.qfPerBlock)
+        XCTAssertGreaterThan(unique.count, 1,
+            "adaptive QF should produce ≥ 2 distinct QFs on "
+            + "mixed-variance content; got \(unique)")
+
+        let csOn = try VarDCTBitstreamWriter.encode(frame: frame)
+        XCTAssertGreaterThan(csOn.count, 0)
+        let dec = try JXLDecoder().decode(csOn)
+        XCTAssertEqual(dec.width, dim)
+        XCTAssertEqual(dec.height, dim)
+
+        // Adaptive QF off — must produce a different codestream
+        // (uniform QF across all blocks).
+        let qOff = try VarDCTEncoder.forward(
+            frame: frame, adaptiveQF: false)
+        let uniqueOff = Set(qOff.qfPerBlock)
+        XCTAssertEqual(uniqueOff.count, 1,
+            "adaptive QF off must produce a uniform per-block QF")
+
+        let csOff = try VarDCTBitstreamWriter.encode(
+            frame: frame, adaptiveQF: false)
+        XCTAssertNotEqual(csOn, csOff,
+            "adaptive QF on/off must yield distinct codestreams")
+    }
+
     /// VarDCT encoder Gaborish smoke test. The default encode path
     /// is `gaborish: true` — the encoder applies the libjxl 5×5
     /// inverse-Gaborish sharpening pre-pass, and the frame header

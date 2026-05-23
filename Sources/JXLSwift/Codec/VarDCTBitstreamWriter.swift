@@ -40,10 +40,11 @@ public enum VarDCTBitstreamWriter {
     /// 256-px tile and one DC group per 2048-px tile.
     public static func encode(
         frame: ImageFrame, distance: Float = 1.0,
-        gaborish: Bool = true
+        gaborish: Bool = true, adaptiveQF: Bool = true
     ) throws -> Data {
         let q = try VarDCTEncoder.forward(
-            frame: frame, distance: distance, gaborish: gaborish)
+            frame: frame, distance: distance,
+            gaborish: gaborish, adaptiveQF: adaptiveQF)
         let groupDim = 256
         let sizeCap = 8192
         guard q.xsize <= sizeCap, q.ysize <= sizeCap else {
@@ -145,7 +146,10 @@ public enum VarDCTBitstreamWriter {
                         let gIdx = (by0 + ly) * blocksX + (bx0 + lx)
                         let raw = q.acStrategy[gIdx]
                         acsList.append(Int32(raw))
-                        qfList.append(q.qf - 1)
+                        // Per-block QF carried in ACMetadata. The
+                        // decoder dequantises with `1/blockQF`, so
+                        // the on-wire value is `qfPerBlock − 1`.
+                        qfList.append(q.qfPerBlock[gIdx] - 1)
                         let strat = ACStrategy(rawValue: raw)
                             ?? .dct8x8
                         let cx = strat.blockCells.cellsX
@@ -571,8 +575,12 @@ public enum VarDCTBitstreamWriter {
                                     (plane[(ly - 1) * gW + lx]
                                      + plane[ly * gW + lx - 1] + 1) >> 1)
                             }
+                            // Use the first-block's per-block QF
+                            // (matches what the decoder reads from
+                            // ACMetadata for the block context).
                             let blockCtx = bctx.context(
-                                dcIdx: 0, qf: UInt32(q.qf),
+                                dcIdx: 0,
+                                qf: UInt32(q.qfPerBlock[blk]),
                                 ord: ordBucket, c: c)
                             // One transform's AC tokens —
                             // `ACEncoder.tokenize` is the shared,

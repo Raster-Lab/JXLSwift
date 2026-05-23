@@ -67,6 +67,16 @@ public enum VarDCTEncoder {
         /// writer mirrors this into the frame header's `lf.gab`
         /// flag so the decoder runs the forward Gaborish pass.
         public let gaborish: Bool
+        /// Per-block quantisation factor (uniform 8×8 cell grid,
+        /// row-major `[by * blocksX + bx]`). Adaptive variance-
+        /// driven: smooth cells get a coarser QF, textured cells get
+        /// a finer one. Multi-block strategies use the first-block's
+        /// QF (the covered cells' entries are populated for the DC
+        /// plane stamp but the bitstream only emits the first
+        /// block's value via ACMetadata). For each first-block, the
+        /// AC values in `acQuant[blockIdx]` were quantised with
+        /// `qfPerBlock[firstBlockIdx]` and dequantise with the same.
+        public let qfPerBlock: [Int32]
     }
 
     /// libjxl `quant_weights.h::kInvDCQuant`, XYB-indexed.
@@ -93,7 +103,7 @@ public enum VarDCTEncoder {
 
     public static func forward(
         frame: ImageFrame, distance: Float = 1.0,
-        gaborish: Bool = true
+        gaborish: Bool = true, adaptiveQF: Bool = true
     ) throws -> Quantized {
         let globalScale = globalScale(forDistance: distance)
         let quantDC: UInt32 = 17
@@ -144,6 +154,44 @@ public enum VarDCTEncoder {
                 to: &planeY, width: pw, height: ph)
             Gaborish.applyInverse5x5(
                 to: &planeB, width: pw, height: ph)
+        }
+
+        // (1.7) Per-block adaptive QF. Variance of the Y plane in
+        // each 8×8 cell drives the per-block quantisation factor —
+        // smoother cells get a coarser QF, textured cells get a
+        // finer one. Bound to `[qfMin, qfMax]` so the bitstream's
+        // ACMetadata can carry the value (libjxl JXL spec accepts
+        // QFs up to 255). This is a deliberately crude
+        // variance-driven heuristic — far from the butteraugli-
+        // driven adaptive quant libjxl uses, but it captures the
+        // core "spend bits where detail is" intuition.
+        var qfPerBlock = [Int32](
+            repeating: qf, count: blocksX * blocksY)
+        if adaptiveQF {
+            let qfMin: Int32 = 3, qfMax: Int32 = 16
+            for by in 0..<blocksY {
+                for bx in 0..<blocksX {
+                    var sum: Float = 0, sumSq: Float = 0
+                    for ly in 0..<8 {
+                        for lx in 0..<8 {
+                            let v = planeY[(by * 8 + ly) * pw
+                                           + (bx * 8 + lx)]
+                            sum += v
+                            sumSq += v * v
+                        }
+                    }
+                    let mean = sum / 64.0
+                    let variance = max(
+                        0.0, sumSq / 64.0 - mean * mean)
+                    // `5 + round(10·√variance·5)`, clamped — gives
+                    // qf=5 for flat content, qf~10–15 for textured.
+                    let scaled = Float(qf)
+                        + (10.0 * variance.squareRoot() * 5.0).rounded()
+                    let qfBlock = Int32(min(Float(qfMax),
+                        max(Float(qfMin), scaled)))
+                    qfPerBlock[by * blocksX + bx] = qfBlock
+                }
+            }
         }
 
         // (2) Per-channel DCT8×8 quant weights (LIBRARY defaults, no
@@ -362,6 +410,7 @@ public enum VarDCTEncoder {
         // DCT8×8 of one block — quantised DC (3) + AC (3 × 64).
         func dct8Cell(_ bx: Int, _ by: Int)
             -> (dc: [Int32], ac: [[Int32]]) {
+            let qf = qfPerBlock[by * blocksX + bx]
             let rX = forwardDCT8Block(
                 patch: patch(planeX, bx, by, 8), quantWeights: qw8X,
                 scale: acScale, qf: qf)
@@ -382,6 +431,7 @@ public enum VarDCTEncoder {
         // (3 DC + 3 × 64 AC), but a different transform.
         func dct4x4Cell(_ bx: Int, _ by: Int)
             -> (dc: [Int32], ac: [[Int32]]) {
+            let qf = qfPerBlock[by * blocksX + bx]
             let rX = forwardDCT4x4Block(
                 patch: patch(planeX, bx, by, 8), quantWeights: qw4x4X,
                 scale: acScale, qf: qf)
@@ -401,6 +451,7 @@ public enum VarDCTEncoder {
         // vertically. Same outputs as `dct8Cell` (3 DC + 3 × 64 AC).
         func dct4x8Cell(_ bx: Int, _ by: Int)
             -> (dc: [Int32], ac: [[Int32]]) {
+            let qf = qfPerBlock[by * blocksX + bx]
             let rX = forwardDCT4x8Block(
                 patch: patch(planeX, bx, by, 8), quantWeights: qw4x8X,
                 scale: acScale, qf: qf)
@@ -420,6 +471,7 @@ public enum VarDCTEncoder {
         // side. Shares the DCT4×8 quant weights table.
         func dct8x4Cell(_ bx: Int, _ by: Int)
             -> (dc: [Int32], ac: [[Int32]]) {
+            let qf = qfPerBlock[by * blocksX + bx]
             let rX = forwardDCT8x4Block(
                 patch: patch(planeX, bx, by, 8), quantWeights: qw4x8X,
                 scale: acScale, qf: qf)
@@ -439,6 +491,7 @@ public enum VarDCTEncoder {
         // Same outputs as `dct8Cell` (3 DC + 3 × 64 AC).
         func dct2x2Cell(_ bx: Int, _ by: Int)
             -> (dc: [Int32], ac: [[Int32]]) {
+            let qf = qfPerBlock[by * blocksX + bx]
             let rX = forwardDCT2x2Block(
                 patch: patch(planeX, bx, by, 8), quantWeights: qw2x2X,
                 scale: acScale, qf: qf)
@@ -458,6 +511,7 @@ public enum VarDCTEncoder {
         // Same outputs as `dct8Cell` (3 DC + 3 × 64 AC).
         func hornussCell(_ bx: Int, _ by: Int)
             -> (dc: [Int32], ac: [[Int32]]) {
+            let qf = qfPerBlock[by * blocksX + bx]
             let rX = forwardHornussBlock(
                 patch: patch(planeX, bx, by, 8), quantWeights: qwHornX,
                 scale: acScale, qf: qf)
@@ -477,6 +531,7 @@ public enum VarDCTEncoder {
         // given `afvKind` orientation. Same outputs as `dct8Cell`.
         func afvCell(_ bx: Int, _ by: Int, kind: Int)
             -> (dc: [Int32], ac: [[Int32]]) {
+            let qf = qfPerBlock[by * blocksX + bx]
             let rX = forwardAFVBlock(
                 afvKind: kind,
                 patch: patch(planeX, bx, by, 8), quantWeights: qwAFVX,
@@ -499,6 +554,7 @@ public enum VarDCTEncoder {
         // AC (3 × 256).
         func dct16Region(_ bx: Int, _ by: Int)
             -> (dc: [[Int32]], ac: [[Int32]]) {
+            let qf = qfPerBlock[by * blocksX + bx]
             let rX = forwardDCT16Block(
                 patch: patch(planeX, bx, by, 16), quantWeights: qw16X,
                 scale: acScale, qf: qf)
@@ -525,6 +581,7 @@ public enum VarDCTEncoder {
         // bottom.
         func dct16x8Pair(_ bx: Int, _ by: Int)
             -> (dc: [[Int32]], ac: [[Int32]]) {
+            let qf = qfPerBlock[by * blocksX + bx]
             let rX = forwardDCT16x8Block(
                 patch: patchRect(planeX, bx, by, 8, 16),
                 quantWeights: qw8x16X, scale: acScale, qf: qf)
@@ -548,6 +605,7 @@ public enum VarDCTEncoder {
         // `dc[c][0]` is the left cell, `dc[c][1]` the right.
         func dct8x16Pair(_ bx: Int, _ by: Int)
             -> (dc: [[Int32]], ac: [[Int32]]) {
+            let qf = qfPerBlock[by * blocksX + bx]
             let rX = forwardDCT8x16Block(
                 patch: patchRect(planeX, bx, by, 16, 8),
                 quantWeights: qw8x16X, scale: acScale, qf: qf)
@@ -572,6 +630,7 @@ public enum VarDCTEncoder {
         // for r ∈ 0..2, c ∈ 0..4 — cell `(bx+r, by+c)`.
         func dct32x16Pair(_ bx: Int, _ by: Int)
             -> (dc: [[Int32]], ac: [[Int32]]) {
+            let qf = qfPerBlock[by * blocksX + bx]
             let rX = forwardDCT32x16Block(
                 patch: patchRect(planeX, bx, by, 16, 32),
                 quantWeights: qw16x32X, scale: acScale, qf: qf)
@@ -596,6 +655,7 @@ public enum VarDCTEncoder {
         // for r ∈ 0..2, c ∈ 0..4 — cell `(bx+c, by+r)`.
         func dct16x32Pair(_ bx: Int, _ by: Int)
             -> (dc: [[Int32]], ac: [[Int32]]) {
+            let qf = qfPerBlock[by * blocksX + bx]
             let rX = forwardDCT16x32Block(
                 patch: patchRect(planeX, bx, by, 32, 16),
                 quantWeights: qw16x32X, scale: acScale, qf: qf)
@@ -618,6 +678,7 @@ public enum VarDCTEncoder {
         // AC (3 × 1024).
         func dct32Region(_ bx: Int, _ by: Int)
             -> (dc: [[Int32]], ac: [[Int32]]) {
+            let qf = qfPerBlock[by * blocksX + bx]
             let rX = forwardDCT32Block(
                 patch: patch(planeX, bx, by, 32), quantWeights: qw32X,
                 scale: acScale, qf: qf)
@@ -641,6 +702,7 @@ public enum VarDCTEncoder {
         // `(bx..bx+3) × (by..by+7)`. `dc[r*8+c]` ↔ cell `(bx+r, by+c)`.
         func dct64x32Pair(_ bx: Int, _ by: Int)
             -> (dc: [[Int32]], ac: [[Int32]]) {
+            let qf = qfPerBlock[by * blocksX + bx]
             let rX = forwardDCT64x32Block(
                 patch: patchRect(planeX, bx, by, 32, 64),
                 quantWeights: qw32x64X, scale: acScale, qf: qf)
@@ -664,6 +726,7 @@ public enum VarDCTEncoder {
         // `(bx..bx+7) × (by..by+3)`. `dc[r*8+c]` ↔ cell `(bx+c, by+r)`.
         func dct32x64Pair(_ bx: Int, _ by: Int)
             -> (dc: [[Int32]], ac: [[Int32]]) {
+            let qf = qfPerBlock[by * blocksX + bx]
             let rX = forwardDCT32x64Block(
                 patch: patchRect(planeX, bx, by, 64, 32),
                 quantWeights: qw32x64X, scale: acScale, qf: qf)
@@ -686,6 +749,7 @@ public enum VarDCTEncoder {
         // AC (3 × 4096).
         func dct64Region(_ bx: Int, _ by: Int)
             -> (dc: [[Int32]], ac: [[Int32]]) {
+            let qf = qfPerBlock[by * blocksX + bx]
             let rX = forwardDCT64x64Block(
                 patch: patch(planeX, bx, by, 64), quantWeights: qw64X,
                 scale: acScale, qf: qf)
@@ -1103,7 +1167,8 @@ public enum VarDCTEncoder {
             globalScale: globalScale, quantDC: quantDC, qf: qf,
             dcExtraPrecision: 0,
             dcQuant: dcQuant, acStrategy: acStrategy,
-            acQuant: acQuant, gaborish: gaborish)
+            acQuant: acQuant, gaborish: gaborish,
+            qfPerBlock: qfPerBlock)
     }
 
     /// Estimated token cost (in rough bit units) of one block's
