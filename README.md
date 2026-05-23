@@ -13,11 +13,11 @@ See [ROADMAP.md](ROADMAP.md) for the full project summary and design constraints
 JXLSwift decodes and encodes JPEG XL today, in pure Swift, with no libjxl at runtime:
 
 - **VarDCT decoder — byte-exact against `djxl 0.11.2`** across every real image tested (any size, all AC strategies, RGB and RGBA). Multi-AC-group, multi-DC-group, adaptive DC smoothing, EPF restoration, AFV.
-- **VarDCT lossy encoder** — `VarDCTBitstreamWriter` emits genuine spec-compliant JPEG XL that `djxl` decodes: 8-bit RGB / RGBA up to 8192 px, a `distance` quality knob, single- and multi-section codestreams, multi-DC-group. (DCT8×8 only — AC-strategy search is the next encoder feature.)
+- **VarDCT lossy encoder** — `VarDCTBitstreamWriter` emits genuine spec-compliant JPEG XL that `djxl` decodes: 8-bit RGB / RGBA up to 8192 px, a `distance` quality knob, single- and multi-section codestreams, multi-DC-group, every decoder-supported AC strategy (DCT8/16/32/64 + asymmetric ord-4/6/8 + AFV0–3 + Hornuss + DCT2×2 + DCT4×4 + DCT4×8 + DCT8×4) via a hierarchical trial-encode, libjxl 5×5 inverse-Gaborish pre-pass, per-block adaptive QF, and adaptive 1/2/3-cluster AC histograms.
 - **Modular lossless decoder + encoder** — 8/16-bit grayscale / RGB / RGBA, byte-exact round-trips through `cjxl`/`djxl`.
 - **`JXLEncoder` / `JXLDecoder` public API** — `encode(_:)` picks VarDCT (lossy modes) or Modular (`.lossless`); `decode(_:)` returns pixels. Both are real, not stubs.
 
-The remaining headline encoder feature is VarDCT **AC-strategy selection** (variable DCT block sizes — DCT16/32 etc.); the decoder already supports every strategy. See [CHANGELOG.md](CHANGELOG.md) for the v0.5.0 → v0.11.0 trajectory and [ROADMAP.md](ROADMAP.md) for the phase grid.
+Every decoder-supported AC strategy is now emitted by the encoder (v0.11.0aj). The remaining decoder gaps are DCT128/256 and DCT32×8/8×32 (ord 5/9/10/11/12/13) — niche on real images and requiring spec-side quant-band data. See [CHANGELOG.md](CHANGELOG.md) for the v0.5.0 → v0.11.0 trajectory and [ROADMAP.md](ROADMAP.md) for the phase grid.
 
 The spec-layer foundation the codec is built on:
 
@@ -99,6 +99,20 @@ swift test  -c release           # 384 tests — foundation, headers, entropy,
 .build/release/jxl-tool encode -i in.ppm -o out.jxl       # lossy VarDCT
 .build/release/jxl-tool encode -i in.ppm -o out.jxl --lossless
 .build/release/jxl-tool decode -i out.jxl -o out.ppm
+```
+
+The `jxl encode` CLI also exposes the VarDCT encoder's quality knobs:
+
+```bash
+# Default (lossy, quality 90, Gaborish + adaptive QF on).
+.build/release/jxl encode -i in.ppm -o out.jxl
+
+# Disable the inverse-Gaborish pre-pass (skip the libjxl
+# butteraugli-optimised sharpening).
+.build/release/jxl encode -i in.ppm -o out.jxl --no-gaborish
+
+# Disable per-block adaptive QF (uniform quantiser everywhere).
+.build/release/jxl encode -i in.ppm -o out.jxl --no-adaptive-qf
 ```
 
 Requires Swift 6.2+ on macOS 13+. **No external dependencies.** (`swift-argument-parser` for the CLI is the only Swift-package dep.)
