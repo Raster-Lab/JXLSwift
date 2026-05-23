@@ -198,6 +198,17 @@ The square AC strategies (DCT8 / DCT16 / DCT32) are emitted; the next AC-strateg
 - **Verified.** `testVarDCTBitstreamWriter_AsymmetricACS` encodes a 64×64 vertical-stripes frame — confirmed to select DCT16×8 or DCT8×16 — and confirms `djxl 0.11.2` decodes it and our decoder agrees on the pixels.
 - **396 tests passing, 3 skipped, 0 failures.**
 
+### v0.11.0u — AC-strategy encode: DCT32×16 / DCT16×32 DSP foundation
+
+Asymmetric ord-6 DSP, the next axis after ord-4 (DCT16×8 / DCT8×16). Same milestone pattern: DSP foundation first, integration follows.
+
+- **`LowestFrequenciesFromDC.dcFromLowestFrequenciesOrd6Block`** — encoder-direction inverse of `ord6Block`. Undoes the `<4, 32>` × `<2, 32>` resample, the 1-D scaled DCT-4 along rows, then the 1-D DCT-2 along the 2-row axis, recovering the 8 DC-plane cell values from a block's 8 LLF coefficients.
+- **`VarDCTEncoder.forwardDCT16x32Block`** — direct `dct2D(rows: 16, cols: 32)` on the 32w × 16h pixel patch; the coef layout matches the decoder's, so no transpose.
+- **`VarDCTEncoder.forwardDCT32x16Block`** — transposes the 16w × 32h patch into the 16-row × 32-col coef layout, then `dct2D(rows: 16, cols: 32)`. The decoder transposes the IDCT output back; the encoder is its inverse.
+- **Verified.** `testLowestFrequenciesFromDC_Ord6Block_Inverse` confirms `ord6Block ∘ dcFromLowestFrequenciesOrd6Block = identity`; two block round-trip tests put 32w × 16h and 16w × 32h patches through `forwardDCT…Block` and the decoder's `idct2D(rows: 16, cols: 32)` (with the right transpose for DCT32×16) within bounded error.
+- **Scope.** DSP foundation only — no bitstream change, encoder output byte-identical to v0.11.0t. The integration (folding DCT32×16 / DCT16×32 into the 32×32-region trial encode as two new partitionings, alongside DCT32×32 and the four-way 16×16 sub-region trial) follows.
+- **399 tests passing, 3 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)

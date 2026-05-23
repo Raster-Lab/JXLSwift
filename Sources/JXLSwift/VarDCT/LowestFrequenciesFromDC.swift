@@ -307,6 +307,43 @@ public enum LowestFrequenciesFromDC {
         return result
     }
 
+    /// Inverse of `ord6Block` — the **encoder** direction. Recovers
+    /// the 8 DC-plane cell values (laid out as the `ord6Block` input
+    /// expects: row-major over the 4-col × 2-row coef cell grid)
+    /// from a DCT32×16 / DCT16×32 block's 8 LLF coefficients.
+    /// `ord6Block(dcFromLowestFrequenciesOrd6Block(llf)) == llf`
+    /// within float epsilon.
+    public static func dcFromLowestFrequenciesOrd6Block(
+        llf: [Float]
+    ) -> [Float] {
+        precondition(llf.count == 8,
+                     "ord 6 LLF needs 8 coefficients")
+        // Undo the per-axis `<4, 32>` × `<2, 32>` resample.
+        var out = [Float](repeating: 0, count: 8)
+        for y in 0..<2 {
+            for x in 0..<4 {
+                out[y * 4 + x] = llf[y * 4 + x]
+                    / (kScales4to32[x] * kScales2to32[y])
+            }
+        }
+        // Undo the 1-D scaled DCT-4 along rows.
+        var tmp = [Float](repeating: 0, count: 8)
+        for y in 0..<2 {
+            let inv = inverseScaledDCT4([
+                out[y * 4 + 0], out[y * 4 + 1],
+                out[y * 4 + 2], out[y * 4 + 3]])
+            for x in 0..<4 { tmp[y * 4 + x] = inv[x] }
+        }
+        // Undo the 1-D DCT-2 along the 2-row axis
+        // (`tmp[x] = (d0+d1)/2`, `tmp[4+x] = (d0-d1)/2`).
+        var dc = [Float](repeating: 0, count: 8)
+        for x in 0..<4 {
+            dc[x] = tmp[x] + tmp[4 + x]
+            dc[4 + x] = tmp[x] - tmp[4 + x]
+        }
+        return dc
+    }
+
     /// DCT64x32 / DCT32x64 (libjxl ord 8) path: 32 DC values from
     /// the covered 8×4 (or 4×8) cells reinterpret to 32 LLF coefs
     /// at the top-left 8×4 corner of the 64×32 coef block.

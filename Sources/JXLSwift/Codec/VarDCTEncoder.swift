@@ -767,4 +767,79 @@ public enum VarDCTEncoder {
         }
         return (dc, ac)
     }
+
+    /// Forward + quantise one 16-row × 32-col patch as a DCT16×32
+    /// block (libjxl ord 6). Patch layout matches the decoder's
+    /// `idct2D(rows: 16, cols: 32)` output, so no transpose. Returns
+    /// 8 LLF-derived DC values laid out as `ord6Block`'s input
+    /// expects (`dc[r*4+c]` for r ∈ 0..2, c ∈ 0..4) — for DCT16×32,
+    /// `dc[r*4+c]` corresponds to the pixel-cell at `(bx+c, by+r)`.
+    /// Returns 504 quantised AC coefficients (the 8 LLF positions
+    /// 0..3 / 32..35 left 0).
+    static func forwardDCT16x32Block(
+        patch: [Float], quantWeights: [Float],
+        scale: Float, qf: Int32
+    ) -> (dc: [Float], ac: [Int32]) {
+        precondition(patch.count == 512
+                     && quantWeights.count == 512,
+                     "DCT16x32 block needs a 512-entry patch "
+                     + "+ 512 weights")
+        var coef = patch
+        AccelerateDCT.dct2D(&coef, rows: 16, cols: 32)
+        // 8 LLF coefficients at the 4-col × 2-row corner.
+        var llf = [Float](repeating: 0, count: 8)
+        for r in 0..<2 {
+            for c in 0..<4 { llf[r * 4 + c] = coef[r * 32 + c] }
+        }
+        let dc = LowestFrequenciesFromDC
+            .dcFromLowestFrequenciesOrd6Block(llf: llf)
+        var ac = [Int32](repeating: 0, count: 512)
+        for np in 0..<512 {
+            let r = np / 32, c = np % 32
+            if r < 2 && c < 4 { continue }
+            ac[np] = quantizeAC(
+                coef[np], weight: quantWeights[np],
+                scale: scale, qf: qf)
+        }
+        return (dc, ac)
+    }
+
+    /// Forward + quantise one 32-row × 16-col patch as a DCT32×16
+    /// block (libjxl ord 6). The decoder's coef layout is 16-row ×
+    /// 32-col, so the encoder transposes the patch first. Returns
+    /// 8 LLF-derived DC values laid out as `ord6Block`'s input
+    /// expects — for DCT32×16, `dc[r*4+c]` corresponds to the
+    /// pixel-cell at `(bx+r, by+c)`. Returns 504 quantised AC.
+    static func forwardDCT32x16Block(
+        patch: [Float], quantWeights: [Float],
+        scale: Float, qf: Int32
+    ) -> (dc: [Float], ac: [Int32]) {
+        precondition(patch.count == 512
+                     && quantWeights.count == 512,
+                     "DCT32x16 block needs a 512-entry patch "
+                     + "+ 512 weights")
+        // Transpose 32-row × 16-col → 16-row × 32-col.
+        var ar = [Float](repeating: 0, count: 512)
+        for r in 0..<16 {
+            for c in 0..<32 {
+                ar[r * 32 + c] = patch[c * 16 + r]
+            }
+        }
+        AccelerateDCT.dct2D(&ar, rows: 16, cols: 32)
+        var llf = [Float](repeating: 0, count: 8)
+        for r in 0..<2 {
+            for c in 0..<4 { llf[r * 4 + c] = ar[r * 32 + c] }
+        }
+        let dc = LowestFrequenciesFromDC
+            .dcFromLowestFrequenciesOrd6Block(llf: llf)
+        var ac = [Int32](repeating: 0, count: 512)
+        for np in 0..<512 {
+            let r = np / 32, c = np % 32
+            if r < 2 && c < 4 { continue }
+            ac[np] = quantizeAC(
+                ar[np], weight: quantWeights[np],
+                scale: scale, qf: qf)
+        }
+        return (dc, ac)
+    }
 }
