@@ -1131,6 +1131,58 @@ public enum VarDCTEncoder {
     }
 
     /// Forward-transform + quantise one 8×8 single-channel patch as a
+    /// DCT2×2 block — the analysis half of a `dct2x2` AC-strategy
+    /// cell. DCT2×2 is the hierarchical 2×2-Haar cascade: at each
+    /// scale `s ∈ {8, 4, 2}` the top-left `s×s` region's `(s/2)²`
+    /// dense 2×2 pixel groups are each replaced by their 2×2 Haar
+    /// (DC + 3 ACs), with the DC stored at `(y, x)` and the three
+    /// ACs at `(y, x+s/2)`, `(y+s/2, x)`, `(y+s/2, x+s/2)`. The DC
+    /// of the largest scale becomes the cell DC at coef[0], and
+    /// each level's three ACs occupy the remaining 63 positions.
+    /// Exact inverse of `DCT2x2Transform.transformToPixels`
+    /// (`idct2TopBlock` cascade at s = 2 → 4 → 8).
+    static func forwardDCT2x2Block(
+        patch: [Float], quantWeights: [Float],
+        scale: Float, qf: Int32
+    ) -> (dc: Float, ac: [Int32]) {
+        precondition(patch.count == 64 && quantWeights.count == 64,
+                     "DCT2×2 block needs an 8×8 patch + 64 weights")
+        var block = patch
+        for s in [8, 4, 2] {
+            var temp = block
+            let num2x2 = s / 2
+            for y in 0..<num2x2 {
+                for x in 0..<num2x2 {
+                    let t00 = block[2 * y * 8 + 2 * x]
+                    let t01 = block[2 * y * 8 + 2 * x + 1]
+                    let t10 = block[(2 * y + 1) * 8 + 2 * x]
+                    let t11 = block[(2 * y + 1) * 8 + 2 * x + 1]
+                    // Forward 2×2 Haar — exact inverse of the
+                    // decoder's c00+c01+c10+c11 / ± expansion.
+                    temp[y * 8 + x] =
+                        (t00 + t01 + t10 + t11) * 0.25
+                    temp[y * 8 + x + num2x2] =
+                        (t00 + t01 - t10 - t11) * 0.25
+                    temp[(y + num2x2) * 8 + x] =
+                        (t00 - t01 + t10 - t11) * 0.25
+                    temp[(y + num2x2) * 8 + x + num2x2] =
+                        (t00 - t01 - t10 + t11) * 0.25
+                }
+            }
+            for y in 0..<s {
+                for x in 0..<s { block[y * 8 + x] = temp[y * 8 + x] }
+            }
+        }
+        var ac = [Int32](repeating: 0, count: 64)
+        for np in 1..<64 {
+            ac[np] = quantizeAC(
+                block[np], weight: quantWeights[np],
+                scale: scale, qf: qf)
+        }
+        return (block[0], ac)
+    }
+
+    /// Forward-transform + quantise one 8×8 single-channel patch as a
     /// DCT4×8 block — the analysis half of a `dct4x8` AC-strategy
     /// cell. The 8×8 cell is split into two 4-tall × 8-wide halves
     /// stacked vertically; each is forward-DCT'd (ROWS<COLS, natural

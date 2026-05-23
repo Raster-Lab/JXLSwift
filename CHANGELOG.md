@@ -295,6 +295,15 @@ DCT4×8 and DCT8×4 join the per-cell trial. The four single-cell strategies (DC
 - **Verified.** `testVarDCTBitstreamWriter_SmallBlockHalfCell` encodes a 16×16 frame whose four 8×8 cells each carry a half-aligned reversed gradient — half horizontal (top-half ramps left→right, bottom-half right→left) and half vertical — asserts at least one cell picks DCT4×8 or DCT8×4, and confirms `djxl 0.11.2` decodes the codestream within `mean < 2` of our decoder.
 - **409 tests passing, 3 skipped, 0 failures.**
 
+### v0.11.0ae — AC-strategy encode: DCT2×2 DSP foundation
+
+The last single-cell small-block transform. DCT2×2 is a hierarchical 2×2-Haar cascade: at each scale `s ∈ {8, 4, 2}` the top-left `s × s` region's dense 2×2 pixel groups are each replaced by their 2×2 Haar (DC + 3 ACs). The cell-DC of the largest scale becomes `coef[0]`; each level's three ACs occupy the remaining 63 positions. Its sweet spot is content with detail at every Haar scale simultaneously (e.g. hierarchical synthetic textures).
+
+- **`VarDCTEncoder.forwardDCT2x2Block`** — exact inverse of `DCT2x2Transform.transformToPixels` (the decoder's `idct2TopBlock` cascade at `s = 2 → 4 → 8`). For each scale `s ∈ {8, 4, 2}` (forward, large-to-small), reads dense 2×2 pixel groups in the top-left `s × s` area and writes the per-group `[c00, c01, c10, c11] = [Σ, ±Σ, ∓Σ, ±∓] / 4` Haar to positions `(y, x), (y, x + s/2), (y + s/2, x), (y + s/2, x + s/2)`. The 1/4 normalisation cancels the decoder's pure-sum IDCT cascade exactly.
+- **Verified.** `testVarDCTEncoder_ForwardDCT2x2Block_RoundTrip` puts a synthetic 3-scale checkerboard (frequency content at scales 2, 4, *and* 8 simultaneously — every level of the cascade contributes) through `forwardDCT2x2Block` and `DCT2x2Transform.transformToPixels` (with dequant) — round-trips within `mean < 0.03`, `max < 0.15`.
+- **Scope.** DSP foundation only — no bitstream change, encoder output byte-identical to v0.11.0ad. Trial-encode wiring follows in v0.11.0af.
+- **410 tests passing, 3 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)

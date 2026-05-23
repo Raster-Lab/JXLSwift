@@ -8288,6 +8288,57 @@ extension FoundationTests {
             "DCT4×4 block round-trip max error \(maxErr)")
     }
 
+    /// DCT2×2 encoder DSP foundation. `forwardDCT2x2Block` packs an
+    /// 8×8 patch through the hierarchical 2×2-Haar cascade and must
+    /// reconstruct the patch within bounded error through
+    /// `DCT2x2Transform.transformToPixels` (the decoder's `idct2TopBlock`
+    /// cascade at s = 2 → 4 → 8).
+    func testVarDCTEncoder_ForwardDCT2x2Block_RoundTrip() throws {
+        // Multi-scale alternating pattern — has detail at scales 2,
+        // 4, and 8 simultaneously, so every level of the Haar
+        // cascade contributes significant coefficients.
+        var patch = [Float](repeating: 0, count: 64)
+        for y in 0..<8 {
+            for x in 0..<8 {
+                let s2: Float = ((x + y) % 2 == 0) ? 0.10 : -0.10
+                let s4: Float = (((x / 2) + (y / 2)) % 2 == 0)
+                    ? 0.15 : -0.15
+                let s8: Float = (((x / 4) + (y / 4)) % 2 == 0)
+                    ? 0.20 : -0.20
+                patch[y * 8 + x] = 0.5 + s2 + s4 + s8
+            }
+        }
+        let qw = QuantWeights.getDCT2QuantWeights(
+            DefaultQuantBands.dct2x2)
+        let yWeights = Array(qw[64..<128])
+        let globalScale: UInt32 = 5111
+        let qf: Int32 = 5
+        let acScale = Float(globalScale) / 65536.0
+        let (dc, ac) = VarDCTEncoder.forwardDCT2x2Block(
+            patch: patch, quantWeights: yWeights,
+            scale: acScale, qf: qf)
+        XCTAssertEqual(ac.count, 64)
+        XCTAssertEqual(ac[0], 0)
+        var coef = [Float](repeating: 0, count: 64)
+        coef[0] = dc
+        let invQuantAC = 65536.0 / Float(globalScale) / Float(qf)
+        for np in 1..<64 {
+            coef[np] = AdjustQuantBias.adjust(channel: 1, quant: ac[np])
+                / yWeights[np] * invQuantAC
+        }
+        let recon = DCT2x2Transform.transformToPixels(coef)
+        var meanErr: Float = 0, maxErr: Float = 0
+        for i in 0..<64 {
+            let e = abs(recon[i] - patch[i])
+            meanErr += e; maxErr = max(maxErr, e)
+        }
+        meanErr /= 64
+        XCTAssertLessThan(meanErr, 0.03,
+            "DCT2×2 block round-trip mean error \(meanErr)")
+        XCTAssertLessThan(maxErr, 0.15,
+            "DCT2×2 block round-trip max error \(maxErr)")
+    }
+
     /// DCT4×8 encoder DSP foundation. `forwardDCT4x8Block` packs an
     /// 8×8 patch into the libjxl two-half coefficient layout (two
     /// 4-tall × 8-wide DCTs stacked, DCs 1-D-DCT-2 combined, ACs
