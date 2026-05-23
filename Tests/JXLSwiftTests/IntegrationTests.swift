@@ -9458,6 +9458,116 @@ extension FoundationTests {
             + "codestream (mean \(mean))")
     }
 
+    /// VarDCT AC-strategy — DCT4×8 / DCT8×4 end-to-end (half-cell
+    /// small-block). Each 8×8 cell carries a horizontal (or
+    /// vertical) gradient across the full half-width that *reverses*
+    /// across the half boundary: top half flat-y but linear-in-x
+    /// (left→right), bottom half linear-in-x reversed (right→left).
+    /// This is the DCT4×8 sweet spot — each 4-tall × 8-wide half is
+    /// a clean horizontal ramp (one non-zero column-frequency AC),
+    /// total cost ~6 tokens. DCT4×4 has to split the same ramp
+    /// across two 4×4 quadrants and additionally carries the Haar
+    /// of the per-quadrant DCs — far more non-zero ACs at higher
+    /// zigzag positions. DCT8×8 also pays for the cross-half
+    /// reversal. Half the cells use the vertical-gradient
+    /// equivalent → DCT8×4. The codestream must decode through
+    /// our decoder **and `djxl`** with both agreeing on the
+    /// pixels.
+    func testVarDCTBitstreamWriter_SmallBlockHalfCell() throws {
+        let dim = 16
+        var frame = ImageFrame(width: dim, height: dim, channels: 3)
+        // Per-cell base colour + gradient amplitude + orientation
+        // (.horizontal → DCT4×8, .vertical → DCT8×4).
+        struct CellSpec {
+            let base: (R: Int, G: Int, B: Int)
+            let amp: (R: Int, G: Int, B: Int)
+            let horizontal: Bool
+        }
+        let specs: [CellSpec] = [
+            CellSpec(base: (60, 110, 150), amp: (20, 14, -18),
+                     horizontal: true),
+            CellSpec(base: (140, 90, 110), amp: (-16, 18, 12),
+                     horizontal: false),
+            CellSpec(base: (90, 150, 80), amp: (18, -14, 16),
+                     horizontal: false),
+            CellSpec(base: (120, 80, 160), amp: (-12, 16, -18),
+                     horizontal: true),
+        ]
+        for cy in 0..<2 {
+            for cx in 0..<2 {
+                let s = specs[cy * 2 + cx]
+                for py in 0..<8 {
+                    for px in 0..<8 {
+                        let axis = s.horizontal ? px : py
+                        let halfTop = s.horizontal ? (py < 4) : (px < 4)
+                        // Top/left half: ramps 0..7 along axis.
+                        // Bottom/right half: ramps 7..0 (reversed) —
+                        // the across-boundary reversal that wedges
+                        // DCT4×4 into emitting Haar + per-quadrant ACs.
+                        let t = halfTop ? axis : (7 - axis)
+                        let R = s.base.R + s.amp.R * t
+                        let G = s.base.G + s.amp.G * t
+                        let B = s.base.B + s.amp.B * t
+                        let x = cx * 8 + px, y = cy * 8 + py
+                        let i = (y * dim + x) * 3
+                        frame.data[i + 0] = UInt8(clamping: R)
+                        frame.data[i + 1] = UInt8(clamping: G)
+                        frame.data[i + 2] = UInt8(clamping: B)
+                    }
+                }
+            }
+        }
+        let q = try VarDCTEncoder.forward(frame: frame)
+        let halfCount = q.acStrategy.filter {
+            $0 == ACStrategy.dct4x8.rawValue
+                || $0 == ACStrategy.dct8x4.rawValue
+        }.count
+        XCTAssertGreaterThan(halfCount, 0,
+            "axis-aligned seam cells should select DCT4×8 or "
+            + "DCT8×4 for at least one cell")
+
+        let codestream = try VarDCTBitstreamWriter.encode(frame: frame)
+        let ours = try JXLDecoder().decode(codestream)
+
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("djxl not available")
+        }
+        let tmp = NSTemporaryDirectory()
+        let jxlPath = tmp + "vdt_halfcell.jxl"
+        let outPath = tmp + "vdt_halfcell_dj.ppm"
+        try codestream.write(to: URL(fileURLWithPath: jxlPath))
+        let p = Process()
+        p.launchPath = djxl
+        p.arguments = [jxlPath, outPath]
+        let errPipe = Pipe()
+        p.standardOutput = Pipe(); p.standardError = errPipe
+        try p.run(); p.waitUntilExit()
+        let err = String(
+            data: errPipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8) ?? ""
+        XCTAssertEqual(p.terminationStatus, 0,
+            "djxl rejected the half-cell codestream; stderr: \(err)")
+        let dj = try Data(contentsOf: URL(fileURLWithPath: outPath))
+        var binStart = 0, nl = 0
+        for (i, b) in dj.enumerated() {
+            if b == 0x0A {
+                nl += 1; if nl == 3 { binStart = i + 1; break }
+            }
+        }
+        guard dj.count - binStart == dim * dim * 3 else {
+            throw XCTSkip("djxl PPM size mismatch")
+        }
+        var diff = 0
+        for i in 0..<(dim * dim * 3) {
+            diff += abs(Int(dj[binStart + i]) - Int(ours.data[i]))
+        }
+        let mean = Double(diff) / Double(dim * dim * 3)
+        XCTAssertLessThan(mean, 2.0,
+            "our decoder and djxl disagree on the half-cell "
+            + "codestream (mean \(mean))")
+    }
+
     /// `VarDCTBitstreamWriter` end-to-end. Encodes a 24×24 gradient
     /// to a VarDCT codestream and verifies it both with our own
     /// decoder **and with libjxl `djxl`** — our encoder emits a

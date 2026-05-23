@@ -184,15 +184,20 @@ public enum VarDCTEncoder {
                 + "\(error)")
         }
         // Small-block (single-cell) quant weights — `getDCT4QuantWeights`
-        // is the libjxl `kQuantModeDCT4` fan-out (a 4×4 weight table
-        // duplicated 2× along each axis into a 3 × 8×8 grid).
+        // and `getDCT4X8QuantWeights` are the libjxl `kQuantModeDCT4`
+        // and `kQuantModeDCT4X8` fan-outs (4×4 / 4×8 weight tables
+        // duplicated into the 3 × 8×8 small-block layout). The
+        // DCT4×8 table is shared between DCT4×8 and DCT8×4.
         let qweights4x4: [Float]
+        let qweights4x8: [Float]
         do {
             qweights4x4 = try QuantWeights.getDCT4QuantWeights(
                 bands: DefaultQuantBands.dct4x4)
+            qweights4x8 = try QuantWeights.getDCT4X8QuantWeights(
+                bands: DefaultQuantBands.dct4x8)
         } catch {
             throw EncoderError.unsupported(
-                "VarDCT encode: DCT4×4 quant weights failed: \(error)")
+                "VarDCT encode: small-block quant weights failed: \(error)")
         }
         let dct32Raw = ACStrategy.dct32x32.rawValue
         let dct64Raw = ACStrategy.dct64x64.rawValue
@@ -203,6 +208,8 @@ public enum VarDCTEncoder {
         let dct64x32Raw = ACStrategy.dct64x32.rawValue
         let dct32x64Raw = ACStrategy.dct32x64.rawValue
         let dct4x4Raw = ACStrategy.dct4x4.rawValue
+        let dct4x8Raw = ACStrategy.dct4x8.rawValue
+        let dct8x4Raw = ACStrategy.dct8x4.rawValue
 
         // (3) Forward-transform + quantise with a hierarchical
         // **trial encode**. Every even-aligned 16×16 region is
@@ -242,6 +249,9 @@ public enum VarDCTEncoder {
         let qw4x4X = Array(qweights4x4[0..<64])
         let qw4x4Y = Array(qweights4x4[64..<128])
         let qw4x4B = Array(qweights4x4[128..<192])
+        let qw4x8X = Array(qweights4x8[0..<64])
+        let qw4x8Y = Array(qweights4x8[64..<128])
+        let qw4x8B = Array(qweights4x8[128..<192])
         var covered = [Bool](repeating: false, count: nBlocks)
 
         // Extract a `size`×`size` single-channel patch at block
@@ -329,6 +339,44 @@ public enum VarDCTEncoder {
                 scale: acScale, qf: qf)
             let rB = forwardDCT4x4Block(
                 patch: patchBmY(bx, by, 8), quantWeights: qw4x4B,
+                scale: acScale, qf: qf)
+            return ([
+                Int32((rX.dc / mulDC[0]).rounded()),
+                Int32((rY.dc / mulDC[1]).rounded()),
+                Int32((rB.dc / mulDC[2]).rounded()),
+            ], [rX.ac, rY.ac, rB.ac])
+        }
+        // DCT4×8 of one block — two 4-tall × 8-wide DCTs stacked
+        // vertically. Same outputs as `dct8Cell` (3 DC + 3 × 64 AC).
+        func dct4x8Cell(_ bx: Int, _ by: Int)
+            -> (dc: [Int32], ac: [[Int32]]) {
+            let rX = forwardDCT4x8Block(
+                patch: patch(planeX, bx, by, 8), quantWeights: qw4x8X,
+                scale: acScale, qf: qf)
+            let rY = forwardDCT4x8Block(
+                patch: patch(planeY, bx, by, 8), quantWeights: qw4x8Y,
+                scale: acScale, qf: qf)
+            let rB = forwardDCT4x8Block(
+                patch: patchBmY(bx, by, 8), quantWeights: qw4x8B,
+                scale: acScale, qf: qf)
+            return ([
+                Int32((rX.dc / mulDC[0]).rounded()),
+                Int32((rY.dc / mulDC[1]).rounded()),
+                Int32((rB.dc / mulDC[2]).rounded()),
+            ], [rX.ac, rY.ac, rB.ac])
+        }
+        // DCT8×4 of one block — two 8-tall × 4-wide DCTs side-by-
+        // side. Shares the DCT4×8 quant weights table.
+        func dct8x4Cell(_ bx: Int, _ by: Int)
+            -> (dc: [Int32], ac: [[Int32]]) {
+            let rX = forwardDCT8x4Block(
+                patch: patch(planeX, bx, by, 8), quantWeights: qw4x8X,
+                scale: acScale, qf: qf)
+            let rY = forwardDCT8x4Block(
+                patch: patch(planeY, bx, by, 8), quantWeights: qw4x8Y,
+                scale: acScale, qf: qf)
+            let rB = forwardDCT8x4Block(
+                patch: patchBmY(bx, by, 8), quantWeights: qw4x8B,
                 scale: acScale, qf: qf)
             return ([
                 Int32((rX.dc / mulDC[0]).rounded()),
@@ -548,25 +596,50 @@ public enum VarDCTEncoder {
 
         let cellOffsets = [(0, 0), (1, 0), (0, 1), (1, 1)]
         // Commit one DCT8×8 block.
-        // Commit one 8×8 cell as the cheaper of DCT8×8 and DCT4×4
-        // (the per-cell trial — same coverage, different transform).
-        // DCT4×4 wins on cells with within-quadrant detail that
-        // DCT8×8 spreads across more high-frequency coefficients.
-        func commitDCT8(_ bx: Int, _ by: Int) {
-            let idx = by * blocksX + bx
+        // Per-cell trial — pick the cheapest single-cell strategy
+        // among DCT8×8, DCT4×4, DCT4×8, DCT8×4. Each transform has
+        // a distinct sweet spot:
+        //   • DCT8×8     — smooth gradients (low overall AC energy).
+        //   • DCT4×4     — within-quadrant detail (cross-quadrant
+        //                  high-freq wasted by DCT8×8).
+        //   • DCT4×8     — sharp horizontal seam (top/bot halves flat).
+        //   • DCT8×4     — sharp vertical seam (left/right halves flat).
+        func bestSmallCell(_ bx: Int, _ by: Int)
+            -> (strat: UInt8,
+                dc: [Int32], ac: [[Int32]],
+                cost: Int) {
             let c8 = dct8Cell(bx, by)
             let c44 = dct4x4Cell(bx, by)
-            var cost8 = 0, cost44 = 0
+            let c48 = dct4x8Cell(bx, by)
+            let c84 = dct8x4Cell(bx, by)
+            var cost8 = 0, cost44 = 0, cost48 = 0, cost84 = 0
             for c in 0..<3 {
                 cost8 += tokenCost(c8.ac[c], order: order8)
                 cost44 += tokenCost(c44.ac[c], order: order8)
+                cost48 += tokenCost(c48.ac[c], order: order8)
+                cost84 += tokenCost(c84.ac[c], order: order8)
             }
-            let pick = cost44 < cost8 ? c44 : c8
+            let minCost = min(min(cost8, cost44), min(cost48, cost84))
+            if minCost == cost44 {
+                return (dct4x4Raw, c44.dc, c44.ac, cost44)
+            }
+            if minCost == cost48 {
+                return (dct4x8Raw, c48.dc, c48.ac, cost48)
+            }
+            if minCost == cost84 {
+                return (dct8x4Raw, c84.dc, c84.ac, cost84)
+            }
+            return (0, c8.dc, c8.ac, cost8)
+        }
+        // Commit one 8×8 cell with the cheapest single-cell strategy.
+        func commitDCT8(_ bx: Int, _ by: Int) {
+            let pick = bestSmallCell(bx, by)
+            let idx = by * blocksX + bx
             dcQuant[0][idx] = pick.dc[0]
             dcQuant[1][idx] = pick.dc[1]
             dcQuant[2][idx] = pick.dc[2]
             acQuant[idx] = pick.ac
-            acStrategy[idx] = cost44 < cost8 ? dct4x4Raw : 0
+            acStrategy[idx] = pick.strat
             covered[idx] = true
         }
         // Commit one DCT16×8 vertical pair (top + bottom cells) —
@@ -612,38 +685,22 @@ public enum VarDCTEncoder {
         // two DCT8×16s (horizontal split), or four DCT8×8s.
         func eval16Region(_ rx: Int, _ ry: Int) -> Int {
             let r16 = dct16Region(rx, ry)
-            let c8 = cellOffsets.map {
-                dct8Cell(rx + $0.0, ry + $0.1)
+            // Per-cell small-block trial — each of the 4 cells
+            // independently picks the cheapest of DCT8/DCT4×4/
+            // DCT4×8/DCT8×4 via `bestSmallCell`. The "four small
+            // cells" cost is the sum of the per-cell minima.
+            let cellPicks = cellOffsets.map {
+                bestSmallCell(rx + $0.0, ry + $0.1)
             }
-            // Per-cell DCT4×4 trial — DCT4×4 wins on cells with
-            // within-quadrant high-frequency detail. Each cell
-            // independently picks min(DCT8, DCT4×4); the small-cell
-            // cost is the sum.
-            let c44 = cellOffsets.map {
-                dct4x4Cell(rx + $0.0, ry + $0.1)
-            }
-            var cellChoices = [UInt8](repeating: 0, count: 4)
             // Vertical split — two DCT16×8 pairs (left + right cols).
             let pairV1 = dct16x8Pair(rx, ry)
             let pairV2 = dct16x8Pair(rx + 1, ry)
             // Horizontal split — two DCT8×16 pairs (top + bottom).
             let pairH1 = dct8x16Pair(rx, ry)
             let pairH2 = dct8x16Pair(rx, ry + 1)
-            var cost16 = 0, costSmall = 0, costV = 0, costH = 0
-            for i in 0..<4 {
-                var ci8 = 0, ci44 = 0
-                for c in 0..<3 {
-                    ci8 += tokenCost(c8[i].ac[c], order: order8)
-                    ci44 += tokenCost(c44[i].ac[c], order: order8)
-                }
-                if ci44 < ci8 {
-                    cellChoices[i] = dct4x4Raw
-                    costSmall += ci44
-                } else {
-                    cellChoices[i] = 0
-                    costSmall += ci8
-                }
-            }
+            var cost16 = 0, costV = 0, costH = 0
+            var costSmall = 0
+            for pick in cellPicks { costSmall += pick.cost }
             for c in 0..<3 {
                 cost16 += tokenCost(r16.ac[c], order: order16)
                 costV += tokenCost(pairV1.ac[c], order: order8x16)
@@ -678,12 +735,12 @@ public enum VarDCTEncoder {
             }
             for (i, off) in cellOffsets.enumerated() {
                 let cIdx = (ry + off.1) * blocksX + (rx + off.0)
-                let cell = cellChoices[i] == dct4x4Raw ? c44[i] : c8[i]
-                acStrategy[cIdx] = cellChoices[i]
-                dcQuant[0][cIdx] = cell.dc[0]
-                dcQuant[1][cIdx] = cell.dc[1]
-                dcQuant[2][cIdx] = cell.dc[2]
-                acQuant[cIdx] = cell.ac
+                let pick = cellPicks[i]
+                acStrategy[cIdx] = pick.strat
+                dcQuant[0][cIdx] = pick.dc[0]
+                dcQuant[1][cIdx] = pick.dc[1]
+                dcQuant[2][cIdx] = pick.dc[2]
+                acQuant[cIdx] = pick.ac
                 covered[cIdx] = true
             }
             return costSmall

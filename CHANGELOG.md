@@ -286,6 +286,15 @@ The half-cell asymmetric small-block pair. DCT4×8 and DCT8×4 each cover an 8×
 - **Scope.** DSP foundation only — no bitstream change, encoder output byte-identical to v0.11.0ab. Trial-encode wiring follows in v0.11.0ad.
 - **408 tests passing, 3 skipped, 0 failures.**
 
+### v0.11.0ad — AC-strategy encode: DCT4×8 / DCT8×4 emission
+
+DCT4×8 and DCT8×4 join the per-cell trial. The four single-cell strategies (DCT8×8, DCT4×4, DCT4×8, DCT8×4) compete on every 8×8 cell that isn't absorbed by a multi-cell strategy.
+
+- **`VarDCTEncoder.forward`** — the per-cell trial is refactored behind a `bestSmallCell(bx, by)` helper that scores all four single-cell transforms via `tokenCost` and returns the cheapest with its DC, AC, and raw-byte strategy. `commitDCT8` is now a direct wrapper around the helper; `eval16Region`'s "four small cells" branch uses it too. Each transform has a distinct sweet spot — DCT4×8 wins on a half with a clean horizontal ramp (one column-frequency AC) where DCT4×4 has to split the ramp across two quadrants and pay the Haar of the per-quadrant DCs.
+- **No bitstream-writer change.** DCT4×8 and DCT8×4 use the standard 8×8 zigzag (`naturalCoeffOrder` for any single-cell strategy); the block-context map already routes ord-bucket 1 contexts (shared with the other small-block strategies); `ACEncoder.tokenize` is generic over `coveredBlocks == 1`.
+- **Verified.** `testVarDCTBitstreamWriter_SmallBlockHalfCell` encodes a 16×16 frame whose four 8×8 cells each carry a half-aligned reversed gradient — half horizontal (top-half ramps left→right, bottom-half right→left) and half vertical — asserts at least one cell picks DCT4×8 or DCT8×4, and confirms `djxl 0.11.2` decodes the codestream within `mean < 2` of our decoder.
+- **409 tests passing, 3 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)
