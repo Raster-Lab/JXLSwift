@@ -183,18 +183,23 @@ public enum VarDCTEncoder {
                 "VarDCT encode: multi-block quant weights failed: "
                 + "\(error)")
         }
-        // Small-block (single-cell) quant weights — `getDCT4QuantWeights`
+        // Small-block (single-cell) quant weights. `getDCT4QuantWeights`
         // and `getDCT4X8QuantWeights` are the libjxl `kQuantModeDCT4`
         // and `kQuantModeDCT4X8` fan-outs (4×4 / 4×8 weight tables
-        // duplicated into the 3 × 8×8 small-block layout). The
+        // duplicated into the 3 × 8×8 small-block layout); the
         // DCT4×8 table is shared between DCT4×8 and DCT8×4.
+        // `getDCT2QuantWeights` is the `kQuantModeDCT2X2` cascade
+        // table — one 64-entry weight matrix per channel.
         let qweights4x4: [Float]
         let qweights4x8: [Float]
+        let qweights2x2: [Float]
         do {
             qweights4x4 = try QuantWeights.getDCT4QuantWeights(
                 bands: DefaultQuantBands.dct4x4)
             qweights4x8 = try QuantWeights.getDCT4X8QuantWeights(
                 bands: DefaultQuantBands.dct4x8)
+            qweights2x2 = QuantWeights.getDCT2QuantWeights(
+                DefaultQuantBands.dct2x2)
         } catch {
             throw EncoderError.unsupported(
                 "VarDCT encode: small-block quant weights failed: \(error)")
@@ -210,6 +215,7 @@ public enum VarDCTEncoder {
         let dct4x4Raw = ACStrategy.dct4x4.rawValue
         let dct4x8Raw = ACStrategy.dct4x8.rawValue
         let dct8x4Raw = ACStrategy.dct8x4.rawValue
+        let dct2x2Raw = ACStrategy.dct2x2.rawValue
 
         // (3) Forward-transform + quantise with a hierarchical
         // **trial encode**. Every even-aligned 16×16 region is
@@ -252,6 +258,9 @@ public enum VarDCTEncoder {
         let qw4x8X = Array(qweights4x8[0..<64])
         let qw4x8Y = Array(qweights4x8[64..<128])
         let qw4x8B = Array(qweights4x8[128..<192])
+        let qw2x2X = Array(qweights2x2[0..<64])
+        let qw2x2Y = Array(qweights2x2[64..<128])
+        let qw2x2B = Array(qweights2x2[128..<192])
         var covered = [Bool](repeating: false, count: nBlocks)
 
         // Extract a `size`×`size` single-channel patch at block
@@ -377,6 +386,25 @@ public enum VarDCTEncoder {
                 scale: acScale, qf: qf)
             let rB = forwardDCT8x4Block(
                 patch: patchBmY(bx, by, 8), quantWeights: qw4x8B,
+                scale: acScale, qf: qf)
+            return ([
+                Int32((rX.dc / mulDC[0]).rounded()),
+                Int32((rY.dc / mulDC[1]).rounded()),
+                Int32((rB.dc / mulDC[2]).rounded()),
+            ], [rX.ac, rY.ac, rB.ac])
+        }
+        // DCT2×2 of one block — hierarchical 2×2-Haar cascade.
+        // Same outputs as `dct8Cell` (3 DC + 3 × 64 AC).
+        func dct2x2Cell(_ bx: Int, _ by: Int)
+            -> (dc: [Int32], ac: [[Int32]]) {
+            let rX = forwardDCT2x2Block(
+                patch: patch(planeX, bx, by, 8), quantWeights: qw2x2X,
+                scale: acScale, qf: qf)
+            let rY = forwardDCT2x2Block(
+                patch: patch(planeY, bx, by, 8), quantWeights: qw2x2Y,
+                scale: acScale, qf: qf)
+            let rB = forwardDCT2x2Block(
+                patch: patchBmY(bx, by, 8), quantWeights: qw2x2B,
                 scale: acScale, qf: qf)
             return ([
                 Int32((rX.dc / mulDC[0]).rounded()),
@@ -597,13 +625,15 @@ public enum VarDCTEncoder {
         let cellOffsets = [(0, 0), (1, 0), (0, 1), (1, 1)]
         // Commit one DCT8×8 block.
         // Per-cell trial — pick the cheapest single-cell strategy
-        // among DCT8×8, DCT4×4, DCT4×8, DCT8×4. Each transform has
-        // a distinct sweet spot:
+        // among DCT8×8, DCT4×4, DCT4×8, DCT8×4, DCT2×2. Each
+        // transform has a distinct sweet spot:
         //   • DCT8×8     — smooth gradients (low overall AC energy).
         //   • DCT4×4     — within-quadrant detail (cross-quadrant
         //                  high-freq wasted by DCT8×8).
         //   • DCT4×8     — sharp horizontal seam (top/bot halves flat).
         //   • DCT8×4     — sharp vertical seam (left/right halves flat).
+        //   • DCT2×2     — multi-scale Haar detail (frequency content
+        //                  at every cascade level simultaneously).
         func bestSmallCell(_ bx: Int, _ by: Int)
             -> (strat: UInt8,
                 dc: [Int32], ac: [[Int32]],
@@ -612,14 +642,21 @@ public enum VarDCTEncoder {
             let c44 = dct4x4Cell(bx, by)
             let c48 = dct4x8Cell(bx, by)
             let c84 = dct8x4Cell(bx, by)
-            var cost8 = 0, cost44 = 0, cost48 = 0, cost84 = 0
+            let c22 = dct2x2Cell(bx, by)
+            var cost8 = 0, cost44 = 0, cost48 = 0, cost84 = 0, cost22 = 0
             for c in 0..<3 {
                 cost8 += tokenCost(c8.ac[c], order: order8)
                 cost44 += tokenCost(c44.ac[c], order: order8)
                 cost48 += tokenCost(c48.ac[c], order: order8)
                 cost84 += tokenCost(c84.ac[c], order: order8)
+                cost22 += tokenCost(c22.ac[c], order: order8)
             }
-            let minCost = min(min(cost8, cost44), min(cost48, cost84))
+            let minCost = min(
+                min(min(cost8, cost44), min(cost48, cost84)),
+                cost22)
+            if minCost == cost22 {
+                return (dct2x2Raw, c22.dc, c22.ac, cost22)
+            }
             if minCost == cost44 {
                 return (dct4x4Raw, c44.dc, c44.ac, cost44)
             }

@@ -304,6 +304,15 @@ The last single-cell small-block transform. DCT2×2 is a hierarchical 2×2-Haar 
 - **Scope.** DSP foundation only — no bitstream change, encoder output byte-identical to v0.11.0ad. Trial-encode wiring follows in v0.11.0af.
 - **410 tests passing, 3 skipped, 0 failures.**
 
+### v0.11.0af — AC-strategy encode: DCT2×2 emission
+
+DCT2×2 joins `bestSmallCell` as the fifth single-cell candidate. Adding one more option to a min-of-N comparison cannot make any region worse, so the integration is byte-safe by construction. DCT2×2's sweet spot is narrow (multi-scale hierarchical detail at every Haar level simultaneously) — libjxl itself selects it rarely on real content, so we don't expect frequent firing.
+
+- **`VarDCTEncoder.forward`** — `bestSmallCell` now scores all five single-cell transforms (DCT8×8, DCT4×4, DCT4×8, DCT8×4, DCT2×2) and returns the cheapest. DCT2×2 uses the `kQuantModeDCT2X2` weight table (`getDCT2QuantWeights`).
+- **No bitstream-writer change.** DCT2×2 shares ord-bucket 1 and the standard 8×8 zigzag with the rest of the single-cell strategies.
+- **Verified.** `testVarDCTBitstreamWriter_SmallBlockDCT2x2` is an integration-safety check — a multi-scale textured fixture is encoded with DCT2×2 in the pool, and the codestream must still decode through our decoder **and `djxl`** at `mean < 2`. Whether DCT2×2 *actually* wins on this particular fixture is a heuristic outcome, not an integration requirement.
+- **411 tests passing, 3 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)

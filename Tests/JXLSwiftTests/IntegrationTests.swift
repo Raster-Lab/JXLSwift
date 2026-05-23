@@ -9509,6 +9509,76 @@ extension FoundationTests {
             + "codestream (mean \(mean))")
     }
 
+    /// VarDCT AC-strategy — DCT2×2 emission integration check.
+    /// DCT2×2 (hierarchical Haar cascade) has the narrowest sweet
+    /// spot of the small-block strategies — libjxl itself selects
+    /// it rarely on real content — so this test verifies the
+    /// **integration is safe**: with DCT2×2 in the `bestSmallCell`
+    /// pool, a textured fixture still round-trips through our
+    /// decoder and `djxl` at `mean < 2`. The DCT2×2 forward
+    /// primitive is independently exercised by
+    /// `testVarDCTEncoder_ForwardDCT2x2Block_RoundTrip`; whether
+    /// any cell *actually* picks DCT2×2 is a heuristic outcome
+    /// (the test passes either way).
+    func testVarDCTBitstreamWriter_SmallBlockDCT2x2() throws {
+        let dim = 16
+        var frame = ImageFrame(width: dim, height: dim, channels: 3)
+        for y in 0..<dim {
+            for x in 0..<dim {
+                let s2 = ((x + y) % 2 == 0) ? 30 : -30
+                let s4 = (((x / 2) + (y / 2)) % 2 == 0) ? 40 : -40
+                let s8 = (((x / 4) + (y / 4)) % 2 == 0) ? 50 : -50
+                let R = 130 + s2 + s4 + s8
+                let G = 130 - s2 / 2 + s4 - s8 / 2
+                let B = 130 + s2 - s4 + s8
+                let i = (y * dim + x) * 3
+                frame.data[i + 0] = UInt8(clamping: R)
+                frame.data[i + 1] = UInt8(clamping: G)
+                frame.data[i + 2] = UInt8(clamping: B)
+            }
+        }
+        let codestream = try VarDCTBitstreamWriter.encode(frame: frame)
+        let ours = try JXLDecoder().decode(codestream)
+
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("djxl not available")
+        }
+        let tmp = NSTemporaryDirectory()
+        let jxlPath = tmp + "vdt_dct2x2.jxl"
+        let outPath = tmp + "vdt_dct2x2_dj.ppm"
+        try codestream.write(to: URL(fileURLWithPath: jxlPath))
+        let p = Process()
+        p.launchPath = djxl
+        p.arguments = [jxlPath, outPath]
+        let errPipe = Pipe()
+        p.standardOutput = Pipe(); p.standardError = errPipe
+        try p.run(); p.waitUntilExit()
+        let err = String(
+            data: errPipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8) ?? ""
+        XCTAssertEqual(p.terminationStatus, 0,
+            "djxl rejected the textured codestream; stderr: \(err)")
+        let dj = try Data(contentsOf: URL(fileURLWithPath: outPath))
+        var binStart = 0, nl = 0
+        for (i, b) in dj.enumerated() {
+            if b == 0x0A {
+                nl += 1; if nl == 3 { binStart = i + 1; break }
+            }
+        }
+        guard dj.count - binStart == dim * dim * 3 else {
+            throw XCTSkip("djxl PPM size mismatch")
+        }
+        var diff = 0
+        for i in 0..<(dim * dim * 3) {
+            diff += abs(Int(dj[binStart + i]) - Int(ours.data[i]))
+        }
+        let mean = Double(diff) / Double(dim * dim * 3)
+        XCTAssertLessThan(mean, 2.0,
+            "our decoder and djxl disagree on the textured "
+            + "codestream after DCT2×2 join (mean \(mean))")
+    }
+
     /// VarDCT AC-strategy — DCT4×8 / DCT8×4 end-to-end (half-cell
     /// small-block). Each 8×8 cell carries a horizontal (or
     /// vertical) gradient across the full half-width that *reverses*
