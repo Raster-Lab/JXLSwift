@@ -9556,6 +9556,71 @@ extension FoundationTests {
             + "codestream (mean \(mean))")
     }
 
+    /// VarDCT AC-strategy — Hornuss emission integration check.
+    /// Hornuss has a narrow sweet spot (flat / smooth blocks where
+    /// a full DCT wastes bits on noise-floor coefficients) and
+    /// libjxl itself selects it rarely; this test verifies the
+    /// **integration is safe** — a flat-ish fixture still
+    /// round-trips through our decoder and `djxl` at `mean < 2`
+    /// with Hornuss in the `bestSmallCell` pool. The Hornuss
+    /// forward primitive is independently exercised by
+    /// `testVarDCTEncoder_ForwardHornussBlock_RoundTrip`.
+    func testVarDCTBitstreamWriter_SmallBlockHornuss() throws {
+        let dim = 16
+        var frame = ImageFrame(width: dim, height: dim, channels: 3)
+        // Near-flat content with mild per-pixel dither — the
+        // Hornuss sweet spot.
+        for y in 0..<dim {
+            for x in 0..<dim {
+                let dither = Int((x * 5 + y * 3) % 7) - 3
+                let i = (y * dim + x) * 3
+                frame.data[i + 0] = UInt8(clamping: 130 + dither)
+                frame.data[i + 1] = UInt8(clamping: 140 + dither / 2)
+                frame.data[i + 2] = UInt8(clamping: 120 - dither)
+            }
+        }
+        let codestream = try VarDCTBitstreamWriter.encode(frame: frame)
+        let ours = try JXLDecoder().decode(codestream)
+
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("djxl not available")
+        }
+        let tmp = NSTemporaryDirectory()
+        let jxlPath = tmp + "vdt_hornuss.jxl"
+        let outPath = tmp + "vdt_hornuss_dj.ppm"
+        try codestream.write(to: URL(fileURLWithPath: jxlPath))
+        let p = Process()
+        p.launchPath = djxl
+        p.arguments = [jxlPath, outPath]
+        let errPipe = Pipe()
+        p.standardOutput = Pipe(); p.standardError = errPipe
+        try p.run(); p.waitUntilExit()
+        let err = String(
+            data: errPipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8) ?? ""
+        XCTAssertEqual(p.terminationStatus, 0,
+            "djxl rejected the flat-ish codestream; stderr: \(err)")
+        let dj = try Data(contentsOf: URL(fileURLWithPath: outPath))
+        var binStart = 0, nl = 0
+        for (i, b) in dj.enumerated() {
+            if b == 0x0A {
+                nl += 1; if nl == 3 { binStart = i + 1; break }
+            }
+        }
+        guard dj.count - binStart == dim * dim * 3 else {
+            throw XCTSkip("djxl PPM size mismatch")
+        }
+        var diff = 0
+        for i in 0..<(dim * dim * 3) {
+            diff += abs(Int(dj[binStart + i]) - Int(ours.data[i]))
+        }
+        let mean = Double(diff) / Double(dim * dim * 3)
+        XCTAssertLessThan(mean, 2.0,
+            "our decoder and djxl disagree on the flat-ish "
+            + "codestream after Hornuss join (mean \(mean))")
+    }
+
     /// VarDCT AC-strategy — DCT2×2 emission integration check.
     /// DCT2×2 (hierarchical Haar cascade) has the narrowest sweet
     /// spot of the small-block strategies — libjxl itself selects

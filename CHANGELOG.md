@@ -322,6 +322,15 @@ The IDENTITY ("hornuss") transform — a near-spatial small-block strategy. Each
 - **Scope.** DSP foundation only — no bitstream change, encoder output byte-identical to v0.11.0af. Trial-encode wiring follows in v0.11.0ah.
 - **412 tests passing, 3 skipped, 0 failures.**
 
+### v0.11.0ah — AC-strategy encode: Hornuss emission
+
+Hornuss joins `bestSmallCell` as the sixth single-cell candidate. Same byte-safety argument as v0.11.0af: adding one more option to a min-of-N comparison cannot regress any region. Hornuss's sweet spot is flat / smooth-block content — libjxl itself selects it rarely.
+
+- **`VarDCTEncoder.forward`** — `bestSmallCell` now scores all six single-cell transforms (DCT8×8, DCT4×4, DCT4×8, DCT8×4, DCT2×2, Hornuss) and returns the cheapest. Hornuss uses the `kQuantModeIdentity` weight table (`getIdentityQuantWeights`).
+- **No bitstream-writer change.** Hornuss shares ord-bucket 1 and the standard 8×8 zigzag with the rest of the single-cell strategies.
+- **Verified.** `testVarDCTBitstreamWriter_SmallBlockHornuss` is an integration-safety check — a flat-ish dithered fixture is encoded with Hornuss in the pool, and the codestream must still decode through our decoder **and `djxl`** at `mean < 2`. Whether any cell *actually* picks Hornuss on this particular fixture is a heuristic outcome, not an integration requirement.
+- **413 tests passing, 3 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)
