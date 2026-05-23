@@ -8564,6 +8564,80 @@ extension FoundationTests {
         }
     }
 
+    /// DCT64×64 encoder DSP foundation.
+    /// `dcFromLowestFrequencies64x64` must exactly invert the
+    /// decoder's `dct64x64`, so the encoder can split a DCT64×64
+    /// block's 64 LLF coefficients into the 64 DC-plane cell values.
+    func testLowestFrequenciesFromDC_DCT64x64_Inverse() throws {
+        let cases: [[Float]] = [
+            [Float](repeating: 100, count: 64),
+            (0..<64).map { Float($0) * 2 - 50 },
+            (0..<64).map { Float(($0 * 7) % 23) - 10 },
+            [Float](repeating: 0, count: 64),
+        ]
+        for dc in cases {
+            let llf = LowestFrequenciesFromDC.dct64x64(dc: dc)
+            let back = LowestFrequenciesFromDC
+                .dcFromLowestFrequencies64x64(llf: llf)
+            for i in 0..<64 {
+                XCTAssertEqual(back[i], dc[i], accuracy: 5e-2,
+                    "DCT64x64 LLF inverse mismatch at \(i)")
+            }
+        }
+    }
+
+    /// DCT64×64 encoder DSP foundation. `forwardDCT64x64Block`
+    /// (forward DCT64 + LLF→DC split + AC quantise) round-trips a
+    /// smooth 64×64 patch through the decoder's DCT64 reconstruction
+    /// (`dct64x64` LLF + dequant + transpose + IDCT64) within a
+    /// bounded error.
+    func testVarDCTEncoder_ForwardDCT64x64Block_RoundTrip() throws {
+        var patch = [Float](repeating: 0, count: 4096)
+        for y in 0..<64 {
+            for x in 0..<64 {
+                patch[y * 64 + x] = 0.12 + Float(x + y) * 0.003
+            }
+        }
+        let qw = try QuantWeights.getQuantWeights(
+            rows: 64, cols: 64, bands: DefaultQuantBands.dct64x64)
+        let yWeights = Array(qw[4096..<8192])
+        let globalScale: UInt32 = 5111
+        let qf: Int32 = 5
+        let acScale = Float(globalScale) / 65536.0
+        let (dc, ac) = VarDCTEncoder.forwardDCT64x64Block(
+            patch: patch, quantWeights: yWeights,
+            scale: acScale, qf: qf)
+        XCTAssertEqual(dc.count, 64)
+        XCTAssertEqual(ac.count, 4096)
+        // Decoder reconstruction.
+        var coef = [Float](repeating: 0, count: 4096)
+        let llf = LowestFrequenciesFromDC.dct64x64(dc: dc)
+        for r in 0..<8 {
+            for c in 0..<8 { coef[r * 64 + c] = llf[r * 8 + c] }
+        }
+        let invQuantAC = 65536.0 / Float(globalScale) / Float(qf)
+        for np in 0..<4096 {
+            let r = np / 64, c = np % 64
+            if r < 8 && c < 8 { continue }
+            coef[np] = AdjustQuantBias.adjust(
+                channel: 1, quant: ac[np])
+                / yWeights[np] * invQuantAC
+        }
+        JXLDecoder.transposeSquareInPlace(&coef, size: 64)
+        AccelerateDCT.idct2D(&coef, size: 64)
+        var meanErr: Float = 0, maxErr: Float = 0
+        for i in 0..<4096 {
+            let e = abs(coef[i] - patch[i])
+            meanErr += e
+            maxErr = max(maxErr, e)
+        }
+        meanErr /= 4096
+        XCTAssertLessThan(meanErr, 0.03,
+            "DCT64 block round-trip mean error \(meanErr)")
+        XCTAssertLessThan(maxErr, 0.20,
+            "DCT64 block round-trip max error \(maxErr)")
+    }
+
     /// DCT16×32 encoder DSP foundation. `forwardDCT16x32Block`
     /// round-trips a 16-row × 32-col patch (32w × 16h pixel,
     /// DCT16×32 coef layout matches the IDCT output directly)

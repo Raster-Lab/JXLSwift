@@ -219,6 +219,16 @@ The 32×32-region trial encode is now **four-way** instead of two — the ord-6 
 - **Verified.** `testVarDCTBitstreamWriter_AsymmetricOrd6` encodes a 64×64 16-px-stripe frame — confirmed to select DCT32×16 or DCT16×32 — and confirms `djxl 0.11.2` decodes it and our decoder agrees on the pixels.
 - **400 tests passing, 3 skipped, 0 failures.**
 
+### v0.11.0w — AC-strategy encode: DCT64×64 DSP foundation
+
+The square AC-strategy progression continues — DCT64×64 (libjxl ord 7) covers a 8×8 grid of cells. Foundation only this milestone; emission follows.
+
+- **`LowestFrequenciesFromDC.dcFromLowestFrequencies64x64`** — encoder-direction inverse of `dct64x64`. Undoes the transpose + per-axis `<8, 64>` resample, then the 2-D forward scaled DCT-8 via `AccelerateDCT.idct2D(size: 8)`, recovering the 64 DC-plane cell values from a block's 64 LLF coefficients.
+- **`VarDCTEncoder.forwardDCT64x64Block`** — forward `dct2D(size: 64)` + transpose, splits the 8×8 LLF corner to the DC plane, quantises the 4032 AC coefficients with the DCT64 matrix.
+- **Verified.** `testLowestFrequenciesFromDC_DCT64x64_Inverse` confirms `dct64x64 ∘ dcFromLowestFrequencies64x64 = identity`; `testVarDCTEncoder_ForwardDCT64x64Block_RoundTrip` round-trips a smooth 64×64 patch through the decoder's full DCT64 reconstruction within bounded error.
+- **Scope.** DSP foundation only — no bitstream change, encoder output byte-identical to v0.11.0v.
+- **402 tests passing, 3 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)

@@ -964,4 +964,41 @@ public enum VarDCTEncoder {
         }
         return (dc, ac)
     }
+
+    /// Forward + quantise one 64×64 single-channel patch as a
+    /// DCT64×64 block (libjxl ord 7). The 64 lowest-frequency
+    /// coefficients (the 8×8 corner of the 64×64 grid) become 64
+    /// DC-plane cell values via `dcFromLowestFrequencies64x64`.
+    /// Returns those 64 float DC values (row-major over the covered
+    /// cells — the caller quantises DC) and the 4032 quantised AC
+    /// coefficients in the 4096-entry natural grid (the 64 LLF
+    /// positions left 0).
+    static func forwardDCT64x64Block(
+        patch: [Float], quantWeights: [Float],
+        scale: Float, qf: Int32
+    ) -> (dc: [Float], ac: [Int32]) {
+        precondition(patch.count == 4096
+                     && quantWeights.count == 4096,
+                     "DCT64 block needs a 64×64 patch + 4096 weights")
+        var coef = patch
+        AccelerateDCT.dct2D(&coef, size: 64)
+        transposeSquare(&coef, size: 64)
+        // 64 LLF coefficients — the 8×8 corner.
+        var llf = [Float](repeating: 0, count: 64)
+        for r in 0..<8 {
+            for c in 0..<8 { llf[r * 8 + c] = coef[r * 64 + c] }
+        }
+        let dc = LowestFrequenciesFromDC
+            .dcFromLowestFrequencies64x64(llf: llf)
+        var ac = [Int32](repeating: 0, count: 4096)
+        for r in 0..<64 {
+            for c in 0..<64 where !(r < 8 && c < 8) {
+                let np = r * 64 + c
+                ac[np] = quantizeAC(
+                    coef[np], weight: quantWeights[np],
+                    scale: scale, qf: qf)
+            }
+        }
+        return (dc, ac)
+    }
 }

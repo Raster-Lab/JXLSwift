@@ -409,6 +409,30 @@ public enum LowestFrequenciesFromDC {
         return result
     }
 
+    /// Inverse of `dct64x64` — the **encoder** direction. Recovers
+    /// the 64 DC-plane cell values (row-major over the 8×8 covered
+    /// cells) from a DCT64×64 block's 64 LLF coefficients.
+    /// `dct64x64(dcFromLowestFrequencies64x64(llf)) == llf` within
+    /// float epsilon.
+    public static func dcFromLowestFrequencies64x64(
+        llf: [Float]
+    ) -> [Float] {
+        precondition(llf.count == 64,
+                     "DCT64x64 LLF needs 64 coefficients")
+        // Undo the transpose + per-axis `<8, 64>` resample.
+        var scaled = [Float](repeating: 0, count: 64)
+        for y in 0..<8 {
+            for x in 0..<8 {
+                scaled[y * 8 + x] = llf[x * 8 + y]
+                    / (kScales8to64[x] * kScales8to64[y])
+            }
+        }
+        // Undo the 2-D forward scaled DCT-8.
+        var dc = scaled
+        AccelerateDCT.idct2D(&dc, size: 8)
+        return dc
+    }
+
     /// DCT32x32 (libjxl ord 3) path: 16 DC values from the 4×4
     /// covered cells reinterpret to 16 LLF coefficients at the
     /// top-left 4×4 corner of the 32×32 coef block.
