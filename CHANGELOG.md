@@ -258,6 +258,15 @@ The hierarchical trial gains an ord-8 fork — DCT64×32 (libjxl ord 8 vertical-
 - **Verified.** `testVarDCTBitstreamWriter_AsymmetricOrd8` encodes a 64×64 frame split by a single vertical seam at `x = 32` (two flat colours), asserts at least one cell picks `DCT64×32` or `DCT32×64`, and confirms `djxl 0.11.2` decodes the codestream within `mean < 2` of our decoder.
 - **404 tests passing, 3 skipped, 0 failures.**
 
+### v0.11.0aa — AC-strategy encode: DCT4×4 DSP foundation
+
+The small-block axis. DCT4×4 covers one 8×8 cell as four 4×4 DCTs — its coefficient packing differs entirely from the multi-cell strategies (quadrant DCs combined by 2×2 Haar into the four top-left positions, quadrant ACs strided-scattered into the remaining 60), so it needs its own forward primitive.
+
+- **`VarDCTEncoder.forwardDCT4x4Block`** — exact inverse of `DCT4x4Transform.transformToPixels`. Splits an 8×8 patch into four 4×4 quadrants, forward-DCTs each (`dct2D(4) → transposeSquareInPlace(4)`, the inverse of the decoder's `transpose → idct2D` reconstruction), inverse-Haars the four quadrant DCs into positions `(0,0)`, `(0,1)`, `(1,0)`, `(1,1)` of the 8×8 coef grid, strided-scatters the 60 quadrant AC coefficients to positions `(y+iy·2, x+ix·2)`, then quantises the 63 AC slots through the shared `quantizeAC` path.
+- **Verified.** `testVarDCTEncoder_ForwardDCT4x4Block_RoundTrip` puts a 4×4-quadrant-aligned high-frequency checkerboard patch through `forwardDCT4x4Block` and the decoder's `DCT4x4Transform.transformToPixels` (with dequant) — the round-trip stays within `mean < 0.02`, `max < 0.10` of the source.
+- **Scope.** DSP foundation only — no bitstream change, encoder output byte-identical to v0.11.0z. Trial-encode wiring follows in v0.11.0ab.
+- **405 tests passing, 3 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)

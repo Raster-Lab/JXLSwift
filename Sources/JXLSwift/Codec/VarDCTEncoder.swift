@@ -934,6 +934,80 @@ public enum VarDCTEncoder {
         return (coef[0], ac)
     }
 
+    /// Forward-transform + quantise one 8×8 single-channel patch as a
+    /// DCT4×4 block — the analysis half of a `dct4x4` AC-strategy
+    /// cell. The 8×8 cell is split into four 4×4 quadrants; each is
+    /// forward-DCT'd, and the 64 output coefficients are laid out in
+    /// the libjxl packed scheme: the four quadrant DCs combine by a
+    /// 2×2 Haar into positions `(0,0)`, `(0,1)`, `(1,0)`, `(1,1)` of
+    /// the 8×8 coef grid (the cell DC + three top-left AC), and each
+    /// quadrant's 15 ACs are strided-scattered into positions
+    /// `(y + iy·2, x + ix·2)` for `(iy, ix) ∈ [0,4) × [0,4) \ {(0,0)}`.
+    /// Returns the cell-DC (which the caller routes through the DC
+    /// plane) and the 63 quantised AC coefficients in the 64-entry
+    /// natural grid (position 0 left 0). Exact inverse of
+    /// `DCT4x4Transform.transformToPixels`.
+    static func forwardDCT4x4Block(
+        patch: [Float], quantWeights: [Float],
+        scale: Float, qf: Int32
+    ) -> (dc: Float, ac: [Int32]) {
+        precondition(patch.count == 64 && quantWeights.count == 64,
+                     "DCT4×4 block needs an 8×8 patch + 64 weights")
+        // (1) Forward 4×4 DCT on each quadrant. The decoder applies
+        // `transposeSquareInPlace(4) → idct2D(4)`; the encoder is its
+        // inverse — `dct2D(4) → transposeSquareInPlace(4)`.
+        var quadCoef = [[Float]](
+            repeating: [Float](repeating: 0, count: 16), count: 4)
+        var quadDC = [Float](repeating: 0, count: 4)
+        for y in 0..<2 {
+            for x in 0..<2 {
+                var block = [Float](repeating: 0, count: 16)
+                for iy in 0..<4 {
+                    for ix in 0..<4 {
+                        block[iy * 4 + ix] =
+                            patch[(y * 4 + iy) * 8 + x * 4 + ix]
+                    }
+                }
+                AccelerateDCT.dct2D(&block, size: 4)
+                transposeSquare(&block, size: 4)
+                quadCoef[y * 2 + x] = block
+                quadDC[y * 2 + x] = block[0]
+            }
+        }
+        // (2) Inverse 2×2 Haar over the four quadrant DCs — undoes
+        // the decoder's `dcs[k] = ±block00 ± block01 ± block10 ± block11`
+        // packing into positions `block00/01/10/11`.
+        let d0 = quadDC[0], d1 = quadDC[1], d2 = quadDC[2], d3 = quadDC[3]
+        let b00 = (d0 + d1 + d2 + d3) * 0.25
+        let b01 = (d0 + d1 - d2 - d3) * 0.25
+        let b10 = (d0 - d1 + d2 - d3) * 0.25
+        let b11 = (d0 - d1 - d2 + d3) * 0.25
+        var coef = [Float](repeating: 0, count: 64)
+        coef[0] = b00; coef[1] = b01
+        coef[8] = b10; coef[9] = b11
+        // (3) Strided-scatter each quadrant's 15 AC coefficients.
+        for y in 0..<2 {
+            for x in 0..<2 {
+                let q = quadCoef[y * 2 + x]
+                for iy in 0..<4 {
+                    for ix in 0..<4 {
+                        if ix == 0 && iy == 0 { continue }
+                        coef[(y + iy * 2) * 8 + x + ix * 2] =
+                            q[iy * 4 + ix]
+                    }
+                }
+            }
+        }
+        // (4) Quantise the 63 AC coefficients (position 0 = cell DC).
+        var ac = [Int32](repeating: 0, count: 64)
+        for np in 1..<64 {
+            ac[np] = quantizeAC(
+                coef[np], weight: quantWeights[np],
+                scale: scale, qf: qf)
+        }
+        return (coef[0], ac)
+    }
+
     /// Forward-transform + quantise one 16×16 single-channel patch
     /// as a DCT16×16 block — the analysis half of an `dct16x16`
     /// AC-strategy block.

@@ -8227,6 +8227,67 @@ extension FoundationTests {
     /// split + AC quantise) round-trips a smooth 16×16 patch through
     /// the decoder's DCT16 reconstruction within a bounded error —
     /// the complete DCT16 *analysis* path is correct.
+    /// DCT4×4 encoder DSP foundation. `forwardDCT4x4Block` packs an
+    /// 8×8 patch into the libjxl small-block coefficient layout —
+    /// four 4×4 quadrant DCTs with their DCs combined by a 2×2 Haar
+    /// into the four top-left positions and the 60 quadrant ACs
+    /// strided-scattered into the remaining slots — and must
+    /// reconstruct the patch within bounded error when routed
+    /// through `DCT4x4Transform.transformToPixels` (the decoder
+    /// path). The patch is a high-frequency 4×4-block-aligned
+    /// checkerboard, the case DCT4×4 is designed to compress
+    /// efficiently.
+    func testVarDCTEncoder_ForwardDCT4x4Block_RoundTrip() throws {
+        var patch = [Float](repeating: 0, count: 64)
+        for y in 0..<8 {
+            for x in 0..<8 {
+                // 4×4-quadrant-aligned alternation with within-
+                // quadrant high-frequency detail.
+                let qy = y / 4, qx = x / 4
+                let iy = y % 4, ix = x % 4
+                let base: Float = (qy + qx).isMultiple(of: 2)
+                    ? 0.25 : 0.55
+                let detail: Float =
+                    (ix + iy).isMultiple(of: 2) ? 0.0 : 0.05
+                patch[y * 8 + x] = base + detail
+            }
+        }
+        let qw = try QuantWeights.getDCT4QuantWeights(
+            bands: DefaultQuantBands.dct4x4)
+        let yWeights = Array(qw[64..<128])           // Y channel
+        let globalScale: UInt32 = 5111
+        let qf: Int32 = 5
+        let acScale = Float(globalScale) / 65536.0
+        let (dc, ac) = VarDCTEncoder.forwardDCT4x4Block(
+            patch: patch, quantWeights: yWeights,
+            scale: acScale, qf: qf)
+        XCTAssertEqual(ac.count, 64)
+        XCTAssertEqual(ac[0], 0,
+            "small-block position 0 is the cell DC, must be 0 in AC")
+
+        // Decoder reconstruction: place DC at coef[0], dequant the
+        // 63 AC coefficients, then `DCT4x4Transform.transformToPixels`.
+        var coef = [Float](repeating: 0, count: 64)
+        coef[0] = dc
+        let invQuantAC = 65536.0 / Float(globalScale) / Float(qf)
+        for np in 1..<64 {
+            coef[np] = AdjustQuantBias.adjust(channel: 1, quant: ac[np])
+                / yWeights[np] * invQuantAC
+        }
+        let recon = DCT4x4Transform.transformToPixels(coef)
+        var meanErr: Float = 0, maxErr: Float = 0
+        for i in 0..<64 {
+            let e = abs(recon[i] - patch[i])
+            meanErr += e
+            maxErr = max(maxErr, e)
+        }
+        meanErr /= 64
+        XCTAssertLessThan(meanErr, 0.02,
+            "DCT4×4 block round-trip mean error \(meanErr)")
+        XCTAssertLessThan(maxErr, 0.10,
+            "DCT4×4 block round-trip max error \(maxErr)")
+    }
+
     func testVarDCTEncoder_ForwardDCT16Block_RoundTrip() throws {
         var patch = [Float](repeating: 0, count: 256)
         for y in 0..<16 {
