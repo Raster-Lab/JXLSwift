@@ -107,7 +107,9 @@ public struct JXLEncoder: Sendable {
         } else {
             do {
                 let cs = try VarDCTBitstreamWriter.encode(
-                    frame: frame, distance: options.distance)
+                    frame: frame, distance: options.distance,
+                    gaborish: options.gaborish,
+                    adaptiveQF: options.adaptiveQF)
                 let wrapped = options.containerWrap
                     ? buildJXLContainer(codestream: cs) : cs
                 return EncodedImage(

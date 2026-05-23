@@ -58,6 +58,19 @@ public struct EncodingOptions: Sendable {
     /// later carry sidecar data (EXIF, JUMBF, JPEG-reconstruct
     /// boxes). Defaults to true to match cjxl's behaviour.
     public var containerWrap: Bool
+    /// VarDCT-only: apply the libjxl 5×5 inverse-Gaborish
+    /// sharpening pre-pass to XYB pixels before the forward DCT,
+    /// and write `lf.gab = true` in the frame header so the decoder
+    /// runs the matching forward Gaborish smoothing pass. Defaults
+    /// to `true` (libjxl-default behaviour). Ignored for lossless
+    /// (Modular) encodes — those don't go through VarDCT.
+    public var gaborish: Bool
+    /// VarDCT-only: per-block variance-driven adaptive
+    /// quantisation factor. Smoother cells get a coarser QF
+    /// (= fewer bits on near-zero AC), textured cells get a finer
+    /// one (= preserve detail). Defaults to `true` (libjxl-like
+    /// adaptive quant behaviour). Ignored for lossless encodes.
+    public var adaptiveQF: Bool
 
     public init(
         mode: CompressionMode = .lossy(quality: 90),
@@ -66,7 +79,9 @@ public struct EncodingOptions: Sendable {
         numThreads: Int = 0,
         useM0Placeholder: Bool = false,
         m0Effort: M0Effort = .balanced,
-        containerWrap: Bool = true
+        containerWrap: Bool = true,
+        gaborish: Bool = true,
+        adaptiveQF: Bool = true
     ) {
         self.mode = mode
         self.effort = effort
@@ -75,6 +90,8 @@ public struct EncodingOptions: Sendable {
         self.useM0Placeholder = useM0Placeholder
         self.m0Effort = m0Effort
         self.containerWrap = containerWrap
+        self.gaborish = gaborish
+        self.adaptiveQF = adaptiveQF
     }
 
     /// The libjxl distance value that this configuration maps to. Used

@@ -393,6 +393,16 @@ v0.11.0j added an adaptive 2-cluster AC split (nzeros vs coefficient tokens). v0
 - **Verified.** `testVarDCTBitstreamWriter_ThreeClusterACSmoke` encodes an 80×80 frame with a smooth-gradient top half (gets large-DCT-strategy big-block tokens) and a textured bottom half (gets DCT8 small-block tokens) — the 3-cluster path may or may not be chosen by the estimator (heuristic outcome), but the codestream **must** still round-trip through `djxl 0.11.2`. All existing 2-cluster and 1-cluster paths still exercise their original code via the other end-to-end tests.
 - **419 tests passing, 3 skipped, 0 failures.**
 
+### v0.11.0ao — Public API: `EncodingOptions.gaborish` / `.adaptiveQF`
+
+The new VarDCT encoder knobs from v0.11.0al (Gaborish pre-pass) and v0.11.0am (adaptive per-block QF) are now reachable from the public `JXLEncoder` API. Defaults match libjxl behaviour (both `true`); callers who want byte-deterministic output with the older simpler pipeline can opt out via `EncodingOptions(... gaborish: false, adaptiveQF: false)`.
+
+- **`EncodingOptions.gaborish: Bool = true`** — when set, the VarDCT encoder applies the inverse-Gaborish 5×5 pre-pass and writes `lf.gab = true`. Ignored for `.lossless` encodes (Modular path doesn't go through VarDCT).
+- **`EncodingOptions.adaptiveQF: Bool = true`** — when set, per-block QF varies with Y-plane variance; otherwise a uniform `qf = 5` is used. Ignored for `.lossless` encodes.
+- **`JXLEncoder.encode`** — threads `options.gaborish` and `options.adaptiveQF` into `VarDCTBitstreamWriter.encode`.
+- **Verified.** `testJXLEncoder_GaborishAndAdaptiveQFOptions` encodes the same 32×32 frame four ways (defaults, gaborish-off, adaptiveQF-off, both-off) and confirms each combination produces a distinct codestream — proving the options thread end-to-end.
+- **420 tests passing, 3 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)

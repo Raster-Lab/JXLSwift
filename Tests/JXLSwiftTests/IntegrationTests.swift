@@ -9995,6 +9995,47 @@ extension FoundationTests {
     /// is bounded: a DC-only encode (block averages) would mean ~7+
     /// here — passing `< 4` proves the AC coefficient stream is
     /// carrying real detail.
+    /// JXLEncoder API surface: the new `gaborish` and `adaptiveQF`
+    /// EncodingOptions knobs are honoured all the way through to
+    /// the VarDCT encoder. Toggling each must produce a different
+    /// codestream — verifying the option threading.
+    func testJXLEncoder_GaborishAndAdaptiveQFOptions() throws {
+        let dim = 32
+        var frame = ImageFrame(width: dim, height: dim, channels: 3)
+        for y in 0..<dim {
+            for x in 0..<dim {
+                let i = (y * dim + x) * 3
+                frame.data[i + 0] = UInt8(40 + x * 5)
+                frame.data[i + 1] = UInt8(60 + y * 4)
+                let detail = (x + y).isMultiple(of: 2) ? 20 : -20
+                frame.data[i + 2] = UInt8(clamping: 100 + detail)
+            }
+        }
+        // Encode with defaults (gaborish: true, adaptiveQF: true).
+        let optsDefault = EncodingOptions(
+            mode: .distance(1.0), containerWrap: false)
+        let encDefault = try JXLEncoder(options: optsDefault).encode(frame)
+        XCTAssertGreaterThan(encDefault.data.count, 0)
+
+        // Toggle gaborish off — codestream must differ.
+        let optsNoGab = EncodingOptions(
+            mode: .distance(1.0), containerWrap: false,
+            gaborish: false)
+        let encNoGab = try JXLEncoder(options: optsNoGab).encode(frame)
+        XCTAssertNotEqual(encDefault.data, encNoGab.data,
+            "gaborish off must produce a distinct codestream")
+
+        // Toggle adaptiveQF off — codestream must differ.
+        let optsNoQF = EncodingOptions(
+            mode: .distance(1.0), containerWrap: false,
+            adaptiveQF: false)
+        let encNoQF = try JXLEncoder(options: optsNoQF).encode(frame)
+        XCTAssertNotEqual(encDefault.data, encNoQF.data,
+            "adaptiveQF off must produce a distinct codestream")
+        XCTAssertNotEqual(encNoGab.data, encNoQF.data,
+            "the two toggle paths must remain independent")
+    }
+
     /// VarDCT encoder 3-cluster AC histogram smoke test. The
     /// writer estimates 1 / 2 / 3 AC histogram clusters and picks
     /// the cheapest — cluster 0 holds nzeros tokens, cluster 1
