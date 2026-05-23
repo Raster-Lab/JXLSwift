@@ -8288,6 +8288,95 @@ extension FoundationTests {
             "DCT4×4 block round-trip max error \(maxErr)")
     }
 
+    /// DCT4×8 encoder DSP foundation. `forwardDCT4x8Block` packs an
+    /// 8×8 patch into the libjxl two-half coefficient layout (two
+    /// 4-tall × 8-wide DCTs stacked, DCs 1-D-DCT-2 combined, ACs
+    /// strided-scattered) and must reconstruct the patch within
+    /// bounded error through `DCT4x8Transform.transformToPixels`.
+    func testVarDCTEncoder_ForwardDCT4x8Block_RoundTrip() throws {
+        // Patch with a sharp horizontal seam at y = 4 (top half flat
+        // bright, bottom half flat dark) — the DCT4×8 sweet spot.
+        var patch = [Float](repeating: 0, count: 64)
+        for y in 0..<8 {
+            for x in 0..<8 {
+                patch[y * 8 + x] = y < 4 ? 0.75 : 0.20
+            }
+        }
+        let qw = try QuantWeights.getDCT4X8QuantWeights(
+            bands: DefaultQuantBands.dct4x8)
+        let yWeights = Array(qw[64..<128])
+        let globalScale: UInt32 = 5111
+        let qf: Int32 = 5
+        let acScale = Float(globalScale) / 65536.0
+        let (dc, ac) = VarDCTEncoder.forwardDCT4x8Block(
+            patch: patch, quantWeights: yWeights,
+            scale: acScale, qf: qf)
+        XCTAssertEqual(ac.count, 64)
+        XCTAssertEqual(ac[0], 0)
+        var coef = [Float](repeating: 0, count: 64)
+        coef[0] = dc
+        let invQuantAC = 65536.0 / Float(globalScale) / Float(qf)
+        for np in 1..<64 {
+            coef[np] = AdjustQuantBias.adjust(channel: 1, quant: ac[np])
+                / yWeights[np] * invQuantAC
+        }
+        let recon = DCT4x8Transform.transformToPixels(coef)
+        var meanErr: Float = 0, maxErr: Float = 0
+        for i in 0..<64 {
+            let e = abs(recon[i] - patch[i])
+            meanErr += e; maxErr = max(maxErr, e)
+        }
+        meanErr /= 64
+        XCTAssertLessThan(meanErr, 0.02,
+            "DCT4×8 block round-trip mean error \(meanErr)")
+        XCTAssertLessThan(maxErr, 0.10,
+            "DCT4×8 block round-trip max error \(maxErr)")
+    }
+
+    /// DCT8×4 encoder DSP foundation. `forwardDCT8x4Block` packs an
+    /// 8×8 patch into the libjxl two-half coefficient layout (two
+    /// 8-tall × 4-wide DCTs side-by-side, transposed to 4×8 storage
+    /// per half) and must reconstruct the patch within bounded error
+    /// through `DCT8x4Transform.transformToPixels`.
+    func testVarDCTEncoder_ForwardDCT8x4Block_RoundTrip() throws {
+        // Sharp vertical seam at x = 4 — the DCT8×4 sweet spot.
+        var patch = [Float](repeating: 0, count: 64)
+        for y in 0..<8 {
+            for x in 0..<8 {
+                patch[y * 8 + x] = x < 4 ? 0.75 : 0.20
+            }
+        }
+        let qw = try QuantWeights.getDCT4X8QuantWeights(
+            bands: DefaultQuantBands.dct4x8)
+        let yWeights = Array(qw[64..<128])
+        let globalScale: UInt32 = 5111
+        let qf: Int32 = 5
+        let acScale = Float(globalScale) / 65536.0
+        let (dc, ac) = VarDCTEncoder.forwardDCT8x4Block(
+            patch: patch, quantWeights: yWeights,
+            scale: acScale, qf: qf)
+        XCTAssertEqual(ac.count, 64)
+        XCTAssertEqual(ac[0], 0)
+        var coef = [Float](repeating: 0, count: 64)
+        coef[0] = dc
+        let invQuantAC = 65536.0 / Float(globalScale) / Float(qf)
+        for np in 1..<64 {
+            coef[np] = AdjustQuantBias.adjust(channel: 1, quant: ac[np])
+                / yWeights[np] * invQuantAC
+        }
+        let recon = DCT8x4Transform.transformToPixels(coef)
+        var meanErr: Float = 0, maxErr: Float = 0
+        for i in 0..<64 {
+            let e = abs(recon[i] - patch[i])
+            meanErr += e; maxErr = max(maxErr, e)
+        }
+        meanErr /= 64
+        XCTAssertLessThan(meanErr, 0.02,
+            "DCT8×4 block round-trip mean error \(meanErr)")
+        XCTAssertLessThan(maxErr, 0.10,
+            "DCT8×4 block round-trip max error \(maxErr)")
+    }
+
     func testVarDCTEncoder_ForwardDCT16Block_RoundTrip() throws {
         var patch = [Float](repeating: 0, count: 256)
         for y in 0..<16 {

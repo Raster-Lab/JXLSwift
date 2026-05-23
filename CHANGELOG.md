@@ -276,6 +276,16 @@ DCT4×4 joins the trial as a per-cell alternative to DCT8×8. Unlike the multi-c
 - **Verified.** `testVarDCTBitstreamWriter_SmallBlockDCT4x4` encodes a 16×16 frame whose four 8×8 cells each have a per-4×4-quadrant flat-colour pattern (varying per cell so no multi-cell strategy compresses better) — asserts at least one cell picks DCT4×4 and confirms `djxl 0.11.2` decodes the codestream within `mean < 2` of our decoder.
 - **406 tests passing, 3 skipped, 0 failures.**
 
+### v0.11.0ac — AC-strategy encode: DCT4×8 / DCT8×4 DSP foundation
+
+The half-cell asymmetric small-block pair. DCT4×8 and DCT8×4 each cover an 8×8 cell as two halves (4-tall × 8-wide stacked, or 8-tall × 4-wide side-by-side) joined by a 1-D DCT-2 of their DCs — the right choice for cells with a single sharp axis-aligned discontinuity.
+
+- **`VarDCTEncoder.forwardDCT4x8Block`** — exact inverse of `DCT4x8Transform.transformToPixels`. Two 4×8 forward DCTs (ROWS<COLS, natural = storage), 1-D-DCT-2 combine of the two half DCs into `coef[0] = (top+bot)/2` and `coef[8] = (top-bot)/2`, strided-scatter of each half's 31 ACs into positions `(y + iy·2, ix)`, then quantise the 63 AC slots.
+- **`VarDCTEncoder.forwardDCT8x4Block`** — exact inverse of `DCT8x4Transform.transformToPixels`. Two 8×4 forward DCTs (ROWS≥COLS — natural-layout forward then transpose to 4×8 storage per half), same DC combine, strided AC scatter at `(x + iy·2, ix)`.
+- **Verified.** `testVarDCTEncoder_ForwardDCT4x8Block_RoundTrip` and `…ForwardDCT8x4Block_RoundTrip` put 8×8 patches with a single sharp horizontal / vertical seam (the half-cell sweet spot — each half is flat, all 31 within-half ACs zero) through the new primitives and the decoder's small-block transforms (with dequant) — both round-trip within `mean < 0.02`, `max < 0.10`.
+- **Scope.** DSP foundation only — no bitstream change, encoder output byte-identical to v0.11.0ab. Trial-encode wiring follows in v0.11.0ad.
+- **408 tests passing, 3 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)

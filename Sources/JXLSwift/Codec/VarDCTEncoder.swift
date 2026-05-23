@@ -1073,6 +1073,112 @@ public enum VarDCTEncoder {
         return (coef[0], ac)
     }
 
+    /// Forward-transform + quantise one 8×8 single-channel patch as a
+    /// DCT4×8 block — the analysis half of a `dct4x8` AC-strategy
+    /// cell. The 8×8 cell is split into two 4-tall × 8-wide halves
+    /// stacked vertically; each is forward-DCT'd (ROWS<COLS, natural
+    /// = storage layout), and the 64 output coefficients are packed
+    /// into the libjxl small-block scheme: the two half DCs combine
+    /// by a 1-D DCT-2 into `coef[0]` (sum / 2) and `coef[8]`
+    /// (diff / 2), and each half's 31 ACs are strided-scattered to
+    /// positions `(y + iy·2, ix)` for `(iy, ix) ∈ [0,4) × [0,8) \ {(0,0)}`.
+    /// Exact inverse of `DCT4x8Transform.transformToPixels`.
+    static func forwardDCT4x8Block(
+        patch: [Float], quantWeights: [Float],
+        scale: Float, qf: Int32
+    ) -> (dc: Float, ac: [Int32]) {
+        precondition(patch.count == 64 && quantWeights.count == 64,
+                     "DCT4×8 block needs an 8×8 patch + 64 weights")
+        var coef = [Float](repeating: 0, count: 64)
+        var halfDC = [Float](repeating: 0, count: 2)
+        for y in 0..<2 {
+            // Extract the 4-tall × 8-wide half (natural layout).
+            var half = [Float](repeating: 0, count: 32)
+            for py in 0..<4 {
+                for px in 0..<8 {
+                    half[py * 8 + px] = patch[(y * 4 + py) * 8 + px]
+                }
+            }
+            // ROWS<COLS: forward 2-D DCT, no transpose (natural ==
+            // storage for `ScaledIDCT.transform`).
+            AccelerateDCT.dct2D(&half, rows: 4, cols: 8)
+            halfDC[y] = half[0]
+            for iy in 0..<4 {
+                for ix in 0..<8 {
+                    if ix == 0 && iy == 0 { continue }
+                    coef[(y + iy * 2) * 8 + ix] = half[iy * 8 + ix]
+                }
+            }
+        }
+        // 1-D DCT-2 combine of the two half DCs: dcs[0] = c[0]+c[8],
+        // dcs[1] = c[0]-c[8] → c[0] = (dcs[0]+dcs[1])/2,
+        // c[8] = (dcs[0]-dcs[1])/2.
+        coef[0] = (halfDC[0] + halfDC[1]) * 0.5
+        coef[8] = (halfDC[0] - halfDC[1]) * 0.5
+        var ac = [Int32](repeating: 0, count: 64)
+        for np in 1..<64 {
+            ac[np] = quantizeAC(
+                coef[np], weight: quantWeights[np],
+                scale: scale, qf: qf)
+        }
+        return (coef[0], ac)
+    }
+
+    /// Forward-transform + quantise one 8×8 single-channel patch as a
+    /// DCT8×4 block — the analysis half of a `dct8x4` AC-strategy
+    /// cell. The 8×8 cell is split into two 8-tall × 4-wide halves
+    /// side-by-side; each is forward-DCT'd then transposed into the
+    /// 4-row × 8-col storage layout (ROWS≥COLS — `ScaledIDCT.transform`
+    /// transposes back before IDCT). Same 1-D DC combine and strided
+    /// AC packing as DCT4×8, with the per-half indexing transposed:
+    /// each half's 31 ACs strided-scatter to `(x + iy·2, ix)` for
+    /// `(iy, ix) ∈ [0,4) × [0,8) \ {(0,0)}`. Exact inverse of
+    /// `DCT8x4Transform.transformToPixels`.
+    static func forwardDCT8x4Block(
+        patch: [Float], quantWeights: [Float],
+        scale: Float, qf: Int32
+    ) -> (dc: Float, ac: [Int32]) {
+        precondition(patch.count == 64 && quantWeights.count == 64,
+                     "DCT8×4 block needs an 8×8 patch + 64 weights")
+        var coef = [Float](repeating: 0, count: 64)
+        var halfDC = [Float](repeating: 0, count: 2)
+        for x in 0..<2 {
+            // Extract the 8-tall × 4-wide half (natural layout).
+            var half = [Float](repeating: 0, count: 32)
+            for py in 0..<8 {
+                for px in 0..<4 {
+                    half[py * 4 + px] = patch[py * 8 + x * 4 + px]
+                }
+            }
+            // ROWS≥COLS: forward 2-D DCT in natural layout, then
+            // transpose to storage (4 rows × 8 cols, the C×R form
+            // `ScaledIDCT.transform` un-transposes before IDCT).
+            AccelerateDCT.dct2D(&half, rows: 8, cols: 4)
+            var storage = [Float](repeating: 0, count: 32)
+            for r in 0..<8 {
+                for c in 0..<4 {
+                    storage[c * 8 + r] = half[r * 4 + c]
+                }
+            }
+            halfDC[x] = storage[0]
+            for iy in 0..<4 {
+                for ix in 0..<8 {
+                    if ix == 0 && iy == 0 { continue }
+                    coef[(x + iy * 2) * 8 + ix] = storage[iy * 8 + ix]
+                }
+            }
+        }
+        coef[0] = (halfDC[0] + halfDC[1]) * 0.5
+        coef[8] = (halfDC[0] - halfDC[1]) * 0.5
+        var ac = [Int32](repeating: 0, count: 64)
+        for np in 1..<64 {
+            ac[np] = quantizeAC(
+                coef[np], weight: quantWeights[np],
+                scale: scale, qf: qf)
+        }
+        return (coef[0], ac)
+    }
+
     /// Forward-transform + quantise one 16×16 single-channel patch
     /// as a DCT16×16 block — the analysis half of an `dct16x16`
     /// AC-strategy block.
