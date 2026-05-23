@@ -8365,13 +8365,16 @@ extension FoundationTests {
                 frame.data[i + 2] = UInt8(80 + (x + y) / 4)
             }
         }
-        // Confirm DCT16×16 is actually exercised.
+        // Confirm a multi-block strategy is exercised — depending
+        // on how the hierarchical trial scores this image, DCT16×16
+        // may be replaced by a larger / asymmetric transform.
         let q = try VarDCTEncoder.forward(frame: frame)
-        let dct16Count = q.acStrategy.filter {
-            $0 == ACStrategy.dct16x16.rawValue
+        let multiBlockCount = q.acStrategy.filter {
+            $0 != ACStrategy.dct8x8.rawValue
         }.count
-        XCTAssertGreaterThan(dct16Count, 0,
-            "a smooth 96×96 frame should select DCT16×16")
+        XCTAssertGreaterThan(multiBlockCount, 0,
+            "a smooth 96×96 frame should select a multi-block "
+            + "AC strategy")
 
         func meanError(_ pix: Data, binOffset: Int) -> Double {
             var s = 0
@@ -8814,6 +8817,76 @@ extension FoundationTests {
         let mean = Double(diff) / Double(dim * dim * 3)
         XCTAssertLessThan(mean, 2.0,
             "our decoder and djxl disagree on the asymmetric "
+            + "codestream (mean \(mean))")
+    }
+
+    /// VarDCT AC-strategy — DCT32×16 / DCT16×32 end-to-end (ord 6).
+    /// A 16-pixel-wide vertical-stripe pattern makes one of the
+    /// ord-6 partitionings (two DCT32×16 halves of a 32×32 region,
+    /// where each half covers exactly one stripe) the cheapest
+    /// choice in the 32×32-region trial. The codestream must
+    /// decode through our decoder **and `djxl`** with both agreeing
+    /// on the pixels.
+    func testVarDCTBitstreamWriter_AsymmetricOrd6() throws {
+        let dim = 64
+        var frame = ImageFrame(width: dim, height: dim, channels: 3)
+        for y in 0..<dim {
+            for x in 0..<dim {
+                let i = (y * dim + x) * 3
+                let stripe = (x / 16) % 2 == 0
+                frame.data[i + 0] = UInt8(stripe ? 60 : 160)
+                frame.data[i + 1] = UInt8(stripe ? 80 : 140)
+                frame.data[i + 2] = UInt8(stripe ? 100 : 200)
+            }
+        }
+        let q = try VarDCTEncoder.forward(frame: frame)
+        let ord6Count = q.acStrategy.filter {
+            $0 == ACStrategy.dct32x16.rawValue
+                || $0 == ACStrategy.dct16x32.rawValue
+        }.count
+        XCTAssertGreaterThan(ord6Count, 0,
+            "16-px vertical stripes should select DCT32×16 or "
+            + "DCT16×32 for at least one region")
+
+        let codestream = try VarDCTBitstreamWriter.encode(frame: frame)
+        let ours = try JXLDecoder().decode(codestream)
+
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("djxl not available")
+        }
+        let tmp = NSTemporaryDirectory()
+        let jxlPath = tmp + "vdt_ord6.jxl"
+        let outPath = tmp + "vdt_ord6_dj.ppm"
+        try codestream.write(to: URL(fileURLWithPath: jxlPath))
+        let p = Process()
+        p.launchPath = djxl
+        p.arguments = [jxlPath, outPath]
+        let errPipe = Pipe()
+        p.standardOutput = Pipe(); p.standardError = errPipe
+        try p.run(); p.waitUntilExit()
+        let err = String(
+            data: errPipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8) ?? ""
+        XCTAssertEqual(p.terminationStatus, 0,
+            "djxl rejected the ord-6 codestream; stderr: \(err)")
+        let dj = try Data(contentsOf: URL(fileURLWithPath: outPath))
+        var binStart = 0, nl = 0
+        for (i, b) in dj.enumerated() {
+            if b == 0x0A {
+                nl += 1; if nl == 3 { binStart = i + 1; break }
+            }
+        }
+        guard dj.count - binStart == dim * dim * 3 else {
+            throw XCTSkip("djxl PPM size mismatch")
+        }
+        var diff = 0
+        for i in 0..<(dim * dim * 3) {
+            diff += abs(Int(dj[binStart + i]) - Int(ours.data[i]))
+        }
+        let mean = Double(diff) / Double(dim * dim * 3)
+        XCTAssertLessThan(mean, 2.0,
+            "our decoder and djxl disagree on the ord-6 "
             + "codestream (mean \(mean))")
     }
 

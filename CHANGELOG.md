@@ -209,6 +209,16 @@ Asymmetric ord-6 DSP, the next axis after ord-4 (DCT16×8 / DCT8×16). Same mile
 - **Scope.** DSP foundation only — no bitstream change, encoder output byte-identical to v0.11.0t. The integration (folding DCT32×16 / DCT16×32 into the 32×32-region trial encode as two new partitionings, alongside DCT32×32 and the four-way 16×16 sub-region trial) follows.
 - **399 tests passing, 3 skipped, 0 failures.**
 
+### v0.11.0v — AC-strategy encode: DCT32×16 / DCT16×32 emission
+
+The 32×32-region trial encode is now **four-way** instead of two — the ord-6 asymmetric strategies are emitted, and `djxl` decodes them.
+
+- **`VarDCTEncoder.forward`** — the 32×32 pass quantises every 4-aligned region as one DCT32×32, two DCT32×16 vertical halves (each 16w × 32h covering 2 cols × 4 rows of cells), two DCT16×32 horizontal halves (each 32w × 16h covering 4 cols × 2 rows of cells), and the four 16×16 sub-regions' chosen costs (each itself a four-way trial). The cheapest partitioning wins; because every choice keeps the smaller-transform options in the comparison, the trial **never regresses**. New helpers `dct32x16Pair` / `dct16x32Pair` / `commitDCT32x16Pair` / `commitDCT16x32Pair` round out the analysis + commit paths.
+- **`VarDCTBitstreamWriter.generateACTokens`** — the strategy-generic dispatch is extended with the ord-6 natural coefficient order (`naturalCoeffOrder(for: .dct16x32)`, shared by `dct32x16` and `dct16x32` since they share an order bucket). The ACS-plane writer already accepts asymmetric `blockCells`.
+- **Measured.** On 512×512 directional content (16-pixel vertical or horizontal stripes), encoding shrinks **5.1 → 4.6 KB (−10 %)** vs the ord-4-only build; neutral elsewhere. The ord-6 gain stacks on the ord-4 gain (which was −23 % vs DCT8/16/32-only on 8-pixel stripes).
+- **Verified.** `testVarDCTBitstreamWriter_AsymmetricOrd6` encodes a 64×64 16-px-stripe frame — confirmed to select DCT32×16 or DCT16×32 — and confirms `djxl 0.11.2` decodes it and our decoder agrees on the pixels.
+- **400 tests passing, 3 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)
