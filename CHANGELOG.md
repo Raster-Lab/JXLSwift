@@ -422,6 +422,14 @@ The multi-frame `encode(_ frames: [ImageFrame])` API previously threw `notImplem
 - **Verified.** `testJXLEncoder_MultiFrameDispatch` exercises all three branches: empty array throws `unsupportedFrame`, single-element matches `encode(_:)` byte-for-byte, two-element throws `notImplemented`.
 - **421 tests passing, 3 skipped, 0 failures.**
 
+### v0.11.0as — Tightened round-trip bound + encoder-quality measurement harness
+
+The `testVarDCTBitstreamWriter_RoundTrip` bound is tightened from `mean < 4.0` to `mean < 2.0` (both our-decoder and djxl-decoded paths), and a new opt-in diagnostic test (`testVarDCTBitstreamWriter_EncodeQualityMatrix`) measures encode-output mean error and codestream size across all four (`gaborish`, `adaptiveQF`) combinations.
+
+- **Bound tightening.** Measurement on the 24×24 smooth-gradient fixture: default encode (gab on, aqf on) gets mean error 1.05/channel; the other three combinations are 1.04–1.65. The previous `< 4.0` bound left ~3× slack; `< 2.0` retains a safety margin (~2× headroom) while catching real regressions if e.g. Gaborish silently breaks or a quant table goes wrong.
+- **Diagnostic test.** `testVarDCTBitstreamWriter_EncodeQualityMatrix` is `XCTSkip`-gated on `JXL_PRINT_ENC_QUALITY=1`. When run, it prints one `ENC-QUALITY gab=… aqf=… size=… mean=…` line per combination to stderr — useful when investigating encoder-quality changes without polluting the default test output.
+- **421 tests passing, 4 skipped (incl. the new opt-in diagnostic), 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)

@@ -9995,6 +9995,45 @@ extension FoundationTests {
     /// is bounded: a DC-only encode (block averages) would mean ~7+
     /// here — passing `< 4` proves the AC coefficient stream is
     /// carrying real detail.
+    /// Diagnostic measurement (not an assertion) — print the
+    /// encoder's mean round-trip error and codestream size across
+    /// all four (gaborish, adaptiveQF) combinations on a smooth
+    /// 24×24 gradient. Useful for spotting regressions in encoder
+    /// quality. Skipped unless `JXL_PRINT_ENC_QUALITY` is set in
+    /// the environment.
+    func testVarDCTBitstreamWriter_EncodeQualityMatrix() throws {
+        guard ProcessInfo.processInfo.environment[
+            "JXL_PRINT_ENC_QUALITY"] != nil else {
+            throw XCTSkip("set JXL_PRINT_ENC_QUALITY to run")
+        }
+        let dim = 24
+        var frame = ImageFrame(width: dim, height: dim, channels: 3)
+        for y in 0..<dim {
+            for x in 0..<dim {
+                let i = (y * dim + x) * 3
+                frame.data[i + 0] = UInt8(40 + x * 3)
+                frame.data[i + 1] = UInt8(50 + y * 3)
+                frame.data[i + 2] = UInt8(70 + (x + y) * 2)
+            }
+        }
+        for gab in [true, false] {
+            for aqf in [true, false] {
+                let cs = try VarDCTBitstreamWriter.encode(
+                    frame: frame, gaborish: gab, adaptiveQF: aqf)
+                let dec = try JXLDecoder().decode(cs)
+                var s = 0
+                for i in 0..<(dim * dim * 3) {
+                    s += abs(Int(dec.data[i])
+                             - Int(frame.data[i]))
+                }
+                let mean = Double(s) / Double(dim * dim * 3)
+                FileHandle.standardError.write(Data(
+                    ("ENC-QUALITY gab=\(gab) aqf=\(aqf) "
+                     + "size=\(cs.count)B mean=\(mean)\n").utf8))
+            }
+        }
+    }
+
     /// `JXLEncoder.encode([ImageFrame])` API surface. Empty array
     /// throws `.unsupportedFrame`; single-element array delegates
     /// to `encode(_ frame:)` and produces a normal codestream;
@@ -10259,7 +10298,11 @@ extension FoundationTests {
         XCTAssertEqual(decoded.height, dim)
         XCTAssertEqual(decoded.channels, 3)
         let oursErr = meanError(Data(decoded.data), binOffset: 0)
-        XCTAssertLessThan(oursErr, 4.0,
+        // Tightened from 4.0 → 2.0 in v0.11.0as — the Gaborish +
+        // adaptive-QF pipeline (v0.11.0al/am) brings this fixture
+        // down to ~1.05 per channel; 2.0 retains safety margin
+        // while catching real regressions.
+        XCTAssertLessThan(oursErr, 2.0,
             "VarDCT encode round-trip mean error (our decoder) "
             + "\(oursErr) — AC stream not carrying detail")
 
@@ -10288,7 +10331,7 @@ extension FoundationTests {
             throw XCTSkip("djxl PPM size mismatch")
         }
         let djErr = meanError(djData, binOffset: binStart)
-        XCTAssertLessThan(djErr, 4.0,
+        XCTAssertLessThan(djErr, 2.0,
             "VarDCT encode round-trip mean error (djxl) \(djErr)")
     }
 
