@@ -361,6 +361,17 @@ Pre-work for the only AC-strategy axis the decoder doesn't yet support — DCT32
 - **Scope.** DSP foundation only — no decoder or encoder integration. The decoder's strategy dispatch still skips DCT32×8 / DCT8×32; the encoder still doesn't emit them. Encoder output byte-identical to v0.11.0aj.
 - **416 tests passing, 3 skipped, 0 failures.**
 
+### v0.11.0al — VarDCT encoder: Gaborish pre-inverse pre-pass (Phase R encoder)
+
+The decoder has applied the forward Gaborish smoothing pass (`lf.gab=true`) end-to-end since v0.6.0; the encoder always wrote `gab: false` to disable it. v0.11.0al flips this — by default, the encoder applies the libjxl 5×5 inverse-Gaborish sharpening pre-pass to the XYB pixels before the forward DCT, and writes `lf.gab: true` in the frame header so the decoder runs the matching forward Gaborish pass. The encoder-decoder pair is not mathematically inverse (libjxl's pre-kernel is butteraugli-optimised, not a deconvolution), but the pair produces visually pleasing rate-distortion behaviour that respects the spec defaults.
+
+- **`VarDCTEncoder.forward(frame:distance:gaborish:)`** — new `gaborish: Bool = true` parameter. When set, `Gaborish.applyInverse5x5` runs on `planeX`, `planeY`, `planeB` between the OpsinXYB step and the forward DCT. The flag is mirrored into `Quantized.gaborish`.
+- **`VarDCTBitstreamWriter.encode(frame:distance:gaborish:)`** — same `gaborish` parameter; threads through to `writeOuterCodestream`, which now writes the frame-header `LoopFilter` with `gab: q.gaborish, gabCustom: false` (libjxl default weights).
+- **`FrameHeader.LoopFilter.write`** — extended to support the `gab=true, gabCustom=false, epfIters=0` configuration alongside the previously-supported `gab=false, epfIters=0`. The 1-bit `gabCustom = false` is emitted right after the `gab` flag.
+- **Test bound shifts.** Two strategy-selection tests (`testVarDCTBitstreamWriter_AsymmetricOrd6` / `…_AsymmetricOrd8`) now pass `gaborish: false` — the inverse-Gaborish pre-sharpening at the stripe / seam boundaries shifts per-cell trial costs, and these tests verify the trial mechanism itself, not Gaborish behaviour. All round-trip and end-to-end byte-equality tests are unaffected (mean error stays well under the existing bounds).
+- **Verified.** `testVarDCTBitstreamWriter_GaborishSmoke` exercises the new path — a 16×16 frame encoded with `gaborish: true` (default) round-trips through our decoder at the right dimensions, and the codestream differs from the `gaborish: false` sibling (proving the flag flows through). The existing 24×24 `…_RoundTrip` test also exercises the gaborish-on path with `djxl 0.11.2`-verified byte equality.
+- **417 tests passing, 3 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)

@@ -39,9 +39,11 @@ public enum VarDCTBitstreamWriter {
     /// frames as a multi-section codestream with one AC group per
     /// 256-px tile and one DC group per 2048-px tile.
     public static func encode(
-        frame: ImageFrame, distance: Float = 1.0
+        frame: ImageFrame, distance: Float = 1.0,
+        gaborish: Bool = true
     ) throws -> Data {
-        let q = try VarDCTEncoder.forward(frame: frame, distance: distance)
+        let q = try VarDCTEncoder.forward(
+            frame: frame, distance: distance, gaborish: gaborish)
         let groupDim = 256
         let sizeCap = 8192
         guard q.xsize <= sizeCap, q.ysize <= sizeCap else {
@@ -461,7 +463,8 @@ public enum VarDCTBitstreamWriter {
         // --- Outer codestream (headers + TOC + sections) ---------
         return try writeOuterCodestream(
             xsize: q.xsize, ysize: q.ysize,
-            hasAlpha: hasAlpha, sections: sections)
+            hasAlpha: hasAlpha, gaborish: q.gaborish,
+            sections: sections)
     }
 
     // MARK: - Modular residual tokenisation
@@ -661,7 +664,8 @@ public enum VarDCTBitstreamWriter {
     /// concatenated section payloads. `hasAlpha` declares a single
     /// 8-bit alpha extra channel (RGBA frames).
     static func writeOuterCodestream(
-        xsize: Int, ysize: Int, hasAlpha: Bool, sections: [Data]
+        xsize: Int, ysize: Int, hasAlpha: Bool,
+        gaborish: Bool, sections: [Data]
     ) throws -> Data {
         var w = BitWriter()
         w.write(bits: 8, value: 0xFF)
@@ -708,7 +712,7 @@ public enum VarDCTBitstreamWriter {
             saveBeforeColorTransform: false,
             name: "",
             loopFilter: LoopFilter(
-                allDefault: false, gab: false, epfIters: 0))
+                allDefault: false, gab: gaborish, epfIters: 0))
         try fh.write(to: &w, context: FrameHeaderContext(
             xybEncoded: true, numExtraChannels: hasAlpha ? 1 : 0,
             haveAnimation: false, haveTimecodes: false))

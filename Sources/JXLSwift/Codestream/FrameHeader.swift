@@ -378,24 +378,26 @@ public struct LoopFilter: Sendable, Equatable {
             w.writeU64(0)
             return
         }
-        // Non-default path. We support the configuration libjxl emits
-        // for Modular frames (`enc_frame.cc::LoopFilterFromParams`):
-        // `gab=false, epf_iters=0`. Custom Gaborish weights + EPF
-        // tables are not yet wired up — those would need the full
-        // F16 stream from loop_filter.cc.
-        guard !gab else {
-            throw FrameHeaderError.unsupportedField(
-                "non-default LoopFilter writer (gab=true with custom)"
-            )
-        }
+        // Non-default path. We support two configurations:
+        //   • `gab=false, epfIters=0` — Modular frames
+        //     (`enc_frame.cc::LoopFilterFromParams`).
+        //   • `gab=true,  epfIters=0` with default Gaborish weights —
+        //     the VarDCT encoder's Gaborish-on path. The Gaborish
+        //     block is `gabCustom=false` (use the libjxl defaults
+        //     the decoder already knows).
+        // Custom Gaborish weights + EPF tables (which need the
+        // full F16 stream from loop_filter.cc) are not yet wired up.
         guard epfIters == 0 else {
             throw FrameHeaderError.unsupportedField(
                 "non-default LoopFilter writer (epfIters > 0)"
             )
         }
         w.writeBit(false)            // all_default = 0
-        w.writeBit(false)            // gab = false (skips gab block)
-        w.write(bits: 2, value: epfIters) // epf_iters = 0 (skips EPF block)
+        w.writeBit(gab)              // gab flag
+        if gab {
+            w.writeBit(false)        // gabCustom = false (defaults)
+        }
+        w.write(bits: 2, value: epfIters) // epf_iters = 0
         w.writeU64(0)                // BeginExtensions U64
     }
 

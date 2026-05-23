@@ -9442,7 +9442,11 @@ extension FoundationTests {
                 frame.data[i + 2] = UInt8(stripe ? 100 : 200)
             }
         }
-        let q = try VarDCTEncoder.forward(frame: frame)
+        // Strategy-selection check uses gaborish-off so the per-cell
+        // costs aren't perturbed by the inverse-Gaborish pre-pass
+        // (which sharpens the edges at the stripe boundaries and
+        // shifts the trial outcome).
+        let q = try VarDCTEncoder.forward(frame: frame, gaborish: false)
         let ord6Count = q.acStrategy.filter {
             $0 == ACStrategy.dct32x16.rawValue
                 || $0 == ACStrategy.dct16x32.rawValue
@@ -9451,7 +9455,8 @@ extension FoundationTests {
             "16-px vertical stripes should select DCT32×16 or "
             + "DCT16×32 for at least one region")
 
-        let codestream = try VarDCTBitstreamWriter.encode(frame: frame)
+        let codestream = try VarDCTBitstreamWriter.encode(
+            frame: frame, gaborish: false)
         let ours = try JXLDecoder().decode(codestream)
 
         let djxl = "/opt/homebrew/bin/djxl"
@@ -9513,7 +9518,9 @@ extension FoundationTests {
                 frame.data[i + 2] = UInt8(leftHalf ? 100 : 200)
             }
         }
-        let q = try VarDCTEncoder.forward(frame: frame)
+        // Same Gaborish-off rationale as `…AsymmetricOrd6` — the
+        // pre-pass shifts the per-cell costs at the seam.
+        let q = try VarDCTEncoder.forward(frame: frame, gaborish: false)
         let ord8Count = q.acStrategy.filter {
             $0 == ACStrategy.dct64x32.rawValue
                 || $0 == ACStrategy.dct32x64.rawValue
@@ -9522,7 +9529,8 @@ extension FoundationTests {
             "a single-seam 64×64 frame should select DCT64×32 "
             + "or DCT32×64 for at least one region")
 
-        let codestream = try VarDCTBitstreamWriter.encode(frame: frame)
+        let codestream = try VarDCTBitstreamWriter.encode(
+            frame: frame, gaborish: false)
         let ours = try JXLDecoder().decode(codestream)
 
         let djxl = "/opt/homebrew/bin/djxl"
@@ -9982,6 +9990,45 @@ extension FoundationTests {
     /// is bounded: a DC-only encode (block averages) would mean ~7+
     /// here — passing `< 4` proves the AC coefficient stream is
     /// carrying real detail.
+    /// VarDCT encoder Gaborish smoke test. The default encode path
+    /// is `gaborish: true` — the encoder applies the libjxl 5×5
+    /// inverse-Gaborish sharpening pre-pass, and the frame header
+    /// is written with `lf.gab = true` so the decoder runs the
+    /// matching forward Gaborish pass. Verifies the encode emits a
+    /// non-empty codestream and our decoder reads it back at the
+    /// right dimensions. Heavier byte-equality bounds are covered
+    /// by `…_RoundTrip` (24×24) — which also routes through this
+    /// same Gaborish-enabled default path.
+    func testVarDCTBitstreamWriter_GaborishSmoke() throws {
+        let dim = 16
+        var frame = ImageFrame(width: dim, height: dim, channels: 3)
+        for y in 0..<dim {
+            for x in 0..<dim {
+                let i = (y * dim + x) * 3
+                frame.data[i + 0] = UInt8(40 + x * 5)
+                frame.data[i + 1] = UInt8(50 + y * 5)
+                frame.data[i + 2] = UInt8(70 + (x + y) * 3)
+            }
+        }
+        // Encode with Gaborish enabled (the default).
+        let cs = try VarDCTBitstreamWriter.encode(frame: frame)
+        XCTAssertGreaterThan(cs.count, 0)
+        let ours = try JXLDecoder().decode(cs)
+        XCTAssertEqual(ours.width, dim)
+        XCTAssertEqual(ours.height, dim)
+        XCTAssertEqual(ours.channels, 3)
+        // Smaller-than-default codestream for the gaborish-off
+        // sibling — verifies the gaborish flag actually flows
+        // through. Sizes differ because the pre-sharpening shifts
+        // AC magnitudes (and Gaborish-off skips the LoopFilter
+        // bits — minor saving).
+        let csOff = try VarDCTBitstreamWriter.encode(
+            frame: frame, gaborish: false)
+        XCTAssertGreaterThan(csOff.count, 0)
+        XCTAssertNotEqual(cs, csOff,
+            "gaborish on/off must yield distinct codestreams")
+    }
+
     func testVarDCTBitstreamWriter_RoundTrip() throws {
         let dim = 24
         var frame = ImageFrame(width: dim, height: dim, channels: 3)

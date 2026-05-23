@@ -62,6 +62,11 @@ public enum VarDCTEncoder {
         /// of a multi-block transform are empty. LLF positions are 0
         /// (carried by the DC plane); X/Y/B are colour-decorrelated.
         public let acQuant: [[[Int32]]]
+        /// Whether the inverse-Gaborish 5×5 pre-pass was applied to
+        /// the XYB pixels before the forward DCT. The bitstream
+        /// writer mirrors this into the frame header's `lf.gab`
+        /// flag so the decoder runs the forward Gaborish pass.
+        public let gaborish: Bool
     }
 
     /// libjxl `quant_weights.h::kInvDCQuant`, XYB-indexed.
@@ -87,7 +92,8 @@ public enum VarDCTEncoder {
     }
 
     public static func forward(
-        frame: ImageFrame, distance: Float = 1.0
+        frame: ImageFrame, distance: Float = 1.0,
+        gaborish: Bool = true
     ) throws -> Quantized {
         let globalScale = globalScale(forDistance: distance)
         let quantDC: UInt32 = 17
@@ -123,6 +129,21 @@ public enum VarDCTEncoder {
                 planeY[i] = xyb.Y
                 planeB[i] = xyb.B
             }
+        }
+
+        // (1.5) Inverse-Gaborish 5×5 sharpening pre-pass. The
+        // decoder applies the forward Gaborish smoothing pass when
+        // `lf.gab == true`; the encoder pre-sharpens here so the
+        // round-trip recovers the original XYB values (not
+        // mathematically inverse — the libjxl 5×5 kernel constants
+        // are butteraugli-optimised). Skipped when `gaborish == false`.
+        if gaborish {
+            Gaborish.applyInverse5x5(
+                to: &planeX, width: pw, height: ph)
+            Gaborish.applyInverse5x5(
+                to: &planeY, width: pw, height: ph)
+            Gaborish.applyInverse5x5(
+                to: &planeB, width: pw, height: ph)
         }
 
         // (2) Per-channel DCT8×8 quant weights (LIBRARY defaults, no
@@ -1081,7 +1102,8 @@ public enum VarDCTEncoder {
             blocksX: blocksX, blocksY: blocksY,
             globalScale: globalScale, quantDC: quantDC, qf: qf,
             dcExtraPrecision: 0,
-            dcQuant: dcQuant, acStrategy: acStrategy, acQuant: acQuant)
+            dcQuant: dcQuant, acStrategy: acStrategy,
+            acQuant: acQuant, gaborish: gaborish)
     }
 
     /// Estimated token cost (in rough bit units) of one block's
