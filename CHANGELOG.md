@@ -238,6 +238,17 @@ The hierarchical trial gains a 64×64 level — DCT64×64 (libjxl ord 7) is now 
 - **Verified.** `testVarDCTBitstreamWriter_DCT64` encodes a near-constant 128×128 frame (where DCT64×64 wins on token-overhead alone — one `nzeros` token vs four for 4×DCT32×32) and confirms `djxl 0.11.2` decodes it and our decoder agrees on the pixels.
 - **403 tests passing, 3 skipped, 0 failures.**
 
+### v0.11.0y — AC-strategy encode: DCT64×32 / DCT32×64 DSP foundation
+
+Asymmetric ord-8 DSP, the next axis after ord-6. A DCT64×32 / DCT32×64 covers 32 cells (8×4 or 4×8); its 32 LLF coefficients sit in the DC plane.
+
+- **`LowestFrequenciesFromDC.dcFromLowestFrequenciesOrd8Block`** — encoder-direction inverse of `ord8Block`. Undoes the per-axis `<8, 64>` × `<4, 32>` resample, then the 2-D forward scaled DCT via `AccelerateDCT.idct2D(rows: 4, cols: 8)`, recovering the 32 DC-plane cell values from a block's 32 LLF coefficients.
+- **`VarDCTEncoder.forwardDCT32x64Block`** — direct `dct2D(rows: 32, cols: 64)` on the 64w × 32h pixel patch (coef matches decoder layout).
+- **`VarDCTEncoder.forwardDCT64x32Block`** — transposes the 32w × 64h patch into the 32-row × 64-col coef layout, then `dct2D(rows: 32, cols: 64)`.
+- **Verified.** `testLowestFrequenciesFromDC_Ord8Block_Inverse` confirms `ord8Block ∘ dcFromLowestFrequenciesOrd8Block = identity`; two block round-trip tests put 32×64 and 64×32 patches through `forwardDCT…Block` and the decoder's `idct2D(rows: 32, cols: 64)` (with the right transpose for DCT64×32) within bounded error.
+- **Scope.** DSP foundation only — no bitstream change, encoder output byte-identical to v0.11.0x.
+- **406 tests passing, 3 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)

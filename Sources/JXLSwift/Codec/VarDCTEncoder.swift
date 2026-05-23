@@ -1071,4 +1071,76 @@ public enum VarDCTEncoder {
         }
         return (dc, ac)
     }
+
+    /// Forward + quantise one 32-row × 64-col patch as a DCT32×64
+    /// block (libjxl ord 8). Coef layout matches the decoder's
+    /// `idct2D(rows: 32, cols: 64)` output for DCT32×64 — no
+    /// transpose. Returns 32 LLF-derived DC values (laid out as
+    /// `ord8Block`'s input expects: `dc[r*8+c]` ↔ pixel-cell
+    /// `(bx+c, by+r)`) and 2016 quantised AC coefficients (the 32
+    /// LLF positions `[r*64+c]` for r ∈ 0..4, c ∈ 0..8 left 0).
+    static func forwardDCT32x64Block(
+        patch: [Float], quantWeights: [Float],
+        scale: Float, qf: Int32
+    ) -> (dc: [Float], ac: [Int32]) {
+        precondition(patch.count == 2048
+                     && quantWeights.count == 2048,
+                     "DCT32x64 block needs a 2048-entry patch "
+                     + "+ 2048 weights")
+        var coef = patch
+        AccelerateDCT.dct2D(&coef, rows: 32, cols: 64)
+        var llf = [Float](repeating: 0, count: 32)
+        for r in 0..<4 {
+            for c in 0..<8 { llf[r * 8 + c] = coef[r * 64 + c] }
+        }
+        let dc = LowestFrequenciesFromDC
+            .dcFromLowestFrequenciesOrd8Block(llf: llf)
+        var ac = [Int32](repeating: 0, count: 2048)
+        for np in 0..<2048 {
+            let r = np / 64, c = np % 64
+            if r < 4 && c < 8 { continue }
+            ac[np] = quantizeAC(
+                coef[np], weight: quantWeights[np],
+                scale: scale, qf: qf)
+        }
+        return (dc, ac)
+    }
+
+    /// Forward + quantise one 64-row × 32-col patch as a DCT64×32
+    /// block (libjxl ord 8). The decoder's coef layout is 32-row ×
+    /// 64-col, so the encoder transposes the patch first. Returns
+    /// 32 LLF-derived DC values (`dc[r*8+c]` ↔ pixel-cell
+    /// `(bx+r, by+c)`) and 2016 quantised AC.
+    static func forwardDCT64x32Block(
+        patch: [Float], quantWeights: [Float],
+        scale: Float, qf: Int32
+    ) -> (dc: [Float], ac: [Int32]) {
+        precondition(patch.count == 2048
+                     && quantWeights.count == 2048,
+                     "DCT64x32 block needs a 2048-entry patch "
+                     + "+ 2048 weights")
+        // Transpose 64-row × 32-col → 32-row × 64-col.
+        var ar = [Float](repeating: 0, count: 2048)
+        for r in 0..<32 {
+            for c in 0..<64 {
+                ar[r * 64 + c] = patch[c * 32 + r]
+            }
+        }
+        AccelerateDCT.dct2D(&ar, rows: 32, cols: 64)
+        var llf = [Float](repeating: 0, count: 32)
+        for r in 0..<4 {
+            for c in 0..<8 { llf[r * 8 + c] = ar[r * 64 + c] }
+        }
+        let dc = LowestFrequenciesFromDC
+            .dcFromLowestFrequenciesOrd8Block(llf: llf)
+        var ac = [Int32](repeating: 0, count: 2048)
+        for np in 0..<2048 {
+            let r = np / 64, c = np % 64
+            if r < 4 && c < 8 { continue }
+            ac[np] = quantizeAC(
+                ar[np], weight: quantWeights[np],
+                scale: scale, qf: qf)
+        }
+        return (dc, ac)
+    }
 }

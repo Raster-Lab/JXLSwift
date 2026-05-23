@@ -367,6 +367,31 @@ public enum LowestFrequenciesFromDC {
         return result
     }
 
+    /// Inverse of `ord8Block` — the **encoder** direction. Recovers
+    /// the 32 DC-plane cell values (laid out as `ord8Block`'s input
+    /// expects: row-major over the 8-col × 4-row coef cell grid)
+    /// from a DCT64×32 / DCT32×64 block's 32 LLF coefficients.
+    /// `ord8Block(dcFromLowestFrequenciesOrd8Block(llf)) == llf`
+    /// within float epsilon.
+    public static func dcFromLowestFrequenciesOrd8Block(
+        llf: [Float]
+    ) -> [Float] {
+        precondition(llf.count == 32,
+                     "ord 8 LLF needs 32 coefficients")
+        // Undo the per-axis `<8, 64>` × `<4, 32>` resample.
+        var scaled = [Float](repeating: 0, count: 32)
+        for y in 0..<4 {
+            for x in 0..<8 {
+                scaled[y * 8 + x] = llf[y * 8 + x]
+                    / (kScales8to64[x] * kScales4to32[y])
+            }
+        }
+        // Undo the 2-D forward scaled DCT — `idct2D(rows: 4, cols: 8)`.
+        var dc = scaled
+        AccelerateDCT.idct2D(&dc, rows: 4, cols: 8)
+        return dc
+    }
+
     /// libjxl `dct_scales.h::DCTResampleScales<8, 64>::kScales`.
     static let kScales8to64: [Float] = [
         1.0000000000000000,
