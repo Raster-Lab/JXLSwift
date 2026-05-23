@@ -8864,6 +8864,31 @@ extension FoundationTests {
     /// decoder's `ord6Block`, so the encoder can split an `ord 6`
     /// block's 8 low-frequency coefficients into the 8 covered
     /// cells' DC-plane values.
+    /// DCT32×8 / DCT8×32 LLF DSP foundation (libjxl ord 5).
+    /// `dcFromLowestFrequenciesOrd5Block` must exactly invert the
+    /// decoder's `ord5Block`. The encoder uses this to split a
+    /// DCT32×8 / DCT8×32 block's 4 lowest-frequency coefficients
+    /// back into the 4 DC-plane cell values.
+    func testLowestFrequenciesFromDC_Ord5Block_Inverse() throws {
+        let cases: [[Float]] = [
+            [Float](repeating: 100, count: 4),
+            (0..<4).map { Float($0) * 8 - 12 },
+            (0..<4).map { Float(($0 * 5) % 7) - 3 },
+            [Float](repeating: 0, count: 4),
+            [10, -20, 30, -40],
+        ]
+        for dc in cases {
+            let llf = LowestFrequenciesFromDC.ord5Block(dc: dc)
+            let back = LowestFrequenciesFromDC
+                .dcFromLowestFrequenciesOrd5Block(llf: llf)
+            for i in 0..<4 {
+                XCTAssertEqual(back[i], dc[i], accuracy: 1e-3,
+                    "ord5Block LLF inverse mismatch at \(i): "
+                    + "dc=\(dc) → \(back)")
+            }
+        }
+    }
+
     func testLowestFrequenciesFromDC_Ord6Block_Inverse() throws {
         let cases: [[Float]] = [
             [Float](repeating: 100, count: 8),

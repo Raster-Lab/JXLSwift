@@ -225,6 +225,49 @@ public enum LowestFrequenciesFromDC {
         return [(a + p) / 2, (b + q) / 2, (b - q) / 2, (a - p) / 2]
     }
 
+    /// DCT32x8 / DCT8x32 (libjxl ord 5) path: 4 DC values from the
+    /// 4 covered cells (vertically stacked 1×4 for DCT32x8, or
+    /// horizontally 4×1 for DCT8x32) reinterpret to 4 LLF
+    /// coefficients at the top-left 4×1 corner of the 32×8 coef
+    /// block.
+    ///
+    /// Per libjxl `LowestFrequenciesFromDC<DCT32X8>`: ROWS=4,
+    /// COLS=1 → `ComputeScaledDCT<4, 1>` (1-D scaled DCT-4 along the
+    /// 4-row axis) then resample with
+    /// `DCTTotalResampleScale<4, 32>(y) * DCTTotalResampleScale<1, 8>(x)`.
+    /// The `<1, 8>` axis scale collapses to 1 (single element on
+    /// that axis), so only `kScales4to32` survives.
+    public static func ord5Block(dc: [Float]) -> [Float] {
+        precondition(dc.count == 4, "ord 5 LLF needs 4 DC values")
+        // 1-D scaled DCT-4 along the 4-axis.
+        let scaled = scaledDCT4(dc)
+        var result = [Float](repeating: 0, count: 4)
+        for x in 0..<4 {
+            result[x] = scaled[x] * kScales4to32[x]
+        }
+        return result
+    }
+
+    /// Inverse of `ord5Block` — the **encoder** direction. Recovers
+    /// the 4 DC-plane cell values (in the strategy's natural cell
+    /// order: top-to-bottom for DCT32×8, left-to-right for DCT8×32)
+    /// from a block's 4 LLF coefficients.
+    /// `ord5Block(dcFromLowestFrequenciesOrd5Block(llf)) == llf`
+    /// within float epsilon.
+    public static func dcFromLowestFrequenciesOrd5Block(
+        llf: [Float]
+    ) -> [Float] {
+        precondition(llf.count == 4,
+                     "ord 5 LLF needs 4 coefficients")
+        // Undo the per-axis `<4, 32>` resample.
+        var scaled = [Float](repeating: 0, count: 4)
+        for x in 0..<4 {
+            scaled[x] = llf[x] / kScales4to32[x]
+        }
+        // Undo the 1-D scaled DCT-4.
+        return inverseScaledDCT4(scaled)
+    }
+
     /// DCT32x16 / DCT16x32 (libjxl ord 6) path: 8 DC values from the
     /// covered 4×2 (or 2×4) cells reinterpret to 8 LLF coefficients
     /// at the top-left 4×2 corner of the 32×16 coef block.

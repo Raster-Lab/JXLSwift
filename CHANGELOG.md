@@ -351,6 +351,16 @@ The four AFV orientations join `bestSmallCell` as candidates 7–10. This is the
 - **Coverage.** With AFV in place, every decoder-supported AC strategy is now emitted: all multi-cell DCTs (DCT16/32/64 + asymmetric ord-4/6/8) and all single-cell strategies (DCT8, DCT4×4, DCT4×8, DCT8×4, DCT2×2, Hornuss, AFV0–3). DCT128 / DCT256 / DCT32×8 / DCT8×32 remain out of scope — the decoder doesn't reconstruct them yet, so the encoder doesn't emit them.
 - **415 tests passing, 3 skipped, 0 failures.**
 
+### v0.11.0ak — ord-5 (DCT32×8 / DCT8×32) LLF DSP foundation
+
+Pre-work for the only AC-strategy axis the decoder doesn't yet support — DCT32×8 (1×4 covered cells) and DCT8×32 (4×1 covered cells). Adding decoder dispatch + encoder emission for ord 5 is a multi-bite undertaking (LLF + per-axis IDCT + quant matrices + dispatch + forward primitives + region trial); this commit ships the smallest self-contained piece, the LLF transform, so both sides have a verified inverse pair ready when the rest lands.
+
+- **`LowestFrequenciesFromDC.ord5Block`** — 4 DC values from the 4 covered cells (1×4 / 4×1 grid) → 4 LLF coefficients via 1-D scaled DCT-4 plus the `kScales4to32` per-axis resample (the `<1, 8>` axis collapses to a no-op since it has a single element).
+- **`LowestFrequenciesFromDC.dcFromLowestFrequenciesOrd5Block`** — the encoder-direction inverse, undoes the resample then `inverseScaledDCT4`.
+- **Verified.** `testLowestFrequenciesFromDC_Ord5Block_Inverse` confirms `ord5Block ∘ dcFromLowestFrequenciesOrd5Block = identity` across flat, ramp, and zero-DC fixtures within float epsilon.
+- **Scope.** DSP foundation only — no decoder or encoder integration. The decoder's strategy dispatch still skips DCT32×8 / DCT8×32; the encoder still doesn't emit them. Encoder output byte-identical to v0.11.0aj.
+- **416 tests passing, 3 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)
