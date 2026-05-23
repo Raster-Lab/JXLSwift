@@ -313,6 +313,15 @@ DCT2×2 joins `bestSmallCell` as the fifth single-cell candidate. Adding one mor
 - **Verified.** `testVarDCTBitstreamWriter_SmallBlockDCT2x2` is an integration-safety check — a multi-scale textured fixture is encoded with DCT2×2 in the pool, and the codestream must still decode through our decoder **and `djxl`** at `mean < 2`. Whether DCT2×2 *actually* wins on this particular fixture is a heuristic outcome, not an integration requirement.
 - **411 tests passing, 3 skipped, 0 failures.**
 
+### v0.11.0ag — AC-strategy encode: Hornuss DSP foundation
+
+The IDENTITY ("hornuss") transform — a near-spatial small-block strategy. Each 4×4 quadrant carries a 2×2-DCT-combined block DC plus 15 spatial residuals around the quadrant centre pixel `(1,1)`. The (0,0) pixel of each quadrant uses a "corner-overwrite" trick — its residual lives at coef position `(y + 2, x + 2)` (the slot the (1,1) residual would otherwise occupy). Sweet spot: flat / smooth-block content where a full DCT would waste bits on noise-floor high-frequency coefficients.
+
+- **`VarDCTEncoder.forwardHornussBlock`** — exact inverse of `IdentityTransform.transformToPixels`. For each of the four 4×4 quadrants: pick `center = patch(1,1)`, compute 15 residuals via the libjxl coefficient-position permutation (including the corner-overwrite of (0,0)), set `blockDC = center + Σresidual / 16`, then 2×2 forward DCT the four block-DCs into positions `coef[0]`, `coef[1]`, `coef[8]`, `coef[9]`.
+- **Verified.** `testVarDCTEncoder_ForwardHornussBlock_RoundTrip` puts a smooth-ish patch (the Hornuss sweet spot) through `forwardHornussBlock` and `IdentityTransform.transformToPixels` (with dequant) — round-trips within `mean < 0.03`, `max < 0.15`.
+- **Scope.** DSP foundation only — no bitstream change, encoder output byte-identical to v0.11.0af. Trial-encode wiring follows in v0.11.0ah.
+- **412 tests passing, 3 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)

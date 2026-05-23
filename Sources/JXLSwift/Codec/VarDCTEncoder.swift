@@ -1167,6 +1167,72 @@ public enum VarDCTEncoder {
         return (coef[0], ac)
     }
 
+    /// Forward IDENTITY ("hornuss") transform — the analysis half
+    /// of a `hornuss` AC-strategy cell. Each 4×4 quadrant carries a
+    /// 2×2-DCT-combined block DC plus 15 spatial residuals around a
+    /// quadrant centre pixel (the `(1,1)` of the 4×4). Unlike the
+    /// DCT strategies, this is a near-spatial transform — useful
+    /// for flat / smooth-block content where a full DCT would waste
+    /// bits on noise-floor high-frequency coefficients. Exact
+    /// inverse of `IdentityTransform.transformToPixels`.
+    static func forwardHornussBlock(
+        patch: [Float], quantWeights: [Float],
+        scale: Float, qf: Int32
+    ) -> (dc: Float, ac: [Int32]) {
+        precondition(patch.count == 64 && quantWeights.count == 64,
+                     "Hornuss block needs an 8×8 patch + 64 weights")
+        var coef = [Float](repeating: 0, count: 64)
+        var blockDCs = [Float](repeating: 0, count: 4)
+        for y in 0..<2 {
+            for x in 0..<2 {
+                let center = patch[(y * 4 + 1) * 8 + x * 4 + 1]
+                var residualSum: Float = 0
+                // 15 residuals — for (iy, ix) ∈ 4×4 \ {(0, 0)}, the
+                // coef at the strided position `(y + iy·2, x + ix·2)`
+                // is the residual of one specific pixel:
+                //   • (iy, ix) = (1, 1) → pixel (y·4, x·4) — the
+                //     decoder's "corner overwrite" — coef[(y+2)·8 + x+2]
+                //     carries the (0,0)-pixel residual.
+                //   • otherwise → pixel (y·4 + iy, x·4 + ix).
+                for iy in 0..<4 {
+                    for ix in 0..<4 {
+                        if ix == 0 && iy == 0 { continue }
+                        let coefIdx =
+                            (y + iy * 2) * 8 + x + ix * 2
+                        let pixIdx: Int
+                        if ix == 1 && iy == 1 {
+                            pixIdx = (y * 4) * 8 + (x * 4)
+                        } else {
+                            pixIdx =
+                                (y * 4 + iy) * 8 + (x * 4 + ix)
+                        }
+                        let residual = patch[pixIdx] - center
+                        coef[coefIdx] = residual
+                        residualSum += residual
+                    }
+                }
+                // Decoder: center = blockDC − residualSum / 16.
+                // Encoder: blockDC = center + residualSum / 16.
+                blockDCs[y * 2 + x] =
+                    center + residualSum * (1.0 / 16.0)
+            }
+        }
+        // 2×2 forward DCT of the four block DCs into coef[0]/[1]/[8]/[9].
+        let d0 = blockDCs[0], d1 = blockDCs[1]
+        let d2 = blockDCs[2], d3 = blockDCs[3]
+        coef[0] = (d0 + d1 + d2 + d3) * 0.25
+        coef[1] = (d0 + d1 - d2 - d3) * 0.25
+        coef[8] = (d0 - d1 + d2 - d3) * 0.25
+        coef[9] = (d0 - d1 - d2 + d3) * 0.25
+        var ac = [Int32](repeating: 0, count: 64)
+        for np in 1..<64 {
+            ac[np] = quantizeAC(
+                coef[np], weight: quantWeights[np],
+                scale: scale, qf: qf)
+        }
+        return (coef[0], ac)
+    }
+
     /// Forward-transform + quantise one 8×8 single-channel patch as a
     /// DCT2×2 block — the analysis half of a `dct2x2` AC-strategy
     /// cell. DCT2×2 is the hierarchical 2×2-Haar cascade: at each

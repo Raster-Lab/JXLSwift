@@ -8288,6 +8288,53 @@ extension FoundationTests {
             "DCT4×4 block round-trip max error \(maxErr)")
     }
 
+    /// IDENTITY ("hornuss") encoder DSP foundation. `forwardHornussBlock`
+    /// packs an 8×8 patch into the spatial residual layout (per-
+    /// quadrant 2×2-DCT-combined block DC + 15 residuals around the
+    /// quadrant centre pixel) and must reconstruct the patch
+    /// exactly through `IdentityTransform.transformToPixels` (modulo
+    /// quantisation rounding).
+    func testVarDCTEncoder_ForwardHornussBlock_RoundTrip() throws {
+        // Flat-ish patch with mild per-pixel variation — the
+        // Hornuss sweet spot.
+        var patch = [Float](repeating: 0, count: 64)
+        for y in 0..<8 {
+            for x in 0..<8 {
+                patch[y * 8 + x] = 0.5
+                    + Float((x * 3 + y * 5) % 7) * 0.004
+            }
+        }
+        let qw = QuantWeights.getIdentityQuantWeights(
+            DefaultQuantBands.identity)
+        let yWeights = Array(qw[64..<128])
+        let globalScale: UInt32 = 5111
+        let qf: Int32 = 5
+        let acScale = Float(globalScale) / 65536.0
+        let (dc, ac) = VarDCTEncoder.forwardHornussBlock(
+            patch: patch, quantWeights: yWeights,
+            scale: acScale, qf: qf)
+        XCTAssertEqual(ac.count, 64)
+        XCTAssertEqual(ac[0], 0)
+        var coef = [Float](repeating: 0, count: 64)
+        coef[0] = dc
+        let invQuantAC = 65536.0 / Float(globalScale) / Float(qf)
+        for np in 1..<64 {
+            coef[np] = AdjustQuantBias.adjust(channel: 1, quant: ac[np])
+                / yWeights[np] * invQuantAC
+        }
+        let recon = IdentityTransform.transformToPixels(coef)
+        var meanErr: Float = 0, maxErr: Float = 0
+        for i in 0..<64 {
+            let e = abs(recon[i] - patch[i])
+            meanErr += e; maxErr = max(maxErr, e)
+        }
+        meanErr /= 64
+        XCTAssertLessThan(meanErr, 0.03,
+            "Hornuss block round-trip mean error \(meanErr)")
+        XCTAssertLessThan(maxErr, 0.15,
+            "Hornuss block round-trip max error \(maxErr)")
+    }
+
     /// DCT2×2 encoder DSP foundation. `forwardDCT2x2Block` packs an
     /// 8×8 patch through the hierarchical 2×2-Haar cascade and must
     /// reconstruct the patch within bounded error through
