@@ -858,6 +858,195 @@ final class JPEGFoundationTests: XCTestCase {
         }
     }
 
+    // MARK: - JPEGBlockDecoder
+
+    /// All-zero block: DC delta = 0, EOB right after. Single bit
+    /// each from a minimal table: huffvals=[0x00], code "0" for
+    /// both DC and AC sides.
+    func testJPEGBlock_AllZero() throws {
+        let dcTable = JPEGHuffmanTable(
+            class: .dc, tableId: 0,
+            bits: [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            huffvals: [0x00])  // size 0
+        let acTable = JPEGHuffmanTable(
+            class: .ac, tableId: 0,
+            bits: [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            huffvals: [0x00])  // EOB
+        let dcBook = try dcTable.buildCodebook()
+        let acBook = try acTable.buildCodebook()
+        var reader = JPEGBitReader(Data([0x00]))
+        var pred = JPEGDCPredictor()
+        let block = try JPEGBlockDecoder.decode(
+            from: &reader,
+            dcCodebook: dcBook, dcHuffvals: dcTable.huffvals,
+            acCodebook: acBook, acHuffvals: acTable.huffvals,
+            dcPredictor: &pred)
+        XCTAssertEqual(block.coefficients,
+                       Array(repeating: 0, count: 64))
+        XCTAssertEqual(pred.value, 0)
+    }
+
+    /// DC = 7. Single DC symbol size=3 at code "0", magnitude
+    /// "111" → raw=7, high=1 → value +7. Then EOB.
+    func testJPEGBlock_DCOnly_PositiveSeven() throws {
+        let dcTable = JPEGHuffmanTable(
+            class: .dc, tableId: 0,
+            bits: [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            huffvals: [0x03])  // DC size 3
+        let acTable = JPEGHuffmanTable(
+            class: .ac, tableId: 0,
+            bits: [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            huffvals: [0x00])  // EOB
+        let dcBook = try dcTable.buildCodebook()
+        let acBook = try acTable.buildCodebook()
+        // Bit stream: 0 (DC code) + 111 (mag 7) + 0 (EOB) = 01110
+        // Padded to 8 bits: 01110000 = 0x70
+        var reader = JPEGBitReader(Data([0x70]))
+        var pred = JPEGDCPredictor()
+        let block = try JPEGBlockDecoder.decode(
+            from: &reader,
+            dcCodebook: dcBook, dcHuffvals: dcTable.huffvals,
+            acCodebook: acBook, acHuffvals: acTable.huffvals,
+            dcPredictor: &pred)
+        XCTAssertEqual(block.coefficients[0], 7)
+        XCTAssertEqual(block.coefficients.dropFirst().reduce(0,+),
+                       0)
+        XCTAssertEqual(pred.value, 7)
+    }
+
+    /// DC = -3: size-2 covers magnitudes ±[2..3]. raw=0
+    /// (bit pattern "00") encodes -3 via EXTEND(V=0, T=2):
+    /// Vt=2, V<Vt → V + (-4+1) = -3.
+    func testJPEGBlock_DCOnly_NegativeThree() throws {
+        let dcTable = JPEGHuffmanTable(
+            class: .dc, tableId: 0,
+            bits: [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            huffvals: [0x02])  // DC size 2
+        let acTable = JPEGHuffmanTable(
+            class: .ac, tableId: 0,
+            bits: [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            huffvals: [0x00])
+        let dcBook = try dcTable.buildCodebook()
+        let acBook = try acTable.buildCodebook()
+        // Bit stream: 0 (DC code) + 00 (raw=0) + 0 (EOB) = 0000
+        // Padded: 0x00.
+        var reader = JPEGBitReader(Data([0x00]))
+        var pred = JPEGDCPredictor()
+        let block = try JPEGBlockDecoder.decode(
+            from: &reader,
+            dcCodebook: dcBook, dcHuffvals: dcTable.huffvals,
+            acCodebook: acBook, acHuffvals: acTable.huffvals,
+            dcPredictor: &pred)
+        XCTAssertEqual(block.coefficients[0], -3)
+        XCTAssertEqual(pred.value, -3)
+    }
+
+    /// DC predictor accumulates across blocks: block 1 DC=5,
+    /// block 2 DC delta=6 → block 2 absolute DC = 11.
+    func testJPEGBlock_DCDifferentialAccumulates() throws {
+        let dcTable = JPEGHuffmanTable(
+            class: .dc, tableId: 0,
+            bits: [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            huffvals: [0x03])
+        let acTable = JPEGHuffmanTable(
+            class: .ac, tableId: 0,
+            bits: [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            huffvals: [0x00])
+        let dcBook = try dcTable.buildCodebook()
+        let acBook = try acTable.buildCodebook()
+        // Block 1: "0" + "101" + "0" = 01010 (DC delta +5)
+        // Block 2: "0" + "110" + "0" = 01100 (DC delta +6)
+        // 10 bits → 0101001100 → 01010011 00000000 = 0x53 0x00
+        var reader = JPEGBitReader(Data([0x53, 0x00]))
+        var pred = JPEGDCPredictor()
+        let b1 = try JPEGBlockDecoder.decode(
+            from: &reader,
+            dcCodebook: dcBook, dcHuffvals: dcTable.huffvals,
+            acCodebook: acBook, acHuffvals: acTable.huffvals,
+            dcPredictor: &pred)
+        let b2 = try JPEGBlockDecoder.decode(
+            from: &reader,
+            dcCodebook: dcBook, dcHuffvals: dcTable.huffvals,
+            acCodebook: acBook, acHuffvals: acTable.huffvals,
+            dcPredictor: &pred)
+        XCTAssertEqual(b1.coefficients[0], 5)
+        XCTAssertEqual(b2.coefficients[0], 11)
+        XCTAssertEqual(pred.value, 11)
+    }
+
+    /// ZRL + single AC value: AC table with 3 length-2 codes
+    /// (00=ZRL, 01=(run=0 size=1), 10=EOB). Stream produces an
+    /// AC value of +1 at zig-zag position 17 (natural index 24).
+    func testJPEGBlock_ZRLThenValue() throws {
+        let dcTable = JPEGHuffmanTable(
+            class: .dc, tableId: 0,
+            bits: [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            huffvals: [0x00])  // DC size 0
+        let acTable = JPEGHuffmanTable(
+            class: .ac, tableId: 0,
+            bits: [0,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            huffvals: [0xF0, 0x01, 0x00])  // ZRL, (0,1), EOB
+        let dcBook = try dcTable.buildCodebook()
+        let acBook = try acTable.buildCodebook()
+        // Stream: "0" (DC) + "00" (ZRL) + "01" (0,1) + "1" (mag=1)
+        // + "10" (EOB) = 8 bits = 00001110 = 0x0E
+        var reader = JPEGBitReader(Data([0x0E]))
+        var pred = JPEGDCPredictor()
+        let block = try JPEGBlockDecoder.decode(
+            from: &reader,
+            dcCodebook: dcBook, dcHuffvals: dcTable.huffvals,
+            acCodebook: acBook, acHuffvals: acTable.huffvals,
+            dcPredictor: &pred)
+        // Zig-zag pos 0 = DC = 0. ZRL skipped pos 1..16. Pos 17
+        // gets +1. zigZag[17] = 24 per Figure A.6.
+        // Zig-zag pos 0 = DC = 0. ZRL skipped zig-zag pos 1..16.
+        // The (0,1) token writes +1 at zig-zag pos 17 — which
+        // JPEGZigZag.order maps to natural index 19.
+        let target = JPEGZigZag.order[17]
+        XCTAssertEqual(block.coefficients[0], 0)
+        XCTAssertEqual(block.coefficients[target], 1,
+            "expected +1 at natural index \(target)")
+        // No other non-zero coefficients.
+        for i in 0..<64 where i != target {
+            XCTAssertEqual(block.coefficients[i], 0,
+                "non-zero at unexpected index \(i)")
+        }
+    }
+
+    /// Truncated stream → propagates JPEGBitReaderError up.
+    /// Empty input — first DC bit read should throw .truncated.
+    func testJPEGBlock_TruncatedThrows() throws {
+        let dcTable = JPEGHuffmanTable(
+            class: .dc, tableId: 0,
+            bits: [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            huffvals: [0x03])
+        let acTable = JPEGHuffmanTable(
+            class: .ac, tableId: 0,
+            bits: [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            huffvals: [0x00])
+        let dcBook = try dcTable.buildCodebook()
+        let acBook = try acTable.buildCodebook()
+        var reader = JPEGBitReader(Data())  // empty
+        var pred = JPEGDCPredictor()
+        XCTAssertThrowsError(
+            try JPEGBlockDecoder.decode(
+                from: &reader,
+                dcCodebook: dcBook, dcHuffvals: dcTable.huffvals,
+                acCodebook: acBook, acHuffvals: acTable.huffvals,
+                dcPredictor: &pred))
+    }
+
+    /// Zig-zag table is the canonical Figure A.6 layout.
+    func testJPEGZigZag_KnownEntries() {
+        XCTAssertEqual(JPEGZigZag.order[0], 0)
+        XCTAssertEqual(JPEGZigZag.order[1], 1)
+        XCTAssertEqual(JPEGZigZag.order[2], 8)
+        XCTAssertEqual(JPEGZigZag.order[63], 63)
+        XCTAssertEqual(JPEGZigZag.order.count, 64)
+        // Every natural index appears exactly once.
+        XCTAssertEqual(Set(JPEGZigZag.order).count, 64)
+    }
+
     // MARK: - byte-stuffing + RST skip stress
 
     func testJPEGSegmentReader_HandlesByteStuffing() throws {

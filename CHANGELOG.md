@@ -695,6 +695,19 @@ The `benchmark` subcommand previously hardcoded the M0 placeholder codec — so 
 - **End-to-end manual verification.** Multi-value, repeated, and glob forms all produce the same 169 B 3-frame animation; the single-frame form unchanged.
 - **432 tests passing, 5 skipped, 0 failures.**
 
+### v0.11.0ce — Phase J: JPEG DC + AC coefficient block decoder
+
+Seventh Phase J bite, and the substance of JPEG decoding. Given a `JPEGBitReader` + DC/AC `JPEGHuffmanCodebook`s, `JPEGBlockDecoder.decode(...)` reads one 8×8 block of quantised DCT coefficients in natural (row-major) order, threading per-component DC-differential predictor state through. After this layer, "JPEG entropy stream → quantised DCT coefficients" is solved end to end; what's left for Phase J transcoding is dequantisation + IDCT + YCbCr→RGB + the JXL-side encoder bridge.
+
+- **`Sources/JXLSwift/JPEG/JPEGBlockDecoder.swift`** (new).
+  - **`JPEGCoefficientBlock`** — 64 `Int32` values in natural order (DC at [0], ACs at [1..63]).
+  - **`JPEGDCPredictor`** — per-component running DC value, in-out across blocks; reset on RST.
+  - **`JPEGZigZag.order`** — ITU-T T.81 Figure A.6 scan order (zig-zag index → natural index), used to unzigzag AC coefficients as they're decoded.
+  - **`JPEGBlockDecoder.decode(...)`** — DC path: Huffman-decode size byte `S` → read `S` magnitude bits → EXTEND (§F.2.2.1 Figure F.12) → add to predictor. AC path: loop over zig-zag positions, Huffman-decode `(RRRR, SSSS)` tokens — `(0,0)` is EOB, `(15,0)` is ZRL (skip 16 zeros), otherwise skip `RRRR` zeros and place `EXTEND(value, SSSS)`. Throws `JPEGBlockDecodeError` for malformed tokens (size out of range, RRRR ∈ 1..14 with SSSS=0, zero-run overflow).
+  - **`JPEGBlockDecodeError`** — distinct from `JPEGBitReaderError` (stream-level) and `JPEGParseError` (segment-level): coefficient-token errors are their own thing.
+- **7 new tests**: all-zero block, DC-only positive (DC=7, size=3, bits=111), DC-only negative (DC=−3, size=2, raw=0 — picked size 2 because size 3 covers ±[4..7] only), multi-block DC differential accumulation (5 then +6 = 11), ZRL followed by single AC value at zig-zag pos 17 → natural index 19, truncated-stream propagation, and a Figure A.6 zig-zag-table sanity check (all 64 indices unique, endpoints correct).
+- **486 tests passing, 6 skipped, 0 failures** (was 479; +7).
+
 ### v0.11.0cd — Phase J: JPEG MSB-first bit reader (byte-unstuffing + RST-aware)
 
 Sixth Phase J bite. Sits between the JPEG entropy *byte* stream and the Huffman codebook's `decodeSymbol` loop. Three concerns: MSB-first bit packing (JPEG §F.2.2.5), 0xFF 0x00 byte-stuffing (§F.1.2.3), RST-marker skipping mid-scan.
