@@ -543,6 +543,16 @@ v0.11.0az adds a second short-circuit tier: when DCT8 cost is ≤ 120 (≈ 40 pe
 - **Caveat: our decoder.** `JXLDecoder.decodeAll(_:)` is still a stub. End-to-end round-trip through our own decoder needs the decoder-side multi-frame loop; that's a separate scope. The encoder produces a spec-valid animation that `djxl` accepts.
 - **422 tests passing, 5 skipped, 0 failures.**
 
+### v0.11.0bc — Multi-frame VarDCT decoder (`JXLDecoder.decodeAll`)
+
+`JXLDecoder.decodeAll(_:)` previously threw `notImplemented`. v0.11.0bc implements it via **synthetic-single-frame byte surgery**: the multi-frame codestream's shared prelude (signature + SizeHeader + ImageMetadata + CustomTransformData) already declares animation correctly, so for each frame we concatenate `prelude + thatFrameBytes` and run the existing single-frame `decode(_:)` on the result. The per-frame FrameHeader carries its `animationFrame` block and the decoder reads it with the correct `haveAnimation = true` context. `isLast` doesn't change the outcome — `decode(_:)` always returns the first frame it reads.
+
+- **`JXLDecoder.decodeAll(_:)`** — walks the codestream once to find each frame's byte range (parse the prelude, then loop: read FrameHeader → read TOC → sum entry sizes → advance), then for each range constructs `prelude + frameBytes` and delegates to `decode(_:)`. M0 placeholder codestreams short-circuit to `[decode(_:)]`.
+- **Two small helpers** (`codestreamXSize` / `codestreamYSize`) compute the TOC entry count from the SizeHeader without re-parsing the whole codestream.
+- **Verified.** `testVarDCTBitstreamWriter_EncodeAnimation` now does a true end-to-end round-trip: encode a 3-frame red/green/blue animation, decode through `decodeAll`, check (a) frame count, (b) per-frame dimensions, (c) first-pixel RGB matches the source within 2 channels. `djxl 0.11.2` independently decodes the same codestream as spec-valid animation.
+- **Limitations.** This is a single-pass implementation: every frame re-decodes the prelude (no shared state across frames yet — the existing `decode(_:)` re-parses everything from byte 0). For animations with many frames this is `O(N²)` in prelude cost; for the common 2–10 frame case it's fine. A future refinement could share decoder state across frames.
+- **422 tests passing, 5 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)

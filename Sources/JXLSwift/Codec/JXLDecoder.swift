@@ -2951,8 +2951,115 @@ public struct JXLDecoder: Sendable {
         return frame
     }
 
+    /// Decode every frame in a JPEG XL codestream — single frame
+    /// or multi-frame animation. For single-frame inputs returns
+    /// `[decode(data)]`. For multi-frame: scans the codestream's
+    /// per-frame byte ranges, then for each frame constructs a
+    /// synthetic single-frame codestream (shared prelude + that
+    /// frame's bytes) and runs the existing `decode(_:)` on it.
+    /// The shared prelude correctly declares animation, so the
+    /// per-frame `FrameHeader` round-trips through the existing
+    /// reader without any rewriting needed. `isLast` flag in the
+    /// per-frame header does not change the outcome — `decode(_:)`
+    /// always returns the first frame it reads.
     public func decodeAll(_ data: Data) throws -> [ImageFrame] {
-        throw DecoderError.notImplemented("multi-frame decoding")
+        if MinimalLosslessCodec.isM0(data) {
+            return [try MinimalLosslessCodec.decode(data)]
+        }
+        let codestream: Data
+        do {
+            switch try parseJXLContainer(data) {
+            case .naked:
+                codestream = data
+            case .iso(let boxes):
+                codestream = try extractCodestream(
+                    from: boxes, in: data)
+            }
+        } catch let e as ContainerError {
+            throw DecoderError.container(e)
+        }
+        guard hasCodestreamSignature(codestream) else {
+            throw DecoderError.missingSignature
+        }
+        // Walk the codestream's prelude (signature + SizeHeader +
+        // ImageMetadata + CustomTransformData) to find the byte
+        // position where the first FrameHeader starts.
+        var r = BitReader(codestream, startingAt: 16)
+        let _ = try SizeHeader.read(from: &r)
+        let metadata = try ImageMetadata.read(from: &r)
+        try r.readCustomTransformData(
+            xybEncoded: metadata.xybEncoded)
+        try r.alignToByte()
+        let preludeEndByte = r.position / 8
+        // Walk per-frame: read FrameHeader + TOC, sum entry sizes
+        // to find the frame's end byte. Stop after the frame whose
+        // `isLast` flag is set.
+        let ctx = FrameHeaderContext(
+            xybEncoded: metadata.xybEncoded,
+            numExtraChannels: metadata.extraChannels.count,
+            haveAnimation: metadata.animation != nil,
+            haveTimecodes:
+                metadata.animation?.haveTimecodes ?? false)
+        var frameRanges: [(start: Int, end: Int)] = []
+        while true {
+            let frameStartByte = r.position / 8
+            let fh = try FrameHeader.read(from: &r, context: ctx)
+            let xs = Int(codestreamXSize(codestream))
+            let ys = Int(codestreamYSize(codestream))
+            let groupDim = 128 << Int(fh.groupSizeShift)
+            let dcGroupDim = groupDim << 3
+            let numG = ((xs + groupDim - 1) / groupDim)
+                * ((ys + groupDim - 1) / groupDim)
+            let numDG = ((xs + dcGroupDim - 1) / dcGroupDim)
+                * ((ys + dcGroupDim - 1) / dcGroupDim)
+            let entries = TOC.numEntries(
+                numGroups: numG, numDcGroups: numDG,
+                numPasses: Int(fh.passes.numPasses))
+            let toc = try TOC.read(from: &r, numEntries: entries)
+            // TOC.read aligns to byte; sections that follow are
+            // byte-aligned chunks of sizes toc.entrySizes.
+            let afterTocByte = r.position / 8
+            let totalSectionBytes = toc.entrySizes.reduce(0) {
+                $0 + Int($1)
+            }
+            let frameEndByte = afterTocByte + totalSectionBytes
+            guard frameEndByte <= codestream.count else {
+                throw DecoderError.notImplemented(
+                    "decodeAll: frame \(frameRanges.count) "
+                    + "extends past codestream end "
+                    + "(\(frameEndByte) > \(codestream.count))")
+            }
+            frameRanges.append(
+                (start: frameStartByte, end: frameEndByte))
+            if fh.isLast { break }
+            // Advance reader past the sections to the next
+            // FrameHeader byte position.
+            try r.skip(bits: totalSectionBytes * 8)
+        }
+        // For each frame, build a synthetic single-frame
+        // codestream (shared prelude + that frame's bytes) and
+        // decode it via the existing single-frame path.
+        let prelude = codestream.subdata(in: 0..<preludeEndByte)
+        var out: [ImageFrame] = []
+        out.reserveCapacity(frameRanges.count)
+        for range in frameRanges {
+            var synth = prelude
+            synth.append(codestream.subdata(
+                in: range.start..<range.end))
+            out.append(try decode(synth))
+        }
+        return out
+    }
+
+    /// Helper for `decodeAll` — read just the SizeHeader's xsize /
+    /// ysize from a codestream that's already passed signature.
+    private func codestreamXSize(_ codestream: Data) -> UInt32 {
+        var r = BitReader(codestream, startingAt: 16)
+        return (try? SizeHeader.read(from: &r).xsize) ?? 0
+    }
+    private func codestreamYSize(_ codestream: Data) -> UInt32 {
+        var r = BitReader(codestream, startingAt: 16)
+        return (try? SizeHeader.read(from: &r).ysize) ?? 0
     }
 
     /// End-to-end Modular pixel decode. Walks the container + headers,

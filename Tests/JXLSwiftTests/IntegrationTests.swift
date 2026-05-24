@@ -10170,6 +10170,38 @@ extension FoundationTests {
         }
     }
 
+    /// Diagnostic — observe what `JXLDecoder.decode(_:)` does when
+    /// fed a multi-frame codestream. Skipped unless
+    /// `JXL_PRINT_MF_DECODE` is set.
+    func testJXLDecoder_MultiFrameDecodeProbe() throws {
+        guard ProcessInfo.processInfo.environment[
+            "JXL_PRINT_MF_DECODE"] != nil else {
+            throw XCTSkip("set JXL_PRINT_MF_DECODE to run")
+        }
+        let dim = 16
+        var f0 = ImageFrame(width: dim, height: dim, channels: 3)
+        var f1 = ImageFrame(width: dim, height: dim, channels: 3)
+        for i in 0..<(dim * dim) {
+            f0.data[i * 3 + 0] = 200; f0.data[i * 3 + 1] = 60
+            f0.data[i * 3 + 2] = 60
+            f1.data[i * 3 + 0] = 60; f1.data[i * 3 + 1] = 200
+            f1.data[i * 3 + 2] = 60
+        }
+        let cs = try VarDCTBitstreamWriter.encodeAnimation(
+            frames: [f0, f1], frameDurations: [10, 10])
+        do {
+            let dec = try JXLDecoder().decode(cs)
+            FileHandle.standardError.write(Data(
+                ("MF-PROBE decode() succeeded: \(dec.width)×"
+                 + "\(dec.height), first pixel "
+                 + "RGB=(\(dec.data[0]),\(dec.data[1]),"
+                 + "\(dec.data[2]))\n").utf8))
+        } catch {
+            FileHandle.standardError.write(Data(
+                "MF-PROBE decode() threw: \(error)\n".utf8))
+        }
+    }
+
     /// VarDCT multi-frame round-trip. Encode a 3-frame animation
     /// (each frame a different colour), verify djxl decodes it as
     /// a 3-frame animation, and verify our `decodeAll` reads back
@@ -10196,9 +10228,27 @@ extension FoundationTests {
             frameDurations: [20, 30, 40])
         XCTAssertGreaterThan(cs.count, 0)
 
-        // Our decoder's `decodeAll` is still a stub — the multi-
-        // frame DECODER infrastructure is a separate scope. So we
-        // verify multi-frame ENCODE via djxl only here.
+        // Our decoder's `decodeAll(_:)` — multi-frame round-trip
+        // through synthetic-single-frame byte-surgery (v0.11.0bc).
+        let decoded = try JXLDecoder().decodeAll(cs)
+        XCTAssertEqual(decoded.count, frames.count,
+            "decodeAll must return all \(frames.count) frames; "
+            + "got \(decoded.count)")
+        for (i, f) in decoded.enumerated() {
+            XCTAssertEqual(f.width, dim)
+            XCTAssertEqual(f.height, dim)
+            // First-pixel check confirms the *right* frame was
+            // returned (red / green / blue match the source).
+            let src = frames[i]
+            let r = Int(f.data[0]), g = Int(f.data[1])
+            let b = Int(f.data[2])
+            let dr = abs(r - Int(src.data[0]))
+            let dg = abs(g - Int(src.data[1]))
+            let db = abs(b - Int(src.data[2]))
+            XCTAssertLessThan(max(max(dr, dg), db), 3,
+                "frame \(i) first-pixel RGB=\(r),\(g),\(b) "
+                + "differs from source by more than 2 channels")
+        }
 
         // libjxl djxl confirms spec compliance for the animation.
         let djxl = "/opt/homebrew/bin/djxl"
