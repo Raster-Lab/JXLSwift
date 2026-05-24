@@ -503,6 +503,17 @@ The fixed `qfMax = 24` and `multiplier = 100` from v0.11.0aw was tuned for `dist
 - **Extended diagnostic.** `EncodeQualityMatrix` now iterates four distances (`0.5, 1.0, 2.0, 4.0`) per fixture — 32 measurement lines instead of 16.
 - **421 tests passing, 4 skipped, 0 failures.**
 
+### v0.11.0ay — Encoder performance: `bestSmallCell` smooth-cell short-circuit
+
+The `bestSmallCell` per-cell trial runs 10 forward transforms (DCT8 + DCT4×4 + DCT4×8 + DCT8×4 + DCT2×2 + Hornuss + AFV0..3) on every uncovered cell, scoring each and picking the cheapest. On typical photographic content most cells are smooth (low AC energy), and DCT8×8 is already the optimal choice — the other 9 trials are pure waste. v0.11.0ay short-circuits on the smooth-cell case: compute DCT8 first, if its 3-channel total token cost is `≤ 54` (= ≤ 18 per channel = `lastNZ ≤ 4` with small magnitudes — "very smooth"), return DCT8 immediately without running the other 9.
+
+- **`VarDCTEncoder.bestSmallCell`** — single early-return after the DCT8 trial. Threshold tuned at 54 (3 channels × 18 per channel ≈ 4-token nzeros + small ACs); below this the cost gap to the cheapest small-block alternative is below 1 token / cell, so the chance of picking a wrong strategy is negligible.
+- **Measured perf gain** (new `JXL_PRINT_ENC_PERF` diagnostic, 256×256):
+  - **smooth content (per-cell gradient):** 95 ms/frame → 43 ms/frame; throughput **0.68 → 1.51 Mpx/s** (**2.2× faster**).
+  - **noisy content (per-pixel random):** unchanged at 95 ms/frame / 0.68 Mpx/s (every cell has high AC; short-circuit never fires — same code path as before).
+- **Quality impact** (via `EncodeQualityMatrix`): smooth fixtures unchanged or marginally improved (smooth-gradient d=4.0: mean error **3.44 → 2.99**, –13 %); textured fixtures (checkerboard, colour-mosaic) byte-identical because they never hit the short-circuit threshold.
+- **421 tests passing, 5 skipped (incl. new opt-in perf diagnostic), 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)

@@ -9995,6 +9995,61 @@ extension FoundationTests {
     /// is bounded: a DC-only encode (block averages) would mean ~7+
     /// here — passing `< 4` proves the AC coefficient stream is
     /// carrying real detail.
+    /// Diagnostic (not an assertion) — measure encoder throughput
+    /// at multiple frame sizes and content types with default
+    /// options. Useful for spotting performance regressions.
+    /// Skipped unless `JXL_PRINT_ENC_PERF` is set.
+    func testVarDCTBitstreamWriter_EncodePerformance() throws {
+        guard ProcessInfo.processInfo.environment[
+            "JXL_PRINT_ENC_PERF"] != nil else {
+            throw XCTSkip("set JXL_PRINT_ENC_PERF to run")
+        }
+        let scenarios: [(name: String, build: (Int, Int, Int) -> (UInt8, UInt8, UInt8))] = [
+            ("noisy",  { dim, x, y in
+                (UInt8(((x * 7 + y * 3) & 0xff)),
+                 UInt8(((x * 5 + y * 11) & 0xff)),
+                 UInt8(((x * 13 + y * 17) & 0xff)))
+            }),
+            ("smooth", { dim, x, y in
+                let v = UInt8(40 + (x + y) % 32)
+                return (v, UInt8(clamping: Int(v) + 10),
+                        UInt8(clamping: Int(v) + 20))
+            }),
+        ]
+        for (sName, sBuild) in scenarios {
+            for dim in [64, 128, 256] {
+                var frame = ImageFrame(
+                    width: dim, height: dim, channels: 3)
+                for y in 0..<dim {
+                    for x in 0..<dim {
+                        let i = (y * dim + x) * 3
+                        let (r, g, b) = sBuild(dim, x, y)
+                        frame.data[i + 0] = r
+                        frame.data[i + 1] = g
+                        frame.data[i + 2] = b
+                    }
+                }
+                // Warm up.
+                _ = try VarDCTBitstreamWriter.encode(frame: frame)
+                let iters = max(1, 5_000_000 / (dim * dim))
+                let start = Date()
+                for _ in 0..<iters {
+                    _ = try VarDCTBitstreamWriter.encode(
+                        frame: frame)
+                }
+                let elapsed = -start.timeIntervalSinceNow
+                let perFrame = elapsed / Double(iters) * 1000
+                let mpps = Double(dim * dim * iters)
+                    / elapsed / 1_000_000
+                FileHandle.standardError.write(Data(
+                    ("ENC-PERF [\(sName)] dim=\(dim) "
+                     + "iters=\(iters) "
+                     + "perFrame=\(String(format: "%.2f", perFrame))ms "
+                     + "throughput=\(String(format: "%.2f", mpps))Mpx/s\n").utf8))
+            }
+        }
+    }
+
     /// Diagnostic measurement (not an assertion) — print the
     /// encoder's mean round-trip error and codestream size across
     /// all four (gaborish, adaptiveQF) combinations on multiple
