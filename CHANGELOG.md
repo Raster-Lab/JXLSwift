@@ -579,6 +579,15 @@ The `--frame-duration` option from v0.11.0bd was accepted by the CLI but never t
 - **End-to-end manual verification.** Encoded a 3-frame red / green / blue animation via the v0.11.0bd CLI multi-frame encode, decoded with `jxl decode -i anim.jxl -o "dec-%03d.ppm" --all-frames`. Output: three PPM files, first pixel of each `(200, 60, 59)` / `(61, 200, 61)` / `(60, 60, 200)` — within ±1 of the source RGB. The fallback (`out.ppm` without `%d`) writes `out-00.ppm`, `out-01.ppm`, `out-02.ppm`.
 - **423 tests passing, 5 skipped, 0 failures** (the CLI is a thin layer over the already-tested `decodeAll`).
 
+### v0.11.0bg — `JXLDecoder.countFrames(_:)` + `jxl info` shows frame count
+
+`jxl info` reported the animation tps numerator/denominator and loops, but not the frame count — users had to either decode the animation or count via `djxl`. v0.11.0bg adds a cheap `countFrames` API (FrameHeader+TOC parse only, no pixel decode) and surfaces it in the info output.
+
+- **`JXLDecoder.countFrames(_:)`** — walks each frame's FrameHeader + TOC, sums section sizes to skip the payload, increments a counter, breaks at the frame with `isLast = true`. Returns 1 for any single-frame codestream (the common case); the actual count for multi-frame animations. M0 placeholder codestreams short-circuit to 1.
+- **`Info` subcommand** — when `metadata.animation != nil`, the existing `Animation: …` line is prefixed with `N frame(s),` (e.g. `Animation: 3 frame(s), 100/1 tps, loops=0`).
+- **Verified.** `testJXLDecoder_CountFrames` exercises 1- / 3- / 7-frame fixtures. End-to-end manual: `jxl info anim.jxl` shows `Animation: 3 frame(s), 100/1 tps, loops=0`; `jxl info single.jxl` shows no `Animation:` line (correct — metadata declares no animation for single-frame).
+- **424 tests passing, 5 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)

@@ -47,7 +47,12 @@ struct Info: ParsableCommand {
                 }
             }
             if let anim = m.animation {
-                print("Animation:    \(anim.tpsNumerator)/\(anim.tpsDenominator) tps, loops=\(anim.numLoops)")
+                let frameCount = (try? JXLDecoder().countFrames(data))
+                    ?? 0
+                let countLabel = frameCount > 0
+                    ? "\(frameCount) frame(s), "
+                    : ""
+                print("Animation:    \(countLabel)\(anim.tpsNumerator)/\(anim.tpsDenominator) tps, loops=\(anim.numLoops)")
             }
             if m.intensityTarget != 255.0 {
                 print("HDR:          intensity target = \(m.intensityTarget) cd/m²")

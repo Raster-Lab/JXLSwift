@@ -10202,6 +10202,28 @@ extension FoundationTests {
         }
     }
 
+    /// `JXLDecoder.countFrames(_:)` reports 1 for single-frame
+    /// codestreams and the actual count for multi-frame animations.
+    func testJXLDecoder_CountFrames() throws {
+        let dim = 16
+        var f = ImageFrame(width: dim, height: dim, channels: 3)
+        for i in 0..<(dim * dim) {
+            f.data[i * 3 + 0] = 200; f.data[i * 3 + 1] = 60
+            f.data[i * 3 + 2] = 60
+        }
+        // Single-frame.
+        let single = try VarDCTBitstreamWriter.encode(frame: f)
+        XCTAssertEqual(try JXLDecoder().countFrames(single), 1)
+        // 3-frame animation.
+        let anim = try VarDCTBitstreamWriter.encodeAnimation(
+            frames: [f, f, f])
+        XCTAssertEqual(try JXLDecoder().countFrames(anim), 3)
+        // 7-frame animation.
+        let anim7 = try VarDCTBitstreamWriter.encodeAnimation(
+            frames: [f, f, f, f, f, f, f])
+        XCTAssertEqual(try JXLDecoder().countFrames(anim7), 7)
+    }
+
     /// VarDCT multi-frame round-trip. Encode a 3-frame animation
     /// (each frame a different colour), verify djxl decodes it as
     /// a 3-frame animation, and verify our `decodeAll` reads back

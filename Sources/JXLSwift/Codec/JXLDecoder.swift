@@ -3062,6 +3062,69 @@ public struct JXLDecoder: Sendable {
         return (try? SizeHeader.read(from: &r).ysize) ?? 0
     }
 
+    /// Count the number of frames in a JPEG XL codestream without
+    /// decoding any pixels — walks each frame's FrameHeader + TOC
+    /// + skips the section bytes, stopping at the frame whose
+    /// `isLast` flag is set. Returns `1` for any single-frame
+    /// codestream (the usual case); returns the actual frame count
+    /// for multi-frame animations.
+    ///
+    /// Cheap relative to `decode(_:)` or `decodeAll(_:)` —
+    /// FrameHeader parsing is bits-only, TOC parsing is a few
+    /// hundred bits, and section bytes are skipped without
+    /// processing.
+    public func countFrames(_ data: Data) throws -> Int {
+        if MinimalLosslessCodec.isM0(data) { return 1 }
+        let codestream: Data
+        do {
+            switch try parseJXLContainer(data) {
+            case .naked:
+                codestream = data
+            case .iso(let boxes):
+                codestream = try extractCodestream(
+                    from: boxes, in: data)
+            }
+        } catch let e as ContainerError {
+            throw DecoderError.container(e)
+        }
+        guard hasCodestreamSignature(codestream) else {
+            throw DecoderError.missingSignature
+        }
+        var r = BitReader(codestream, startingAt: 16)
+        let _ = try SizeHeader.read(from: &r)
+        let metadata = try ImageMetadata.read(from: &r)
+        try r.readCustomTransformData(
+            xybEncoded: metadata.xybEncoded)
+        try r.alignToByte()
+        let ctx = FrameHeaderContext(
+            xybEncoded: metadata.xybEncoded,
+            numExtraChannels: metadata.extraChannels.count,
+            haveAnimation: metadata.animation != nil,
+            haveTimecodes:
+                metadata.animation?.haveTimecodes ?? false)
+        var count = 0
+        while true {
+            let fh = try FrameHeader.read(from: &r, context: ctx)
+            let xs = Int(codestreamXSize(codestream))
+            let ys = Int(codestreamYSize(codestream))
+            let groupDim = 128 << Int(fh.groupSizeShift)
+            let dcGroupDim = groupDim << 3
+            let numG = ((xs + groupDim - 1) / groupDim)
+                * ((ys + groupDim - 1) / groupDim)
+            let numDG = ((xs + dcGroupDim - 1) / dcGroupDim)
+                * ((ys + dcGroupDim - 1) / dcGroupDim)
+            let entries = TOC.numEntries(
+                numGroups: numG, numDcGroups: numDG,
+                numPasses: Int(fh.passes.numPasses))
+            let toc = try TOC.read(from: &r, numEntries: entries)
+            let total = toc.entrySizes.reduce(0) { $0 + Int($1) }
+            try r.skip(bits: total * 8)
+            count += 1
+            if fh.isLast { break }
+        }
+        return count
+    }
+
     /// End-to-end Modular pixel decode. Walks the container + headers,
     /// decodes the MA-tree + post-tree codebook, reads the
     /// GroupHeader(s), applies meta-transforms, decodes every
