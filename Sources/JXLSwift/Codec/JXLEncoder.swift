@@ -256,13 +256,25 @@ public struct JXLEncoder: Sendable {
         let start = Date()
         let cs: Data
         do {
+            let durations: [UInt32]
+            if let perFrame = options.frameDurations {
+                guard perFrame.count == frames.count else {
+                    throw EncoderError.unsupportedFrame(
+                        "EncodingOptions.frameDurations.count "
+                        + "(\(perFrame.count)) ≠ frames.count "
+                        + "(\(frames.count))")
+                }
+                durations = perFrame
+            } else {
+                durations = [UInt32](
+                    repeating: options.defaultFrameDuration,
+                    count: frames.count)
+            }
             cs = try VarDCTBitstreamWriter.encodeAnimation(
                 frames: frames, distance: options.distance,
                 gaborish: options.gaborish,
                 adaptiveQF: options.adaptiveQF,
-                frameDurations: [UInt32](
-                    repeating: options.defaultFrameDuration,
-                    count: frames.count))
+                frameDurations: durations)
         } catch let e as VarDCTBitstreamWriter.WriterError {
             throw EncoderError.unsupportedFrame(
                 "encodeAnimation: \(e)")

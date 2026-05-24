@@ -596,6 +596,16 @@ Two pin-down tests exercising multi-frame paths that weren't covered by the basi
 - **`testJXLDecoder_DecodeAllOnSingleFrame`** — feeds a normal single-frame VarDCT codestream to `decodeAll(_:)`; confirms it returns `[singleFrame]` (count 1, correct dimensions, correct channel count). The byte-surgery `decodeAll` correctly handles the `isLast = true` case on the very first frame iteration.
 - **426 tests passing, 5 skipped, 0 failures.**
 
+### v0.11.0bi — Per-frame animation durations (`EncodingOptions.frameDurations` + CLI `--frame-duration 10,30,10`)
+
+Animations with **variable-pace timing** — slow intro frame, fast middle, slow end. Previously every frame got `defaultFrameDuration` (uniform). v0.11.0bi adds explicit per-frame durations at both the API and CLI surfaces.
+
+- **`EncodingOptions.frameDurations: [UInt32]?`** — new field. When non-nil, must have `count == frames.count`; each entry overrides the per-frame duration for that index. When nil, `defaultFrameDuration` is used uniformly (existing behaviour, unchanged).
+- **`JXLEncoder.encode([ImageFrame])`** — uses `options.frameDurations` when set, falls back to `[defaultFrameDuration]·count` otherwise. Mismatched count throws `EncoderError.unsupportedFrame`.
+- **`Encode` subcommand** — `--frame-duration` changes type from `UInt32` to `String`, accepting either a single integer (`10`, applied uniformly) or a comma-separated list (`10,30,10`, count must match input frames; otherwise `JXLExitCode.invalidArguments`).
+- **Verified.** `testJXLEncoder_PerFrameDurations` proves per-frame durations produce a different codestream than uniform (the values flow through to the per-frame `animationFrame.duration` field) and that count mismatch correctly throws. End-to-end manual: `jxl encode -i f0 -i f1 -i f2 -o a.jxl --frame-duration 50,10,30` produces a 169 B byte-distinct codestream from the uniform-10 version.
+- **427 tests passing, 5 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)

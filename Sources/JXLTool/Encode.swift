@@ -49,8 +49,8 @@ struct Encode: ParsableCommand {
     var adaptiveQF: Bool = true
 
     @Option(name: .customLong("frame-duration"),
-            help: "Per-frame duration in tps units (multi-frame only; default 10 = 100 ms at the libjxl-default 100 tps).")
-    var frameDuration: UInt32 = 10
+            help: "Per-frame duration in tps units (multi-frame only; default 10 = 100 ms at the libjxl-default 100 tps). Accepts either a single value applied to every frame, or a comma-separated list `--frame-duration 10,30,10` matching the number of input frames.")
+    var frameDuration: String = "10"
 
     func run() throws {
         guard !input.isEmpty else {
@@ -86,10 +86,40 @@ struct Encode: ParsableCommand {
             : .lossy(quality: max(0, min(quality, 100)))
         let effortLevel = EncodingEffort(
             rawValue: max(1, min(effort, 9))) ?? .squirrel
+        // Parse `--frame-duration`. Accepts a single integer
+        // ("10") or a comma-separated list ("10,30,10"). For the
+        // list form, the count must match the number of frames.
+        let rawDurations = frameDuration
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+        var parsedDurations: [UInt32] = []
+        for s in rawDurations {
+            guard let v = UInt32(s) else {
+                print("error: invalid --frame-duration '\(s)' "
+                    + "(expected integer)", to: &standardError)
+                throw JXLExitCode.invalidArguments
+            }
+            parsedDurations.append(v)
+        }
+        let defaultDur: UInt32 = parsedDurations.first ?? 10
+        let perFrameDurs: [UInt32]?
+        if parsedDurations.count <= 1 {
+            perFrameDurs = nil // single value handled by default
+        } else {
+            guard parsedDurations.count == frames.count else {
+                print("error: --frame-duration list has "
+                    + "\(parsedDurations.count) values but "
+                    + "\(frames.count) input frame(s)",
+                    to: &standardError)
+                throw JXLExitCode.invalidArguments
+            }
+            perFrameDurs = parsedDurations
+        }
         let encoder = JXLEncoder(options: EncodingOptions(
             mode: mode, effort: effortLevel,
             gaborish: gaborish, adaptiveQF: adaptiveQF,
-            defaultFrameDuration: frameDuration))
+            defaultFrameDuration: defaultDur,
+            frameDurations: perFrameDurs))
         let encoded: EncodedImage
         do {
             if frames.count == 1 {

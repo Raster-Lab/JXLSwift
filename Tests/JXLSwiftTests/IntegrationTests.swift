@@ -10376,6 +10376,45 @@ extension FoundationTests {
             "djxl rejected the animation codestream; stderr: \(err)")
     }
 
+    /// JXLEncoder API surface: `EncodingOptions.frameDurations`
+    /// overrides `defaultFrameDuration` when non-nil; supports
+    /// variable-pace animations. Count mismatch throws.
+    func testJXLEncoder_PerFrameDurations() throws {
+        let dim = 16
+        var f = ImageFrame(width: dim, height: dim, channels: 3)
+        for i in 0..<(dim * dim) {
+            f.data[i * 3 + 0] = 200; f.data[i * 3 + 1] = 60
+            f.data[i * 3 + 2] = 60
+        }
+        // Per-frame durations [50, 10, 30] must produce a different
+        // codestream than uniform [10, 10, 10].
+        let uniformOpts = EncodingOptions(
+            mode: .distance(1.0), containerWrap: false,
+            defaultFrameDuration: 10)
+        let perFrameOpts = EncodingOptions(
+            mode: .distance(1.0), containerWrap: false,
+            frameDurations: [50, 10, 30])
+        let uniform = try JXLEncoder(options: uniformOpts)
+            .encode([f, f, f])
+        let perFrame = try JXLEncoder(options: perFrameOpts)
+            .encode([f, f, f])
+        XCTAssertNotEqual(uniform.data, perFrame.data,
+            "per-frame durations must produce a different "
+            + "codestream than uniform durations")
+        // Count mismatch must throw.
+        let bad = EncodingOptions(
+            mode: .distance(1.0), containerWrap: false,
+            frameDurations: [10, 20])
+        do {
+            _ = try JXLEncoder(options: bad).encode([f, f, f])
+            XCTFail("count mismatch must throw")
+        } catch EncoderError.unsupportedFrame {
+            // expected
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+    }
+
     /// JXLEncoder API surface: `EncodingOptions.defaultFrameDuration`
     /// flows through `encode([ImageFrame])` to the per-frame
     /// `animationFrame.duration` field. Different values must

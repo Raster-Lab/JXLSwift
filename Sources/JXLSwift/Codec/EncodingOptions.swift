@@ -75,8 +75,15 @@ public struct EncodingOptions: Sendable {
     /// 100-tps timestamp units (= 10 ms each). Default 10 → 100 ms
     /// per frame. Applied uniformly to every frame in an animation
     /// encode (`JXLEncoder.encode([ImageFrame])`); ignored for
-    /// single-frame encodes.
+    /// single-frame encodes. Overridden by `frameDurations` when
+    /// that is set.
     public var defaultFrameDuration: UInt32
+    /// Multi-frame only: per-frame duration override. When non-nil,
+    /// must have one entry per frame (`count == frames.count`);
+    /// when nil, every frame uses `defaultFrameDuration`. Lets
+    /// callers do variable-pace animations (slow intro frame, fast
+    /// middle, slow end frame, …).
+    public var frameDurations: [UInt32]?
 
     public init(
         mode: CompressionMode = .lossy(quality: 90),
@@ -88,7 +95,8 @@ public struct EncodingOptions: Sendable {
         containerWrap: Bool = true,
         gaborish: Bool = true,
         adaptiveQF: Bool = true,
-        defaultFrameDuration: UInt32 = 10
+        defaultFrameDuration: UInt32 = 10,
+        frameDurations: [UInt32]? = nil
     ) {
         self.mode = mode
         self.effort = effort
@@ -100,6 +108,7 @@ public struct EncodingOptions: Sendable {
         self.gaborish = gaborish
         self.adaptiveQF = adaptiveQF
         self.defaultFrameDuration = defaultFrameDuration
+        self.frameDurations = frameDurations
     }
 
     /// The libjxl distance value that this configuration maps to. Used
