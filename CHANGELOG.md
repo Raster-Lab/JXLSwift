@@ -668,6 +668,21 @@ The `Decode` subcommand previously offered `--all-frames` (decode every frame) o
 - **End-to-end manual verification.** `jxl decode -i varied.jxl -o just-frame-1.ppm --frame 1` extracts only frame 1 (green: 61, 200, 61) from the 3-frame red/green/blue animation. `--frame 99` errors with "index 99 out of range (codestream has 3 frames)". `--all-frames --frame 1` errors "mutually exclusive".
 - **432 tests passing, 5 skipped, 0 failures** (the CLI flag is a thin layer over the already-tested `decodeFrame` API).
 
+### v0.11.0bp docs — README drops stale "multi-frame not yet implemented" claim
+
+Minor. The "Not yet implemented" line still listed both VarDCT AC-strategy selection and multi-frame / animation encoding — both shipped (v0.11.0aj for AC strategy coverage, v0.11.0ba…bo for multi-frame). Update to list only the genuinely-open items: Phase J (JPEG ↔ JXL transcoding) and the four niche AC strategies (DCT128 / DCT256 / DCT32×8 / DCT8×32) the decoder doesn't yet reconstruct.
+
+### v0.11.0bq — `jxl benchmark --mode {m0|lossy|lossless}`
+
+The `benchmark` subcommand previously hardcoded the M0 placeholder codec — so users couldn't measure the real `JXLEncoder` / `JXLDecoder` throughput from the CLI. v0.11.0bq adds a `--mode` flag for benchmarking either of the three codec paths.
+
+- **`Benchmark --mode lossy`** (the new **default**) — round-trips through `JXLEncoder(options: EncodingOptions(mode: .lossy(quality: 90)))` and `JXLDecoder().decode(_:)`. Skips the exactness check (lossy by definition).
+- **`Benchmark --mode lossless`** — through Modular. Asserts byte-exact round-trip (Modular is lossless — encoder/decoder disagreement is a real bug).
+- **`Benchmark --mode m0`** — legacy `MinimalLosslessCodec` path. Asserts byte-exact round-trip. `--fast` still honoured here.
+- **Output enhancement.** Mode label printed in the report (`Mode: VarDCT lossy` / `Mode: Modular lossless` / `Mode: M0 placeholder (effort: balanced)`).
+- **End-to-end manual verification** on the 16×16 red PPM at 5 iterations: lossy 0.6 Mpx/s encode, 0.2 Mpx/s decode; lossless 6.6 Mpx/s encode, 0.3 Mpx/s decode; M0 1.6 Mpx/s encode, 8.3 Mpx/s decode. (Tiny fixture — real-image numbers depend on content.)
+- **432 tests passing, 5 skipped, 0 failures** (no new test — the dispatch is end-to-end-tested by the existing single-frame encode/decode tests).
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)

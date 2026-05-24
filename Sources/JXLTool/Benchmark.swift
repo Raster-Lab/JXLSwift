@@ -21,10 +21,16 @@ import ArgumentParser
 import Foundation
 import JXLSwift
 
+enum BenchmarkMode: String, ExpressibleByArgument, CaseIterable {
+    case m0
+    case lossy
+    case lossless
+}
+
 struct Benchmark: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "benchmark",
-        abstract: "Time M0 encode + decode on a PNM input."
+        abstract: "Time encode + decode round-trips on a PNM input. Default mode is `lossy` (VarDCT); use `--mode lossless` for the spec-compliant Modular path, or `--mode m0` for the project-internal M0 placeholder codec."
     )
 
     @Option(name: .shortAndLong, help: "Input image path (PGM, PPM, or PAM)")
@@ -33,8 +39,11 @@ struct Benchmark: ParsableCommand {
     @Option(name: .shortAndLong, help: "Number of encode/decode iterations (each direction)")
     var iterations: Int = 10
 
-    @Flag(name: .long, help: "Use M0 fast-encode mode (skip predictor + RCT search)")
+    @Flag(name: .long, help: "Use M0 fast-encode mode (skip predictor + RCT search). Only honoured for `--mode m0`.")
     var fast: Bool = false
+
+    @Option(name: .long, help: "Benchmark mode: m0 / lossy / lossless. Default: lossy.")
+    var mode: BenchmarkMode = .lossy
 
     func run() throws {
         let url = URL(fileURLWithPath: input)
@@ -56,22 +65,30 @@ struct Benchmark: ParsableCommand {
 
         let effort: M0Effort = fast ? .fast : .balanced
 
-        // First pass: round-trip correctness check + populate
-        // `encoded` for the decode benchmark.
+        // First pass: encode once to populate `encoded` for the
+        // decode benchmark + capture the encoded byte count.
         let encoded: Data
-        do { encoded = try MinimalLosslessCodec.encode(frame, effort: effort) }
-        catch { print("M0 encode error: \(error)", to: &standardError)
+        do { encoded = try benchmarkEncode(frame: frame, effort: effort) }
+        catch { print("\(mode.rawValue) encode error: \(error)",
+                      to: &standardError)
                 throw JXLExitCode.generalError }
-        do {
-            let decoded = try MinimalLosslessCodec.decode(encoded)
-            guard decoded.data == frame.data else {
-                print("M0 round-trip mismatch — encoder/decoder disagree",
+        // Lossless modes must round-trip exactly; lossy modes
+        // skip the exactness check (mean-error checks belong in
+        // the unit tests, not here).
+        if mode != .lossy {
+            do {
+                let decoded = try benchmarkDecode(encoded: encoded)
+                guard decoded.data == frame.data else {
+                    print("\(mode.rawValue) round-trip mismatch — "
+                        + "encoder/decoder disagree",
+                          to: &standardError)
+                    throw JXLExitCode.generalError
+                }
+            } catch {
+                print("\(mode.rawValue) decode error: \(error)",
                       to: &standardError)
                 throw JXLExitCode.generalError
             }
-        } catch {
-            print("M0 decode error: \(error)", to: &standardError)
-            throw JXLExitCode.generalError
         }
 
         let n = max(1, iterations)
@@ -79,14 +96,14 @@ struct Benchmark: ParsableCommand {
         // Encode benchmark.
         let encStart = clock_gettime_ns()
         for _ in 0..<n {
-            _ = try MinimalLosslessCodec.encode(frame, effort: effort)
+            _ = try benchmarkEncode(frame: frame, effort: effort)
         }
         let encNs = clock_gettime_ns() - encStart
 
         // Decode benchmark.
         let decStart = clock_gettime_ns()
         for _ in 0..<n {
-            _ = try MinimalLosslessCodec.decode(encoded)
+            _ = try benchmarkDecode(encoded: encoded)
         }
         let decNs = clock_gettime_ns() - decStart
 
@@ -101,12 +118,19 @@ struct Benchmark: ParsableCommand {
         let widthLabel = "\(frame.width)×\(frame.height)"
         let kindLabel  = channelDescription(frame.channels) +
                         " " + "\(frame.pixelType.bitsPerSample)-bit"
+        let modeLabel: String
+        switch mode {
+        case .m0: modeLabel = "M0 placeholder (effort: " +
+                              (fast ? "fast" : "balanced") + ")"
+        case .lossy: modeLabel = "VarDCT lossy"
+        case .lossless: modeLabel = "Modular lossless"
+        }
         print("""
 
             Image:        \(widthLabel) \(kindLabel)
             Source size:  \(formatBytes(rawByteCount)) (\(totalPixels) pixels)
             Encoded size: \(formatBytes(encoded.count)) (\(String(format: "%.1f", ratio))% of source)
-            Effort:       \(fast ? "fast" : "balanced")
+            Mode:         \(modeLabel)
 
             Encode (\(n)× iterations):
               total       \(String(format: "%.1f", Double(encNs) / 1_000_000)) ms
@@ -118,6 +142,33 @@ struct Benchmark: ParsableCommand {
               per pass    \(String(format: "%.2f", decMsPer)) ms
               throughput  \(String(format: "%.1f", decMpps)) Mpx/s  /  \(String(format: "%.1f", decMBs)) MB/s
             """)
+    }
+
+    private func benchmarkEncode(
+        frame: ImageFrame, effort: M0Effort
+    ) throws -> Data {
+        switch mode {
+        case .m0:
+            return try MinimalLosslessCodec.encode(
+                frame, effort: effort)
+        case .lossy:
+            return try JXLEncoder(options: EncodingOptions(
+                mode: .lossy(quality: 90))).encode(frame).data
+        case .lossless:
+            return try JXLEncoder(options: EncodingOptions(
+                mode: .lossless)).encode(frame).data
+        }
+    }
+
+    private func benchmarkDecode(
+        encoded: Data
+    ) throws -> ImageFrame {
+        switch mode {
+        case .m0:
+            return try MinimalLosslessCodec.decode(encoded)
+        case .lossy, .lossless:
+            return try JXLDecoder().decode(encoded)
+        }
     }
 }
 
