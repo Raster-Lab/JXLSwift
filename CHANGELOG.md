@@ -606,6 +606,19 @@ Animations with **variable-pace timing** — slow intro frame, fast middle, slow
 - **Verified.** `testJXLEncoder_PerFrameDurations` proves per-frame durations produce a different codestream than uniform (the values flow through to the per-frame `animationFrame.duration` field) and that count mismatch correctly throws. End-to-end manual: `jxl encode -i f0 -i f1 -i f2 -o a.jxl --frame-duration 50,10,30` produces a 169 B byte-distinct codestream from the uniform-10 version.
 - **427 tests passing, 5 skipped, 0 failures.**
 
+### v0.11.0bj — Lossless multi-frame (Modular animation)
+
+`JXLEncoder.encode([ImageFrame])` with `.lossless` previously threw `notImplemented`. v0.11.0bj makes it work by extending `SpecModularEncoder` with an animation path that parallels the VarDCT v0.11.0ba refactor.
+
+- **`SpecModularEncoder` refactor.** The 100-line `writeOuterCodestream` body is split into two reusable pieces:
+  - **`writeModularPrelude(width:height:bitsPerSample:colorSpace:extraChannels:animation:)`** — shared image-level prelude (signature + SizeHeader + ImageMetadata + CustomTransformData). `animation` is `nil` for single-frame; a libjxl-default `AnimationHeader(tpsNumerator: 100, tpsDenominator: 1, numLoops: 0, haveTimecodes: false)` for multi-frame.
+  - **`writeModularFrameChunk(extraChannels:built:isLast:animationFrame:haveAnimation:)`** — one frame chunk (FrameHeader + TOC + section payloads). Used for both single-frame and multi-frame writes.
+  - `writeOuterCodestream` is now a thin wrapper over prelude + one chunk.
+  - **`encodeModularAnimation8(width:height:hasAlpha:frames:durations:)`** — new public multi-frame entry point. Empty arrays / mismatched-channel-count / mismatched-duration-count frames throw `SpecModularEncoderError.unsupportedFrame`. Each frame goes through the same `buildSections` pipeline as the single-frame encode.
+- **`JXLEncoder.encode([ImageFrame])`** — the `.lossless` branch now dispatches to `encodeModularAnimation8` (for 8-bit RGB / RGBA frames; other content types throw `notImplemented` for now). All frames must share dimensions + pixel type + channels. Per-frame durations from `EncodingOptions.frameDurations` are honoured.
+- **Verified.** `testJXLEncoder_LosslessMultiFrameRoundTrip` encodes a 2-frame red/green RGB8 animation lossless, verifies `decodeAll` returns 2 frames with **byte-exact** first-pixel RGB (Modular is lossless — no `mean < 2` slack), and confirms `djxl 0.11.2` decodes the codestream. `testJXLEncoder_MultiFrameDispatch` is updated — its previous "lossless multi-frame must throw notImplemented" branch flips to "lossless multi-frame must round-trip".
+- **428 tests passing, 5 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)

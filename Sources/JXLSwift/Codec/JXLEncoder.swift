@@ -212,6 +212,102 @@ public struct JXLEncoder: Sendable {
     /// Run a SpecModular encode and rewrap any thrown error into an
     /// `EncoderError`. Keeps the dispatch table in `encode(_:)` tidy
     /// and ensures callers see a consistent error surface.
+    /// Multi-frame lossless Modular encode. All frames must be
+    /// the same shape and 8-bit RGB or RGBA (the two Modular
+    /// content types currently exposed by
+    /// `SpecModularEncoder.encodeModularAnimation8`).
+    private func encodeLosslessAnimation(
+        frames: [ImageFrame], start: Date
+    ) throws -> EncodedImage {
+        let first = frames[0]
+        for (i, f) in frames.enumerated() where i > 0 {
+            guard f.width == first.width, f.height == first.height,
+                  f.channels == first.channels,
+                  f.pixelType == first.pixelType else {
+                throw EncoderError.unsupportedFrame(
+                    "multi-frame lossless: frame \(i) shape "
+                    + "(\(f.width)×\(f.height)/"
+                    + "\(f.channels)ch/\(f.pixelType)) "
+                    + "differs from frame 0")
+            }
+        }
+        guard first.pixelType == .uint8 else {
+            throw EncoderError.notImplemented(
+                "multi-frame lossless for \(first.pixelType) — "
+                + "only .uint8 RGB/RGBA supported in animation")
+        }
+        let hasAlpha: Bool
+        switch first.channels {
+        case 3:
+            hasAlpha = false
+        case 4:
+            hasAlpha = true
+        default:
+            throw EncoderError.notImplemented(
+                "multi-frame lossless for "
+                + "\(first.channels) channels — only RGB / RGBA "
+                + "supported in animation")
+        }
+        // Per-frame durations. Same logic as the lossy path.
+        let durations: [UInt32]
+        if let perFrame = options.frameDurations {
+            guard perFrame.count == frames.count else {
+                throw EncoderError.unsupportedFrame(
+                    "EncodingOptions.frameDurations.count "
+                    + "(\(perFrame.count)) ≠ frames.count "
+                    + "(\(frames.count))")
+            }
+            durations = perFrame
+        } else {
+            durations = [UInt32](
+                repeating: options.defaultFrameDuration,
+                count: frames.count)
+        }
+        // Convert each frame to [r, g, b]/[r, g, b, a] Int32 arrays.
+        var framesChannels: [[[Int32]]] = []
+        framesChannels.reserveCapacity(frames.count)
+        for f in frames {
+            if hasAlpha {
+                let (r, g, b, a) = deinterleave4(frame: f)
+                framesChannels.append([
+                    r.map { Int32($0) }, g.map { Int32($0) },
+                    b.map { Int32($0) }, a.map { Int32($0) },
+                ])
+            } else {
+                let (r, g, b) = deinterleave3(frame: f)
+                framesChannels.append([
+                    r.map { Int32($0) }, g.map { Int32($0) },
+                    b.map { Int32($0) },
+                ])
+            }
+        }
+        let cs: Data
+        do {
+            cs = try SpecModularEncoder.encodeModularAnimation8(
+                width: first.width, height: first.height,
+                hasAlpha: hasAlpha,
+                frames: framesChannels,
+                durations: durations)
+        } catch let e as SpecModularEncoderError {
+            throw EncoderError.unsupportedFrame(
+                "encodeModularAnimation8: \(e)")
+        } catch {
+            throw EncoderError.unsupportedFrame(
+                "encodeModularAnimation8: \(error)")
+        }
+        let wrapped = options.containerWrap
+            ? buildJXLContainer(codestream: cs) : cs
+        let originalSize = frames.reduce(0) { $0 + $1.data.count }
+        return EncodedImage(
+            data: wrapped,
+            stats: CompressionStats(
+                originalSize: originalSize,
+                compressedSize: wrapped.count,
+                encodingTime: Date().timeIntervalSince(start)
+            )
+        )
+    }
+
     private func wrapModular(_ body: () throws -> Data) throws -> Data {
         do { return try body() }
         catch let e as SpecModularEncoderError {
@@ -246,14 +342,12 @@ public struct JXLEncoder: Sendable {
         default:
             break // fall through to multi-frame
         }
-        if case .lossless = options.mode {
-            throw EncoderError.notImplemented(
-                "multi-frame (animation) encoding for "
-                + ".lossless mode — Modular animation not yet "
-                + "implemented; use a lossy mode (.lossy / "
-                + ".distance) for multi-frame encodes")
-        }
         let start = Date()
+        if case .lossless = options.mode {
+            return try encodeLosslessAnimation(
+                frames: frames, start: start)
+        }
+        // Validate per-frame durations: must match frame count.
         let cs: Data
         do {
             let durations: [UInt32]

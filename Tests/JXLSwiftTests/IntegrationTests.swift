@@ -10156,18 +10156,72 @@ extension FoundationTests {
             soloResult.data.count,
             "multi-frame codestream must be larger than single-frame")
 
-        // (4) Lossless multi-frame — still not implemented (no
-        // Modular animation writer).
+        // (4) Lossless multi-frame — now supported (v0.11.0bj+).
         let losslessEnc = JXLEncoder(options: EncodingOptions(
             mode: .lossless))
-        do {
-            _ = try losslessEnc.encode([frame, frame])
-            XCTFail("lossless multi-frame must throw notImplemented")
-        } catch EncoderError.notImplemented {
-            // expected
-        } catch {
-            XCTFail("unexpected error: \(error)")
+        let llResult = try losslessEnc.encode([frame, frame])
+        XCTAssertGreaterThan(llResult.data.count, 0,
+            "lossless multi-frame must produce a non-empty "
+            + "codestream")
+        // Round-trip through our decoder.
+        let decoded = try JXLDecoder().decodeAll(llResult.data)
+        XCTAssertEqual(decoded.count, 2,
+            "lossless multi-frame round-trip frame count")
+    }
+
+    /// Lossless multi-frame (Modular animation) end-to-end —
+    /// encode two RGB8 frames as a lossless animation, verify
+    /// `decodeAll` returns BYTE-EXACT pixels (Modular is lossless),
+    /// and djxl accepts the codestream.
+    func testJXLEncoder_LosslessMultiFrameRoundTrip() throws {
+        let dim = 16
+        func mk(r: UInt8, g: UInt8, b: UInt8) -> ImageFrame {
+            var f = ImageFrame(
+                width: dim, height: dim, channels: 3)
+            for i in 0..<(dim * dim) {
+                f.data[i * 3 + 0] = r
+                f.data[i * 3 + 1] = g
+                f.data[i * 3 + 2] = b
+            }
+            return f
         }
+        let frames = [mk(r: 200, g: 60, b: 60),
+                      mk(r: 60, g: 200, b: 60)]
+        let enc = try JXLEncoder(options: EncodingOptions(
+            mode: .lossless)).encode(frames)
+        let decoded = try JXLDecoder().decodeAll(enc.data)
+        XCTAssertEqual(decoded.count, 2)
+        // Modular is lossless — first pixel must match EXACTLY.
+        for (i, f) in decoded.enumerated() {
+            XCTAssertEqual(f.data[0], frames[i].data[0],
+                "frame \(i) lossless R \(f.data[0]) ≠ "
+                + "\(frames[i].data[0])")
+            XCTAssertEqual(f.data[1], frames[i].data[1],
+                "frame \(i) lossless G")
+            XCTAssertEqual(f.data[2], frames[i].data[2],
+                "frame \(i) lossless B")
+        }
+
+        // djxl confirms spec compliance.
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("djxl not available")
+        }
+        let tmp = NSTemporaryDirectory()
+        let jxlPath = tmp + "ll_anim.jxl"
+        let outPath = tmp + "ll_anim_dj.apng"
+        try enc.data.write(to: URL(fileURLWithPath: jxlPath))
+        let p = Process()
+        p.launchPath = djxl
+        p.arguments = [jxlPath, outPath]
+        let errPipe = Pipe()
+        p.standardOutput = Pipe(); p.standardError = errPipe
+        try p.run(); p.waitUntilExit()
+        let err = String(
+            data: errPipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8) ?? ""
+        XCTAssertEqual(p.terminationStatus, 0,
+            "djxl rejected lossless animation; stderr: \(err)")
     }
 
     /// Diagnostic — observe what `JXLDecoder.decode(_:)` does when

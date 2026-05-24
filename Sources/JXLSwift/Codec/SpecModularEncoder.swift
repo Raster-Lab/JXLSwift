@@ -563,7 +563,7 @@ public enum SpecModularEncoder {
     ///     `2 + numDcGroups + numGroups` for multi-group frames)
     ///   - or just `[whole frame]` (length 1) for the
     ///     `numGroups == 1 && numPasses == 1` fast path.
-    private struct EncodedSections {
+    struct EncodedSections {
         let groupSizeShift: UInt32
         let sections: [Data]
     }
@@ -917,17 +917,17 @@ public enum SpecModularEncoder {
         }
     }
 
-    /// Build the outer codestream layer (signature, SizeHeader,
-    /// ImageMetadata, CustomTransformData, FrameHeader, TOC) for a
-    /// single-section single-group 8-bit Modular frame in the
-    /// requested colour space (`grayscale` or `rgb`) and append the
-    /// caller-supplied section 0 payload.
-    private static func writeOuterCodestream(
+    /// Build the shared image-level prelude (signature, SizeHeader,
+    /// ImageMetadata, CustomTransformData) for a Modular
+    /// codestream. `animation` is `nil` for single-frame
+    /// codestreams and a libjxl-default 100-tps `AnimationHeader`
+    /// for multi-frame animations.
+    static func writeModularPrelude(
         width: Int, height: Int,
         bitsPerSample: UInt32,
         colorSpace: ColorSpaceID,
         extraChannels: [ExtraChannelInfo],
-        built: EncodedSections
+        animation: AnimationHeader?
     ) throws -> Data {
         let colorEncoding: ColorEncoding
         switch colorSpace {
@@ -935,7 +935,8 @@ public enum SpecModularEncoder {
         case .rgb:       colorEncoding = .srgb
         default:
             throw SpecModularEncoderError.unsupportedFrame(
-                "writeOuterCodestream: unsupported colorSpace \(colorSpace)"
+                "writeModularPrelude: unsupported colorSpace "
+                + "\(colorSpace)"
             )
         }
         var w = BitWriter()
@@ -946,7 +947,7 @@ public enum SpecModularEncoder {
         ).write(to: &w)
         let meta = ImageMetadata(
             allDefault: false, orientation: 1,
-            intrinsicSize: nil, preview: nil, animation: nil,
+            intrinsicSize: nil, preview: nil, animation: animation,
             bitDepth: BitDepth(
                 floatingPoint: false, bitsPerSample: bitsPerSample
             ),
@@ -962,6 +963,22 @@ public enum SpecModularEncoder {
         // single bit). See note in `encodeConstantGrayscale`.
         w.writeBit(true)
         w.alignToByte()
+        return w.finishToData()
+    }
+
+    /// Build one Modular frame chunk (FrameHeader + TOC + section
+    /// payloads). Used for both single-frame and multi-frame
+    /// codestreams. `isLast = false` on non-last frames in an
+    /// animation; `haveAnimation = true` when the metadata
+    /// declares animation.
+    static func writeModularFrameChunk(
+        extraChannels: [ExtraChannelInfo],
+        built: EncodedSections,
+        isLast: Bool,
+        animationFrame: AnimationFrame,
+        haveAnimation: Bool
+    ) throws -> Data {
+        var w = BitWriter()
         let fh = FrameHeader(
             allDefault: false,
             frameType: .regular, encoding: .modular,
@@ -975,8 +992,8 @@ public enum SpecModularEncoder {
             frameOrigin: (0, 0), frameSize: nil,
             blendingInfo: .default,
             extraChannelBlendingInfo: [],
-            animationFrame: .default,
-            isLast: true,
+            animationFrame: animationFrame,
+            isLast: isLast,
             saveAsReference: 0,
             saveBeforeColorTransform: true,
             name: "",
@@ -987,13 +1004,9 @@ public enum SpecModularEncoder {
         let ctx = FrameHeaderContext(
             xybEncoded: false,
             numExtraChannels: extraChannels.count,
-            haveAnimation: false, haveTimecodes: false
+            haveAnimation: haveAnimation, haveTimecodes: false
         )
         try fh.write(to: &w, context: ctx)
-        // Emit the TOC. Single-section frames just record one
-        // entry; multi-section frames record one per logical section
-        // (libjxl `NumTocEntries`). Offsets are a prefix-sum of the
-        // section sizes — used by readers that skip permutations.
         var entrySizes = [UInt32]()
         entrySizes.reserveCapacity(built.sections.count)
         var offsets = [UInt64]()
@@ -1013,6 +1026,103 @@ public enum SpecModularEncoder {
         try toc.write(to: &w)
         var out = w.finishToData()
         for s in built.sections { out.append(s) }
+        return out
+    }
+
+    /// Build the outer codestream layer (signature, SizeHeader,
+    /// ImageMetadata, CustomTransformData, FrameHeader, TOC) for a
+    /// single-section single-group 8-bit Modular frame in the
+    /// requested colour space (`grayscale` or `rgb`) and append the
+    /// caller-supplied section 0 payload.
+    private static func writeOuterCodestream(
+        width: Int, height: Int,
+        bitsPerSample: UInt32,
+        colorSpace: ColorSpaceID,
+        extraChannels: [ExtraChannelInfo],
+        built: EncodedSections
+    ) throws -> Data {
+        var out = try writeModularPrelude(
+            width: width, height: height,
+            bitsPerSample: bitsPerSample,
+            colorSpace: colorSpace,
+            extraChannels: extraChannels, animation: nil)
+        out.append(try writeModularFrameChunk(
+            extraChannels: extraChannels,
+            built: built,
+            isLast: true,
+            animationFrame: .default,
+            haveAnimation: false))
+        return out
+    }
+
+    /// Encode N RGB / RGBA frames as a multi-frame lossless
+    /// Modular JPEG XL animation. All frames must share the same
+    /// dimensions. `frames[i].channels` is `[r, g, b]` (RGB) or
+    /// `[r, g, b, a]` (RGBA), each an Int32 array of length
+    /// `width*height`. `hasAlpha` declares a single 8-bit alpha
+    /// extra channel. `durations` is per-frame in tps units (the
+    /// metadata declares 100 tps so each unit is 10 ms by default).
+    public static func encodeModularAnimation8(
+        width: Int, height: Int, hasAlpha: Bool,
+        frames: [[[Int32]]],
+        durations: [UInt32]
+    ) throws -> Data {
+        guard !frames.isEmpty else {
+            throw SpecModularEncoderError.unsupportedFrame(
+                "encodeModularAnimation8: empty frames array")
+        }
+        guard durations.count == frames.count else {
+            throw SpecModularEncoderError.unsupportedFrame(
+                "encodeModularAnimation8: durations count "
+                + "(\(durations.count)) ≠ frames count "
+                + "(\(frames.count))")
+        }
+        let expectedChans = hasAlpha ? 4 : 3
+        for (i, f) in frames.enumerated() {
+            guard f.count == expectedChans else {
+                throw SpecModularEncoderError.unsupportedFrame(
+                    "encodeModularAnimation8: frame \(i) has "
+                    + "\(f.count) channels, expected "
+                    + "\(expectedChans)")
+            }
+        }
+        // Build sections for every frame upfront — same buildSections
+        // pipeline as the single-frame encodeRGB8 / encodeRGBA8.
+        var sectionsPerFrame: [EncodedSections] = []
+        sectionsPerFrame.reserveCapacity(frames.count)
+        for f in frames {
+            sectionsPerFrame.append(try buildSections(
+                width: width, height: height,
+                channels: f, sampleHi: 255))
+        }
+        let extraChannels: [ExtraChannelInfo] = hasAlpha
+            ? [ExtraChannelInfo(
+                type: .alpha,
+                bitDepth: BitDepth(
+                    floatingPoint: false, bitsPerSample: 8),
+                dimShift: 0, name: "")]
+            : []
+        // libjxl-default 100 tps timestamp resolution, infinite
+        // playback loops, no SMPTE timecodes.
+        let animation = AnimationHeader(
+            tpsNumerator: 100, tpsDenominator: 1,
+            numLoops: 0, haveTimecodes: false)
+        var out = try writeModularPrelude(
+            width: width, height: height, bitsPerSample: 8,
+            colorSpace: .rgb,
+            extraChannels: extraChannels,
+            animation: animation)
+        for (i, built) in sectionsPerFrame.enumerated() {
+            let isLast = (i == sectionsPerFrame.count - 1)
+            let af = AnimationFrame(
+                duration: durations[i], timecode: 0)
+            out.append(try writeModularFrameChunk(
+                extraChannels: extraChannels,
+                built: built,
+                isLast: isLast,
+                animationFrame: af,
+                haveAnimation: true))
+        }
         return out
     }
 }
