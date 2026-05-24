@@ -378,6 +378,145 @@ final class JPEGFoundationTests: XCTestCase {
         }
     }
 
+    // MARK: - JPEGHuffmanTable
+
+    func testJPEGHuffmanTable_ParsesSingleDCTable() throws {
+        // 1 table: class DC (0), id 0, single symbol of code
+        // length 1 (so bits = [1, 0, 0, ..., 0], one symbol 0x00).
+        var payload = Data([0x00])  // Tc=0, Th=0
+        payload.append(contentsOf: [1, 0, 0, 0, 0, 0, 0, 0,
+                                    0, 0, 0, 0, 0, 0, 0, 0])
+        payload.append(0x00)
+        let tables = try JPEGHuffmanTable.parse(
+            dhtPayload: payload)
+        XCTAssertEqual(tables.count, 1)
+        XCTAssertEqual(tables[0].class, .dc)
+        XCTAssertEqual(tables[0].tableId, 0)
+        XCTAssertEqual(tables[0].bits[0], 1)
+        XCTAssertEqual(tables[0].huffvals, [0x00])
+    }
+
+    func testJPEGHuffmanTable_ParsesACTable() throws {
+        // 1 table: class AC (1), id 1, 3 symbols at length 2:
+        // bits = [0, 3, 0, ..., 0], huffvals = [0x11, 0x21, 0x31].
+        var payload = Data([0x11])  // Tc=1, Th=1
+        payload.append(contentsOf: [0, 3, 0, 0, 0, 0, 0, 0,
+                                    0, 0, 0, 0, 0, 0, 0, 0])
+        payload.append(contentsOf: [0x11, 0x21, 0x31])
+        let tables = try JPEGHuffmanTable.parse(
+            dhtPayload: payload)
+        XCTAssertEqual(tables.count, 1)
+        XCTAssertEqual(tables[0].class, .ac)
+        XCTAssertEqual(tables[0].tableId, 1)
+        XCTAssertEqual(tables[0].huffvals, [0x11, 0x21, 0x31])
+    }
+
+    func testJPEGHuffmanTable_ParsesMultipleTablesInOneSegment()
+        throws
+    {
+        // Two tables: DC0 with 1 symbol, AC0 with 2 symbols.
+        var payload = Data([0x00])
+        payload.append(contentsOf: [1, 0, 0, 0, 0, 0, 0, 0,
+                                    0, 0, 0, 0, 0, 0, 0, 0])
+        payload.append(0x05)
+        payload.append(0x10)  // Tc=1, Th=0
+        payload.append(contentsOf: [0, 2, 0, 0, 0, 0, 0, 0,
+                                    0, 0, 0, 0, 0, 0, 0, 0])
+        payload.append(contentsOf: [0xAA, 0xBB])
+        let tables = try JPEGHuffmanTable.parse(
+            dhtPayload: payload)
+        XCTAssertEqual(tables.count, 2)
+        XCTAssertEqual(tables[0].class, .dc)
+        XCTAssertEqual(tables[0].huffvals, [0x05])
+        XCTAssertEqual(tables[1].class, .ac)
+        XCTAssertEqual(tables[1].huffvals, [0xAA, 0xBB])
+    }
+
+    func testJPEGHuffmanTable_RejectsTruncatedSymbolList() {
+        var payload = Data([0x00])
+        // Claim 5 symbols at length 1.
+        payload.append(contentsOf: [5, 0, 0, 0, 0, 0, 0, 0,
+                                    0, 0, 0, 0, 0, 0, 0, 0])
+        // ... but only provide 2.
+        payload.append(contentsOf: [0x10, 0x20])
+        XCTAssertThrowsError(
+            try JPEGHuffmanTable.parse(dhtPayload: payload))
+    }
+
+    func testJPEGHuffmanTable_RejectsExcessiveSymbolCount() {
+        var payload = Data([0x00])
+        // All-255s would claim 16 * 255 = 4080 symbols (>> 256).
+        payload.append(Data(repeating: 0xFF, count: 16))
+        XCTAssertThrowsError(
+            try JPEGHuffmanTable.parse(dhtPayload: payload))
+    }
+
+    /// `JPEGStructure.huffmanTables(in:)` on the minimal fixture
+    /// returns the single trivial DC table we baked in.
+    func testJPEGStructure_HuffmanTablesOnFixture() throws {
+        let tables = try JPEGStructure.huffmanTables(
+            in: minimalJPEG())
+        XCTAssertEqual(tables.count, 1)
+        XCTAssertEqual(tables[0].class, .dc)
+        XCTAssertEqual(tables[0].tableId, 0)
+        XCTAssertEqual(tables[0].huffvals, [0x00])
+    }
+
+    /// On a real sips-emitted JPEG, expect at least one DC + one
+    /// AC table; symbols should be in the 0..255 byte range.
+    func testJPEGStructure_HuffmanTablesOnRealJPEG() throws {
+        guard FileManager.default.isExecutableFile(
+            atPath: "/usr/bin/sips") else {
+            throw XCTSkip("sips not available on this host")
+        }
+        let tmp = NSTemporaryDirectory()
+        let ppmPath = tmp + "jpegtest-\(UUID().uuidString).ppm"
+        let jpgPath = tmp + "jpegtest-\(UUID().uuidString).jpg"
+        defer {
+            try? FileManager.default.removeItem(atPath: ppmPath)
+            try? FileManager.default.removeItem(atPath: jpgPath)
+        }
+        var ppm = Data("P6\n8 8\n255\n".utf8)
+        for y in 0..<8 {
+            for x in 0..<8 {
+                ppm.append(contentsOf: [
+                    UInt8(20 + x * 25),
+                    UInt8(40 + y * 25),
+                    UInt8(100)
+                ])
+            }
+        }
+        try ppm.write(to: URL(fileURLWithPath: ppmPath))
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/sips")
+        proc.arguments = ["-s", "format", "jpeg",
+                          "-s", "formatOptions", "75",
+                          ppmPath, "--out", jpgPath]
+        proc.standardOutput = Pipe()
+        proc.standardError = Pipe()
+        try proc.run()
+        proc.waitUntilExit()
+        guard proc.terminationStatus == 0 else {
+            throw XCTSkip("sips conversion failed")
+        }
+        let jpg = try Data(contentsOf:
+            URL(fileURLWithPath: jpgPath))
+        let tables = try JPEGStructure.huffmanTables(in: jpg)
+        XCTAssertGreaterThanOrEqual(tables.count, 2,
+            "expected at least one DC + AC table")
+        let hasDC = tables.contains { $0.class == .dc }
+        let hasAC = tables.contains { $0.class == .ac }
+        XCTAssertTrue(hasDC,
+            "no DC Huffman table in sips JPEG")
+        XCTAssertTrue(hasAC,
+            "no AC Huffman table in sips JPEG")
+        for t in tables {
+            XCTAssertEqual(t.bits.count, 16)
+            XCTAssertEqual(t.huffvals.count,
+                t.bits.reduce(0) { $0 + Int($1) })
+        }
+    }
+
     // MARK: - byte-stuffing + RST skip stress
 
     func testJPEGSegmentReader_HandlesByteStuffing() throws {

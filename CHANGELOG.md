@@ -695,6 +695,14 @@ The `benchmark` subcommand previously hardcoded the M0 placeholder codec — so 
 - **End-to-end manual verification.** Multi-value, repeated, and glob forms all produce the same 169 B 3-frame animation; the single-frame form unchanged.
 - **432 tests passing, 5 skipped, 0 failures.**
 
+### v0.11.0ca — Phase J: JPEG DHT (Huffman-table) payload parser
+
+Third bite. Same shape as v0.11.0bz but for Huffman tables — the entropy-coding precondition for actually decoding JPEG pixel data later.
+
+- **`Sources/JXLSwift/JPEG/JPEGHuffmanTable.swift`** (new) — DHT layout per ITU-T T.81 §B.2.4.2. `JPEGHuffmanClass` (`dc` / `ac`), `JPEGHuffmanTable` (class, tableId, `bits: [UInt8]` 16-element length-count array, `huffvals: [UInt8]` symbol values in canonical Huffman code order). `JPEGHuffmanTable.parse(dhtPayload:)` walks one segment payload (segments may concatenate multiple tables). `JPEGStructure.huffmanTables(in:)` walks the whole file. Note: this layer does NOT build the runtime code table — the canonical Huffman code is derivable from `(bits, huffvals)` via the §C.2 algorithm and that's the next bite's job.
+- **7 new tests**: DC-table single-symbol parse, AC-table 3-symbol parse, multi-table-in-one-segment, truncated-symbol-list rejection, excessive symbol-count rejection (sum(Li) > 256), fixture parse, real sips-JPEG parse (asserts ≥1 DC + ≥1 AC table, `bits.count == 16`, `huffvals.count == sum(bits)` invariant).
+- **463 tests passing, 6 skipped, 0 failures** (was 456; +7).
+
 ### v0.11.0bz — Phase J: JPEG DQT (quantisation-table) payload parser
 
 Second bite on the Phase J road. The segment walker (v0.11.0by) gives us "here's a DQT payload, raw bytes"; v0.11.0bz turns those bytes into typed `JPEGQuantTable` records ready for the eventual transcoder to feed into the JXL-side quant pipeline.
