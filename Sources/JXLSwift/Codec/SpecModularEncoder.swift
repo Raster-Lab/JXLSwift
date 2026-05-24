@@ -1062,54 +1062,90 @@ public enum SpecModularEncoder {
     /// `width*height`. `hasAlpha` declares a single 8-bit alpha
     /// extra channel. `durations` is per-frame in tps units (the
     /// metadata declares 100 tps so each unit is 10 ms by default).
+    /// 8-bit RGB/RGBA convenience wrapper over
+    /// `encodeModularAnimation`.
     public static func encodeModularAnimation8(
         width: Int, height: Int, hasAlpha: Bool,
         frames: [[[Int32]]],
         durations: [UInt32]
     ) throws -> Data {
+        try encodeModularAnimation(
+            width: width, height: height,
+            bitsPerSample: 8,
+            colorSpace: .rgb, hasAlpha: hasAlpha,
+            frames: frames, durations: durations)
+    }
+
+    /// Encode N modular frames as a multi-frame lossless JPEG XL
+    /// animation. Generalised over bit depth (8 or 16), colour
+    /// space (`.grayscale` or `.rgb`), and alpha presence. All
+    /// frames must agree on dimensions and channel count.
+    /// `frames[i]` is `[gray]` / `[gray, alpha]` / `[r, g, b]` /
+    /// `[r, g, b, a]` per the (colorSpace, hasAlpha) combination.
+    public static func encodeModularAnimation(
+        width: Int, height: Int,
+        bitsPerSample: UInt32,
+        colorSpace: ColorSpaceID,
+        hasAlpha: Bool,
+        frames: [[[Int32]]],
+        durations: [UInt32]
+    ) throws -> Data {
         guard !frames.isEmpty else {
             throw SpecModularEncoderError.unsupportedFrame(
-                "encodeModularAnimation8: empty frames array")
+                "encodeModularAnimation: empty frames array")
         }
         guard durations.count == frames.count else {
             throw SpecModularEncoderError.unsupportedFrame(
-                "encodeModularAnimation8: durations count "
+                "encodeModularAnimation: durations count "
                 + "(\(durations.count)) ≠ frames count "
                 + "(\(frames.count))")
         }
-        let expectedChans = hasAlpha ? 4 : 3
+        guard bitsPerSample == 8 || bitsPerSample == 16 else {
+            throw SpecModularEncoderError.unsupportedFrame(
+                "encodeModularAnimation: bitsPerSample must be "
+                + "8 or 16 (got \(bitsPerSample))")
+        }
+        let colorChans: Int
+        switch colorSpace {
+        case .grayscale: colorChans = 1
+        case .rgb:       colorChans = 3
+        default:
+            throw SpecModularEncoderError.unsupportedFrame(
+                "encodeModularAnimation: unsupported colorSpace "
+                + "\(colorSpace)")
+        }
+        let expectedChans = colorChans + (hasAlpha ? 1 : 0)
         for (i, f) in frames.enumerated() {
             guard f.count == expectedChans else {
                 throw SpecModularEncoderError.unsupportedFrame(
-                    "encodeModularAnimation8: frame \(i) has "
+                    "encodeModularAnimation: frame \(i) has "
                     + "\(f.count) channels, expected "
                     + "\(expectedChans)")
             }
         }
-        // Build sections for every frame upfront — same buildSections
-        // pipeline as the single-frame encodeRGB8 / encodeRGBA8.
+        let sampleHi = Int32((Int64(1) << bitsPerSample) - 1)
         var sectionsPerFrame: [EncodedSections] = []
         sectionsPerFrame.reserveCapacity(frames.count)
         for f in frames {
             sectionsPerFrame.append(try buildSections(
                 width: width, height: height,
-                channels: f, sampleHi: 255))
+                channels: f, sampleHi: sampleHi))
         }
         let extraChannels: [ExtraChannelInfo] = hasAlpha
             ? [ExtraChannelInfo(
                 type: .alpha,
                 bitDepth: BitDepth(
-                    floatingPoint: false, bitsPerSample: 8),
+                    floatingPoint: false,
+                    bitsPerSample: bitsPerSample),
                 dimShift: 0, name: "")]
             : []
-        // libjxl-default 100 tps timestamp resolution, infinite
-        // playback loops, no SMPTE timecodes.
         let animation = AnimationHeader(
             tpsNumerator: 100, tpsDenominator: 1,
             numLoops: 0, haveTimecodes: false)
         var out = try writeModularPrelude(
-            width: width, height: height, bitsPerSample: 8,
-            colorSpace: .rgb,
+            width: width, height: height,
+            bitsPerSample: bitsPerSample,
+            colorSpace: colorSpace,
             extraChannels: extraChannels,
             animation: animation)
         for (i, built) in sectionsPerFrame.enumerated() {

@@ -231,22 +231,36 @@ public struct JXLEncoder: Sendable {
                     + "differs from frame 0")
             }
         }
-        guard first.pixelType == .uint8 else {
+        // Dispatch on (pixelType, channels). Supported today:
+        // 8-bit and 16-bit grayscale / RGB / RGBA frames. Other
+        // shapes throw `notImplemented`.
+        let bitsPerSample: UInt32
+        switch first.pixelType {
+        case .uint8: bitsPerSample = 8
+        case .uint16: bitsPerSample = 16
+        default:
             throw EncoderError.notImplemented(
                 "multi-frame lossless for \(first.pixelType) — "
-                + "only .uint8 RGB/RGBA supported in animation")
+                + "only uint8 / uint16 grayscale / RGB / RGBA "
+                + "supported in animation")
         }
+        let colorSpace: ColorSpaceID
+        let colorChans: Int
         let hasAlpha: Bool
         switch first.channels {
-        case 3:
+        case 1: colorSpace = .grayscale; colorChans = 1
             hasAlpha = false
-        case 4:
+        case 2: colorSpace = .grayscale; colorChans = 1
+            hasAlpha = true
+        case 3: colorSpace = .rgb; colorChans = 3
+            hasAlpha = false
+        case 4: colorSpace = .rgb; colorChans = 3
             hasAlpha = true
         default:
             throw EncoderError.notImplemented(
                 "multi-frame lossless for "
-                + "\(first.channels) channels — only RGB / RGBA "
-                + "supported in animation")
+                + "\(first.channels) channels — only grayscale / "
+                + "grayscale+alpha / RGB / RGBA supported")
         }
         // Per-frame durations. Same logic as the lossy path.
         let durations: [UInt32]
@@ -263,37 +277,51 @@ public struct JXLEncoder: Sendable {
                 repeating: options.defaultFrameDuration,
                 count: frames.count)
         }
-        // Convert each frame to [r, g, b]/[r, g, b, a] Int32 arrays.
+        // Convert each frame to per-channel Int32 arrays. Layout
+        // matches encodeModularAnimation's frames parameter: 1ch
+        // grayscale, 2ch grayscale+alpha, 3ch RGB, 4ch RGBA.
         var framesChannels: [[[Int32]]] = []
         framesChannels.reserveCapacity(frames.count)
         for f in frames {
-            if hasAlpha {
-                let (r, g, b, a) = deinterleave4(frame: f)
-                framesChannels.append([
-                    r.map { Int32($0) }, g.map { Int32($0) },
-                    b.map { Int32($0) }, a.map { Int32($0) },
-                ])
+            var chans: [[Int32]] = []
+            chans.reserveCapacity(colorChans + (hasAlpha ? 1 : 0))
+            if bitsPerSample == 8 {
+                for c in 0..<(colorChans + (hasAlpha ? 1 : 0)) {
+                    var arr = [Int32](repeating: 0,
+                        count: f.width * f.height)
+                    let totalCh = colorChans + (hasAlpha ? 1 : 0)
+                    for i in 0..<(f.width * f.height) {
+                        arr[i] = Int32(f.data[i * totalCh + c])
+                    }
+                    chans.append(arr)
+                }
             } else {
-                let (r, g, b) = deinterleave3(frame: f)
-                framesChannels.append([
-                    r.map { Int32($0) }, g.map { Int32($0) },
-                    b.map { Int32($0) },
-                ])
+                // 16-bit: unpack pairs of bytes per channel.
+                let totalCh = colorChans + (hasAlpha ? 1 : 0)
+                for c in 0..<totalCh {
+                    var arr = unpackUInt16(
+                        from: f, channelCount: totalCh, channel: c)
+                    chans.append(arr.map { Int32($0) })
+                    _ = arr // silence unused warning if compiler
+                            // optimises the cast away
+                }
             }
+            framesChannels.append(chans)
         }
         let cs: Data
         do {
-            cs = try SpecModularEncoder.encodeModularAnimation8(
+            cs = try SpecModularEncoder.encodeModularAnimation(
                 width: first.width, height: first.height,
-                hasAlpha: hasAlpha,
+                bitsPerSample: bitsPerSample,
+                colorSpace: colorSpace, hasAlpha: hasAlpha,
                 frames: framesChannels,
                 durations: durations)
         } catch let e as SpecModularEncoderError {
             throw EncoderError.unsupportedFrame(
-                "encodeModularAnimation8: \(e)")
+                "encodeModularAnimation: \(e)")
         } catch {
             throw EncoderError.unsupportedFrame(
-                "encodeModularAnimation8: \(error)")
+                "encodeModularAnimation: \(error)")
         }
         let wrapped = options.containerWrap
             ? buildJXLContainer(codestream: cs) : cs

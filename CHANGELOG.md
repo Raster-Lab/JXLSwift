@@ -627,6 +627,15 @@ A pin-down for the v0.11.0bj feature exercised through a different angle. `JXLDe
 - **End-to-end CLI manual verification.** Encode 3 different RGB PPMs as a lossless animation via `jxl encode -l -i f0 -i f1 -i f2 -o anim-ll.jxl`; decode via `jxl decode --all-frames -i anim-ll.jxl -o "ll-dec-%d.ppm"`; `cmp` every source-vs-decoded PPM — byte-exact. The full library + CLI + decoder loop for lossless multi-frame works.
 - **429 tests passing, 5 skipped, 0 failures.**
 
+### v0.11.0bl — Generalised lossless animation: grayscale + 16-bit
+
+v0.11.0bj's `encodeModularAnimation8` was 8-bit RGB / RGBA only. v0.11.0bl generalises to **grayscale (1 / 2 channel) and 16-bit (uint16)** — every Modular content type the single-frame `encode(_ frame:)` accepts now works in animation form too.
+
+- **`SpecModularEncoder.encodeModularAnimation(width:height:bitsPerSample:colorSpace:hasAlpha:frames:durations:)`** — new generalised entry point. Parameters cover all four `(bitsPerSample, colorSpace)` combinations: 8/16-bit × grayscale/RGB, each optionally with alpha. `encodeModularAnimation8` becomes a 4-line wrapper around this.
+- **`JXLEncoder.encodeLosslessAnimation`** — dispatch logic extended to handle `(pixelType, channels)` combinations: `.uint8 / .uint16` × `1, 2, 3, 4` channels. Other shapes still throw `notImplemented`.
+- **Verified.** `testJXLEncoder_LosslessMultiFrameGeneralised` exercises (1) 8-bit grayscale 3-frame animation (full-array byte equality) and (2) 16-bit grayscale 3-frame animation (full-array byte equality across the 16-bit-packed `f.data`). Both round-trip exactly through our `decodeAll`.
+- **430 tests passing, 5 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)

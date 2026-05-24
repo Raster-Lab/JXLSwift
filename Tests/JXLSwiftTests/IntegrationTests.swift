@@ -10318,6 +10318,56 @@ extension FoundationTests {
             "djxl rejected the RGBA animation; stderr: \(err)")
     }
 
+    /// Generalised lossless animation — grayscale and 16-bit
+    /// frames. The v0.11.0bj initial implementation only handled
+    /// 8-bit RGB/RGBA; v0.11.0bl extends to grayscale (1ch) and
+    /// 16-bit (PixelType.uint16). All combinations must round-trip
+    /// byte-exact through our decoder.
+    func testJXLEncoder_LosslessMultiFrameGeneralised() throws {
+        let dim = 16
+        // (1) 8-bit grayscale animation.
+        func mkGray(_ v: UInt8) -> ImageFrame {
+            var f = ImageFrame(
+                width: dim, height: dim, channels: 1)
+            for i in 0..<(dim * dim) { f.data[i] = v }
+            return f
+        }
+        let grayFrames = [mkGray(40), mkGray(120), mkGray(200)]
+        let grayEnc = try JXLEncoder(options: EncodingOptions(
+            mode: .lossless)).encode(grayFrames)
+        let grayDec = try JXLDecoder().decodeAll(grayEnc.data)
+        XCTAssertEqual(grayDec.count, 3)
+        for (i, f) in grayDec.enumerated() {
+            XCTAssertEqual(f.channels, 1)
+            XCTAssertEqual(f.data, grayFrames[i].data,
+                "8-bit grayscale frame \(i) lossless mismatch")
+        }
+
+        // (2) 16-bit grayscale animation.
+        func mkGray16(_ v: UInt16) -> ImageFrame {
+            var f = ImageFrame(
+                width: dim, height: dim,
+                channels: 1, pixelType: .uint16)
+            for i in 0..<(dim * dim) {
+                f.data[i * 2] = UInt8(v & 0xff)
+                f.data[i * 2 + 1] = UInt8(v >> 8)
+            }
+            return f
+        }
+        let g16Frames = [
+            mkGray16(1000), mkGray16(30000), mkGray16(60000)]
+        let g16Enc = try JXLEncoder(options: EncodingOptions(
+            mode: .lossless)).encode(g16Frames)
+        let g16Dec = try JXLDecoder().decodeAll(g16Enc.data)
+        XCTAssertEqual(g16Dec.count, 3)
+        for (i, f) in g16Dec.enumerated() {
+            XCTAssertEqual(f.channels, 1)
+            XCTAssertEqual(f.pixelType, .uint16)
+            XCTAssertEqual(f.data, g16Frames[i].data,
+                "16-bit grayscale frame \(i) lossless mismatch")
+        }
+    }
+
     /// `decodeAll(_:)` on a lossless Modular multi-frame
     /// animation — confirms `decodeAll` works for both VarDCT and
     /// Modular per-frame codestreams (the implementation is
