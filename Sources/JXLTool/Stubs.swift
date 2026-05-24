@@ -62,9 +62,23 @@ struct Compare: ParsableCommand {
     @Flag(help: "Suppress per-component table; report overall metrics only.")
     var quiet: Bool = false
 
+    @Option(name: .customLong("frame"),
+            help: "0-based frame index to compare when either input is a JXL animation. Default 0 (first frame). Use `--all-frames` to compare every frame in lockstep.")
+    var frame: Int = 0
+
+    @Flag(name: .customLong("all-frames"),
+          help: "Compare every frame in lockstep between two JXL animations. Both inputs must hold the same number of frames; per-frame metrics are reported and averaged.")
+    var allFrames: Bool = false
+
     func run() throws {
-        let refImg = try loadComparableImage(path: reference)
-        let testImg = try loadComparableImage(path: test)
+        if allFrames {
+            try runAllFrames()
+            return
+        }
+        let refImg = try loadComparableImage(path: reference,
+                                             frameIndex: frame)
+        let testImg = try loadComparableImage(path: test,
+                                              frameIndex: frame)
 
         guard refImg.width == testImg.width,
               refImg.height == testImg.height,
@@ -88,15 +102,116 @@ struct Compare: ParsableCommand {
             metrics.printText(reference: reference, test: test, quiet: quiet)
         }
     }
+
+    /// `--all-frames` path: decode both inputs to frame arrays
+    /// (JXL → all frames, PNM → 1-element array), insist on
+    /// matching frame counts, compute per-frame metrics, and print
+    /// each plus an averaged summary line.
+    private func runAllFrames() throws {
+        let refFrames = try loadComparableFrames(path: reference)
+        let testFrames = try loadComparableFrames(path: test)
+
+        guard refFrames.count == testFrames.count else {
+            print("compare --all-frames: frame counts differ — "
+                + "reference has \(refFrames.count), test has "
+                + "\(testFrames.count)", to: &standardError)
+            throw JXLExitCode.invalidArguments
+        }
+
+        var perFrame: [ImageMetrics] = []
+        for (i, pair) in zip(refFrames, testFrames).enumerated() {
+            guard pair.0.width == pair.1.width,
+                  pair.0.height == pair.1.height,
+                  pair.0.channels == pair.1.channels,
+                  pair.0.pixelType == pair.1.pixelType else {
+                print("compare --all-frames: frame \(i) shape "
+                    + "mismatch", to: &standardError)
+                throw JXLExitCode.invalidArguments
+            }
+            perFrame.append(ImageMetrics.compute(
+                reference: pair.0, test: pair.1))
+        }
+
+        if json {
+            print(jsonAllFrames(perFrame: perFrame))
+        } else {
+            print("All-frames comparison:")
+            print("  Reference:  \(reference) "
+                + "(\(refFrames.count) frame(s))")
+            print("  Test:       \(test) "
+                + "(\(testFrames.count) frame(s))")
+            print("")
+            for (i, m) in perFrame.enumerated() {
+                print("  [\(i)] PSNR=\(formatPSNR(m.overallPSNR)) "
+                    + "MAE=\(String(format: "%.4f", m.overallMAE)) "
+                    + "max=\(m.overallMaxError) "
+                    + "bit-exact="
+                    + (m.bitExact ? "Y" : "N"))
+            }
+            print("")
+            let meanMAE = perFrame.map { $0.overallMAE }
+                .reduce(0, +) / Double(perFrame.count)
+            let meanMaxErr = Double(perFrame.map {
+                $0.overallMaxError
+            }.reduce(0, +)) / Double(perFrame.count)
+            let allBitExact = perFrame.allSatisfy {
+                $0.bitExact
+            }
+            let meanPSNR = perFrame.map { $0.overallPSNR }
+                .filter { $0.isFinite }
+                .reduce(0.0, +)
+            let psnrAvg = perFrame.contains { $0.overallPSNR.isInfinite }
+                ? "Inf"
+                : String(format: "%.4f dB",
+                    meanPSNR / Double(perFrame.count))
+            print("  Average:    PSNR=\(psnrAvg) "
+                + "MAE=\(String(format: "%.4f", meanMAE)) "
+                + "max=\(String(format: "%.1f", meanMaxErr))")
+            print("  All frames bit-exact: "
+                + (allBitExact ? "YES ✓" : "NO ✗"))
+        }
+    }
+
+    private func formatPSNR(_ psnr: Double) -> String {
+        if !psnr.isFinite { return "Inf" }
+        return String(format: "%.4f", psnr) + " dB"
+    }
+
+    private func jsonAllFrames(perFrame: [ImageMetrics]) -> String {
+        var s = "{"
+        s += "\"reference\": \"\(reference)\", "
+        s += "\"test\": \"\(test)\", "
+        s += "\"frameCount\": \(perFrame.count), "
+        let inner = perFrame.enumerated().map { (i, m) -> String in
+            let psnr = m.overallPSNR.isFinite
+                ? String(format: "%.6f", m.overallPSNR)
+                : "null"
+            return "{\"index\": \(i), \"psnr\": \(psnr), "
+                + "\"mae\": \(String(format: "%.6f", m.overallMAE)), "
+                + "\"maxError\": \(m.overallMaxError), "
+                + "\"bitExact\": \(m.bitExact)}"
+        }.joined(separator: ", ")
+        s += "\"frames\": [\(inner)], "
+        let allExact = perFrame.allSatisfy {
+            $0.bitExact
+        }
+        s += "\"allBitExact\": \(allExact)"
+        s += "}"
+        return s
+    }
 }
 
-/// Decode `path` to an `ImageFrame`. Detects file type from the
-/// leading magic bytes:
+/// Decode `path` to a single `ImageFrame`. Detects file type from
+/// the leading magic bytes:
 ///   - `P5` / `P6` / `P7` → PNM (PGM / PPM / PAM)
 ///   - `0xFF 0x0A` → naked JXL codestream
 ///   - `0x00 0x00 0x00 0x0C 'J' 'X' 'L' ' '` → JXL ISOBMFF box
 /// Falls back to the file extension if the magic check is ambiguous.
-private func loadComparableImage(path: String) throws -> ImageFrame {
+/// `frameIndex` is honoured only for JXL inputs (PNM is always a
+/// single frame).
+private func loadComparableImage(
+    path: String, frameIndex: Int = 0
+) throws -> ImageFrame {
     let url = URL(fileURLWithPath: path)
     let data: Data
     do { data = try Data(contentsOf: url) }
@@ -106,14 +221,54 @@ private func loadComparableImage(path: String) throws -> ImageFrame {
         throw JXLExitCode.generalError
     }
     if isJXL(data: data, path: path) {
-        do { return try JXLDecoder().decode(data) }
-        catch let e as DecoderError {
-            print("compare: JXL decode failed for \(path): "
+        do {
+            if frameIndex == 0 {
+                return try JXLDecoder().decode(data)
+            }
+            return try JXLDecoder().decodeFrame(
+                data, at: frameIndex)
+        } catch let e as DecoderError {
+            print("compare: JXL decode failed for \(path) "
+                + "(frame \(frameIndex)): "
                 + "\(e.localizedDescription)", to: &standardError)
             throw JXLExitCode.generalError
         }
     }
+    if frameIndex != 0 {
+        print("compare: --frame \(frameIndex) ignored for PNM "
+            + "input \(path) (PNM is single-frame)",
+            to: &standardError)
+    }
     do { return try PNM.read(data) }
+    catch let e as PNMError {
+        print("compare: PNM parse failed for \(path): \(e)",
+              to: &standardError)
+        throw JXLExitCode.invalidArguments
+    }
+}
+
+/// Decode `path` to every available frame. For PNM inputs that's a
+/// 1-element array; for JXL it's the result of `decodeAll`.
+private func loadComparableFrames(
+    path: String
+) throws -> [ImageFrame] {
+    let url = URL(fileURLWithPath: path)
+    let data: Data
+    do { data = try Data(contentsOf: url) }
+    catch {
+        print("compare: cannot read \(path): \(error)",
+              to: &standardError)
+        throw JXLExitCode.generalError
+    }
+    if isJXL(data: data, path: path) {
+        do { return try JXLDecoder().decodeAll(data) }
+        catch let e as DecoderError {
+            print("compare: JXL decodeAll failed for \(path): "
+                + "\(e.localizedDescription)", to: &standardError)
+            throw JXLExitCode.generalError
+        }
+    }
+    do { return [try PNM.read(data)] }
     catch let e as PNMError {
         print("compare: PNM parse failed for \(path): \(e)",
               to: &standardError)

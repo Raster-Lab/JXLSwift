@@ -695,6 +695,17 @@ The `benchmark` subcommand previously hardcoded the M0 placeholder codec — so 
 - **End-to-end manual verification.** Multi-value, repeated, and glob forms all produce the same 169 B 3-frame animation; the single-frame form unchanged.
 - **432 tests passing, 5 skipped, 0 failures.**
 
+### v0.11.0bv — CLI `jxl compare --frame N` + `--all-frames` for animations
+
+Previously `jxl compare` against a JXL animation silently picked frame 0 — calling `JXLDecoder.decode(_:)` always returns the first frame, so a user comparing `ref.ppm` against `anim.jxl` got a single-frame readout with no indication that the test file held more frames. v0.11.0bv adds two principled selectors:
+
+- **`--frame N`** picks a specific 0-based frame from a JXL input. Default is `0` (matches the previous behaviour). Routes through `JXLDecoder.decodeFrame(_:at:)` when `N != 0`. For PNM inputs (always single-frame) a non-zero `--frame` emits a one-line warning to stderr and falls through to the PNM read; this keeps the symmetric `compare ref.jxl test.jxl --frame N` form working when one of the inputs happens to be a pre-decoded PNM.
+- **`--all-frames`** compares every frame in lockstep between two animations. Both inputs decoded with `decodeAll(_:)`; frame counts must match (clean error and exit code 1 otherwise). Reports per-frame PSNR/MAE/max/bit-exact plus an averaged summary line (`Average: PSNR=… MAE=… max=…`). JSON path emits `{frames: [{index, psnr, mae, maxError, bitExact}], allBitExact, …}`.
+
+- **Smoke verification** on a 3-frame animation: `--frame 0` matches default behaviour byte-for-byte (PSNR 52.90 dB); `--frame 2` reports a different PSNR (49.89 dB) confirming we're decoding the correct frame. `--all-frames` averaged PSNR matches the per-frame mean. `--all-frames` against an identical file reports `Inf MAE 0 bit-exact YES` for all three frames. Mismatched frame counts error cleanly; PNM warn-and-continue path tested.
+- **`Sources/JXLTool/Stubs.swift`** — adds `frame`/`allFrames` Compare fields, `runAllFrames()` per-frame path, `loadComparableImage(path:frameIndex:)`, `loadComparableFrames(path:)`, `jsonAllFrames(...)` and `formatPSNR(...)` helpers.
+- **438 tests passing, 6 skipped, 0 failures.**
+
 ### v0.11.0bu — CLI polish: validate walks animations, m0 stubs hidden from help
 
 Two small fit-and-finish bites that clean up the CLI surface as the family-parity work approaches completion.
