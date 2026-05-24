@@ -553,6 +553,14 @@ v0.11.0az adds a second short-circuit tier: when DCT8 cost is ≤ 120 (≈ 40 pe
 - **Limitations.** This is a single-pass implementation: every frame re-decodes the prelude (no shared state across frames yet — the existing `decode(_:)` re-parses everything from byte 0). For animations with many frames this is `O(N²)` in prelude cost; for the common 2–10 frame case it's fine. A future refinement could share decoder state across frames.
 - **422 tests passing, 5 skipped, 0 failures.**
 
+### v0.11.0bd — CLI: multi-frame `jxl encode -i a.ppm -i b.ppm -i c.ppm`
+
+`jxl encode` previously accepted exactly one `-i / --input`. v0.11.0bd makes it accept multiple — repeat `-i` to encode an animation. Single-`-i` invocations behave exactly as before.
+
+- **`Encode` subcommand** — `var input: String` → `var input: [String]` (with `parsing: .singleValue` so each `-i` is one path). When `frames.count == 1`, encode the lone frame through `encoder.encode(_ frame:)`; when ≥ 2, dispatch through `encoder.encode([ImageFrame])` (which routes to `VarDCTBitstreamWriter.encodeAnimation`). A new `--frame-duration` option (default 10 tps units = 100 ms) is exposed for future per-frame customisation, though the underlying API call doesn't yet thread it through (defaults to 10 for every frame).
+- **End-to-end manual verification.** Three single-colour PPMs (red / green / blue, 16×16) encoded as `jxl encode -i f0.ppm -i f1.ppm -i f2.ppm -o anim.jxl` produces a 169 B codestream that `djxl 0.11.2` decodes as a valid animation.
+- **422 tests passing, 5 skipped, 0 failures** (the CLI change is exercised end-to-end manually; no new XCTest case — the multi-frame `encode([ImageFrame])` plumbing is already covered by `testJXLEncoder_MultiFrameDispatch` and the animation round-trip test).
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)

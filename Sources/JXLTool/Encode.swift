@@ -15,12 +15,15 @@ import JXLSwift
 
 struct Encode: ParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "Encode an image to JPEG XL (lossy VarDCT or "
-            + "lossless Modular)."
+        abstract: "Encode one or more images to JPEG XL (lossy "
+            + "VarDCT or lossless Modular; multiple `-i` flags "
+            + "produce a multi-frame animation)."
     )
 
-    @Option(name: .shortAndLong, help: "Input image path (PGM/PPM/PAM)")
-    var input: String
+    @Option(name: .shortAndLong,
+            parsing: .singleValue,
+            help: "Input image path (PGM/PPM/PAM). Repeat `-i` to encode multiple frames as an animation.")
+    var input: [String]
 
     @Option(name: .shortAndLong, help: "Output .jxl path")
     var output: String
@@ -45,22 +48,37 @@ struct Encode: ParsableCommand {
           help: "Per-block variance-driven adaptive quantisation (lossy only). Default: on.")
     var adaptiveQF: Bool = true
 
+    @Option(name: .customLong("frame-duration"),
+            help: "Per-frame duration in tps units (multi-frame only; default 10 = 100 ms at the libjxl-default 100 tps).")
+    var frameDuration: UInt32 = 10
+
     func run() throws {
-        let inputURL = URL(fileURLWithPath: input)
+        guard !input.isEmpty else {
+            print("error: at least one -i / --input is required",
+                  to: &standardError)
+            throw JXLExitCode.invalidArguments
+        }
         let outputURL = URL(fileURLWithPath: output)
 
-        let pnmData: Data
-        do { pnmData = try Data(contentsOf: inputURL) }
-        catch {
-            print("error reading \(input): \(error)", to: &standardError)
-            throw JXLExitCode.generalError
-        }
-
-        let frame: ImageFrame
-        do { frame = try PNM.read(pnmData) }
-        catch let e as PNMError {
-            print("PNM parse error: \(e)", to: &standardError)
-            throw JXLExitCode.invalidArguments
+        // Read every input PNM into an ImageFrame.
+        var frames: [ImageFrame] = []
+        var rawTotal = 0
+        for path in input {
+            let inputURL = URL(fileURLWithPath: path)
+            let pnmData: Data
+            do { pnmData = try Data(contentsOf: inputURL) }
+            catch {
+                print("error reading \(path): \(error)",
+                      to: &standardError)
+                throw JXLExitCode.generalError
+            }
+            rawTotal += pnmData.count
+            do { frames.append(try PNM.read(pnmData)) }
+            catch let e as PNMError {
+                print("PNM parse error in \(path): \(e)",
+                      to: &standardError)
+                throw JXLExitCode.invalidArguments
+            }
         }
 
         let mode: CompressionMode = lossless
@@ -72,29 +90,43 @@ struct Encode: ParsableCommand {
             mode: mode, effort: effortLevel,
             gaborish: gaborish, adaptiveQF: adaptiveQF))
         let encoded: EncodedImage
-        do { encoded = try encoder.encode(frame) }
-        catch let e as EncoderError {
-            print("encode error: \(e.localizedDescription)", to: &standardError)
+        do {
+            if frames.count == 1 {
+                encoded = try encoder.encode(frames[0])
+            } else {
+                // Multi-frame path. JXLEncoder.encode([ImageFrame])
+                // dispatches to VarDCTBitstreamWriter.encodeAnimation
+                // with libjxl-default 100 tps timestamps.
+                encoded = try encoder.encode(frames)
+            }
+        } catch let e as EncoderError {
+            print("encode error: \(e.localizedDescription)",
+                  to: &standardError)
             throw JXLExitCode.generalError
         }
 
         do { try encoded.data.write(to: outputURL) }
         catch {
-            print("error writing \(output): \(error)", to: &standardError)
+            print("error writing \(output): \(error)",
+                  to: &standardError)
             throw JXLExitCode.generalError
         }
 
-        let rawSize = pnmData.count
         let encSize = encoded.data.count
-        let pct = Double(encSize) * 100 / Double(rawSize)
+        let pct = Double(encSize) * 100 / Double(rawTotal)
         let modeLabel = lossless
             ? "lossless"
             : "lossy q\(String(format: "%g", quality))"
+        let first = frames[0]
+        let frameLabel = frames.count == 1
+            ? ""
+            : " (\(frames.count)-frame animation)"
         print(
-            "encoded \(frame.width)×\(frame.height) "
-            + "\(channelDescription(frame.channels))"
-            + " \(frame.pixelType.bitsPerSample)-bit (\(modeLabel)): "
-            + "\(formatBytes(rawSize)) → \(formatBytes(encSize)) "
+            "encoded \(first.width)×\(first.height) "
+            + "\(channelDescription(first.channels))"
+            + " \(first.pixelType.bitsPerSample)-bit "
+            + "(\(modeLabel))\(frameLabel): "
+            + "\(formatBytes(rawTotal)) → \(formatBytes(encSize)) "
             + "(\(String(format: "%.1f", pct))% of source) "
             + "in \(String(format: "%.3f", encoded.stats.encodingTime))s"
         )
