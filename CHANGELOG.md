@@ -430,6 +430,17 @@ The `testVarDCTBitstreamWriter_RoundTrip` bound is tightened from `mean < 4.0` t
 - **Diagnostic test.** `testVarDCTBitstreamWriter_EncodeQualityMatrix` is `XCTSkip`-gated on `JXL_PRINT_ENC_QUALITY=1`. When run, it prints one `ENC-QUALITY gab=… aqf=… size=… mean=…` line per combination to stderr — useful when investigating encoder-quality changes without polluting the default test output.
 - **421 tests passing, 4 skipped (incl. the new opt-in diagnostic), 0 failures.**
 
+### v0.11.0at — VarDCT encoder: adaptive-QF region-trial fairness
+
+The v0.11.0am note flagged a known limitation: when `eval16Region` compared DCT16 vs 4×DCT8 (or `eval32Region` compared DCT32 vs 4×eval16Region, or the 64-pass vs 4×eval32Region), the multi-block candidate used the region's first-cell QF while each cell of the alternative used its own per-cell QF. With adaptive QF, this gave a slight comparison bias — smooth cells in a textured region would quantise to fewer non-zero ACs at their own low QF than the region-wide DCT16 would at the textured QF, skewing the trial toward 4×DCT8.
+
+v0.11.0at fixes the bias by giving every cell helper a `currentQFOverride` it consults before falling back to `qfPerBlock[by · blocksX + bx]`. Each region trial (16-pass `eval16Region`, 32-pass `eval32Region`, the 64-pass inline loop) sets the override to its first-cell QF for the scope of the trial; the override propagates through nested calls (so `eval32Region` → `eval16Region` → `bestSmallCell` → `dct8Cell` all see the 32-region's QF). On commit, a new `stampQF` helper writes the effective QF into `qfPerBlock` for every covered cell — the bitstream writer reads `qfPerBlock[firstBlock]` for ACMetadata, and the decoder must dequantise with the QF the encoder actually used.
+
+- **`VarDCTEncoder.forward`** — adds `var currentQFOverride: Int32? = nil` at the outer scope; all 16 cell helpers (`dct8Cell`, `dct4x4Cell`, `dct4x8Cell`, `dct8x4Cell`, `dct2x2Cell`, `hornussCell`, `afvCell`, `dct16Region`, `dct16x8Pair`, `dct8x16Pair`, `dct32x16Pair`, `dct16x32Pair`, `dct32Region`, `dct64x32Pair`, `dct32x64Pair`, `dct64Region`) shadow `qf = currentQFOverride ?? qfPerBlock[…]`. `eval16Region` / `eval32Region` / the 64-pass set + restore the override around their trials. New `stampQF(firstIdx:covered:)` helper stamps the effective QF over the strategy's covered cells in every commit (`commitDCT8`, `commitDCT16x8Pair`, `commitDCT8x16Pair`, `commitDCT32x16Pair`, `commitDCT16x32Pair`, `commitDCT64x32Pair`, `commitDCT32x64Pair`, and the inline DCT16 / DCT32 / DCT64 commits).
+- **Test invariant shift.** The `testVarDCTBitstreamWriter_AdaptiveQFSmoke` assertion that `qfPerBlock` carries ≥ 2 distinct values is no longer correct — under fairness, a fixture that fits in a single trial region produces a uniform `qfPerBlock`. The test now switches to a fully-textured 16×16 checkerboard and asserts `qfPerBlock[0] > 5` (the base QF) when adaptive is on, `== 5` when off, plus the codestream-differs assertion. The fairness invariant is the correct one.
+- **Quality impact on the 24×24 diagnostic.** Identical to pre-fairness on this fixture (which fits in one 16-region): mean error 1.05 / 92–99 B per channel across the four (gab, aqf) combinations. The fairness fix is structural — its benefit shows on larger frames where the trial decisions actually shift.
+- **421 tests passing, 4 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)

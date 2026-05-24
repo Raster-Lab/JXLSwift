@@ -10175,41 +10175,37 @@ extension FoundationTests {
     }
 
     /// VarDCT encoder adaptive-QF smoke test. The default encode
-    /// path is `adaptiveQF: true` — each 8×8 cell gets a
-    /// variance-driven QF (smooth cells coarser, textured cells
-    /// finer), emitted through ACMetadata's per-block QF plane.
-    /// This test verifies (1) the encoder produces a non-empty
-    /// codestream, (2) the per-block QF actually varies for a
-    /// frame with mixed-variance content, (3) our decoder reads
-    /// the result at the right dimensions, and (4) the on-wire
-    /// codestream differs from the `adaptiveQF: false` sibling.
+    /// path is `adaptiveQF: true` — variance-driven per-block QF
+    /// (smooth cells coarser, textured cells finer), emitted
+    /// through ACMetadata's per-block QF plane.
+    ///
+    /// Note (post v0.11.0at — adaptive-QF trial fairness): within
+    /// each region trial all cells inherit the first-cell's QF,
+    /// so a fixture that fits in a single trial region will have a
+    /// uniform `qfPerBlock`. The assertion this test makes is that
+    /// adaptiveQF on/off produce DIFFERENT codestreams (= the QF
+    /// actually flows through) — and that adaptiveQF on a
+    /// strongly-textured fixture picks a QF DIFFERENT from the
+    /// `qfBase` (5).
     func testVarDCTBitstreamWriter_AdaptiveQFSmoke() throws {
-        let dim = 32
+        let dim = 16
         var frame = ImageFrame(width: dim, height: dim, channels: 3)
-        // Left half: smooth gradient. Right half: high-frequency
-        // checkerboard. The adaptive heuristic should give a low
-        // QF on the left half and a high QF on the right.
+        // High-frequency checkerboard — every cell is textured, so
+        // adaptive QF should land WELL above the base of 5.
         for y in 0..<dim {
             for x in 0..<dim {
                 let i = (y * dim + x) * 3
-                if x < dim / 2 {
-                    frame.data[i + 0] = UInt8(50 + x * 4)
-                    frame.data[i + 1] = UInt8(60 + y * 4)
-                    frame.data[i + 2] = UInt8(80 + (x + y))
-                } else {
-                    let checker = (x + y).isMultiple(of: 2)
-                    frame.data[i + 0] = checker ? 220 : 30
-                    frame.data[i + 1] = checker ? 30 : 220
-                    frame.data[i + 2] = checker ? 180 : 70
-                }
+                let checker = (x + y).isMultiple(of: 2)
+                frame.data[i + 0] = checker ? 220 : 30
+                frame.data[i + 1] = checker ? 30 : 220
+                frame.data[i + 2] = checker ? 180 : 70
             }
         }
-        // Adaptive QF on — verify the per-block QF varies.
+        // Adaptive QF on — should pick a QF > 5 (variance is high).
         let qOn = try VarDCTEncoder.forward(frame: frame)
-        let unique = Set(qOn.qfPerBlock)
-        XCTAssertGreaterThan(unique.count, 1,
-            "adaptive QF should produce ≥ 2 distinct QFs on "
-            + "mixed-variance content; got \(unique)")
+        XCTAssertGreaterThan(qOn.qfPerBlock[0], 5,
+            "textured content should pick a QF above the base of "
+            + "5; got \(qOn.qfPerBlock[0])")
 
         let csOn = try VarDCTBitstreamWriter.encode(frame: frame)
         XCTAssertGreaterThan(csOn.count, 0)
@@ -10217,13 +10213,11 @@ extension FoundationTests {
         XCTAssertEqual(dec.width, dim)
         XCTAssertEqual(dec.height, dim)
 
-        // Adaptive QF off — must produce a different codestream
-        // (uniform QF across all blocks).
+        // Adaptive QF off — every block at the base QF (= 5).
         let qOff = try VarDCTEncoder.forward(
             frame: frame, adaptiveQF: false)
-        let uniqueOff = Set(qOff.qfPerBlock)
-        XCTAssertEqual(uniqueOff.count, 1,
-            "adaptive QF off must produce a uniform per-block QF")
+        XCTAssertEqual(qOff.qfPerBlock[0], 5,
+            "adaptive QF off must produce the uniform base QF")
 
         let csOff = try VarDCTBitstreamWriter.encode(
             frame: frame, adaptiveQF: false)

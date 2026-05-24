@@ -352,6 +352,18 @@ public enum VarDCTEncoder {
         let qwAFVY = Array(qweightsAFV[64..<128])
         let qwAFVB = Array(qweightsAFV[128..<192])
         var covered = [Bool](repeating: false, count: nBlocks)
+        // Adaptive-QF trial fairness — when a region trial wants
+        // all its candidate strategies to use the SAME quant factor
+        // (so the cost comparison is fair), it sets
+        // `currentQFOverride` for the scope of its trial. Every
+        // cell helper (`dct8Cell`, `dct16Region`, …) shadows
+        // `qf = currentQFOverride ?? qfPerBlock[by·blocksX+bx]`,
+        // so the override propagates through every nested call.
+        // The commits stamp the effective QF into `qfPerBlock` for
+        // every covered cell — the bitstream writer reads from
+        // `qfPerBlock[firstBlock]` for ACMetadata, and the decoder
+        // must see the same QF the encoder used to quantise.
+        var currentQFOverride: Int32? = nil
 
         // Extract a `size`×`size` single-channel patch at block
         // origin `(bx, by)`.
@@ -410,7 +422,8 @@ public enum VarDCTEncoder {
         // DCT8×8 of one block — quantised DC (3) + AC (3 × 64).
         func dct8Cell(_ bx: Int, _ by: Int)
             -> (dc: [Int32], ac: [[Int32]]) {
-            let qf = qfPerBlock[by * blocksX + bx]
+            let qf = currentQFOverride
+                ?? qfPerBlock[by * blocksX + bx]
             let rX = forwardDCT8Block(
                 patch: patch(planeX, bx, by, 8), quantWeights: qw8X,
                 scale: acScale, qf: qf)
@@ -431,7 +444,8 @@ public enum VarDCTEncoder {
         // (3 DC + 3 × 64 AC), but a different transform.
         func dct4x4Cell(_ bx: Int, _ by: Int)
             -> (dc: [Int32], ac: [[Int32]]) {
-            let qf = qfPerBlock[by * blocksX + bx]
+            let qf = currentQFOverride
+                ?? qfPerBlock[by * blocksX + bx]
             let rX = forwardDCT4x4Block(
                 patch: patch(planeX, bx, by, 8), quantWeights: qw4x4X,
                 scale: acScale, qf: qf)
@@ -451,7 +465,8 @@ public enum VarDCTEncoder {
         // vertically. Same outputs as `dct8Cell` (3 DC + 3 × 64 AC).
         func dct4x8Cell(_ bx: Int, _ by: Int)
             -> (dc: [Int32], ac: [[Int32]]) {
-            let qf = qfPerBlock[by * blocksX + bx]
+            let qf = currentQFOverride
+                ?? qfPerBlock[by * blocksX + bx]
             let rX = forwardDCT4x8Block(
                 patch: patch(planeX, bx, by, 8), quantWeights: qw4x8X,
                 scale: acScale, qf: qf)
@@ -471,7 +486,8 @@ public enum VarDCTEncoder {
         // side. Shares the DCT4×8 quant weights table.
         func dct8x4Cell(_ bx: Int, _ by: Int)
             -> (dc: [Int32], ac: [[Int32]]) {
-            let qf = qfPerBlock[by * blocksX + bx]
+            let qf = currentQFOverride
+                ?? qfPerBlock[by * blocksX + bx]
             let rX = forwardDCT8x4Block(
                 patch: patch(planeX, bx, by, 8), quantWeights: qw4x8X,
                 scale: acScale, qf: qf)
@@ -491,7 +507,8 @@ public enum VarDCTEncoder {
         // Same outputs as `dct8Cell` (3 DC + 3 × 64 AC).
         func dct2x2Cell(_ bx: Int, _ by: Int)
             -> (dc: [Int32], ac: [[Int32]]) {
-            let qf = qfPerBlock[by * blocksX + bx]
+            let qf = currentQFOverride
+                ?? qfPerBlock[by * blocksX + bx]
             let rX = forwardDCT2x2Block(
                 patch: patch(planeX, bx, by, 8), quantWeights: qw2x2X,
                 scale: acScale, qf: qf)
@@ -511,7 +528,8 @@ public enum VarDCTEncoder {
         // Same outputs as `dct8Cell` (3 DC + 3 × 64 AC).
         func hornussCell(_ bx: Int, _ by: Int)
             -> (dc: [Int32], ac: [[Int32]]) {
-            let qf = qfPerBlock[by * blocksX + bx]
+            let qf = currentQFOverride
+                ?? qfPerBlock[by * blocksX + bx]
             let rX = forwardHornussBlock(
                 patch: patch(planeX, bx, by, 8), quantWeights: qwHornX,
                 scale: acScale, qf: qf)
@@ -531,7 +549,8 @@ public enum VarDCTEncoder {
         // given `afvKind` orientation. Same outputs as `dct8Cell`.
         func afvCell(_ bx: Int, _ by: Int, kind: Int)
             -> (dc: [Int32], ac: [[Int32]]) {
-            let qf = qfPerBlock[by * blocksX + bx]
+            let qf = currentQFOverride
+                ?? qfPerBlock[by * blocksX + bx]
             let rX = forwardAFVBlock(
                 afvKind: kind,
                 patch: patch(planeX, bx, by, 8), quantWeights: qwAFVX,
@@ -554,7 +573,8 @@ public enum VarDCTEncoder {
         // AC (3 × 256).
         func dct16Region(_ bx: Int, _ by: Int)
             -> (dc: [[Int32]], ac: [[Int32]]) {
-            let qf = qfPerBlock[by * blocksX + bx]
+            let qf = currentQFOverride
+                ?? qfPerBlock[by * blocksX + bx]
             let rX = forwardDCT16Block(
                 patch: patch(planeX, bx, by, 16), quantWeights: qw16X,
                 scale: acScale, qf: qf)
@@ -581,7 +601,8 @@ public enum VarDCTEncoder {
         // bottom.
         func dct16x8Pair(_ bx: Int, _ by: Int)
             -> (dc: [[Int32]], ac: [[Int32]]) {
-            let qf = qfPerBlock[by * blocksX + bx]
+            let qf = currentQFOverride
+                ?? qfPerBlock[by * blocksX + bx]
             let rX = forwardDCT16x8Block(
                 patch: patchRect(planeX, bx, by, 8, 16),
                 quantWeights: qw8x16X, scale: acScale, qf: qf)
@@ -605,7 +626,8 @@ public enum VarDCTEncoder {
         // `dc[c][0]` is the left cell, `dc[c][1]` the right.
         func dct8x16Pair(_ bx: Int, _ by: Int)
             -> (dc: [[Int32]], ac: [[Int32]]) {
-            let qf = qfPerBlock[by * blocksX + bx]
+            let qf = currentQFOverride
+                ?? qfPerBlock[by * blocksX + bx]
             let rX = forwardDCT8x16Block(
                 patch: patchRect(planeX, bx, by, 16, 8),
                 quantWeights: qw8x16X, scale: acScale, qf: qf)
@@ -630,7 +652,8 @@ public enum VarDCTEncoder {
         // for r ∈ 0..2, c ∈ 0..4 — cell `(bx+r, by+c)`.
         func dct32x16Pair(_ bx: Int, _ by: Int)
             -> (dc: [[Int32]], ac: [[Int32]]) {
-            let qf = qfPerBlock[by * blocksX + bx]
+            let qf = currentQFOverride
+                ?? qfPerBlock[by * blocksX + bx]
             let rX = forwardDCT32x16Block(
                 patch: patchRect(planeX, bx, by, 16, 32),
                 quantWeights: qw16x32X, scale: acScale, qf: qf)
@@ -655,7 +678,8 @@ public enum VarDCTEncoder {
         // for r ∈ 0..2, c ∈ 0..4 — cell `(bx+c, by+r)`.
         func dct16x32Pair(_ bx: Int, _ by: Int)
             -> (dc: [[Int32]], ac: [[Int32]]) {
-            let qf = qfPerBlock[by * blocksX + bx]
+            let qf = currentQFOverride
+                ?? qfPerBlock[by * blocksX + bx]
             let rX = forwardDCT16x32Block(
                 patch: patchRect(planeX, bx, by, 32, 16),
                 quantWeights: qw16x32X, scale: acScale, qf: qf)
@@ -678,7 +702,8 @@ public enum VarDCTEncoder {
         // AC (3 × 1024).
         func dct32Region(_ bx: Int, _ by: Int)
             -> (dc: [[Int32]], ac: [[Int32]]) {
-            let qf = qfPerBlock[by * blocksX + bx]
+            let qf = currentQFOverride
+                ?? qfPerBlock[by * blocksX + bx]
             let rX = forwardDCT32Block(
                 patch: patch(planeX, bx, by, 32), quantWeights: qw32X,
                 scale: acScale, qf: qf)
@@ -702,7 +727,8 @@ public enum VarDCTEncoder {
         // `(bx..bx+3) × (by..by+7)`. `dc[r*8+c]` ↔ cell `(bx+r, by+c)`.
         func dct64x32Pair(_ bx: Int, _ by: Int)
             -> (dc: [[Int32]], ac: [[Int32]]) {
-            let qf = qfPerBlock[by * blocksX + bx]
+            let qf = currentQFOverride
+                ?? qfPerBlock[by * blocksX + bx]
             let rX = forwardDCT64x32Block(
                 patch: patchRect(planeX, bx, by, 32, 64),
                 quantWeights: qw32x64X, scale: acScale, qf: qf)
@@ -726,7 +752,8 @@ public enum VarDCTEncoder {
         // `(bx..bx+7) × (by..by+3)`. `dc[r*8+c]` ↔ cell `(bx+c, by+r)`.
         func dct32x64Pair(_ bx: Int, _ by: Int)
             -> (dc: [[Int32]], ac: [[Int32]]) {
-            let qf = qfPerBlock[by * blocksX + bx]
+            let qf = currentQFOverride
+                ?? qfPerBlock[by * blocksX + bx]
             let rX = forwardDCT32x64Block(
                 patch: patchRect(planeX, bx, by, 64, 32),
                 quantWeights: qw32x64X, scale: acScale, qf: qf)
@@ -749,7 +776,8 @@ public enum VarDCTEncoder {
         // AC (3 × 4096).
         func dct64Region(_ bx: Int, _ by: Int)
             -> (dc: [[Int32]], ac: [[Int32]]) {
-            let qf = qfPerBlock[by * blocksX + bx]
+            let qf = currentQFOverride
+                ?? qfPerBlock[by * blocksX + bx]
             let rX = forwardDCT64x64Block(
                 patch: patch(planeX, bx, by, 64), quantWeights: qw64X,
                 scale: acScale, qf: qf)
@@ -838,6 +866,16 @@ public enum VarDCTEncoder {
             return (0, c8.dc, c8.ac, cost8)
         }
         // Commit one 8×8 cell with the cheapest single-cell strategy.
+        // Stamp the effective per-block QF (currentQFOverride if a
+        // region trial is active, else qfPerBlock[firstIdx]) over
+        // the strategy's covered cells. Called from every commit*
+        // helper so the writer's `qfPerBlock[firstIdx]` matches the
+        // QF the encoder actually used to quantise the AC values.
+        func stampQF(firstIdx: Int, covered: [Int]) {
+            let qf = currentQFOverride ?? qfPerBlock[firstIdx]
+            qfPerBlock[firstIdx] = qf
+            for idx in covered { qfPerBlock[idx] = qf }
+        }
         func commitDCT8(_ bx: Int, _ by: Int) {
             let pick = bestSmallCell(bx, by)
             let idx = by * blocksX + bx
@@ -847,6 +885,7 @@ public enum VarDCTEncoder {
             acQuant[idx] = pick.ac
             acStrategy[idx] = pick.strat
             covered[idx] = true
+            stampQF(firstIdx: idx, covered: [])
         }
         // Commit one DCT16×8 vertical pair (top + bottom cells) —
         // first-block at (bx, by), covered cell at (bx, by+1).
@@ -866,6 +905,7 @@ public enum VarDCTEncoder {
             acQuant[coverIdx] = [[], [], []]
             covered[firstIdx] = true
             covered[coverIdx] = true
+            stampQF(firstIdx: firstIdx, covered: [coverIdx])
         }
         // Commit one DCT8×16 horizontal pair (left + right cells) —
         // first-block at (bx, by), covered cell at (bx+1, by).
@@ -885,11 +925,29 @@ public enum VarDCTEncoder {
             acQuant[coverIdx] = [[], [], []]
             covered[firstIdx] = true
             covered[coverIdx] = true
+            stampQF(firstIdx: firstIdx, covered: [coverIdx])
         }
         // Evaluate + commit one 16×16 region as the cheapest of four
         // partitionings: DCT16×16, two DCT16×8s (vertical split),
         // two DCT8×16s (horizontal split), or four DCT8×8s.
         func eval16Region(_ rx: Int, _ ry: Int) -> Int {
+            // Trial fairness — all candidate strategies in this 16-
+            // region evaluate at the same QF (the first-cell's, the
+            // one that wins the bitstream-side ACMetadata write
+            // anyway). Without this override, smooth cells in a
+            // 4×DCT8 alternative would quantise to fewer non-zero
+            // ACs than the region-wide DCT16's quantisation,
+            // biasing the trial toward 4×DCT8. The override is
+            // restored at function exit; if eval16Region is called
+            // recursively from eval32Region, that outer override
+            // (the 32-region's first-cell QF) takes precedence.
+            let firstIdx = ry * blocksX + rx
+            let regionQF = currentQFOverride
+                ?? qfPerBlock[firstIdx]
+            let savedOverride = currentQFOverride
+            currentQFOverride = regionQF
+            defer { currentQFOverride = savedOverride }
+
             let r16 = dct16Region(rx, ry)
             // Per-cell small-block trial — each of the 4 cells
             // independently picks the cheapest of DCT8/DCT4×4/
@@ -915,8 +973,8 @@ public enum VarDCTEncoder {
                 costH += tokenCost(pairH2.ac[c], order: order8x16)
             }
             let minCost = min(min(cost16, costSmall), min(costV, costH))
-            let firstIdx = ry * blocksX + rx
             if minCost == cost16 {
+                var coveredCells: [Int] = []
                 for (i, off) in cellOffsets.enumerated() {
                     let cIdx = (ry + off.1) * blocksX + (rx + off.0)
                     acStrategy[cIdx] = dct16Raw
@@ -925,8 +983,10 @@ public enum VarDCTEncoder {
                     dcQuant[2][cIdx] = r16.dc[2][i]
                     acQuant[cIdx] = [[], [], []]
                     covered[cIdx] = true
+                    if cIdx != firstIdx { coveredCells.append(cIdx) }
                 }
                 acQuant[firstIdx] = r16.ac
+                stampQF(firstIdx: firstIdx, covered: coveredCells)
                 return cost16
             }
             if minCost == costV {
@@ -948,6 +1008,7 @@ public enum VarDCTEncoder {
                 dcQuant[2][cIdx] = pick.dc[2]
                 acQuant[cIdx] = pick.ac
                 covered[cIdx] = true
+                stampQF(firstIdx: cIdx, covered: [])
             }
             return costSmall
         }
@@ -959,6 +1020,7 @@ public enum VarDCTEncoder {
             _ pair: (dc: [[Int32]], ac: [[Int32]])
         ) {
             let firstIdx = by * blocksX + bx
+            var coveredCells: [Int] = []
             for r in 0..<2 {
                 for c in 0..<4 {
                     let cIdx = (by + c) * blocksX + (bx + r)
@@ -968,9 +1030,11 @@ public enum VarDCTEncoder {
                     }
                     acQuant[cIdx] = [[], [], []]
                     covered[cIdx] = true
+                    if cIdx != firstIdx { coveredCells.append(cIdx) }
                 }
             }
             acQuant[firstIdx] = pair.ac
+            stampQF(firstIdx: firstIdx, covered: coveredCells)
         }
         // Commit one DCT16×32 pair (8 cells in a 4-col × 2-row
         // arrangement). `pair.dc[ch][r*4+c]` ↔ cell `(bx+c, by+r)`.
@@ -979,6 +1043,7 @@ public enum VarDCTEncoder {
             _ pair: (dc: [[Int32]], ac: [[Int32]])
         ) {
             let firstIdx = by * blocksX + bx
+            var coveredCells: [Int] = []
             for r in 0..<2 {
                 for c in 0..<4 {
                     let cIdx = (by + r) * blocksX + (bx + c)
@@ -988,9 +1053,11 @@ public enum VarDCTEncoder {
                     }
                     acQuant[cIdx] = [[], [], []]
                     covered[cIdx] = true
+                    if cIdx != firstIdx { coveredCells.append(cIdx) }
                 }
             }
             acQuant[firstIdx] = pair.ac
+            stampQF(firstIdx: firstIdx, covered: coveredCells)
         }
         // Commit one DCT64×32 pair (32 cells in a 4-col × 8-row
         // arrangement). `pair.dc[ch][r*8+c]` ↔ cell `(bx+r, by+c)`.
@@ -999,6 +1066,7 @@ public enum VarDCTEncoder {
             _ pair: (dc: [[Int32]], ac: [[Int32]])
         ) {
             let firstIdx = by * blocksX + bx
+            var coveredCells: [Int] = []
             for r in 0..<4 {
                 for c in 0..<8 {
                     let cIdx = (by + c) * blocksX + (bx + r)
@@ -1008,9 +1076,11 @@ public enum VarDCTEncoder {
                     }
                     acQuant[cIdx] = [[], [], []]
                     covered[cIdx] = true
+                    if cIdx != firstIdx { coveredCells.append(cIdx) }
                 }
             }
             acQuant[firstIdx] = pair.ac
+            stampQF(firstIdx: firstIdx, covered: coveredCells)
         }
         // Commit one DCT32×64 pair (32 cells in an 8-col × 4-row
         // arrangement). `pair.dc[ch][r*8+c]` ↔ cell `(bx+c, by+r)`.
@@ -1019,6 +1089,7 @@ public enum VarDCTEncoder {
             _ pair: (dc: [[Int32]], ac: [[Int32]])
         ) {
             let firstIdx = by * blocksX + bx
+            var coveredCells: [Int] = []
             for r in 0..<4 {
                 for c in 0..<8 {
                     let cIdx = (by + r) * blocksX + (bx + c)
@@ -1028,9 +1099,11 @@ public enum VarDCTEncoder {
                     }
                     acQuant[cIdx] = [[], [], []]
                     covered[cIdx] = true
+                    if cIdx != firstIdx { coveredCells.append(cIdx) }
                 }
             }
             acQuant[firstIdx] = pair.ac
+            stampQF(firstIdx: firstIdx, covered: coveredCells)
         }
 
         // 16 sub-cell offsets `(col, row)` within a 32×32 region.
@@ -1045,6 +1118,20 @@ public enum VarDCTEncoder {
         // chosen token cost so a larger enclosing 64×64 region can
         // compare its DCT64 cost against summed sub-region costs.
         func eval32Region(_ rx: Int, _ ry: Int) -> Int {
+            // Trial fairness — same pattern as `eval16Region`. The
+            // 32-region's first-cell QF applies to every candidate
+            // strategy here (DCT32, ord-6 pairs, 4× eval16Region
+            // recursion). The recursive `eval16Region` will pick up
+            // this override via `currentQFOverride` (it doesn't
+            // overwrite when one is already set — see eval16Region's
+            // `regionQF` initialisation).
+            let firstIdx = ry * blocksX + rx
+            let regionQF = currentQFOverride
+                ?? qfPerBlock[firstIdx]
+            let savedOverride = currentQFOverride
+            currentQFOverride = regionQF
+            defer { currentQFOverride = savedOverride }
+
             let r32 = dct32Region(rx, ry)
             let pV1 = dct32x16Pair(rx, ry)
             let pV2 = dct32x16Pair(rx + 2, ry)
@@ -1069,7 +1156,7 @@ public enum VarDCTEncoder {
             // A multi-block partitioning wins — overwrite the
             // sub-region commits.
             if minCost == cost32 {
-                let firstIdx = ry * blocksX + rx
+                var coveredCells: [Int] = []
                 for (i, off) in cell16.enumerated() {
                     let cIdx = (ry + off.1) * blocksX + (rx + off.0)
                     acStrategy[cIdx] = dct32Raw
@@ -1077,8 +1164,10 @@ public enum VarDCTEncoder {
                     dcQuant[1][cIdx] = r32.dc[1][i]
                     dcQuant[2][cIdx] = r32.dc[2][i]
                     acQuant[cIdx] = [[], [], []]
+                    if cIdx != firstIdx { coveredCells.append(cIdx) }
                 }
                 acQuant[firstIdx] = r32.ac
+                stampQF(firstIdx: firstIdx, covered: coveredCells)
                 return cost32
             } else if minCost == costV {
                 commitDCT32x16Pair(rx, ry, pV1)
@@ -1097,6 +1186,17 @@ public enum VarDCTEncoder {
         // stand when none of the multi-block options beat them.
         for ry in stride(from: 0, to: blocksY - 7, by: 8) {
             for rx in stride(from: 0, to: blocksX - 7, by: 8) {
+                // Trial fairness — the 64-region's first-cell QF
+                // governs every candidate strategy here (DCT64,
+                // ord-8 pairs, 4× eval32Region recursion). The
+                // recursive eval32Region calls inherit through
+                // `currentQFOverride`.
+                let firstIdx = ry * blocksX + rx
+                let regionQF = qfPerBlock[firstIdx]
+                let savedOverride = currentQFOverride
+                currentQFOverride = regionQF
+                defer { currentQFOverride = savedOverride }
+
                 let r64 = dct64Region(rx, ry)
                 let pV1 = dct64x32Pair(rx, ry)         // left half
                 let pV2 = dct64x32Pair(rx + 4, ry)      // right half
@@ -1119,7 +1219,7 @@ public enum VarDCTEncoder {
                     min(costV, costH))
                 if minCost == cost32group { continue }
                 if minCost == cost64 {
-                    let firstIdx = ry * blocksX + rx
+                    var coveredCells: [Int] = []
                     for (i, off) in cell64.enumerated() {
                         let cIdx = (ry + off.1) * blocksX
                             + (rx + off.0)
@@ -1128,8 +1228,13 @@ public enum VarDCTEncoder {
                         dcQuant[1][cIdx] = r64.dc[1][i]
                         dcQuant[2][cIdx] = r64.dc[2][i]
                         acQuant[cIdx] = [[], [], []]
+                        if cIdx != firstIdx {
+                            coveredCells.append(cIdx)
+                        }
                     }
                     acQuant[firstIdx] = r64.ac
+                    stampQF(firstIdx: firstIdx,
+                            covered: coveredCells)
                 } else if minCost == costV {
                     commitDCT64x32Pair(rx, ry, pV1)
                     commitDCT64x32Pair(rx + 4, ry, pV2)
