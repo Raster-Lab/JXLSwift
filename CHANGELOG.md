@@ -460,6 +460,18 @@ Y still has twice the weight of X+B combined (luminance is the dominant perceptu
 - **Expanded diagnostic.** `testVarDCTBitstreamWriter_EncodeQualityMatrix` now iterates four fixture types (smooth-gradient / checkerboard / colour-mosaic / smooth-with-edge) and prints one `ENC-QUALITY [fixture] gab=… aqf=… size=…B mean=…` line per (fixture, gab, aqf) combination — 16 lines total.
 - **421 tests passing, 4 skipped, 0 failures.**
 
+### v0.11.0av — Adaptive-QF heuristic: 100× detail multiplier (tuned via diagnostic)
+
+The v0.11.0am `qf = qfBase + round(50 · detail)` formula under-utilised the QF ceiling — even the dense-checkerboard fixture saw the heuristic settle around `qf ≈ 11`, well below the `qfMax = 16` cap. Pushing the multiplier to 100× actually uses the available range on textured content, with a clear quality improvement and marginal size cost.
+
+- **`VarDCTEncoder.forward`** — one constant change: `50.0 * detail` → `100.0 * detail` in the per-cell QF computation. Same `[3, 16]` clamp.
+- **Measured deltas** (via the `EncodeQualityMatrix` diagnostic, 24×24 fixtures, distance 1.0, default options):
+  - **checkerboard:** mean error **13.24 → 10.33** (–22 %); size **968 B → 977 B** (+1 %).
+  - **colour-mosaic:** mean error **4.85 → 3.88** (–20 %); size **712 B → 771 B** (+8 %).
+  - **smooth-with-edge:** mean error **0.76 → 0.73** (–4 %); size **128 B → 127 B** (–1 %).
+  - **smooth-gradient:** mean error **1.05 → 0.99** (–6 %); size **99 B → 106 B** (+7 %).
+- **421 tests passing, 4 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)

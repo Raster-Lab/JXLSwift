@@ -208,9 +208,14 @@ public enum VarDCTEncoder {
                         (wY * vY.squareRoot()
                          + wX * vX.squareRoot()
                          + wB * vB.squareRoot()) / wSum
-                    // qf = round(qfBase + 50 · detail), clamped.
+                    // qf = round(qfBase + 100 · detail), clamped.
+                    // The 100× multiplier was tuned via the
+                    // `EncodeQualityMatrix` diagnostic — the
+                    // previous 50× under-utilised the QF ceiling
+                    // (most fixtures stayed below qf 12 even on
+                    // textured content).
                     let scaled = Float(qf)
-                        + (50.0 * detail).rounded()
+                        + (100.0 * detail).rounded()
                     let qfBlock = Int32(min(Float(qfMax),
                         max(Float(qfMin), scaled)))
                     qfPerBlock[by * blocksX + bx] = qfBlock
