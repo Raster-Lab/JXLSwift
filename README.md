@@ -135,6 +135,26 @@ Multi-frame animations and helper subcommands:
 .build/release/jxl batch encode -i pnm/ -o jxl/ --recursive --continue-on-error
 ```
 
+JPEG inputs are accepted everywhere PNM is (Phase J decode side, since v0.11.0ck–cl) — auto-detected by SOI magic bytes, decoded through the pure-Swift JPEG pipeline, then handed to the JXL encoder / comparison / batch loop. Baseline-sequential 1- or 3-component 8-bit JPEGs are supported today; progressive / 12-bit / arithmetic-coded / 4-component CMYK are rejected with a clear error message:
+
+```bash
+# JPEG → PNM via the pure-Swift JPEG decoder.
+.build/release/jxl decode -i photo.jpg -o photo.ppm
+
+# JPEG → JXL (decode + re-encode; not bit-perfect transcoding —
+# that's the JXL VarDCT coefficient bridge, still on the roadmap).
+.build/release/jxl encode -i photo.jpg -o photo.jxl -q 90
+
+# Convert a whole directory of JPEGs (and any PNMs alongside).
+.build/release/jxl batch encode -i photos/ -o jxl/ --recursive
+
+# Compare a JPEG reference against a JXL re-encode.
+.build/release/jxl compare ref.jpg test.jxl
+
+# Inspect JPEG structure (dimensions, DCT mode, quant DC, JFIF/EXIF).
+.build/release/jxl info photo.jpg
+```
+
 Requires Swift 6.2+ on macOS 13+. **No external dependencies.** (`swift-argument-parser` for the CLI is the only Swift-package dep.)
 
 `jxl-tool info` now reports the frame structure of any cjxl-emitted file — encoding mode, TOC entries, MA-tree leaf count, post-tree pixel codec (prefix codes vs rANS):
