@@ -21,6 +21,19 @@
 //   - 12-bit precision
 //   - 4-component CMYK / YCCK (Adobe APP14)
 //   - Arithmetic coding (DAC segments)
+//
+// **API stability — v0.11.0.** `JPEGDecoder.decode(_:)` is the
+// intended-stable public surface and will remain so across the
+// Phase J series. The layer types in `Sources/JXLSwift/JPEG/*`
+// (`JPEGSegmentReader`, `JPEGStructure`, `JPEGQuantTable`,
+// `JPEGHuffmanTable`, `JPEGHuffmanCodebook`, `JPEGBitReader`,
+// `JPEGBlockDecoder`, `JPEGDequantiser`, `JPEGScanDecoder`,
+// `JPEGIDCT`, `JPEGPixelAssembler`, `JPEGColorConversion`) are
+// `public` because the eventual JPEG → JXL transcoding bridge
+// (Phase J capstone, planned for v0.12.0) needs them, but their
+// individual signatures may evolve when that bridge lands.
+// Callers who only need "JPEG bytes → ImageFrame" should use
+// `JPEGDecoder.decode(_:)` exclusively.
 
 import Foundation
 

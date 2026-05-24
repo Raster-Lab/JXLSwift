@@ -9,7 +9,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
-## [0.11.0] — in progress (VarDCT lossy encoder)
+## [0.11.0] — 2026-05-24 (release)
+
+**Headline.** First tagged release on the pure-Swift trajectory. Full encode + decode pipeline (VarDCT lossy + Modular lossless), multi-frame animations, JPEG-decode foundation, and a CLI surface feature-aligned with the family-parity J2KSwift target.
+
+**What's in v0.11.0.**
+
+- **VarDCT lossy encoder + decoder.** Encoder emits spec-compliant codestreams djxl decodes (8-bit RGB/RGBA up to 8192 px, distance quality knob, all decoder-supported AC strategies, inverse-Gaborish pre-pass, per-block adaptive QF, multi-DC-group, multi-section, animation). Decoder byte-exact against `djxl 0.11.2` on `cjxl -d 0.5`/`-d 1.0` SWEEP + DCT8/16/32/64 / AFV / IDENTITY / DCT2×2 / DCT4×4 / DCT4×8 / DCT8×4 fixtures; `cjxl -d 2/5/10` retains a small B-channel residual (max ~12–14, mean < 0.7). Multi-AC-group, multi-DC-group, adaptive DC smoothing, EPF1/EPF2.
+- **Modular lossless encoder + decoder.** 8/16-bit grayscale / RGB / RGBA, byte-exact round-trips through `cjxl`/`djxl`.
+- **Multi-frame animations.** `JXLEncoder.encode([ImageFrame])` + `JXLDecoder.decodeAll(_:)` / `decodeFrame(_:at:)` / `inspectFrames(_:)` / `countFrames(_:)` end-to-end. CLI supports `--frame-duration 10,20,30`, `--all-frames` decode template, per-frame `info --frames` listing.
+- **JPEG decode side (Phase J foundation).** `JPEGDecoder.decode(_:) → ImageFrame` for baseline-sequential 1- or 3-component 8-bit JPEGs. Wired into `jxl decode foo.jpg`, `jxl encode -i foo.jpg`, `jxl compare ref.jpg test.jxl`, and `jxl batch encode photos/`. Progressive / 12-bit / arithmetic-coded / CMYK throw `.unsupported` with clear messages.
+- **CLI surface.** `jxl` (alias: `jxl-tool`) with `info`, `encode`, `decode`, `benchmark`, `compare` (PNM ↔ JXL ↔ JPEG, per-frame + all-frames), `validate` (structural + functional, walks every frame of animations), `batch encode|decode` (recursive, glob filter, continue-on-error, JSON summary), `version`, `completions`, multi-value `-i`. M0 internal subcommands hidden from main help.
+- **Family-parity with J2KSwift.** Phases A + B + C of the API alignment plan complete: `JXLImage` typealias, `EncodingOptions` presets, `JXLConfiguration`, `jxl` canonical CLI name, async + progress overloads, shared `CompressionFamily` Swift package, `CompressionError` umbrella. See [Documentation/FAMILY-API-PARITY.md](Documentation/FAMILY-API-PARITY.md).
+
+**Known limitations.** Documented at the top of [README.md](README.md). Headline ones:
+
+- VarDCT decoder: DCT128, DCT256, DCT32×8, DCT8×32 transforms not ported (rare on real images, no real fixture forces them in our test corpus).
+- VarDCT decoder: `cjxl -d 2/5/10` has a small B-channel byte-diff (max ~12–14) — visually indistinguishable but not bit-exact. Pixel-byte-equality close-out is open Phase V work.
+- VarDCT decoder: Splines / Noise / Patches synthesis frame flags throw `.notImplemented`.
+- Modular: Palette transform throws `.paletteUnsupported`; ICC compressed-profile boxes not parsed (uncompressed profiles work).
+- EPF0 7×7 kernel deferred until a real fixture forces it.
+- JPEG: progressive / 12-bit / arithmetic / CMYK rejected with a clear error message.
+- **Bit-perfect JPEG ↔ JXL transcoding (Phase J capstone) — NOT in v0.11.0**, planned for v0.12.0 (VarDCT coefficient bridge + JXL → JPEG reverse + `jbrd` box).
+
+**Stability boundary for v0.11.0.**
+
+- **Stable**: `JXLEncoder`, `JXLDecoder`, `ImageFrame` (+ `JXLImage` typealias), `EncodingOptions`, `CompressionMode`, `EncodingEffort`, `JXLConfiguration`, `EncodedImage`, `DecoderError`, `EncoderError`, `JXLDecoder.JXLInspection`, `JXLDecoder.FrameSummary`, multi-frame methods (`encode([ImageFrame])`, `decodeAll`, `decodeFrame`, `countFrames`, `inspectFrames`), `ImageMetrics`, the `CompressionFamily` protocol family.
+- **Foundation (may evolve in v0.12.0)**: every public type in `Sources/JXLSwift/JPEG/*` except `JPEGDecoder.decode(_:)`. The layer types (segment reader, parsers, codebooks, bit reader, block decoder, scan decoder, IDCT, assembler, color conversion) are public because the eventual JPEG → JXL transcoding bridge needs them, but their individual signatures may move. Pin to `JPEGDecoder.decode(_:)` for the "JPEG bytes → ImageFrame" use case if you want zero-churn upgrades.
+- M0 placeholder format (`encode-m0` / `decode-m0`) — explicitly internal scaffolding, may be removed in v0.12.0 once the real codec covers the M0 use cases.
+
+**Test suite.** 508 tests passing, 6 skipped, 0 failures (release config, ~38 s on Apple Silicon). One sips-dependent JPEG round-trip skips on non-Darwin.
+
+---
+
+## [0.11.0a–cm] — in progress (VarDCT lossy encoder)
 
 With the VarDCT *decoder* byte-exact across every real image (any size, all AC strategies, RGBA), v0.11.0 builds the other half — a lossy VarDCT *encoder*. This is a multi-stage effort; the bitstream-serialisation layer follows the DSP core below.
 
