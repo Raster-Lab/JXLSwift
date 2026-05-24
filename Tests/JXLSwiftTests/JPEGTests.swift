@@ -1803,6 +1803,162 @@ final class JPEGFoundationTests: XCTestCase {
         }
     }
 
+    // MARK: - JPEGCoefficientImage (v0.12.0a)
+
+    // (Note: no minimalJPEG() coverage here — the segment-walk
+    //  fixture doesn't include an AC Huffman table, which the
+    //  scan decoder needs even for a degenerate single-pixel
+    //  block. The real-fixture tests below cover scan-decode-
+    //  through-coefficient-image; the segment-walk side of the
+    //  fixture is covered by the earlier minimal-fixture tests.)
+
+    /// Real-fixture pipeline-equivalence test: feed the same
+    /// sips-emitted JPEG through *both* `decode(_:)` (full pixel
+    /// pipeline) and `decodeToCoefficients(_:)` (stops after scan
+    /// decoder), then manually finish the coefficient pipeline
+    /// (dequant + IDCT + chroma upsample + YCbCr → RGB + crop) and
+    /// confirm the two produce **byte-identical** pixel arrays.
+    /// Validates the coefficient handoff loses no information vs
+    /// the direct path.
+    func testJPEGCoefficientImage_RealFixturePipelineEquivalence() throws {
+        guard FileManager.default.isExecutableFile(
+            atPath: "/usr/bin/sips") else {
+            throw XCTSkip("sips not available on this host")
+        }
+        let tmp = NSTemporaryDirectory()
+        let ppmPath = tmp + "coef-\(UUID().uuidString).ppm"
+        let jpgPath = tmp + "coef-\(UUID().uuidString).jpg"
+        defer {
+            try? FileManager.default.removeItem(atPath: ppmPath)
+            try? FileManager.default.removeItem(atPath: jpgPath)
+        }
+        // 16×16 gradient — non-trivial DC + AC.
+        var ppm = Data("P6\n16 16\n255\n".utf8)
+        for y in 0..<16 {
+            for x in 0..<16 {
+                ppm.append(contentsOf: [
+                    UInt8(50 + x * 8),
+                    UInt8(70 + y * 8),
+                    UInt8(180)
+                ])
+            }
+        }
+        try ppm.write(to: URL(fileURLWithPath: ppmPath))
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/sips")
+        proc.arguments = ["-s", "format", "jpeg",
+                          "-s", "formatOptions", "85",
+                          ppmPath, "--out", jpgPath]
+        proc.standardOutput = Pipe()
+        proc.standardError = Pipe()
+        try proc.run()
+        proc.waitUntilExit()
+        guard proc.terminationStatus == 0 else {
+            throw XCTSkip("sips conversion failed")
+        }
+        let jpg = try Data(contentsOf:
+            URL(fileURLWithPath: jpgPath))
+
+        let direct = try JPEGDecoder.decode(jpg)
+
+        let coef = try JPEGDecoder.decodeToCoefficients(jpg)
+        XCTAssertEqual(coef.width, 16)
+        XCTAssertEqual(coef.height, 16)
+        XCTAssertEqual(coef.precision, 8)
+        XCTAssertEqual(coef.quantisedComponents.count, 3)
+        XCTAssertGreaterThanOrEqual(coef.quantTables.count, 1)
+
+        // Manually dequantise + IDCT + assemble + upsample +
+        // colour-convert + crop, just like JPEGDecoder.decode.
+        let planes = try JPEGPixelAssembler.assemble(
+            componentBlocks: coef.quantisedComponents,
+            frameComponents: coef.frameComponents,
+            quantTables: coef.quantTables,
+            precision: coef.precision)
+        let yPlane = planes[0]
+        let cb = JPEGPixelAssembler.upsampleNearest(
+            planes[1], toWidth: yPlane.width,
+            height: yPlane.height)
+        let cr = JPEGPixelAssembler.upsampleNearest(
+            planes[2], toWidth: yPlane.width,
+            height: yPlane.height)
+        let rgbBuffer = JPEGColorConversion.ycbcrToRGB8(
+            y: yPlane, cb: cb, cr: cr)
+        let pw = yPlane.width
+        var cropped = [UInt8](repeating: 0, count: 16 * 16 * 3)
+        for y in 0..<16 {
+            for x in 0..<(16 * 3) {
+                cropped[y * 16 * 3 + x]
+                    = rgbBuffer[y * pw * 3 + x]
+            }
+        }
+        XCTAssertEqual(cropped, direct.data,
+            "coefficient path + manual finish should match the "
+            + "direct pixel decode byte-for-byte")
+    }
+
+    /// Catches a quant-table reorder bug: dequantising the Y
+    /// component's first block via the coefficient image's
+    /// quant-table list must produce the right DC.
+    func testJPEGCoefficientImage_DequantiseMatchesDirect() throws {
+        guard FileManager.default.isExecutableFile(
+            atPath: "/usr/bin/sips") else {
+            throw XCTSkip("sips not available on this host")
+        }
+        let tmp = NSTemporaryDirectory()
+        let ppmPath = tmp + "coef-\(UUID().uuidString).ppm"
+        let jpgPath = tmp + "coef-\(UUID().uuidString).jpg"
+        defer {
+            try? FileManager.default.removeItem(atPath: ppmPath)
+            try? FileManager.default.removeItem(atPath: jpgPath)
+        }
+        var ppm = Data("P6\n8 8\n255\n".utf8)
+        ppm.append(Data(repeating: 128, count: 8 * 8 * 3))
+        try ppm.write(to: URL(fileURLWithPath: ppmPath))
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/sips")
+        proc.arguments = ["-s", "format", "jpeg",
+                          "-s", "formatOptions", "90",
+                          ppmPath, "--out", jpgPath]
+        proc.standardOutput = Pipe()
+        proc.standardError = Pipe()
+        try proc.run()
+        proc.waitUntilExit()
+        guard proc.terminationStatus == 0 else {
+            throw XCTSkip("sips conversion failed")
+        }
+        let jpg = try Data(contentsOf:
+            URL(fileURLWithPath: jpgPath))
+        let coef = try JPEGDecoder.decodeToCoefficients(jpg)
+        let yBlock = coef.quantisedComponents[0].blocks[0]
+        let yQuantId = coef.frameComponents.first(where: {
+            $0.componentId
+                == coef.quantisedComponents[0].componentId
+        })?.quantTableId ?? 0
+        let yQt = coef.quantTables.first(where: {
+            $0.tableId == yQuantId
+        })!
+        let viaCoefImg = JPEGDequantiser.dequantising(
+            yBlock, using: yQt)
+        XCTAssertEqual(
+            viaCoefImg.coefficients[0],
+            Int32(yBlock.coefficients[0])
+                * Int32(yQt.zigZagValues[0]),
+            "dequant DC mismatch — quant table mapping wrong")
+    }
+
+    func testJPEGCoefficientImage_RejectsProgressive() throws {
+        var data = minimalJPEG()
+        for i in 0..<(data.count - 1) {
+            if data[i] == 0xFF && data[i + 1] == 0xC0 {
+                data[i + 1] = 0xC2
+                break
+            }
+        }
+        XCTAssertThrowsError(
+            try JPEGDecoder.decodeToCoefficients(data))
+    }
+
     // MARK: - byte-stuffing + RST skip stress
 
     func testJPEGSegmentReader_HandlesByteStuffing() throws {

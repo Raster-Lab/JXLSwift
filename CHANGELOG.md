@@ -9,6 +9,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## [0.12.0] — in progress (Phase J transcoding)
+
+### v0.12.0a — Phase J: `JPEGCoefficientImage` + `decodeToCoefficients(_:)`
+
+First v0.12.0 bite — opens the data-handoff seam between the JPEG decode stack and the eventual JXL VarDCT *coefficient bridge* (the libjxl-style transcode shortcut that packs JPEG quantised coefficients into a JXL frame without IDCT). No JXL-side machinery yet; this commit just exposes the right structured output from the JPEG side so the bridge can be built against a stable type.
+
+**Plan reassessment for v0.12.0.** Original Tier B sketch called for "JXL → JPEG reverse first" because it's easier to validate (bit-exact against the input JPEG). On closer reading of libjxl's source, **the reverse direction is gated on a pure-Swift Brotli decompressor** — the JXL `jbrd` box (JPEG Bitstream Reconstruction Data) payload is Brotli-compressed, and per CLAUDE.md constraint 1 ("C/C++ permitted only for measured optimisation; correctness logic stays Swift") that's a multi-session slab on its own. Forward direction (JPEG → JXL via the coefficient bridge) doesn't need Brotli, so v0.12.0 moves that direction first. Reverse and `jbrd` parsing come later in the v0.12.x line once a Swift Brotli lands (or alongside the broader compressed-ICC-profile-box work, which has the same dependency).
+
+- **`Sources/JXLSwift/JPEG/JPEGCoefficientImage.swift`** (new). Carries the dequantised-pending coefficient state from a decoded JPEG: `width`, `height`, `precision`, `frameKind`, `frameComponents` (sampling factors + quant-table bindings), `quantisedComponents: [JPEGComponentBlocks]` (Int32 per coefficient, natural row-major order, straight-out-of-`JPEGScanDecoder`), `quantTables: [JPEGQuantTable]` (zig-zag-ordered, indexed by table destination ID via `frameComponent.quantTableId`). `totalCoefficientCount` convenience for diagnostics.
+- **`JPEGDecoder.decodeToCoefficients(_:) -> JPEGCoefficientImage`** — runs the same segment-walk prelude as `decode(_:)` but stops after `JPEGScanDecoder.decodeBaselineSequential`, returning the structured coefficient state instead of finishing the IDCT + colour-conversion pipeline. Same scope envelope as `decode(_:)` (baseline-sequential 1 or 3 components, 8-bit precision); same `JPEGDecoderError.unsupported` errors for out-of-scope shapes.
+- **API stability.** `JPEGCoefficientImage` and `decodeToCoefficients(_:)` are foundation types for the in-progress coefficient bridge; signatures may evolve as the bridge work matures. Callers who only need "JPEG bytes → ImageFrame" should continue to use the v0.11.0-stable `JPEGDecoder.decode(_:)`.
+- **3 tests**: real-fixture pipeline equivalence (decode-via-coefficients + manual finish should produce byte-identical pixels to direct `JPEGDecoder.decode`), dequantise-matches-direct (catches quant-table reorder bugs), progressive rejection. **511 tests passing, 6 skipped, 0 failures** (was 508; +3).
+- **What's NOT here yet.** The JXL-side coefficient bridge (i.e. an encoder mode that accepts `JPEGCoefficientImage` and emits a JXL frame whose decoded pixels match the source JPEG). That's the next bite — the v0.12.0a structured output is its required input.
+
+---
+
 ## [0.11.0] — 2026-05-24 (release)
 
 **Headline.** First tagged release on the pure-Swift trajectory. Full encode + decode pipeline (VarDCT lossy + Modular lossless), multi-frame animations, JPEG-decode foundation, and a CLI surface feature-aligned with the family-parity J2KSwift target.
