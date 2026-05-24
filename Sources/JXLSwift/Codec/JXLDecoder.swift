@@ -3051,6 +3051,101 @@ public struct JXLDecoder: Sendable {
         return out
     }
 
+    /// Decode a single frame at `index` from a JPEG XL codestream.
+    /// For single-frame inputs only `index == 0` is valid;
+    /// multi-frame animations support any `index` in
+    /// `0 ..< countFrames(data)`. Use this when you only need one
+    /// frame of an animation (e.g. a thumbnail or a specific
+    /// keyframe) — much cheaper than `decodeAll(_:)` then picking
+    /// the desired frame, since only that one frame's pixels are
+    /// decoded.
+    public func decodeFrame(
+        _ data: Data, at index: Int
+    ) throws -> ImageFrame {
+        guard index >= 0 else {
+            throw DecoderError.notImplemented(
+                "decodeFrame: index must be ≥ 0 (got \(index))")
+        }
+        if MinimalLosslessCodec.isM0(data) {
+            guard index == 0 else {
+                throw DecoderError.notImplemented(
+                    "decodeFrame: M0 codestream has 1 frame, "
+                    + "index \(index) out of range")
+            }
+            return try MinimalLosslessCodec.decode(data)
+        }
+        let codestream: Data
+        do {
+            switch try parseJXLContainer(data) {
+            case .naked:
+                codestream = data
+            case .iso(let boxes):
+                codestream = try extractCodestream(
+                    from: boxes, in: data)
+            }
+        } catch let e as ContainerError {
+            throw DecoderError.container(e)
+        }
+        guard hasCodestreamSignature(codestream) else {
+            throw DecoderError.missingSignature
+        }
+        // Walk the prelude + per-frame FrameHeader+TOC sequence
+        // looking for the frame at `index`. Same per-frame parse
+        // as `decodeAll`, but bails out once the target frame's
+        // byte range is found.
+        var r = BitReader(codestream, startingAt: 16)
+        let _ = try SizeHeader.read(from: &r)
+        let metadata = try ImageMetadata.read(from: &r)
+        try r.readCustomTransformData(
+            xybEncoded: metadata.xybEncoded)
+        try r.alignToByte()
+        let preludeEndByte = r.position / 8
+        let ctx = FrameHeaderContext(
+            xybEncoded: metadata.xybEncoded,
+            numExtraChannels: metadata.extraChannels.count,
+            haveAnimation: metadata.animation != nil,
+            haveTimecodes:
+                metadata.animation?.haveTimecodes ?? false)
+        var current = 0
+        while true {
+            let frameStartByte = r.position / 8
+            let fh = try FrameHeader.read(from: &r, context: ctx)
+            let xs = Int(codestreamXSize(codestream))
+            let ys = Int(codestreamYSize(codestream))
+            let groupDim = 128 << Int(fh.groupSizeShift)
+            let dcGroupDim = groupDim << 3
+            let numG = ((xs + groupDim - 1) / groupDim)
+                * ((ys + groupDim - 1) / groupDim)
+            let numDG = ((xs + dcGroupDim - 1) / dcGroupDim)
+                * ((ys + dcGroupDim - 1) / dcGroupDim)
+            let entries = TOC.numEntries(
+                numGroups: numG, numDcGroups: numDG,
+                numPasses: Int(fh.passes.numPasses))
+            let toc = try TOC.read(from: &r, numEntries: entries)
+            let afterTocByte = r.position / 8
+            let totalSectionBytes = toc.entrySizes.reduce(0) {
+                $0 + Int($1)
+            }
+            let frameEndByte = afterTocByte + totalSectionBytes
+            if current == index {
+                // Construct synthetic single-frame codestream:
+                // prelude bytes + this frame's bytes.
+                var synth = codestream.subdata(
+                    in: 0..<preludeEndByte)
+                synth.append(codestream.subdata(
+                    in: frameStartByte..<frameEndByte))
+                return try decode(synth)
+            }
+            if fh.isLast {
+                throw DecoderError.notImplemented(
+                    "decodeFrame: index \(index) out of range "
+                    + "(codestream has \(current + 1) frames)")
+            }
+            try r.skip(bits: totalSectionBytes * 8)
+            current += 1
+        }
+    }
+
     /// Helper for `decodeAll` — read just the SizeHeader's xsize /
     /// ysize from a codestream that's already passed signature.
     private func codestreamXSize(_ codestream: Data) -> UInt32 {

@@ -652,6 +652,14 @@ v0.11.0bj's `encodeModularAnimation8` was 8-bit RGB / RGBA only. v0.11.0bl gener
 - **Verified.** `testJXLDecoder_InspectFrames` pins down the values for a 3-frame variable-duration animation (50, 10, 100 — last frame flagged `isLast`) and a single-frame codestream (1 summary, duration=0, isLast=true).
 - **431 tests passing, 5 skipped, 0 failures.**
 
+### v0.11.0bn — `JXLDecoder.decodeFrame(_:at:)` — single-frame fetch from an animation
+
+Companion to `decodeAll(_:)` — when a caller only needs ONE frame of an animation (e.g. a thumbnail or a specific keyframe), `decodeFrame(_:at:)` returns just that frame. Much cheaper than `decodeAll` then array-indexing because only the target frame's pixels are decoded.
+
+- **`JXLDecoder.decodeFrame(_:at:)`** — walks the per-frame FrameHeader+TOC chain to find frame `index`, builds the synth single-frame codestream for just that frame, delegates to `decode(_:)`. Out-of-range `index` (negative, ≥ countFrames) throws `DecoderError.notImplemented` with a clear message. M0 placeholder codestreams short-circuit (only `index == 0` is valid).
+- **Verified.** `testJXLDecoder_DecodeFrameAt` exercises (1) byte-exact fetch of each of 3 frames from a lossless animation, (2) out-of-range index throwing, (3) single-frame codestream at `index = 0` working, at `index = 1` throwing.
+- **432 tests passing, 5 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)

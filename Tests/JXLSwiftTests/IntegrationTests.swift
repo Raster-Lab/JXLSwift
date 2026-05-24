@@ -10318,6 +10318,57 @@ extension FoundationTests {
             "djxl rejected the RGBA animation; stderr: \(err)")
     }
 
+    /// `JXLDecoder.decodeFrame(_:at:)` fetches a single frame
+    /// from a multi-frame codestream. Cheaper than `decodeAll`
+    /// when only one frame is needed (e.g. a thumbnail).
+    func testJXLDecoder_DecodeFrameAt() throws {
+        let dim = 16
+        func mk(r: UInt8, g: UInt8, b: UInt8) -> ImageFrame {
+            var f = ImageFrame(
+                width: dim, height: dim, channels: 3)
+            for i in 0..<(dim * dim) {
+                f.data[i * 3 + 0] = r
+                f.data[i * 3 + 1] = g
+                f.data[i * 3 + 2] = b
+            }
+            return f
+        }
+        let frames = [mk(r: 200, g: 60, b: 60),
+                      mk(r: 60, g: 200, b: 60),
+                      mk(r: 60, g: 60, b: 200)]
+        // Lossless animation — every fetched frame must match
+        // its source byte-exact.
+        let cs = try JXLEncoder(options: EncodingOptions(
+            mode: .lossless)).encode(frames).data
+        for i in 0..<frames.count {
+            let f = try JXLDecoder().decodeFrame(cs, at: i)
+            XCTAssertEqual(f.data, frames[i].data,
+                "frame \(i) data mismatch")
+        }
+        // Out-of-range index throws.
+        do {
+            _ = try JXLDecoder().decodeFrame(cs, at: 99)
+            XCTFail("out-of-range index must throw")
+        } catch DecoderError.notImplemented {
+            // expected
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+        // Single-frame codestream — index 0 works, index 1 throws.
+        let single = try VarDCTBitstreamWriter.encode(
+            frame: frames[0])
+        let f0 = try JXLDecoder().decodeFrame(single, at: 0)
+        XCTAssertEqual(f0.width, dim)
+        do {
+            _ = try JXLDecoder().decodeFrame(single, at: 1)
+            XCTFail("single-frame at: 1 must throw")
+        } catch DecoderError.notImplemented {
+            // expected
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+    }
+
     /// `JXLDecoder.inspectFrames(_:)` reports per-frame duration /
     /// isLast / encoding / section count without decoding pixels.
     /// Pin the values down: 3-frame animation with non-uniform
