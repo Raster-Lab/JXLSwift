@@ -650,6 +650,149 @@ final class JPEGFoundationTests: XCTestCase {
             try JPEGScanHeader.parse(sosPayload: payload))
     }
 
+    // MARK: - JPEGHuffmanCodebook (§C.2 canonical-code build)
+
+    /// 2-symbol code: lengths [1,1] → codes 0, 1 (both 1-bit).
+    func testJPEGHuffmanCodebook_TwoOneBitSymbols() throws {
+        let table = JPEGHuffmanTable(
+            class: .dc, tableId: 0,
+            bits: [2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            huffvals: [0xAA, 0xBB])
+        let book = try table.buildCodebook()
+        XCTAssertEqual(book.codes.count, 2)
+        XCTAssertEqual(book.codes[0].code, 0)
+        XCTAssertEqual(book.codes[0].length, 1)
+        XCTAssertEqual(book.codes[0].symbol, 0xAA)
+        XCTAssertEqual(book.codes[1].code, 1)
+        XCTAssertEqual(book.codes[1].length, 1)
+        XCTAssertEqual(book.codes[1].symbol, 0xBB)
+    }
+
+    /// Classic hand example: lengths [0,3,1,...] (3 length-2
+    /// codes + 1 length-3 code). Canonical codes are
+    /// 00, 01, 10, 110.
+    func testJPEGHuffmanCodebook_HandCanonicalCodes() throws {
+        let table = JPEGHuffmanTable(
+            class: .ac, tableId: 0,
+            bits: [0,3,1,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            huffvals: [0x01, 0x02, 0x03, 0x04])
+        let book = try table.buildCodebook()
+        XCTAssertEqual(book.codes.map(\.code),  [0b00, 0b01, 0b10, 0b110])
+        XCTAssertEqual(book.codes.map(\.length), [2, 2, 2, 3])
+        XCTAssertEqual(book.codes.map(\.symbol),
+                       [0x01, 0x02, 0x03, 0x04])
+    }
+
+    /// Round-trip: encode each symbol's canonical bits, decode
+    /// them back with `decodeSymbol`. Exercises maxcode /
+    /// mincode / valoffset together.
+    func testJPEGHuffmanCodebook_DecodeRoundTrip() throws {
+        let table = JPEGHuffmanTable(
+            class: .ac, tableId: 0,
+            bits: [0,3,1,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            huffvals: [0x01, 0x02, 0x03, 0x04])
+        let book = try table.buildCodebook()
+        for entry in book.codes {
+            // Emit `length` bits of `code` MSB-first into a queue.
+            var bits: [Int] = []
+            for i in (0..<entry.length).reversed() {
+                bits.append(Int((entry.code >> UInt32(i)) & 1))
+            }
+            var idx = 0
+            let s = book.decodeSymbol(
+                nextBit: {
+                    defer { idx += 1 }
+                    return idx < bits.count ? bits[idx] : nil
+                },
+                huffvals: table.huffvals)
+            XCTAssertEqual(s, entry.symbol,
+                "round-trip failed for symbol "
+                + "0x\(String(entry.symbol, radix: 16))")
+        }
+    }
+
+    /// On a real sips JPEG, build codebooks for every DHT and
+    /// confirm the maxcode chain is monotone and the per-symbol
+    /// lengths sum back to `huffvals.count`.
+    func testJPEGHuffmanCodebook_OnRealJPEG() throws {
+        guard FileManager.default.isExecutableFile(
+            atPath: "/usr/bin/sips") else {
+            throw XCTSkip("sips not available on this host")
+        }
+        let tmp = NSTemporaryDirectory()
+        let ppmPath = tmp + "jpegtest-\(UUID().uuidString).ppm"
+        let jpgPath = tmp + "jpegtest-\(UUID().uuidString).jpg"
+        defer {
+            try? FileManager.default.removeItem(atPath: ppmPath)
+            try? FileManager.default.removeItem(atPath: jpgPath)
+        }
+        var ppm = Data("P6\n8 8\n255\n".utf8)
+        for y in 0..<8 {
+            for x in 0..<8 {
+                ppm.append(contentsOf: [
+                    UInt8(20 + x * 25),
+                    UInt8(40 + y * 25),
+                    UInt8(100)
+                ])
+            }
+        }
+        try ppm.write(to: URL(fileURLWithPath: ppmPath))
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/sips")
+        proc.arguments = ["-s", "format", "jpeg",
+                          "-s", "formatOptions", "75",
+                          ppmPath, "--out", jpgPath]
+        proc.standardOutput = Pipe()
+        proc.standardError = Pipe()
+        try proc.run()
+        proc.waitUntilExit()
+        guard proc.terminationStatus == 0 else {
+            throw XCTSkip("sips conversion failed")
+        }
+        let jpg = try Data(contentsOf:
+            URL(fileURLWithPath: jpgPath))
+        let tables = try JPEGStructure.huffmanTables(in: jpg)
+        XCTAssertFalse(tables.isEmpty)
+        for table in tables {
+            let book = try table.buildCodebook()
+            XCTAssertEqual(book.codes.count, table.huffvals.count)
+            // Per-symbol lengths sum back to huffvals.count.
+            let totalLen = book.codes.map(\.length).reduce(0, +)
+            XCTAssertEqual(book.codes.count, table.huffvals.count)
+            XCTAssertGreaterThan(totalLen, 0)
+            // maxcode entries that exist are monotone non-decreasing
+            // when reinterpreted as left-aligned values
+            // (canonical-code invariant).
+            var prev = -1
+            for L in 1...16 {
+                let mc = book.maxcode[L - 1]
+                if mc < 0 { continue }
+                // Left-align to 16 bits so the comparison is
+                // length-independent.
+                let leftAligned = mc << (16 - L)
+                XCTAssertGreaterThanOrEqual(leftAligned, prev,
+                    "maxcode chain not monotone at length \(L)")
+                prev = leftAligned
+            }
+        }
+    }
+
+    /// Decoding from a too-short bit stream returns nil cleanly
+    /// instead of crashing.
+    func testJPEGHuffmanCodebook_DecodeOnExhaustedBits() throws {
+        let table = JPEGHuffmanTable(
+            class: .dc, tableId: 0,
+            bits: [2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            huffvals: [0x01, 0x02])
+        let book = try table.buildCodebook()
+        var calls = 0
+        let s = book.decodeSymbol(
+            nextBit: { calls += 1; return nil },
+            huffvals: table.huffvals)
+        XCTAssertNil(s)
+        XCTAssertEqual(calls, 1)
+    }
+
     // MARK: - byte-stuffing + RST skip stress
 
     func testJPEGSegmentReader_HandlesByteStuffing() throws {

@@ -695,6 +695,18 @@ The `benchmark` subcommand previously hardcoded the M0 placeholder codec — so 
 - **End-to-end manual verification.** Multi-value, repeated, and glob forms all produce the same 169 B 3-frame animation; the single-frame form unchanged.
 - **432 tests passing, 5 skipped, 0 failures.**
 
+### v0.11.0cc — Phase J: JPEG canonical Huffman codebook builder (§C.2)
+
+Fifth Phase J bite. Turns the `(bits, huffvals)` records produced by v0.11.0ca into queryable runtime Huffman codebooks via the ITU-T T.81 §C.2 canonical-code algorithm. With this layer the JPEG side has everything a Huffman *decoder* needs — building the actual entropy-decoder loop on top is the next bite.
+
+- **`Sources/JXLSwift/JPEG/JPEGHuffmanCodebook.swift`** (new). `JPEGHuffmanTable.buildCodebook() -> JPEGHuffmanCodebook` walks the §C.2 Figure F.15 algorithm:
+  1. **HUFFSIZE list** — for each band L = 1..16, append L `bits[L-1]` times. Length per symbol.
+  2. **HUFFCODE** — walk the symbols, emitting the next canonical code at each step. When length increases, shift the running code left by the difference. Range-checked against the 16-bit code space (overruns throw `JPEGParseError.invalidSegmentLength`).
+  3. **Decoder state tables** — `mincode[L-1]`, `maxcode[L-1]` (or –1 if no codes of that length), `valoffset[L-1]` per §C.2 Figure F.15. These collapse the per-symbol record into a fixed-size lookup that the decoder loop queries by length.
+- **`JPEGHuffmanCodebook.decodeSymbol(nextBit:huffvals:)`** — §C.2 Figure F.16 decode loop, returns one symbol per call. Caller-provided `nextBit` closure lets the entropy decoder choose how to source bits (byte-stuffing handling, RST marker handling, etc. all stay at that layer). Returns `nil` cleanly on truncated bit streams.
+- **5 new tests**: 2-symbol [length 1, 1] minimal codebook, hand-derived canonical codes for `bits = [0,3,1,…]` (codes 00, 01, 10, 110), full encode-then-decode round-trip exercising every symbol of a multi-length codebook, real-JPEG sips test (every DHT table builds successfully + the maxcode chain is monotone non-decreasing under left-alignment, the canonical-code invariant), and a graceful-EOF test.
+- **473 tests passing, 6 skipped, 0 failures** (was 468; +5).
+
 ### v0.11.0cb — Phase J: JPEG SOFn per-component records + SOS scan header
 
 Fourth Phase J bite. Closes the **structural** parsing of a JPEG file — every byte from SOI to EOI that isn't entropy-coded data now has a typed Swift representation. The remaining work for transcoding is runtime Huffman code-table construction + entropy decode + JXL-side bridge.
