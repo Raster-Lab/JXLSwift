@@ -1047,6 +1047,392 @@ final class JPEGFoundationTests: XCTestCase {
         XCTAssertEqual(Set(JPEGZigZag.order).count, 64)
     }
 
+    // MARK: - JPEGDequantiser
+
+    func testJPEGDequantiser_IdentityTable() {
+        // Quant table of all 1s → dequantised values match input.
+        let table = JPEGQuantTable(
+            tableId: 0, precision: .bits8,
+            zigZagValues: Array(repeating: 1, count: 64))
+        let input = JPEGCoefficientBlock(
+            (0..<64).map { Int32($0) - 32 })
+        let out = JPEGDequantiser.dequantising(
+            input, using: table)
+        XCTAssertEqual(out.coefficients, input.coefficients)
+    }
+
+    func testJPEGDequantiser_ConstantMultiplier() {
+        // Quant table of all 3s → every coefficient × 3.
+        let table = JPEGQuantTable(
+            tableId: 0, precision: .bits8,
+            zigZagValues: Array(repeating: 3, count: 64))
+        let input = JPEGCoefficientBlock(
+            (0..<64).map { Int32($0) - 32 })
+        let out = JPEGDequantiser.dequantising(
+            input, using: table)
+        for i in 0..<64 {
+            XCTAssertEqual(out.coefficients[i],
+                           input.coefficients[i] * 3,
+                "wrong dequant at index \(i)")
+        }
+    }
+
+    /// The quant table is stored in zig-zag order, so testing
+    /// `zigZagValues[1]` (which multiplies natural index 1) and
+    /// `zigZagValues[2]` (natural index 8) must hit different
+    /// positions. Catches a transposed mapping.
+    func testJPEGDequantiser_ZigZagMappingIsCorrect() {
+        var z = Array<UInt16>(repeating: 1, count: 64)
+        z[1] = 10   // multiplies the coefficient at zig-zag
+                    // position 1, which is natural index 1.
+        z[2] = 100  // zig-zag position 2 → natural index 8.
+        let table = JPEGQuantTable(
+            tableId: 0, precision: .bits8, zigZagValues: z)
+        var block = JPEGCoefficientBlock(
+            Array(repeating: Int32(1), count: 64))
+        JPEGDequantiser.dequantise(&block, using: table)
+        XCTAssertEqual(block.coefficients[0], 1)    // DC unchanged
+        XCTAssertEqual(block.coefficients[1], 10)
+        XCTAssertEqual(block.coefficients[8], 100)
+        // Spot-check a position that shouldn't have been touched
+        // by the special multipliers above.
+        XCTAssertEqual(block.coefficients[16], 1)
+    }
+
+    func testJPEGDequantiser_InPlaceMatchesFunctional() {
+        let table = JPEGQuantTable(
+            tableId: 0, precision: .bits8,
+            zigZagValues: (1...64).map { UInt16($0) })
+        let input = JPEGCoefficientBlock(
+            Array(repeating: Int32(2), count: 64))
+        var a = input
+        JPEGDequantiser.dequantise(&a, using: table)
+        let b = JPEGDequantiser.dequantising(
+            input, using: table)
+        XCTAssertEqual(a.coefficients, b.coefficients)
+    }
+
+    // MARK: - JPEGScanDecoder
+
+    /// Synthetic: 8×8 grayscale, single 1×1-sampled component,
+    /// all-zero block. DC predictor returns 0, EOB right after.
+    /// Mirrors the block-decoder all-zero test but exercises the
+    /// MCU dispatch + per-component output grid wiring.
+    func testJPEGScanDecoder_SingleGrayscaleBlock() throws {
+        let dcTable = JPEGHuffmanTable(
+            class: .dc, tableId: 0,
+            bits: [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            huffvals: [0x00])
+        let acTable = JPEGHuffmanTable(
+            class: .ac, tableId: 0,
+            bits: [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            huffvals: [0x00])
+        let dcBook = try dcTable.buildCodebook()
+        let acBook = try acTable.buildCodebook()
+
+        let frameComps = [JPEGFrameComponent(
+            componentId: 1, hSamplingFactor: 1,
+            vSamplingFactor: 1, quantTableId: 0)]
+        let scanHeader = JPEGScanHeader(
+            components: [JPEGScanComponent(
+                componentId: 1, dcTableId: 0,
+                acTableId: 0)],
+            spectralSelectionStart: 0,
+            spectralSelectionEnd: 63,
+            successiveApproximationHigh: 0,
+            successiveApproximationLow: 0)
+
+        // 2 bits (DC code "0" + EOB "0") padded to 0x00.
+        var reader = JPEGBitReader(Data([0x00]))
+        let dcMap: JPEGHuffmanCodebookMap =
+            [0: (dcBook, dcTable.huffvals)]
+        let acMap: JPEGHuffmanCodebookMap =
+            [0: (acBook, acTable.huffvals)]
+        let out = try JPEGScanDecoder.decodeBaselineSequential(
+            from: &reader,
+            scanHeader: scanHeader,
+            frameComponents: frameComps,
+            imageWidth: 8, imageHeight: 8,
+            dcCodebooks: dcMap, acCodebooks: acMap)
+        XCTAssertEqual(out.count, 1)
+        XCTAssertEqual(out[0].componentId, 1)
+        XCTAssertEqual(out[0].blocksWide, 1)
+        XCTAssertEqual(out[0].blocksHigh, 1)
+        XCTAssertEqual(out[0].blocks.count, 1)
+        XCTAssertEqual(out[0].blocks[0].coefficients,
+                       Array(repeating: 0, count: 64))
+    }
+
+    /// Synthetic: 16×16 grayscale, 1×1 sampling → 2×2 = 4 blocks,
+    /// each with DC = the per-block sequence 5, 11, 17, 23 (each
+    /// block's DC delta is +6, predictor accumulates). Verifies
+    /// MCU-row × MCU-col walk + DC differential accumulation.
+    func testJPEGScanDecoder_Grayscale2x2DCAccumulation() throws {
+        let dcTable = JPEGHuffmanTable(
+            class: .dc, tableId: 0,
+            bits: [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            huffvals: [0x03])  // size 3
+        let acTable = JPEGHuffmanTable(
+            class: .ac, tableId: 0,
+            bits: [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            huffvals: [0x00])  // EOB
+        let dcBook = try dcTable.buildCodebook()
+        let acBook = try acTable.buildCodebook()
+
+        // Per block: "0" (DC code) + 3 mag bits + "0" (EOB)
+        // = 5 bits.
+        // Block 0: DC delta +5 → mag bits "101"
+        // Block 1: DC delta +6 → mag bits "110"
+        // Block 2: DC delta +6 → mag bits "110"
+        // Block 3: DC delta +6 → mag bits "110"
+        // 4 × 5 = 20 bits packed MSB-first into 3 bytes (24 bits):
+        //   "01010" "01100" "01100" "01100" + "0000" pad
+        //   = 01010011 00011000 11000000
+        //   = 0x53 0x18 0xC0
+        var reader = JPEGBitReader(Data([0x53, 0x18, 0xC0]))
+        let frameComps = [JPEGFrameComponent(
+            componentId: 1, hSamplingFactor: 1,
+            vSamplingFactor: 1, quantTableId: 0)]
+        let scanHeader = JPEGScanHeader(
+            components: [JPEGScanComponent(
+                componentId: 1, dcTableId: 0,
+                acTableId: 0)],
+            spectralSelectionStart: 0,
+            spectralSelectionEnd: 63,
+            successiveApproximationHigh: 0,
+            successiveApproximationLow: 0)
+        let dcMap: JPEGHuffmanCodebookMap =
+            [0: (dcBook, dcTable.huffvals)]
+        let acMap: JPEGHuffmanCodebookMap =
+            [0: (acBook, acTable.huffvals)]
+        let out = try JPEGScanDecoder.decodeBaselineSequential(
+            from: &reader, scanHeader: scanHeader,
+            frameComponents: frameComps,
+            imageWidth: 16, imageHeight: 16,
+            dcCodebooks: dcMap, acCodebooks: acMap)
+        XCTAssertEqual(out.count, 1)
+        XCTAssertEqual(out[0].blocksWide, 2)
+        XCTAssertEqual(out[0].blocksHigh, 2)
+        // Block order: row 0 col 0, row 0 col 1, row 1 col 0,
+        // row 1 col 1 (raster within MCU walk; here each MCU is
+        // one block since H=V=1).
+        XCTAssertEqual(out[0].blocks[0].coefficients[0], 5)
+        XCTAssertEqual(out[0].blocks[1].coefficients[0], 11)
+        XCTAssertEqual(out[0].blocks[2].coefficients[0], 17)
+        XCTAssertEqual(out[0].blocks[3].coefficients[0], 23)
+    }
+
+    func testJPEGScanDecoder_RejectsProgressive() throws {
+        let dcTable = JPEGHuffmanTable(
+            class: .dc, tableId: 0,
+            bits: [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            huffvals: [0x00])
+        let dcBook = try dcTable.buildCodebook()
+        let scanHeader = JPEGScanHeader(
+            components: [JPEGScanComponent(
+                componentId: 1, dcTableId: 0,
+                acTableId: 0)],
+            spectralSelectionStart: 0,
+            spectralSelectionEnd: 5,    // ← partial band
+            successiveApproximationHigh: 0,
+            successiveApproximationLow: 0)
+        let frameComps = [JPEGFrameComponent(
+            componentId: 1, hSamplingFactor: 1,
+            vSamplingFactor: 1, quantTableId: 0)]
+        var reader = JPEGBitReader(Data([0x00]))
+        XCTAssertThrowsError(
+            try JPEGScanDecoder.decodeBaselineSequential(
+                from: &reader, scanHeader: scanHeader,
+                frameComponents: frameComps,
+                imageWidth: 8, imageHeight: 8,
+                dcCodebooks: [0: (dcBook,
+                                  dcTable.huffvals)],
+                acCodebooks: [:]))
+    }
+
+    func testJPEGScanDecoder_RejectsUnknownComponent() throws {
+        let dcTable = JPEGHuffmanTable(
+            class: .dc, tableId: 0,
+            bits: [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            huffvals: [0x00])
+        let dcBook = try dcTable.buildCodebook()
+        let scanHeader = JPEGScanHeader(
+            components: [JPEGScanComponent(
+                componentId: 99, dcTableId: 0,
+                acTableId: 0)],
+            spectralSelectionStart: 0,
+            spectralSelectionEnd: 63,
+            successiveApproximationHigh: 0,
+            successiveApproximationLow: 0)
+        let frameComps = [JPEGFrameComponent(
+            componentId: 1, hSamplingFactor: 1,
+            vSamplingFactor: 1, quantTableId: 0)]
+        var reader = JPEGBitReader(Data([0x00]))
+        XCTAssertThrowsError(
+            try JPEGScanDecoder.decodeBaselineSequential(
+                from: &reader, scanHeader: scanHeader,
+                frameComponents: frameComps,
+                imageWidth: 8, imageHeight: 8,
+                dcCodebooks: [0: (dcBook,
+                                  dcTable.huffvals)],
+                acCodebooks: [:]))
+    }
+
+    // MARK: - real sips JPEG end-to-end
+
+    /// Run the full pipeline on a sips-produced JPEG: parse
+    /// segments → build codebooks → locate entropy data → scan
+    /// decode → dequantise → sanity-check the result.
+    ///
+    /// This is the first "raw JPEG bytes → dequantised DCT
+    /// coefficients" round-trip on a real-world fixture and the
+    /// natural milestone the Phase J foundation is building
+    /// toward.
+    func testJPEGScanDecoder_RealSIPSFixture() throws {
+        guard FileManager.default.isExecutableFile(
+            atPath: "/usr/bin/sips") else {
+            throw XCTSkip("sips not available on this host")
+        }
+        let tmp = NSTemporaryDirectory()
+        let ppmPath = tmp + "jpegtest-\(UUID().uuidString).ppm"
+        let jpgPath = tmp + "jpegtest-\(UUID().uuidString).jpg"
+        defer {
+            try? FileManager.default.removeItem(atPath: ppmPath)
+            try? FileManager.default.removeItem(atPath: jpgPath)
+        }
+        // 16×16 RGB gradient so DC values vary across blocks.
+        var ppm = Data("P6\n16 16\n255\n".utf8)
+        for y in 0..<16 {
+            for x in 0..<16 {
+                ppm.append(contentsOf: [
+                    UInt8(100 + x * 4),
+                    UInt8(80 + y * 4),
+                    UInt8(150)
+                ])
+            }
+        }
+        try ppm.write(to: URL(fileURLWithPath: ppmPath))
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/sips")
+        proc.arguments = ["-s", "format", "jpeg",
+                          "-s", "formatOptions", "75",
+                          ppmPath, "--out", jpgPath]
+        proc.standardOutput = Pipe()
+        proc.standardError = Pipe()
+        try proc.run()
+        proc.waitUntilExit()
+        guard proc.terminationStatus == 0 else {
+            throw XCTSkip("sips conversion failed")
+        }
+        let jpg = try Data(contentsOf:
+            URL(fileURLWithPath: jpgPath))
+
+        // Walk segments, capturing what the scan decoder needs.
+        var reader = JPEGSegmentReader(jpg)
+        var dcMap = JPEGHuffmanCodebookMap()
+        var acMap = JPEGHuffmanCodebookMap()
+        var quantTables: [JPEGQuantTable] = []
+        var frameComponents: [JPEGFrameComponent] = []
+        var width = 0, height = 0
+        var scanHeader: JPEGScanHeader?
+        var restartInterval = 0
+        var entropyStartOffset = 0
+
+        while let seg = try reader.next() {
+            switch seg.kind {
+            case .startOfFrame:
+                width = (Int(seg.payload[3]) << 8)
+                    | Int(seg.payload[4])
+                height = (Int(seg.payload[1]) << 8)
+                    | Int(seg.payload[2])
+                frameComponents = try JPEGFrameComponent
+                    .parseSOFComponents(sofPayload: seg.payload)
+            case .defineQuantizationTable:
+                quantTables.append(contentsOf:
+                    try JPEGQuantTable.parse(
+                        dqtPayload: seg.payload))
+            case .defineHuffmanTable:
+                for t in try JPEGHuffmanTable.parse(
+                    dhtPayload: seg.payload)
+                {
+                    let book = try t.buildCodebook()
+                    switch t.class {
+                    case .dc:
+                        dcMap[t.tableId] = (book, t.huffvals)
+                    case .ac:
+                        acMap[t.tableId] = (book, t.huffvals)
+                    }
+                }
+            case .defineRestartInterval:
+                if seg.payload.count == 2 {
+                    restartInterval =
+                        (Int(seg.payload[0]) << 8)
+                        | Int(seg.payload[1])
+                }
+            case .startOfScan:
+                scanHeader = try JPEGScanHeader.parse(
+                    sosPayload: seg.payload)
+                entropyStartOffset = reader.byteOffset
+            case .endOfImage:
+                break
+            default:
+                break
+            }
+            if seg.kind == .startOfScan { break }
+        }
+        guard let scan = scanHeader else {
+            XCTFail("no SOS segment found")
+            return
+        }
+
+        var bitReader = JPEGBitReader(jpg,
+            startingAt: entropyStartOffset)
+        let comps = try JPEGScanDecoder.decodeBaselineSequential(
+            from: &bitReader,
+            scanHeader: scan,
+            frameComponents: frameComponents,
+            imageWidth: width, imageHeight: height,
+            dcCodebooks: dcMap, acCodebooks: acMap,
+            restartInterval: restartInterval)
+
+        XCTAssertEqual(comps.count, 3,
+            "expected 3 components for RGB JPEG")
+        for c in comps {
+            XCTAssertGreaterThan(c.blocks.count, 0,
+                "component \(c.componentId) had no blocks")
+            // DC of first block is non-zero (gradient content
+            // is non-uniform; sips' DCT will produce a sensible
+            // DC value even at q=75).
+            XCTAssertNotEqual(
+                c.blocks[0].coefficients[0], 0,
+                "component \(c.componentId): first block DC "
+                + "should be non-zero for real content")
+        }
+
+        // Dequantise the first block of each component using
+        // its quant table. This is the actual "pixel-ready"
+        // path the transcoder will later feed into IDCT or the
+        // JXL VarDCT bridge.
+        for (i, c) in comps.enumerated() {
+            let qtId = frameComponents.first(
+                where: { $0.componentId == c.componentId
+                })?.quantTableId ?? 0
+            guard let qt = quantTables.first(
+                where: { $0.tableId == qtId }) else {
+                XCTFail("missing quant table \(qtId)")
+                return
+            }
+            let dequant = JPEGDequantiser.dequantising(
+                c.blocks[0], using: qt)
+            // The dequantised DC magnitude should be larger
+            // than the quantised one (Q[0] is small but ≥ 1).
+            let q = c.blocks[0].coefficients[0]
+            let dq = dequant.coefficients[0]
+            XCTAssertGreaterThanOrEqual(abs(dq), abs(q),
+                "component \(i) dequant didn't enlarge DC")
+        }
+    }
+
     // MARK: - byte-stuffing + RST skip stress
 
     func testJPEGSegmentReader_HandlesByteStuffing() throws {

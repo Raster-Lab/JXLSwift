@@ -695,6 +695,32 @@ The `benchmark` subcommand previously hardcoded the M0 placeholder codec — so 
 - **End-to-end manual verification.** Multi-value, repeated, and glob forms all produce the same 169 B 3-frame animation; the single-frame form unchanged.
 - **432 tests passing, 5 skipped, 0 failures.**
 
+### v0.11.0cg — Phase J: JPEG baseline scan decoder + real-fixture round-trip
+
+The capstone bite of the Phase J foundation: a full baseline-sequential **scan** decoder, driving MCU iteration across all components with correct sampling-factor handling and restart-interval DC reset. Closes the "raw JPEG bytes → dequantised DCT coefficients per component" round-trip on a real-world fixture.
+
+- **`Sources/JXLSwift/JPEG/JPEGScanDecoder.swift`** (new).
+  - **`JPEGComponentBlocks`** — per-component grid of decoded blocks in row-major order.
+  - **`JPEGScanDecodeError`** — distinguishes "scan config wrong" (unknown component, missing Huffman table, not baseline-sequential) from per-block decode errors so callers can react differently.
+  - **`JPEGHuffmanCodebookMap` typealias** — `[tableId: (codebook, huffvals)]`, populated separately for DC and AC table classes by the caller. Built by parsing each DHT segment and calling `buildCodebook` on each table.
+  - **`JPEGScanDecoder.decodeBaselineSequential(...)`** — the driver. MCU geometry computed from frame components' `H_i`/`V_i` sampling factors (`H_max = max(H_i)`, `V_max = max(V_i)`, MCU is `(H_max*8) × (V_max*8)` pixels). Inner loop: for each MCU position, for each scan component in scan order, decode `V_i × H_i` blocks via `JPEGBlockDecoder.decode` and place them at the right per-component grid offset. RST handling: at every `restartInterval`-th MCU boundary, reset all per-component DC predictors and call `reader.alignToByte()` (the bit reader has already silently consumed the marker bytes during normal fill). Edge MCUs decoded in full per §A.2.4.
+- **5 new tests**:
+  - Synthetic single-block grayscale (all-zero, single 1×1 component).
+  - Synthetic 16×16 grayscale 2×2 MCU walk with 4 successive DC deltas (`+5, +6, +6, +6` → predictor sequence `5, 11, 17, 23`) — verifies row-major MCU iteration + DC accumulation across blocks.
+  - Progressive-scan rejection (`Ss/Se` outside `0..63`).
+  - Unknown-component rejection (scan references a component ID not in the frame).
+  - **Real sips-JPEG end-to-end**: generates a 16×16 RGB gradient JPEG via `sips`, walks segments to collect SOFn / DQT / DHT / DRI / SOS, locates entropy data via `reader.byteOffset` snapshot after SOS, builds DC/AC codebook maps from every DHT, runs `decodeBaselineSequential` on the entropy stream, asserts 3 components with non-zero DC values in their first block, then dequantises each first block via `JPEGDequantiser` and confirms `|dequantised DC| ≥ |quantised DC|` (quant table is all ≥ 1 so the magnitude can only grow). **This is the first "raw JPEG bytes → dequantised DCT coefficients" round-trip on a real-world fixture in JXLSwift.**
+- **495 tests passing, 6 skipped, 0 failures** (was 486; +9 — 4 dequantiser + 5 scan decoder).
+- **ROADMAP.md** — Phase J table updated: "raw JPEG bytes → dequantised DCT coefficients" is now ✅ end-to-end; what remains is the JXL VarDCT coefficient bridge (or alternative IDCT + YCbCr→RGB path) and the JXL → JPEG reverse direction.
+
+### v0.11.0cf — Phase J: JPEG dequantiser
+
+Eighth bite. Applies a `JPEGQuantTable` to a `JPEGCoefficientBlock`, producing still-integer dequantised coefficients ready for IDCT (pixel-reconstruction route) or the JXL VarDCT bridge (libjxl's transcode shortcut).
+
+- **`Sources/JXLSwift/JPEG/JPEGDequantiser.swift`** (new). `JPEGDequantiser.dequantise(_:using:)` (in-place) + `dequantising(_:using:)` (functional). Implementation: `for k in 0..<64: block.coefficients[zigzag[k]] *= Int32(table.zigZagValues[k])` — handles the natural ↔ zig-zag ordering bridge in one line. Product fits in `Int32` at 8-bit JPEG precision (quantised coefficients ≤ ±16 384, quant factors ≤ 65 535 → product ≤ ~1.07e9 < 2³¹).
+- **4 tests**: identity table (round-trip), constant 3× multiplier (every coefficient × 3), zig-zag-mapping correctness (writes to indices 1 and 8 confirm the zig-zag bridge is wired correctly, catches transposition bugs), in-place vs functional equivalence.
+- **490 tests passing** (intermediate; before the scan-decoder bite).
+
 ### v0.11.0ce — Phase J: JPEG DC + AC coefficient block decoder
 
 Seventh Phase J bite, and the substance of JPEG decoding. Given a `JPEGBitReader` + DC/AC `JPEGHuffmanCodebook`s, `JPEGBlockDecoder.decode(...)` reads one 8×8 block of quantised DCT coefficients in natural (row-major) order, threading per-component DC-differential predictor state through. After this layer, "JPEG entropy stream → quantised DCT coefficients" is solved end to end; what's left for Phase J transcoding is dequantisation + IDCT + YCbCr→RGB + the JXL-side encoder bridge.
