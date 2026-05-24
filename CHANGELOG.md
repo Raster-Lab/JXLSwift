@@ -683,6 +683,18 @@ The `benchmark` subcommand previously hardcoded the M0 placeholder codec — so 
 - **End-to-end manual verification** on the 16×16 red PPM at 5 iterations: lossy 0.6 Mpx/s encode, 0.2 Mpx/s decode; lossless 6.6 Mpx/s encode, 0.3 Mpx/s decode; M0 1.6 Mpx/s encode, 8.3 Mpx/s decode. (Tiny fixture — real-image numbers depend on content.)
 - **432 tests passing, 5 skipped, 0 failures** (no new test — the dispatch is end-to-end-tested by the existing single-frame encode/decode tests).
 
+### v0.11.0br — CLI `jxl encode -i` accepts multi-value (shell-glob friendly)
+
+`-i` previously took exactly one value, requiring users to type `-i f0 -i f1 -i f2` for multi-frame animations. v0.11.0br switches to `parsing: .upToNextOption`, so `-i` accepts one *or many* values per invocation — `-i f0 f1 f2` works, and shell-glob expansion (`-i frame_*.ppm`) now works without per-file wrapping.
+
+- **`Encode` subcommand** — `var input: [String]` parsing changes from `.singleValue` to `.upToNextOption`. All three forms produce **byte-identical** codestreams:
+  - `-i f0.ppm` (1 frame)
+  - `-i f0.ppm f1.ppm f2.ppm` (multi-value)
+  - `-i f0.ppm -i f1.ppm -i f2.ppm` (repeated, legacy form — still works)
+  - `-i frame_*.ppm` (shell glob — useful for "encode all frames in a directory")
+- **End-to-end manual verification.** Multi-value, repeated, and glob forms all produce the same 169 B 3-frame animation; the single-frame form unchanged.
+- **432 tests passing, 5 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)

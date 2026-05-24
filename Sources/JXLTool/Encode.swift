@@ -21,8 +21,8 @@ struct Encode: ParsableCommand {
     )
 
     @Option(name: .shortAndLong,
-            parsing: .singleValue,
-            help: "Input image path (PGM/PPM/PAM). Repeat `-i` to encode multiple frames as an animation.")
+            parsing: .upToNextOption,
+            help: "Input image path(s) (PGM/PPM/PAM). Accepts one or many: `-i frame.ppm`, `-i f0.ppm -i f1.ppm`, or `-i frame_*.ppm` (shell glob). Multi-value invocations are encoded as a multi-frame animation.")
     var input: [String]
 
     @Option(name: .shortAndLong, help: "Output .jxl path")
