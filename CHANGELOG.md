@@ -561,6 +561,16 @@ v0.11.0az adds a second short-circuit tier: when DCT8 cost is ≤ 120 (≈ 40 pe
 - **End-to-end manual verification.** Three single-colour PPMs (red / green / blue, 16×16) encoded as `jxl encode -i f0.ppm -i f1.ppm -i f2.ppm -o anim.jxl` produces a 169 B codestream that `djxl 0.11.2` decodes as a valid animation.
 - **422 tests passing, 5 skipped, 0 failures** (the CLI change is exercised end-to-end manually; no new XCTest case — the multi-frame `encode([ImageFrame])` plumbing is already covered by `testJXLEncoder_MultiFrameDispatch` and the animation round-trip test).
 
+### v0.11.0be — `EncodingOptions.defaultFrameDuration` + CLI `--frame-duration` plumbed end-to-end
+
+The `--frame-duration` option from v0.11.0bd was accepted by the CLI but never threaded through — every animation got the default 10 tps units (100 ms / frame) regardless. v0.11.0be wires it.
+
+- **`EncodingOptions.defaultFrameDuration: UInt32 = 10`** — applied uniformly to every frame in a multi-frame encode. Default 10 tps units = 100 ms per frame at the libjxl-default 100-tps timestamp resolution. Ignored for single-frame encodes.
+- **`JXLEncoder.encode([ImageFrame])`** — passes `[UInt32](repeating: options.defaultFrameDuration, count: frames.count)` to `VarDCTBitstreamWriter.encodeAnimation`'s `frameDurations` parameter.
+- **`Encode` subcommand** — sets `defaultFrameDuration: frameDuration` from the `--frame-duration` flag.
+- **Verified.** `testJXLEncoder_FrameDurationOption` encodes the same 2-frame fixture twice with different `defaultFrameDuration` values (10 vs 50) and confirms the codestreams differ (proves the value flows through to the per-frame `animationFrame.duration` field). End-to-end manual: `jxl encode -i f0 -i f1 -o a.jxl --frame-duration 50` produces a byte-distinct codestream from the default-10 version.
+- **423 tests passing, 5 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)

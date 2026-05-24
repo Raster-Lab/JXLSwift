@@ -10272,6 +10272,32 @@ extension FoundationTests {
             "djxl rejected the animation codestream; stderr: \(err)")
     }
 
+    /// JXLEncoder API surface: `EncodingOptions.defaultFrameDuration`
+    /// flows through `encode([ImageFrame])` to the per-frame
+    /// `animationFrame.duration` field. Different values must
+    /// produce distinct codestreams.
+    func testJXLEncoder_FrameDurationOption() throws {
+        let dim = 16
+        var f = ImageFrame(width: dim, height: dim, channels: 3)
+        for i in 0..<(dim * dim) {
+            f.data[i * 3 + 0] = 200; f.data[i * 3 + 1] = 60
+            f.data[i * 3 + 2] = 60
+        }
+        let opts10 = EncodingOptions(
+            mode: .distance(1.0), containerWrap: false,
+            defaultFrameDuration: 10)
+        let opts50 = EncodingOptions(
+            mode: .distance(1.0), containerWrap: false,
+            defaultFrameDuration: 50)
+        let enc10 = try JXLEncoder(options: opts10).encode([f, f])
+        let enc50 = try JXLEncoder(options: opts50).encode([f, f])
+        XCTAssertNotEqual(enc10.data, enc50.data,
+            "different defaultFrameDuration must produce distinct "
+            + "codestreams")
+        XCTAssertEqual(opts10.defaultFrameDuration, 10)
+        XCTAssertEqual(opts50.defaultFrameDuration, 50)
+    }
+
     /// JXLEncoder API surface: the new `gaborish` and `adaptiveQF`
     /// EncodingOptions knobs are honoured all the way through to
     /// the VarDCT encoder. Toggling each must produce a different

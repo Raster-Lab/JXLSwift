@@ -259,7 +259,10 @@ public struct JXLEncoder: Sendable {
             cs = try VarDCTBitstreamWriter.encodeAnimation(
                 frames: frames, distance: options.distance,
                 gaborish: options.gaborish,
-                adaptiveQF: options.adaptiveQF)
+                adaptiveQF: options.adaptiveQF,
+                frameDurations: [UInt32](
+                    repeating: options.defaultFrameDuration,
+                    count: frames.count))
         } catch let e as VarDCTBitstreamWriter.WriterError {
             throw EncoderError.unsupportedFrame(
                 "encodeAnimation: \(e)")

@@ -88,7 +88,8 @@ struct Encode: ParsableCommand {
             rawValue: max(1, min(effort, 9))) ?? .squirrel
         let encoder = JXLEncoder(options: EncodingOptions(
             mode: mode, effort: effortLevel,
-            gaborish: gaborish, adaptiveQF: adaptiveQF))
+            gaborish: gaborish, adaptiveQF: adaptiveQF,
+            defaultFrameDuration: frameDuration))
         let encoded: EncodedImage
         do {
             if frames.count == 1 {

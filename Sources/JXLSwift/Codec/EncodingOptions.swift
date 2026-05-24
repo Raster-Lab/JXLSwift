@@ -71,6 +71,12 @@ public struct EncodingOptions: Sendable {
     /// one (= preserve detail). Defaults to `true` (libjxl-like
     /// adaptive quant behaviour). Ignored for lossless encodes.
     public var adaptiveQF: Bool
+    /// Multi-frame only: per-frame duration in libjxl-default
+    /// 100-tps timestamp units (= 10 ms each). Default 10 → 100 ms
+    /// per frame. Applied uniformly to every frame in an animation
+    /// encode (`JXLEncoder.encode([ImageFrame])`); ignored for
+    /// single-frame encodes.
+    public var defaultFrameDuration: UInt32
 
     public init(
         mode: CompressionMode = .lossy(quality: 90),
@@ -81,7 +87,8 @@ public struct EncodingOptions: Sendable {
         m0Effort: M0Effort = .balanced,
         containerWrap: Bool = true,
         gaborish: Bool = true,
-        adaptiveQF: Bool = true
+        adaptiveQF: Bool = true,
+        defaultFrameDuration: UInt32 = 10
     ) {
         self.mode = mode
         self.effort = effort
@@ -92,6 +99,7 @@ public struct EncodingOptions: Sendable {
         self.containerWrap = containerWrap
         self.gaborish = gaborish
         self.adaptiveQF = adaptiveQF
+        self.defaultFrameDuration = defaultFrameDuration
     }
 
     /// The libjxl distance value that this configuration maps to. Used
