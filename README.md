@@ -237,7 +237,7 @@ let lossless = try JXLEncoder(
 
 `encode(_:)` routes 8-bit RGB/RGBA through the VarDCT lossy codec for lossy modes (falling back to lossless Modular for inputs VarDCT cannot take); `.lossless` always uses Modular. Every codestream JXLSwift emits is decodable by `djxl 0.11.2`.
 
-**Not yet implemented:** VarDCT AC-strategy selection (variable DCT block sizes), multi-frame / animation encoding, and JPEG ↔ JXL transcoding — these throw `.notImplemented` or fall back where a fallback exists.
+**Not yet implemented:** JPEG ↔ JXL transcoding (Phase J), and the four niche AC strategies the decoder doesn't yet reconstruct (DCT128 / DCT256 / DCT32×8 / DCT8×32) — these throw `.notImplemented` or fall back where a fallback exists. AC-strategy selection (variable DCT block sizes) and multi-frame / animation encoding are **shipped** (see the per-feature lists above).
 
 ## Why pure Swift
 
