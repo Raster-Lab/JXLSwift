@@ -115,6 +115,26 @@ The `jxl encode` CLI also exposes the VarDCT encoder's quality knobs:
 .build/release/jxl encode -i in.ppm -o out.jxl --no-adaptive-qf
 ```
 
+Multi-frame animations and helper subcommands:
+
+```bash
+# Encode a 3-frame animation (multi-value -i, or repeated -i, or a shell glob).
+.build/release/jxl encode -i frame_*.ppm -o anim.jxl --frame-duration 10,20,30
+
+# Decode every frame to a per-frame template.
+.build/release/jxl decode -i anim.jxl -o out-%03d.ppm --all-frames
+
+# Validate an arbitrary .jxl (walks every frame of an animation).
+.build/release/jxl validate anim.jxl --json
+
+# Compare two encodes — accepts PNM or JXL on either side.
+.build/release/jxl compare original.ppm encoded.jxl --frame 1
+.build/release/jxl compare ref.jxl test.jxl --all-frames
+
+# Batch-encode every PNM in a directory tree.
+.build/release/jxl batch encode -i pnm/ -o jxl/ --recursive --continue-on-error
+```
+
 Requires Swift 6.2+ on macOS 13+. **No external dependencies.** (`swift-argument-parser` for the CLI is the only Swift-package dep.)
 
 `jxl-tool info` now reports the frame structure of any cjxl-emitted file — encoding mode, TOC entries, MA-tree leaf count, post-tree pixel codec (prefix codes vs rANS):
