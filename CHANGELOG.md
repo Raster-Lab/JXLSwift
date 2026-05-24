@@ -619,6 +619,14 @@ Animations with **variable-pace timing** — slow intro frame, fast middle, slow
 - **Verified.** `testJXLEncoder_LosslessMultiFrameRoundTrip` encodes a 2-frame red/green RGB8 animation lossless, verifies `decodeAll` returns 2 frames with **byte-exact** first-pixel RGB (Modular is lossless — no `mean < 2` slack), and confirms `djxl 0.11.2` decodes the codestream. `testJXLEncoder_MultiFrameDispatch` is updated — its previous "lossless multi-frame must throw notImplemented" branch flips to "lossless multi-frame must round-trip".
 - **428 tests passing, 5 skipped, 0 failures.**
 
+### v0.11.0bk — Pin-down: `decodeAll` on lossless animations + full-frame byte equality
+
+A pin-down for the v0.11.0bj feature exercised through a different angle. `JXLDecoder.decodeAll(_:)` is transform-agnostic (it's pure byte surgery; the per-frame `decode(_:)` call handles VarDCT vs Modular dispatch on its own), but pinning it down for the lossless path keeps both code paths covered after future changes.
+
+- **`testJXLDecoder_DecodeAllOnLosslessAnimation`** — encodes a 3-frame lossless animation, decodes via `decodeAll`, and asserts `frame.data == source.data` (full-array byte equality, not just first-pixel — Modular has no loss budget).
+- **End-to-end CLI manual verification.** Encode 3 different RGB PPMs as a lossless animation via `jxl encode -l -i f0 -i f1 -i f2 -o anim-ll.jxl`; decode via `jxl decode --all-frames -i anim-ll.jxl -o "ll-dec-%d.ppm"`; `cmp` every source-vs-decoded PPM — byte-exact. The full library + CLI + decoder loop for lossless multi-frame works.
+- **429 tests passing, 5 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)

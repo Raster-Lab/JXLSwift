@@ -10318,6 +10318,33 @@ extension FoundationTests {
             "djxl rejected the RGBA animation; stderr: \(err)")
     }
 
+    /// `decodeAll(_:)` on a lossless Modular multi-frame
+    /// animation — confirms `decodeAll` works for both VarDCT and
+    /// Modular per-frame codestreams (the implementation is
+    /// transform-agnostic, but pin it down so we catch any
+    /// regression that breaks the synth-codestream approach for
+    /// Modular).
+    func testJXLDecoder_DecodeAllOnLosslessAnimation() throws {
+        let dim = 16
+        var f = ImageFrame(width: dim, height: dim, channels: 3)
+        for i in 0..<(dim * dim) {
+            f.data[i * 3 + 0] = UInt8((i * 3) & 0xff)
+            f.data[i * 3 + 1] = UInt8((i * 5) & 0xff)
+            f.data[i * 3 + 2] = UInt8((i * 7) & 0xff)
+        }
+        // Encode as 3-frame lossless animation.
+        let enc = try JXLEncoder(options: EncodingOptions(
+            mode: .lossless)).encode([f, f, f])
+        let decoded = try JXLDecoder().decodeAll(enc.data)
+        XCTAssertEqual(decoded.count, 3)
+        // Modular is lossless — every byte of every frame must
+        // match exactly.
+        for (i, frame) in decoded.enumerated() {
+            XCTAssertEqual(frame.data, f.data,
+                "frame \(i) lossless data mismatch")
+        }
+    }
+
     /// Multi-frame `decodeAll(_:)` correctly handles single-frame
     /// codestreams — returns `[singleFrame]`, not a stub or error.
     func testJXLDecoder_DecodeAllOnSingleFrame() throws {
