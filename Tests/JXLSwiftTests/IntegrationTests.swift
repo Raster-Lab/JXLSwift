@@ -10202,6 +10202,88 @@ extension FoundationTests {
         }
     }
 
+    /// Multi-frame animation with an alpha extra channel (RGBA
+    /// frames). Verifies (a) the encoder accepts RGBA frames in an
+    /// animation, (b) `decodeAll` returns the right number of
+    /// frames with the right channel count, and (c) `djxl 0.11.2`
+    /// decodes it as a valid animated JXL with alpha preserved.
+    func testVarDCTBitstreamWriter_RGBAAnimation() throws {
+        let dim = 16
+        func mkRGBA(r: UInt8, g: UInt8, b: UInt8, a: UInt8)
+            -> ImageFrame {
+            var f = ImageFrame(
+                width: dim, height: dim, channels: 4)
+            for i in 0..<(dim * dim) {
+                f.data[i * 4 + 0] = r
+                f.data[i * 4 + 1] = g
+                f.data[i * 4 + 2] = b
+                f.data[i * 4 + 3] = a
+            }
+            return f
+        }
+        let frames = [
+            mkRGBA(r: 200, g: 60, b: 60, a: 255),
+            mkRGBA(r: 60, g: 200, b: 60, a: 200),
+            mkRGBA(r: 60, g: 60, b: 200, a: 100),
+        ]
+        let cs = try VarDCTBitstreamWriter.encodeAnimation(
+            frames: frames)
+        XCTAssertGreaterThan(cs.count, 0)
+
+        let decoded = try JXLDecoder().decodeAll(cs)
+        XCTAssertEqual(decoded.count, frames.count)
+        for (i, f) in decoded.enumerated() {
+            XCTAssertEqual(f.channels, 4,
+                "frame \(i) channels \(f.channels) ≠ 4 (RGBA)")
+            // Alpha is lossless in our encoder — first pixel must
+            // match the source exactly.
+            XCTAssertEqual(f.data[3], frames[i].data[3],
+                "frame \(i) alpha \(f.data[3]) ≠ source "
+                + "\(frames[i].data[3])")
+        }
+
+        // djxl decodes the animation.
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("djxl not available")
+        }
+        let tmp = NSTemporaryDirectory()
+        let jxlPath = tmp + "vdt_rgba_anim.jxl"
+        let outPath = tmp + "vdt_rgba_anim_dj.apng"
+        try cs.write(to: URL(fileURLWithPath: jxlPath))
+        let p = Process()
+        p.launchPath = djxl
+        p.arguments = [jxlPath, outPath]
+        let errPipe = Pipe()
+        p.standardOutput = Pipe(); p.standardError = errPipe
+        try p.run(); p.waitUntilExit()
+        let err = String(
+            data: errPipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8) ?? ""
+        XCTAssertEqual(p.terminationStatus, 0,
+            "djxl rejected the RGBA animation; stderr: \(err)")
+    }
+
+    /// Multi-frame `decodeAll(_:)` correctly handles single-frame
+    /// codestreams — returns `[singleFrame]`, not a stub or error.
+    func testJXLDecoder_DecodeAllOnSingleFrame() throws {
+        let dim = 16
+        var f = ImageFrame(width: dim, height: dim, channels: 3)
+        for i in 0..<(dim * dim) {
+            f.data[i * 3 + 0] = 100; f.data[i * 3 + 1] = 150
+            f.data[i * 3 + 2] = 200
+        }
+        // Single-frame codestream — encodeAnimation expects ≥ 1,
+        // but to test decodeAll on a real single-frame codestream
+        // we use the single-frame encode path.
+        let cs = try VarDCTBitstreamWriter.encode(frame: f)
+        let decoded = try JXLDecoder().decodeAll(cs)
+        XCTAssertEqual(decoded.count, 1)
+        XCTAssertEqual(decoded[0].width, dim)
+        XCTAssertEqual(decoded[0].height, dim)
+        XCTAssertEqual(decoded[0].channels, 3)
+    }
+
     /// `JXLDecoder.countFrames(_:)` reports 1 for single-frame
     /// codestreams and the actual count for multi-frame animations.
     func testJXLDecoder_CountFrames() throws {

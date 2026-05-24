@@ -588,6 +588,14 @@ The `--frame-duration` option from v0.11.0bd was accepted by the CLI but never t
 - **Verified.** `testJXLDecoder_CountFrames` exercises 1- / 3- / 7-frame fixtures. End-to-end manual: `jxl info anim.jxl` shows `Animation: 3 frame(s), 100/1 tps, loops=0`; `jxl info single.jxl` shows no `Animation:` line (correct — metadata declares no animation for single-frame).
 - **424 tests passing, 5 skipped, 0 failures.**
 
+### v0.11.0bh — Multi-frame edge-case tests: RGBA animation + `decodeAll` on single-frame
+
+Two pin-down tests exercising multi-frame paths that weren't covered by the basic 3-frame RGB round-trip:
+
+- **`testVarDCTBitstreamWriter_RGBAAnimation`** — encodes a 3-frame RGBA animation (red 255 / green 200 / blue 100 alpha), confirms `decodeAll` returns three 4-channel frames with byte-exact first-pixel alpha (the encoder's alpha path is lossless), and that `djxl 0.11.2` accepts the codestream. Proves the multi-frame writer correctly carries `hasAlpha = true` through to every per-frame TOC + sections.
+- **`testJXLDecoder_DecodeAllOnSingleFrame`** — feeds a normal single-frame VarDCT codestream to `decodeAll(_:)`; confirms it returns `[singleFrame]` (count 1, correct dimensions, correct channel count). The byte-surgery `decodeAll` correctly handles the `isLast = true` case on the very first frame iteration.
+- **426 tests passing, 5 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)
