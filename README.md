@@ -13,7 +13,7 @@ See [ROADMAP.md](ROADMAP.md) for the full project summary and design constraints
 JXLSwift decodes and encodes JPEG XL today, in pure Swift, with no libjxl at runtime:
 
 - **VarDCT decoder — byte-exact against `djxl 0.11.2`** across every real image tested (any size, all AC strategies, RGB and RGBA). Multi-AC-group, multi-DC-group, adaptive DC smoothing, EPF restoration, AFV.
-- **VarDCT lossy encoder** — `VarDCTBitstreamWriter` emits genuine spec-compliant JPEG XL that `djxl` decodes: 8-bit RGB / RGBA up to 8192 px, a `distance` quality knob, single- and multi-section codestreams, multi-DC-group, every decoder-supported AC strategy (DCT8/16/32/64 + asymmetric ord-4/6/8 + AFV0–3 + Hornuss + DCT2×2 + DCT4×4 + DCT4×8 + DCT8×4) via a hierarchical trial-encode, libjxl 5×5 inverse-Gaborish pre-pass, per-block adaptive QF, and adaptive 1/2/3-cluster AC histograms.
+- **VarDCT lossy encoder** — `VarDCTBitstreamWriter` emits genuine spec-compliant JPEG XL that `djxl` decodes: 8-bit RGB / RGBA up to 8192 px, a `distance` quality knob, single- and multi-section codestreams, multi-DC-group, every decoder-supported AC strategy (DCT8/16/32/64 + asymmetric ord-4/6/8 + AFV0–3 + Hornuss + DCT2×2 + DCT4×4 + DCT4×8 + DCT8×4) via a hierarchical trial-encode, libjxl 5×5 inverse-Gaborish pre-pass, distance-aware per-block adaptive QF, adaptive 1/2/3-cluster AC histograms, and **multi-frame animation** (`encodeAnimation([ImageFrame])`).
 - **Modular lossless decoder + encoder** — 8/16-bit grayscale / RGB / RGBA, byte-exact round-trips through `cjxl`/`djxl`.
 - **`JXLEncoder` / `JXLDecoder` public API** — `encode(_:)` picks VarDCT (lossy modes) or Modular (`.lossless`); `decode(_:)` returns pixels. Both are real, not stubs.
 
