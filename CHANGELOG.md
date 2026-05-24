@@ -695,6 +695,14 @@ The `benchmark` subcommand previously hardcoded the M0 placeholder codec — so 
 - **End-to-end manual verification.** Multi-value, repeated, and glob forms all produce the same 169 B 3-frame animation; the single-frame form unchanged.
 - **432 tests passing, 5 skipped, 0 failures.**
 
+### v0.11.0bu — CLI polish: validate walks animations, m0 stubs hidden from help
+
+Two small fit-and-finish bites that clean up the CLI surface as the family-parity work approaches completion.
+
+- **`jxl validate` walks every frame of an animation.** Previously the functional-validation step called `decoder.decode(_:)`, which only returns the first frame. For an animation the validator would say `frameCount: 1` even if the file held a dozen frames, and a corrupt later frame would slip through the check. v0.11.0bu switches to `decoder.decodeAll(_:)` so every frame is exercised and the reported `frameCount` matches the actual frame count. Verified on a 3-frame animation: now reports `Frames decoded: 3` (was `1`); single-frame and broken-input paths unchanged.
+- **`encode-m0` / `decode-m0` hidden from `jxl --help`.** Both subcommands are project-internal scaffolding for the `MinimalLosslessCodec` placeholder (not a real JXL format) and exposing them in the top-level help made the CLI look like it had two encoders. v0.11.0bu sets `shouldDisplay: false` on both `CommandConfiguration` blocks; the subcommands are still callable (`jxl encode-m0 …` works) but don't clutter the discovery surface that real users see.
+- **438 tests passing, 6 skipped, 0 failures.**
+
 ### v0.11.0bt — CLI `jxl compare` accepts `.jxl` inputs directly
 
 Previously `jxl compare` required pre-decoded PNMs on both sides: to compare an encode against the original, users had to `jxl decode` first, then `jxl compare`. v0.11.0bt detects JXL inputs by magic bytes (`FF 0A` naked codestream, or the 12-byte `JXL ` ISOBMFF signature box per ISO/IEC 18181-2 §B.1) and routes them through `JXLDecoder.decode(_:)` automatically. The `.jxl` / `.jxc` extension is a fallback hint for truncated/borderline cases.

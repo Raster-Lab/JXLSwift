@@ -247,15 +247,27 @@ struct Validate: ParsableCommand {
             report.structural = .fail(reason: "\(error)")
         }
 
-        // 2. Functional validation via decode() (unless --no-decode).
+        // 2. Functional validation via decodeAll() (unless
+        // --no-decode). decodeAll handles both single-frame and
+        // animation inputs — for an animation it returns every
+        // frame, so an animation passes only if EVERY frame decodes
+        // cleanly. For single-frame inputs the result is a 1-element
+        // array, equivalent to the old behaviour.
         if !noDecode, report.structural.isPass {
             do {
-                let frame = try decoder.decode(data)
+                let frames = try decoder.decodeAll(data)
+                guard let first = frames.first else {
+                    report.functional = .fail(
+                        reason: "decodeAll returned 0 frames")
+                    throw JXLExitCode.generalError
+                }
                 report.functional = .passFunctional(
-                    frameCount: 1,
-                    firstFrameWidth: frame.width,
-                    firstFrameHeight: frame.height,
-                    firstFrameChannels: frame.channels)
+                    frameCount: frames.count,
+                    firstFrameWidth: first.width,
+                    firstFrameHeight: first.height,
+                    firstFrameChannels: first.channels)
+            } catch JXLExitCode.generalError {
+                // Re-raise without overwriting the report message.
             } catch {
                 report.functional = .fail(reason: "\(error)")
             }

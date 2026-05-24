@@ -19,7 +19,8 @@ import JXLSwift
 struct EncodeM0: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "encode-m0",
-        abstract: "Encode a PNM image to the project-internal M0 placeholder format (NOT a real JXL file)."
+        abstract: "Encode a PNM image to the project-internal M0 placeholder format (NOT a real JXL file).",
+        shouldDisplay: false
     )
 
     @Option(name: .shortAndLong, help: "Input image path (PGM or PPM)")

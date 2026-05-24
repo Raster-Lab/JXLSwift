@@ -9,7 +9,8 @@ import JXLSwift
 struct DecodeM0: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "decode-m0",
-        abstract: "Decode a project-internal M0 placeholder file back to PNM."
+        abstract: "Decode a project-internal M0 placeholder file back to PNM.",
+        shouldDisplay: false
     )
 
     @Option(name: .shortAndLong, help: "Input .m0 path")
