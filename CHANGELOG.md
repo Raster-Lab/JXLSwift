@@ -514,6 +514,20 @@ The `bestSmallCell` per-cell trial runs 10 forward transforms (DCT8 + DCT4×4 + 
 - **Quality impact** (via `EncodeQualityMatrix`): smooth fixtures unchanged or marginally improved (smooth-gradient d=4.0: mean error **3.44 → 2.99**, –13 %); textured fixtures (checkerboard, colour-mosaic) byte-identical because they never hit the short-circuit threshold.
 - **421 tests passing, 5 skipped (incl. new opt-in perf diagnostic), 0 failures.**
 
+### v0.11.0az — Encoder performance: AFV skip on moderate-detail cells
+
+The four AFV variants are by far the most expensive single-cell strategies — each AFV forward is a 16×16 orthonormal matrix multiplication. For cells in v0.11.0ay's "not very smooth" path (DCT8 cost > 54), AFV was still running unconditionally. AFV's sweet spot is content with detail tightly concentrated in one 4×4 corner of the 8×8 cell — a signature incompatible with the broadly-spread AC suggested by a moderate-cost DCT8.
+
+v0.11.0az adds a second short-circuit tier: when DCT8 cost is ≤ 120 (≈ 40 per channel, "mildly textured"), skip the 4 AFV trials. This saves 4 × 256-mul matrix multiplications × 3 channels per cell = ~3K muls. AFV remains in the trial for cells where DCT8 already hints at concentrated high-frequency detail.
+
+- **`VarDCTEncoder.bestSmallCell`** — `let tryAFV = cost8 > 120`; AFV cell computations and cost summation are gated on this flag.
+- **Quality impact** (via `EncodeQualityMatrix`):
+  - **smooth-with-edge d=1.0:** mean error **0.715 → 0.588** (–18 %, this is the *quality* win — AFV was sometimes wrongly selected as cheapest cost even though DCT8 reconstructed the edge cell better).
+  - **smooth-with-edge d=0.5:** unchanged (already at 0.229).
+  - **smooth-gradient, checkerboard, colour-mosaic:** all unchanged. Smooth fixtures don't hit AFV anyway (short-circuit kicks in at cost8 ≤ 54); textured fixtures stay above the cost8 > 120 threshold so AFV still runs.
+- **Perf impact** (`JXL_PRINT_ENC_PERF` 256×256): noisy content unchanged (every cell has cost8 > 120 so AFV still runs); smooth content unchanged (already short-circuited earlier). The win is concentrated on moderate-detail content not covered by either perf benchmark — e.g. real photos with mostly-smooth regions punctuated by edges.
+- **421 tests passing, 5 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)

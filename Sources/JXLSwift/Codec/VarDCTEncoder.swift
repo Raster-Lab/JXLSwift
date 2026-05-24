@@ -888,7 +888,19 @@ public enum VarDCTEncoder {
             let c84 = dct8x4Cell(bx, by)
             let c22 = dct2x2Cell(bx, by)
             let cH = hornussCell(bx, by)
-            let cAFV = (0..<4).map { afvCell(bx, by, kind: $0) }
+            // Skip the 4 AFV variants when DCT8 cost is moderate
+            // (≤ 120 ≈ 40 per channel, "mildly textured"). AFV's
+            // sweet spot is content with detail tightly concentrated
+            // in one 4×4 corner — that signature is incompatible
+            // with a moderate-cost DCT8 (which suggests broadly-
+            // spread AC). Skipping saves 4 × 256-mul matrix
+            // multiplies × 3 channels per cell = ~3K muls. AFV
+            // remains in the trial for cells where DCT8 already
+            // hints at concentrated high-frequency detail.
+            let tryAFV = cost8 > 120
+            let cAFV: [(dc: [Int32], ac: [[Int32]])] = tryAFV
+                ? (0..<4).map { afvCell(bx, by, kind: $0) }
+                : []
             var cost44 = 0, cost48 = 0
             var cost84 = 0, cost22 = 0, costH = 0
             var costAFV = [Int](repeating: 0, count: 4)
@@ -898,18 +910,25 @@ public enum VarDCTEncoder {
                 cost84 += tokenCost(c84.ac[c], order: order8)
                 cost22 += tokenCost(c22.ac[c], order: order8)
                 costH += tokenCost(cH.ac[c], order: order8)
-                for k in 0..<4 {
-                    costAFV[k] += tokenCost(cAFV[k].ac[c], order: order8)
+                if tryAFV {
+                    for k in 0..<4 {
+                        costAFV[k] += tokenCost(
+                            cAFV[k].ac[c], order: order8)
+                    }
                 }
             }
             var minCost = min(
                 min(min(min(cost8, cost44), min(cost48, cost84)),
                     cost22),
                 costH)
-            for k in 0..<4 { minCost = min(minCost, costAFV[k]) }
-            for k in 0..<4 where minCost == costAFV[k] {
-                return (afvRawByKind[k],
-                        cAFV[k].dc, cAFV[k].ac, costAFV[k])
+            if tryAFV {
+                for k in 0..<4 {
+                    minCost = min(minCost, costAFV[k])
+                }
+                for k in 0..<4 where minCost == costAFV[k] {
+                    return (afvRawByKind[k],
+                            cAFV[k].dc, cAFV[k].ac, costAFV[k])
+                }
             }
             if minCost == costH {
                 return (hornussRaw, cH.dc, cH.ac, costH)
