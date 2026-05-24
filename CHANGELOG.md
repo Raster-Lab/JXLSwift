@@ -695,6 +695,15 @@ The `benchmark` subcommand previously hardcoded the M0 placeholder codec — so 
 - **End-to-end manual verification.** Multi-value, repeated, and glob forms all produce the same 169 B 3-frame animation; the single-frame form unchanged.
 - **432 tests passing, 5 skipped, 0 failures.**
 
+### v0.11.0bt — CLI `jxl compare` accepts `.jxl` inputs directly
+
+Previously `jxl compare` required pre-decoded PNMs on both sides: to compare an encode against the original, users had to `jxl decode` first, then `jxl compare`. v0.11.0bt detects JXL inputs by magic bytes (`FF 0A` naked codestream, or the 12-byte `JXL ` ISOBMFF signature box per ISO/IEC 18181-2 §B.1) and routes them through `JXLDecoder.decode(_:)` automatically. The `.jxl` / `.jxc` extension is a fallback hint for truncated/borderline cases.
+
+- **`Sources/JXLTool/Stubs.swift`** — `loadComparableImage(path:)` helper replaces the inline `PNM.read` call. Three working combinations: PNM↔PNM (backward-compatible), PNM↔JXL (the common encode-then-eval workflow), JXL↔JXL (compare two encodes side-by-side).
+- **End-to-end smoke** on 16×16 RGB fixture: PNM↔JXL-lossless reports `Bit-exact: YES` (PSNR Inf, max error 0); PNM↔JXL-lossy at q=75 reports 41.7 dB PSNR / max error 9 / MAE 1.54 — consistent with light visual loss. PNM↔PNM path unchanged.
+- **Help text + arg help** updated to reflect that either input may be PNM or JXL. The `Compare` doc-comment lists all three usage patterns explicitly.
+- **438 tests passing, 6 skipped, 0 failures.**
+
 ### v0.11.0bs — CLI `jxl batch` (encode + decode whole directories)
 
 Adds `jxl batch encode` / `jxl batch decode` — last-missing core CLI subcommand from the J2KSwift parity list. `j2k batch` has been on the parity-divergence audit since the FAMILY-API-PARITY doc was written; v0.11.0bs closes the gap. Mirrors `j2k batch`'s shape: `-i <dir> -o <dir>`, `--recursive` traversal that preserves subdirectory structure into the output tree, `--filter <glob>` to narrow file selection, `--continue-on-error` so one bad file doesn't abort a large run, and `--json` for machine-readable summaries.

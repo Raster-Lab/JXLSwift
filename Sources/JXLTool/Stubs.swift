@@ -26,17 +26,19 @@ struct Version: ParsableCommand {
 /// Mirrors `j2k compare` — same metrics (PSNR, MSE, MAE, max
 /// error, bit-exact flag) and same output shape (text or JSON).
 ///
-/// Inputs are PNM / PGM / PPM / PAM files. JXL-decoded bitstreams
-/// are accepted via the existing `decode` subcommand pipeline:
-/// pre-decode the JXL to a PNM and feed both PNMs to `compare`.
-/// Direct JXL inputs would require routing through the
-/// JXLDecoder — left as a follow-on once the decoder is robust
-/// enough to ship as the canonical reader.
+/// Inputs may be either PNM (PGM / PPM / PAM) or JXL — the file
+/// type is auto-detected from the leading magic bytes (`P5`/`P6`/
+/// `P7` for PNM; `0xFF 0x0A` naked codestream or the JXL ISOBMFF
+/// `JXL ` ftyp brand for container form), with `.jxl` extension as
+/// a fallback hint. JXL inputs are run through `JXLDecoder.decode`
+/// before metric computation, so `jxl compare ref.ppm out.jxl`
+/// works without a manual decode step.
 ///
 /// Usage:
 ///
-///     jxl compare reference.ppm test.ppm
-///     jxl compare reference.ppm test.ppm --json
+///     jxl compare reference.ppm test.ppm           # PNM ↔ PNM
+///     jxl compare reference.ppm test.jxl           # PNM ↔ JXL
+///     jxl compare reference.jxl test.jxl --json    # JXL ↔ JXL
 ///
 /// PSNR formula (per channel):
 ///
@@ -45,13 +47,13 @@ struct Version: ParsableCommand {
 ///     where maxVal = (1 << bitsPerSample) - 1.
 struct Compare: ParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "Compare two images (PSNR / MSE / MAE / max error)."
+        abstract: "Compare two images — PSNR / MSE / MAE / max error. Accepts PNM or JXL inputs."
     )
 
-    @Argument(help: "Reference (original) image path — PGM / PPM / PAM.")
+    @Argument(help: "Reference (original) image path — PGM / PPM / PAM / JXL.")
     var reference: String
 
-    @Argument(help: "Test (reconstructed) image path — PGM / PPM / PAM.")
+    @Argument(help: "Test (reconstructed) image path — PGM / PPM / PAM / JXL.")
     var test: String
 
     @Flag(help: "Emit JSON instead of human-readable text.")
@@ -61,10 +63,8 @@ struct Compare: ParsableCommand {
     var quiet: Bool = false
 
     func run() throws {
-        let refData = try Data(contentsOf: URL(fileURLWithPath: reference))
-        let testData = try Data(contentsOf: URL(fileURLWithPath: test))
-        let refImg = try PNM.read(refData)
-        let testImg = try PNM.read(testData)
+        let refImg = try loadComparableImage(path: reference)
+        let testImg = try loadComparableImage(path: test)
 
         guard refImg.width == testImg.width,
               refImg.height == testImg.height,
@@ -88,6 +88,61 @@ struct Compare: ParsableCommand {
             metrics.printText(reference: reference, test: test, quiet: quiet)
         }
     }
+}
+
+/// Decode `path` to an `ImageFrame`. Detects file type from the
+/// leading magic bytes:
+///   - `P5` / `P6` / `P7` → PNM (PGM / PPM / PAM)
+///   - `0xFF 0x0A` → naked JXL codestream
+///   - `0x00 0x00 0x00 0x0C 'J' 'X' 'L' ' '` → JXL ISOBMFF box
+/// Falls back to the file extension if the magic check is ambiguous.
+private func loadComparableImage(path: String) throws -> ImageFrame {
+    let url = URL(fileURLWithPath: path)
+    let data: Data
+    do { data = try Data(contentsOf: url) }
+    catch {
+        print("compare: cannot read \(path): \(error)",
+              to: &standardError)
+        throw JXLExitCode.generalError
+    }
+    if isJXL(data: data, path: path) {
+        do { return try JXLDecoder().decode(data) }
+        catch let e as DecoderError {
+            print("compare: JXL decode failed for \(path): "
+                + "\(e.localizedDescription)", to: &standardError)
+            throw JXLExitCode.generalError
+        }
+    }
+    do { return try PNM.read(data) }
+    catch let e as PNMError {
+        print("compare: PNM parse failed for \(path): \(e)",
+              to: &standardError)
+        throw JXLExitCode.invalidArguments
+    }
+}
+
+private func isJXL(data: Data, path: String) -> Bool {
+    // Naked codestream signature: 0xFF 0x0A (per ISO/IEC 18181-1
+    // §F.1, the JPEG XL codestream marker).
+    if data.count >= 2 && data[0] == 0xFF && data[1] == 0x0A {
+        return true
+    }
+    // ISOBMFF container: starts with a 12-byte JXL signature box
+    // 0x00 0x00 0x00 0x0C 'J' 'X' 'L' ' ' 0x0D 0x0A 0x87 0x0A
+    // (ISO/IEC 18181-2 §B.1 — "JXL " box plus the standard
+    // ISOBMFF preamble).
+    if data.count >= 8 {
+        let head = Array(data.prefix(8))
+        if head == [0x00, 0x00, 0x00, 0x0C,
+                    0x4A, 0x58, 0x4C, 0x20] {
+            return true
+        }
+    }
+    // Extension fallback for borderline cases (truncated files,
+    // etc.). Lower-cased so `Foo.JXL` matches.
+    let ext = URL(fileURLWithPath: path)
+        .pathExtension.lowercased()
+    return ext == "jxl" || ext == "jxc"
 }
 
 /// Generate shell completions for `jxl` / `jxl-tool`. Mirrors
