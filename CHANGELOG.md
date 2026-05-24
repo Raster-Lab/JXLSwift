@@ -528,6 +528,21 @@ v0.11.0az adds a second short-circuit tier: when DCT8 cost is ≤ 120 (≈ 40 pe
 - **Perf impact** (`JXL_PRINT_ENC_PERF` 256×256): noisy content unchanged (every cell has cost8 > 120 so AFV still runs); smooth content unchanged (already short-circuited earlier). The win is concentrated on moderate-detail content not covered by either perf benchmark — e.g. real photos with mostly-smooth regions punctuated by edges.
 - **421 tests passing, 5 skipped, 0 failures.**
 
+### v0.11.0ba — Multi-frame VarDCT animation encoder
+
+`JXLEncoder.encode([ImageFrame])` previously threw `notImplemented` for `≥ 2` frames. v0.11.0ba implements true multi-frame VarDCT encoding: each frame goes through the existing encoder pipeline; a shared image-level prelude (signature + SizeHeader + ImageMetadata with `animation` declared + CustomTransformData) prefixes all per-frame chunks; per-frame `FrameHeader`s carry the `animationFrame.duration` and flip `isLast` only on the final frame.
+
+- **`VarDCTBitstreamWriter` refactor.** The 470-line single-`encode()` body is split:
+  - **`buildFrameSections(frame:distance:gaborish:adaptiveQF:)`** runs the encoder pipeline and returns an `EncodedFrameSections` struct (sections + xsize + ysize + hasAlpha + gaborish).
+  - **`writeCodestreamPrelude(xsize:ysize:hasAlpha:animation:)`** writes the shared image-level prelude (signature + SizeHeader + ImageMetadata + CustomTransformData). For multi-frame, `animation` is a libjxl-default `AnimationHeader(tpsNumerator: 100, tpsDenominator: 1, numLoops: 0, haveTimecodes: false)`; for single-frame it's `nil`.
+  - **`writeFrameChunk(hasAlpha:gaborish:isLast:animationFrame:haveAnimation:sections:)`** writes one frame's `FrameHeader + TOC + sections` payload. Used for both single-frame and multi-frame writes.
+  - **`writeOuterCodestream`** is now a thin wrapper over prelude + one chunk.
+  - **`encodeAnimation(frames:distance:gaborish:adaptiveQF:frameDurations:)`** is the new public multi-frame entry point. Empty arrays / mismatched-dimension frames throw `WriterError.unsupported`. Default duration is 10 tps units (= 100 ms / frame at the default 100-tps timestamp resolution).
+- **`JXLEncoder.encode([ImageFrame])`** — the multi-frame path now dispatches to `encodeAnimation` for lossy modes. Lossless multi-frame still throws `notImplemented` (Modular animation writer isn't implemented).
+- **Verified.** `testVarDCTBitstreamWriter_EncodeAnimation` encodes a 3-frame RGB animation (red / green / blue, durations 20 / 30 / 40 tps units) and confirms `djxl 0.11.2` decodes it. `testJXLEncoder_MultiFrameDispatch` extends to cover the new lossy multi-frame path (codestream larger than single-frame) and the still-unimplemented lossless multi-frame path.
+- **Caveat: our decoder.** `JXLDecoder.decodeAll(_:)` is still a stub. End-to-end round-trip through our own decoder needs the decoder-side multi-frame loop; that's a separate scope. The encoder produces a spec-valid animation that `djxl` accepts.
+- **422 tests passing, 5 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)

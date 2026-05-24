@@ -33,6 +33,19 @@ public enum VarDCTBitstreamWriter {
                            UInt32Distribution, UInt32Distribution) =
         (.literal(0x5F), .literal(0x13), .literal(0), .bits(13))
 
+    /// Intermediate output of a single-frame encode — the TOC
+    /// sections plus the per-frame parameters the outer codestream
+    /// writer needs. Used internally to share section-building
+    /// between the single-frame `encode(_:)` and the multi-frame
+    /// `encodeAnimation(frames:)` API.
+    struct EncodedFrameSections {
+        let sections: [Data]
+        let xsize: Int
+        let ysize: Int
+        let hasAlpha: Bool
+        let gaborish: Bool
+    }
+
     /// Encode an 8-bit RGB/RGBA `ImageFrame` as a VarDCT JPEG XL
     /// file (naked codestream). Frames up to the 8192-px encoder cap
     /// are supported: ≤ 256 px as a single contiguous section, larger
@@ -42,6 +55,24 @@ public enum VarDCTBitstreamWriter {
         frame: ImageFrame, distance: Float = 1.0,
         gaborish: Bool = true, adaptiveQF: Bool = true
     ) throws -> Data {
+        let chunk = try buildFrameSections(
+            frame: frame, distance: distance,
+            gaborish: gaborish, adaptiveQF: adaptiveQF)
+        return try writeOuterCodestream(
+            xsize: chunk.xsize, ysize: chunk.ysize,
+            hasAlpha: chunk.hasAlpha, gaborish: chunk.gaborish,
+            sections: chunk.sections)
+    }
+
+    /// Run the encoder pipeline for one frame, returning the TOC
+    /// section payloads + per-frame parameters. Caller is
+    /// responsible for wrapping the result in an outer codestream
+    /// (`writeOuterCodestream` for single-frame, the multi-frame
+    /// path for animation).
+    static func buildFrameSections(
+        frame: ImageFrame, distance: Float = 1.0,
+        gaborish: Bool = true, adaptiveQF: Bool = true
+    ) throws -> EncodedFrameSections {
         let q = try VarDCTEncoder.forward(
             frame: frame, distance: distance,
             gaborish: gaborish, adaptiveQF: adaptiveQF)
@@ -507,11 +538,9 @@ public enum VarDCTBitstreamWriter {
             }
         }
 
-        // --- Outer codestream (headers + TOC + sections) ---------
-        return try writeOuterCodestream(
-            xsize: q.xsize, ysize: q.ysize,
-            hasAlpha: hasAlpha, gaborish: q.gaborish,
-            sections: sections)
+        return EncodedFrameSections(
+            sections: sections, xsize: q.xsize, ysize: q.ysize,
+            hasAlpha: hasAlpha, gaborish: q.gaborish)
     }
 
     // MARK: - Modular residual tokenisation
@@ -724,13 +753,14 @@ public enum VarDCTBitstreamWriter {
 
     // MARK: - Outer codestream
 
-    /// Signature + SizeHeader + ImageMetadata + CustomTransformData +
-    /// VarDCT FrameHeader + TOC (one entry per section) + the
-    /// concatenated section payloads. `hasAlpha` declares a single
-    /// 8-bit alpha extra channel (RGBA frames).
-    static func writeOuterCodestream(
+    /// Write the shared image-level prelude — Signature, SizeHeader,
+    /// ImageMetadata, CustomTransformData. Identical for single-
+    /// frame and multi-frame codestreams except for the metadata's
+    /// `animation` block (`nil` for single-frame, a libjxl-default
+    /// 100 tps `AnimationHeader` for multi-frame).
+    static func writeCodestreamPrelude(
         xsize: Int, ysize: Int, hasAlpha: Bool,
-        gaborish: Bool, sections: [Data]
+        animation: AnimationHeader?
     ) throws -> Data {
         var w = BitWriter()
         w.write(bits: 8, value: 0xFF)
@@ -746,7 +776,7 @@ public enum VarDCTBitstreamWriter {
             : []
         let meta = ImageMetadata(
             allDefault: false, orientation: 1,
-            intrinsicSize: nil, preview: nil, animation: nil,
+            intrinsicSize: nil, preview: nil, animation: animation,
             bitDepth: BitDepth(
                 floatingPoint: false, bitsPerSample: 8),
             modular16BitBufferSufficient: true,
@@ -758,6 +788,20 @@ public enum VarDCTBitstreamWriter {
         try meta.write(to: &w)
         w.writeBit(true)              // CustomTransformData all_default
         w.alignToByte()
+        return w.finishToData()
+    }
+
+    /// Write one frame chunk — FrameHeader + TOC + section payloads.
+    /// Used for both single-frame and per-frame multi-frame writes.
+    /// `isLast = true` flags the last (or only) frame; `isLast = false`
+    /// signals the decoder to expect another FrameHeader after this
+    /// chunk's payloads.
+    static func writeFrameChunk(
+        hasAlpha: Bool, gaborish: Bool, isLast: Bool,
+        animationFrame: AnimationFrame, haveAnimation: Bool,
+        sections: [Data]
+    ) throws -> Data {
+        var w = BitWriter()
         let fh = FrameHeader(
             allDefault: false,
             frameType: .regular, encoding: .varDCT,
@@ -771,8 +815,8 @@ public enum VarDCTBitstreamWriter {
             frameOrigin: (0, 0), frameSize: nil,
             blendingInfo: .default,
             extraChannelBlendingInfo: [],
-            animationFrame: .default,
-            isLast: true,
+            animationFrame: animationFrame,
+            isLast: isLast,
             saveAsReference: 0,
             saveBeforeColorTransform: false,
             name: "",
@@ -780,7 +824,7 @@ public enum VarDCTBitstreamWriter {
                 allDefault: false, gab: gaborish, epfIters: 0))
         try fh.write(to: &w, context: FrameHeaderContext(
             xybEncoded: true, numExtraChannels: hasAlpha ? 1 : 0,
-            haveAnimation: false, haveTimecodes: false))
+            haveAnimation: haveAnimation, haveTimecodes: false))
         var entrySizes = [UInt32]()
         var offsets: [UInt64] = [0]
         var cumulative: UInt64 = 0
@@ -795,6 +839,90 @@ public enum VarDCTBitstreamWriter {
         try toc.write(to: &w)
         var out = w.finishToData()
         for s in sections { out.append(s) }
+        return out
+    }
+
+    /// Signature + SizeHeader + ImageMetadata + CustomTransformData +
+    /// VarDCT FrameHeader + TOC (one entry per section) + the
+    /// concatenated section payloads. `hasAlpha` declares a single
+    /// 8-bit alpha extra channel (RGBA frames).
+    static func writeOuterCodestream(
+        xsize: Int, ysize: Int, hasAlpha: Bool,
+        gaborish: Bool, sections: [Data]
+    ) throws -> Data {
+        var out = try writeCodestreamPrelude(
+            xsize: xsize, ysize: ysize,
+            hasAlpha: hasAlpha, animation: nil)
+        out.append(try writeFrameChunk(
+            hasAlpha: hasAlpha, gaborish: gaborish, isLast: true,
+            animationFrame: .default, haveAnimation: false,
+            sections: sections))
+        return out
+    }
+
+    /// Encode N `ImageFrame`s as a single multi-frame VarDCT JPEG XL
+    /// codestream (animation). All frames must share the same
+    /// dimensions and alpha presence. `durations` is per-frame in
+    /// tps units (the metadata declares 100 tps, so each unit is
+    /// 10 ms by default). The decoder reads them via the frame
+    /// header's `animationFrame.duration` field.
+    public static func encodeAnimation(
+        frames: [ImageFrame], distance: Float = 1.0,
+        gaborish: Bool = true, adaptiveQF: Bool = true,
+        frameDurations: [UInt32]? = nil
+    ) throws -> Data {
+        guard !frames.isEmpty else {
+            throw WriterError.unsupported(
+                "encodeAnimation: empty frames array")
+        }
+        let durations =
+            frameDurations ?? [UInt32](
+                repeating: 10, count: frames.count)
+        guard durations.count == frames.count else {
+            throw WriterError.unsupported(
+                "encodeAnimation: durations.count "
+                + "(\(durations.count)) must match frames.count "
+                + "(\(frames.count))")
+        }
+        // Encode every frame to its own section list.
+        var chunks: [EncodedFrameSections] = []
+        chunks.reserveCapacity(frames.count)
+        for frame in frames {
+            chunks.append(try buildFrameSections(
+                frame: frame, distance: distance,
+                gaborish: gaborish, adaptiveQF: adaptiveQF))
+        }
+        // All frames must agree on dimensions + alpha presence.
+        let first = chunks[0]
+        for (i, c) in chunks.enumerated() where i > 0 {
+            guard c.xsize == first.xsize, c.ysize == first.ysize,
+                  c.hasAlpha == first.hasAlpha else {
+                throw WriterError.unsupported(
+                    "encodeAnimation: frame \(i) "
+                    + "\(c.xsize)×\(c.ysize)/\(c.hasAlpha) "
+                    + "differs from frame 0 "
+                    + "\(first.xsize)×\(first.ysize)/"
+                    + "\(first.hasAlpha)")
+            }
+        }
+        // libjxl-default 100 tps timestamp resolution, infinite
+        // playback loops, no SMPTE timecodes.
+        let animation = AnimationHeader(
+            tpsNumerator: 100, tpsDenominator: 1,
+            numLoops: 0, haveTimecodes: false)
+        var out = try writeCodestreamPrelude(
+            xsize: first.xsize, ysize: first.ysize,
+            hasAlpha: first.hasAlpha, animation: animation)
+        for (i, c) in chunks.enumerated() {
+            let isLast = (i == chunks.count - 1)
+            let af = AnimationFrame(
+                duration: durations[i], timecode: 0)
+            out.append(try writeFrameChunk(
+                hasAlpha: c.hasAlpha, gaborish: c.gaborish,
+                isLast: isLast,
+                animationFrame: af, haveAnimation: true,
+                sections: c.sections))
+        }
         return out
     }
 }

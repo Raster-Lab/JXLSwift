@@ -223,15 +223,19 @@ public struct JXLEncoder: Sendable {
         }
     }
 
-    /// Encode multiple frames into a single `.jxl`. Currently only
-    /// supports the single-frame case (delegates to `encode(_:)`
-    /// over `frames[0]`). True multi-frame / animation encoding —
-    /// shared `ImageMetadata.animation`, sequential FrameHeaders
-    /// with `isLast` flags, frame durations — needs the animation
-    /// header writer and per-frame TOC plumbing, which is tracked
-    /// as a future bite. Empty arrays throw an `unsupportedFrame`
-    /// error; arrays with more than one frame throw
-    /// `notImplemented` until the animation infrastructure lands.
+    /// Encode multiple `ImageFrame`s into a single multi-frame
+    /// `.jxl` (animation). All frames must share the same
+    /// dimensions and alpha presence; the encoder declares
+    /// libjxl-default 100 tps timestamp resolution and writes
+    /// each frame at 10 tps (= 100 ms / frame) by default. Lossy
+    /// VarDCT only — Modular doesn't carry animation metadata in
+    /// our writer yet.
+    ///
+    /// - Empty array: throws `EncoderError.unsupportedFrame`.
+    /// - Single-element array: delegates to `encode(_ frame:)`.
+    /// - Multi-element array: encodes each frame through
+    ///   `VarDCTBitstreamWriter.encodeAnimation`, with `isLast`
+    ///   flipped on the final frame only.
     public func encode(_ frames: [ImageFrame]) throws -> EncodedImage {
         switch frames.count {
         case 0:
@@ -240,10 +244,40 @@ public struct JXLEncoder: Sendable {
         case 1:
             return try encode(frames[0])
         default:
-            throw EncoderError.notImplemented(
-                "multi-frame (animation) encoding — single-frame "
-                + "arrays work via `encode(frames[0])`")
+            break // fall through to multi-frame
         }
+        if case .lossless = options.mode {
+            throw EncoderError.notImplemented(
+                "multi-frame (animation) encoding for "
+                + ".lossless mode — Modular animation not yet "
+                + "implemented; use a lossy mode (.lossy / "
+                + ".distance) for multi-frame encodes")
+        }
+        let start = Date()
+        let cs: Data
+        do {
+            cs = try VarDCTBitstreamWriter.encodeAnimation(
+                frames: frames, distance: options.distance,
+                gaborish: options.gaborish,
+                adaptiveQF: options.adaptiveQF)
+        } catch let e as VarDCTBitstreamWriter.WriterError {
+            throw EncoderError.unsupportedFrame(
+                "encodeAnimation: \(e)")
+        } catch {
+            throw EncoderError.unsupportedFrame(
+                "encodeAnimation: \(error)")
+        }
+        let wrapped = options.containerWrap
+            ? buildJXLContainer(codestream: cs) : cs
+        let originalSize = frames.reduce(0) { $0 + $1.data.count }
+        return EncodedImage(
+            data: wrapped,
+            stats: CompressionStats(
+                originalSize: originalSize,
+                compressedSize: wrapped.count,
+                encodingTime: Date().timeIntervalSince(start)
+            )
+        )
     }
 }
 
