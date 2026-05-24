@@ -9998,9 +9998,11 @@ extension FoundationTests {
     /// Diagnostic measurement (not an assertion) — print the
     /// encoder's mean round-trip error and codestream size across
     /// all four (gaborish, adaptiveQF) combinations on multiple
-    /// fixture types. Useful for spotting regressions in encoder
-    /// quality. Skipped unless `JXL_PRINT_ENC_QUALITY` is set in
-    /// the environment.
+    /// fixture types and multiple distance values. Useful for
+    /// spotting regressions in encoder quality and for seeing how
+    /// the adaptive-QF heuristic interacts with `distance`.
+    /// Skipped unless `JXL_PRINT_ENC_QUALITY` is set in the
+    /// environment.
     func testVarDCTBitstreamWriter_EncodeQualityMatrix() throws {
         guard ProcessInfo.processInfo.environment[
             "JXL_PRINT_ENC_QUALITY"] != nil else {
@@ -10028,6 +10030,7 @@ extension FoundationTests {
                 return (v, v, UInt8(clamping: Int(v) + 20))
             }),
         ]
+        let distances: [Float] = [0.5, 1.0, 2.0, 4.0]
         for (name, build) in fixtures {
             var frame = ImageFrame(
                 width: dim, height: dim, channels: 3)
@@ -10040,11 +10043,11 @@ extension FoundationTests {
                     frame.data[i + 2] = b
                 }
             }
-            for gab in [true, false] {
+            for d in distances {
                 for aqf in [true, false] {
                     let cs = try VarDCTBitstreamWriter.encode(
-                        frame: frame,
-                        gaborish: gab, adaptiveQF: aqf)
+                        frame: frame, distance: d,
+                        gaborish: true, adaptiveQF: aqf)
                     let dec = try JXLDecoder().decode(cs)
                     var s = 0
                     for i in 0..<(dim * dim * 3) {
@@ -10055,7 +10058,7 @@ extension FoundationTests {
                         / Double(dim * dim * 3)
                     FileHandle.standardError.write(Data(
                         ("ENC-QUALITY [\(name)] "
-                         + "gab=\(gab) aqf=\(aqf) "
+                         + "d=\(d) aqf=\(aqf) "
                          + "size=\(cs.count)B "
                          + "mean=\(mean)\n").utf8))
                 }

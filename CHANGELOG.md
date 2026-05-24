@@ -485,6 +485,24 @@ After v0.11.0av pushed the detail multiplier to 100×, textured cells started sa
 - **Cumulative quality wins since v0.11.0am** on the checkerboard fixture: mean error **23.76 (no adaptive) → 13.24 (v0.11.0am, Y-only, 50×, max 16) → 10.33 (v0.11.0au, XYB stddev, 50×) → 8.67 (v0.11.0av+aw, 100×, max 24)**. The encoder now spends bits where detail is, at adaptive granularity.
 - **421 tests passing, 4 skipped, 0 failures.**
 
+### v0.11.0ax — Adaptive-QF heuristic: distance-aware scaling
+
+The fixed `qfMax = 24` and `multiplier = 100` from v0.11.0aw was tuned for `distance = 1.0`. Measurement across `distance ∈ {0.5, 1.0, 2.0, 4.0}` revealed a problem: at high distances the user wants small files, but the fixed heuristic spent extra bits on textured cells anyway — adaptive QF at `d = 4.0` was making the checkerboard file **51 % larger** than `adaptiveQF: false` for no perceptual benefit at that quality target. The fix scales both `qfMax` and the detail multiplier as `1 / max(distance, 0.5)`, so the adaptation magnitude tracks the user's quality target.
+
+- **`VarDCTEncoder.forward`** — `qfMax = clamp(round(24 / scaleD), [6, 48])` and `multiplier = clamp(round(100 / scaleD), [25, 200])` where `scaleD = 1 / max(distance, 0.5)`. At `d = 1.0` this is the v0.11.0aw tuning (max 24, mult 100); at `d = 0.5` it's max 48, mult 200; at `d = 4.0` it's max 6, mult 25.
+- **Measured deltas** (vs v0.11.0aw, same EncodeQualityMatrix diagnostic across four distances):
+  - **High-quality target (d=0.5):** all fixtures see further quality gain:
+    - smooth-with-edge: mean **0.49 → 0.23** (–53 %); size 158 → 172 B (+9 %).
+    - colour-mosaic: mean **2.56 → 1.93** (–25 %); size 950 → 1048 B (+10 %).
+    - checkerboard: mean **4.46 → 3.33** (–25 %); size 917 → 944 B (+3 %).
+  - **Default (d=1.0):** unchanged (the scaling reproduces the v0.11.0aw tuning exactly).
+  - **Low-quality target (d=4.0):** files shrink toward user intent:
+    - colour-mosaic: size **528 B → 330 B** (–37 %); mean error 14.90 → 20.62 (closer to no-AQF 20.84).
+    - checkerboard: size **747 B → 610 B** (–18 %); mean error 23.58 → 56.55.
+    - smooth-with-edge: size 106 B → 86 B (–19 %); mean 1.27 → 1.96.
+- **Extended diagnostic.** `EncodeQualityMatrix` now iterates four distances (`0.5, 1.0, 2.0, 4.0`) per fixture — 32 measurement lines instead of 16.
+- **421 tests passing, 4 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)

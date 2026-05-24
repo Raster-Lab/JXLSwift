@@ -172,7 +172,23 @@ public enum VarDCTEncoder {
         var qfPerBlock = [Int32](
             repeating: qf, count: blocksX * blocksY)
         if adaptiveQF {
-            let qfMin: Int32 = 3, qfMax: Int32 = 24
+            // Distance-aware QF range. At low distance (high
+            // quality target) the user is willing to spend bits, so
+            // a wide range and aggressive multiplier let textured
+            // cells take fine quantisation. At high distance the
+            // user wants small files — a narrower range keeps the
+            // adaptive boost from undoing the explicit quality
+            // reduction. Scaled as `1 / max(distance, 0.5)`,
+            // clamped: `qfMax` from 6 (d=4) to 48 (d≤0.5); detail
+            // multiplier from 25 to 200. Default d=1.0 reproduces
+            // the v0.11.0aw tuning (max 24, mult 100).
+            let qfMin: Int32 = 3
+            let scaleD = 1.0 / max(distance, 0.5)
+            let qfMax = Int32(min(48.0,
+                max(6.0, (24.0 * scaleD).rounded())))
+            let detailMultiplier =
+                min(Float(200), max(Float(25),
+                    (100.0 * scaleD).rounded()))
             // Per-channel weight for the combined detail score. XYB
             // Y is in [0, 0.6]; X / B have smaller dynamic range, so
             // their unweighted variances under-contribute. Weights
@@ -208,14 +224,13 @@ public enum VarDCTEncoder {
                         (wY * vY.squareRoot()
                          + wX * vX.squareRoot()
                          + wB * vB.squareRoot()) / wSum
-                    // qf = round(qfBase + 100 · detail), clamped.
-                    // The 100× multiplier was tuned via the
-                    // `EncodeQualityMatrix` diagnostic — the
-                    // previous 50× under-utilised the QF ceiling
-                    // (most fixtures stayed below qf 12 even on
-                    // textured content).
+                    // qf = round(qfBase + detailMultiplier · detail),
+                    // clamped. detailMultiplier and qfMax both scale
+                    // with `1 / distance` (see above) so the QF
+                    // adaptation magnitude tracks the user's quality
+                    // target.
                     let scaled = Float(qf)
-                        + (100.0 * detail).rounded()
+                        + (detailMultiplier * detail).rounded()
                     let qfBlock = Int32(min(Float(qfMax),
                         max(Float(qfMin), scaled)))
                     qfPerBlock[by * blocksX + bx] = qfBlock
