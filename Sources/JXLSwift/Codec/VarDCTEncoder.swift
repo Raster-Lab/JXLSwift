@@ -172,7 +172,7 @@ public enum VarDCTEncoder {
         var qfPerBlock = [Int32](
             repeating: qf, count: blocksX * blocksY)
         if adaptiveQF {
-            let qfMin: Int32 = 3, qfMax: Int32 = 16
+            let qfMin: Int32 = 3, qfMax: Int32 = 24
             // Per-channel weight for the combined detail score. XYB
             // Y is in [0, 0.6]; X / B have smaller dynamic range, so
             // their unweighted variances under-contribute. Weights

@@ -472,6 +472,19 @@ The v0.11.0am `qf = qfBase + round(50 · detail)` formula under-utilised the QF 
   - **smooth-gradient:** mean error **1.05 → 0.99** (–6 %); size **99 B → 106 B** (+7 %).
 - **421 tests passing, 4 skipped, 0 failures.**
 
+### v0.11.0aw — Adaptive-QF heuristic: widen QF ceiling to 24
+
+After v0.11.0av pushed the detail multiplier to 100×, textured cells started saturating at the `qfMax = 16` cap. Raising the ceiling to 24 unblocks another step of quality on dense-detail fixtures while leaving smooth content unchanged (their detail scores stay well under the cap).
+
+- **`VarDCTEncoder.forward`** — `qfMax: 16 → 24`. Smooth fixtures (which never hit the cap) are unaffected.
+- **Measured deltas** (vs v0.11.0av, same diagnostic):
+  - **checkerboard:** mean error **10.33 → 8.67** (–16 %); size **977 B → 985 B** (+1 %).
+  - **colour-mosaic:** mean error **3.88 → 3.67** (–5 %); size **771 B → 781 B** (+1 %).
+  - **smooth-with-edge:** mean error **0.73 → 0.72** (–2 %); size **127 B → 129 B** (+2 %).
+  - **smooth-gradient:** unchanged.
+- **Cumulative quality wins since v0.11.0am** on the checkerboard fixture: mean error **23.76 (no adaptive) → 13.24 (v0.11.0am, Y-only, 50×, max 16) → 10.33 (v0.11.0au, XYB stddev, 50×) → 8.67 (v0.11.0av+aw, 100×, max 24)**. The encoder now spends bits where detail is, at adaptive granularity.
+- **421 tests passing, 4 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)
