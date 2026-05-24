@@ -695,6 +695,17 @@ The `benchmark` subcommand previously hardcoded the M0 placeholder codec — so 
 - **End-to-end manual verification.** Multi-value, repeated, and glob forms all produce the same 169 B 3-frame animation; the single-frame form unchanged.
 - **432 tests passing, 5 skipped, 0 failures.**
 
+### v0.11.0cb — Phase J: JPEG SOFn per-component records + SOS scan header
+
+Fourth Phase J bite. Closes the **structural** parsing of a JPEG file — every byte from SOI to EOI that isn't entropy-coded data now has a typed Swift representation. The remaining work for transcoding is runtime Huffman code-table construction + entropy decode + JXL-side bridge.
+
+- **`Sources/JXLSwift/JPEG/JPEGScanHeader.swift`** (new). Two structures + their parsers:
+  - **`JPEGFrameComponent`** — per-component records from the SOFn payload: `componentId`, `hSamplingFactor` / `vSamplingFactor` (1..4 each), `quantTableId`. `parseSOFComponents(sofPayload:)` picks up from byte 6 of the SOFn payload (just past P/Y/X/Nf) and walks Nf records. Validates each sampling factor and quant-table ID is in spec range.
+  - **`JPEGScanHeader`** — full SOS header per ITU-T T.81 §B.2.3: `components: [JPEGScanComponent]` (each with `componentId` + `dcTableId` + `acTableId`), `spectralSelectionStart` / `End`, `successiveApproximationHigh` / `Low`. Convenience `isSequential` property (start=0, end=63, both successive-approx bits = 0).
+- **`JPEGStructure.frameComponents(in:)`** + **`JPEGStructure.scanHeaders(in:)`** — file-level helpers that walk the segment stream and pull the per-component / per-scan records. Baseline JPEGs have one scan header; progressive JPEGs typically have many (one per spectral / approximation pass).
+- **5 new tests**: SOFn components on hand-crafted fixture + real sips-JPEG (asserts 3 components, valid sampling factors / quant IDs), SOS scan header on fixture (sequential, components count, Ss=0, Se=63), SOS on real JPEG (≥1 sequential scan covering all 3 components), and a truncated-payload rejection test.
+- **468 tests passing, 6 skipped, 0 failures** (was 463; +5).
+
 ### v0.11.0ca — Phase J: JPEG DHT (Huffman-table) payload parser
 
 Third bite. Same shape as v0.11.0bz but for Huffman tables — the entropy-coding precondition for actually decoding JPEG pixel data later.

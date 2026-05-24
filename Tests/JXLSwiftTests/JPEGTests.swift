@@ -517,6 +517,139 @@ final class JPEGFoundationTests: XCTestCase {
         }
     }
 
+    // MARK: - SOFn per-component records
+
+    func testJPEGFrameComponents_OnFixture() throws {
+        let comps = try JPEGStructure.frameComponents(
+            in: minimalJPEG())
+        XCTAssertEqual(comps.count, 1)
+        // Fixture uses Ci=0 (the bytes are encoder's choice; JFIF
+        // typically uses 1=Y but the spec allows 0..255).
+        XCTAssertEqual(comps[0].componentId, 0)
+        XCTAssertEqual(comps[0].hSamplingFactor, 1)
+        XCTAssertEqual(comps[0].vSamplingFactor, 1)
+        XCTAssertEqual(comps[0].quantTableId, 0)
+    }
+
+    func testJPEGFrameComponents_OnRealJPEG() throws {
+        guard FileManager.default.isExecutableFile(
+            atPath: "/usr/bin/sips") else {
+            throw XCTSkip("sips not available on this host")
+        }
+        let tmp = NSTemporaryDirectory()
+        let ppmPath = tmp + "jpegtest-\(UUID().uuidString).ppm"
+        let jpgPath = tmp + "jpegtest-\(UUID().uuidString).jpg"
+        defer {
+            try? FileManager.default.removeItem(atPath: ppmPath)
+            try? FileManager.default.removeItem(atPath: jpgPath)
+        }
+        var ppm = Data("P6\n8 8\n255\n".utf8)
+        for y in 0..<8 {
+            for x in 0..<8 {
+                ppm.append(contentsOf: [
+                    UInt8(20 + x * 25),
+                    UInt8(40 + y * 25),
+                    UInt8(100)
+                ])
+            }
+        }
+        try ppm.write(to: URL(fileURLWithPath: ppmPath))
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/sips")
+        proc.arguments = ["-s", "format", "jpeg",
+                          "-s", "formatOptions", "75",
+                          ppmPath, "--out", jpgPath]
+        proc.standardOutput = Pipe()
+        proc.standardError = Pipe()
+        try proc.run()
+        proc.waitUntilExit()
+        guard proc.terminationStatus == 0 else {
+            throw XCTSkip("sips conversion failed")
+        }
+        let jpg = try Data(contentsOf:
+            URL(fileURLWithPath: jpgPath))
+        let comps = try JPEGStructure.frameComponents(in: jpg)
+        XCTAssertEqual(comps.count, 3)  // RGB JPEG → 3 components
+        for c in comps {
+            XCTAssertTrue((1...4).contains(c.hSamplingFactor))
+            XCTAssertTrue((1...4).contains(c.vSamplingFactor))
+            XCTAssertTrue((0...3).contains(c.quantTableId))
+        }
+    }
+
+    // MARK: - SOS scan headers
+
+    func testJPEGScanHeader_OnFixture() throws {
+        let scans = try JPEGStructure.scanHeaders(
+            in: minimalJPEG())
+        XCTAssertEqual(scans.count, 1)
+        let s = scans[0]
+        XCTAssertEqual(s.components.count, 1)
+        // Fixture SOS payload binds the scan to Cs=0 to match the
+        // SOF Ci=0 above. (Real JFIF emitters number from 1, but
+        // the spec allows 0..255.)
+        XCTAssertEqual(s.components[0].componentId, 0)
+        XCTAssertEqual(s.components[0].dcTableId, 0)
+        XCTAssertEqual(s.components[0].acTableId, 0)
+        XCTAssertEqual(s.spectralSelectionStart, 0)
+        XCTAssertEqual(s.spectralSelectionEnd, 63)
+        XCTAssertTrue(s.isSequential)
+    }
+
+    func testJPEGScanHeader_OnRealJPEG() throws {
+        guard FileManager.default.isExecutableFile(
+            atPath: "/usr/bin/sips") else {
+            throw XCTSkip("sips not available on this host")
+        }
+        let tmp = NSTemporaryDirectory()
+        let ppmPath = tmp + "jpegtest-\(UUID().uuidString).ppm"
+        let jpgPath = tmp + "jpegtest-\(UUID().uuidString).jpg"
+        defer {
+            try? FileManager.default.removeItem(atPath: ppmPath)
+            try? FileManager.default.removeItem(atPath: jpgPath)
+        }
+        var ppm = Data("P6\n8 8\n255\n".utf8)
+        for y in 0..<8 {
+            for x in 0..<8 {
+                ppm.append(contentsOf: [
+                    UInt8(20 + x * 25),
+                    UInt8(40 + y * 25),
+                    UInt8(100)
+                ])
+            }
+        }
+        try ppm.write(to: URL(fileURLWithPath: ppmPath))
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/sips")
+        proc.arguments = ["-s", "format", "jpeg",
+                          "-s", "formatOptions", "75",
+                          ppmPath, "--out", jpgPath]
+        proc.standardOutput = Pipe()
+        proc.standardError = Pipe()
+        try proc.run()
+        proc.waitUntilExit()
+        guard proc.terminationStatus == 0 else {
+            throw XCTSkip("sips conversion failed")
+        }
+        let jpg = try Data(contentsOf:
+            URL(fileURLWithPath: jpgPath))
+        let scans = try JPEGStructure.scanHeaders(in: jpg)
+        XCTAssertGreaterThanOrEqual(scans.count, 1)
+        XCTAssertTrue(scans[0].isSequential,
+            "baseline sips JPEG should produce a sequential scan")
+        // All 3 RGB components present in the single sequential
+        // scan.
+        XCTAssertEqual(scans[0].components.count, 3)
+    }
+
+    func testJPEGScanHeader_RejectsTruncatedPayload() {
+        // Ns = 2 but only one component record provided.
+        var payload = Data([0x02])
+        payload.append(contentsOf: [0x01, 0x00])  // C1 + Td/Ta
+        XCTAssertThrowsError(
+            try JPEGScanHeader.parse(sosPayload: payload))
+    }
+
     // MARK: - byte-stuffing + RST skip stress
 
     func testJPEGSegmentReader_HandlesByteStuffing() throws {
