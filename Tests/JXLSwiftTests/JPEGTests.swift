@@ -256,6 +256,128 @@ final class JPEGFoundationTests: XCTestCase {
         XCTAssertFalse(s.usesArithmeticCoding)
     }
 
+    // MARK: - JPEGQuantTable
+
+    func testJPEGQuantTable_ParsesSingleEightBitTable() throws {
+        // One DQT, 8-bit, table id 2, values 1..64 in zig-zag order.
+        var payload = Data([0x02])  // Pq=0, Tq=2
+        for k: UInt8 in 1...64 { payload.append(k) }
+        let tables = try JPEGQuantTable.parse(dqtPayload: payload)
+        XCTAssertEqual(tables.count, 1)
+        XCTAssertEqual(tables[0].tableId, 2)
+        XCTAssertEqual(tables[0].precision, .bits8)
+        XCTAssertEqual(tables[0].zigZagValues.count, 64)
+        XCTAssertEqual(tables[0].zigZagValues.first, 1)
+        XCTAssertEqual(tables[0].zigZagValues.last, 64)
+    }
+
+    func testJPEGQuantTable_ParsesSixteenBitTable() throws {
+        // One DQT, 16-bit, table id 0, value k stored as
+        // (0x01, k) → 0x0100 + k.
+        var payload = Data([0x10])  // Pq=1, Tq=0
+        for k: UInt8 in 0..<64 {
+            payload.append(0x01)
+            payload.append(k)
+        }
+        let tables = try JPEGQuantTable.parse(dqtPayload: payload)
+        XCTAssertEqual(tables.count, 1)
+        XCTAssertEqual(tables[0].precision, .bits16)
+        XCTAssertEqual(tables[0].zigZagValues[0], 0x0100)
+        XCTAssertEqual(tables[0].zigZagValues[63], 0x0100 + 63)
+    }
+
+    func testJPEGQuantTable_ParsesMultipleTablesInOneSegment() throws {
+        // Two 8-bit tables back-to-back.
+        var payload = Data([0x00])  // table 0
+        for k: UInt8 in 1...64 { payload.append(k) }
+        payload.append(0x01)        // table 1
+        for k: UInt8 in 0..<64 { payload.append(UInt8(100 + Int(k))) }
+        let tables = try JPEGQuantTable.parse(dqtPayload: payload)
+        XCTAssertEqual(tables.count, 2)
+        XCTAssertEqual(tables[0].tableId, 0)
+        XCTAssertEqual(tables[1].tableId, 1)
+        XCTAssertEqual(tables[1].zigZagValues[0], 100)
+        XCTAssertEqual(tables[1].zigZagValues[63], 163)
+    }
+
+    func testJPEGQuantTable_RejectsTruncatedPayload() {
+        let payload = Data([0x00, 0x01, 0x02])  // header + 2 bytes
+        XCTAssertThrowsError(
+            try JPEGQuantTable.parse(dqtPayload: payload))
+    }
+
+    func testJPEGQuantTable_RejectsInvalidPrecisionNibble() {
+        var payload = Data([0xF0])  // Pq=15, Tq=0
+        payload.append(Data(repeating: 0, count: 64))
+        XCTAssertThrowsError(
+            try JPEGQuantTable.parse(dqtPayload: payload))
+    }
+
+    /// `JPEGStructure.quantTables(in:)` against the minimal
+    /// fixture returns the all-1s 8-bit table we baked in.
+    func testJPEGStructure_QuantTablesOnFixture() throws {
+        let tables = try JPEGStructure.quantTables(
+            in: minimalJPEG())
+        XCTAssertEqual(tables.count, 1)
+        XCTAssertEqual(tables[0].tableId, 0)
+        XCTAssertEqual(tables[0].precision, .bits8)
+        XCTAssertEqual(tables[0].zigZagValues,
+                       Array(repeating: 1, count: 64))
+    }
+
+    /// `JPEGStructure.quantTables(in:)` against a sips-produced
+    /// JPEG returns one or more 8-bit tables of 64 values each.
+    func testJPEGStructure_QuantTablesOnRealJPEG() throws {
+        guard FileManager.default.isExecutableFile(
+            atPath: "/usr/bin/sips") else {
+            throw XCTSkip("sips not available on this host")
+        }
+        let tmp = NSTemporaryDirectory()
+        let ppmPath = tmp + "jpegtest-\(UUID().uuidString).ppm"
+        let jpgPath = tmp + "jpegtest-\(UUID().uuidString).jpg"
+        defer {
+            try? FileManager.default.removeItem(atPath: ppmPath)
+            try? FileManager.default.removeItem(atPath: jpgPath)
+        }
+        var ppm = Data("P6\n8 8\n255\n".utf8)
+        for y in 0..<8 {
+            for x in 0..<8 {
+                ppm.append(contentsOf: [
+                    UInt8(20 + x * 25),
+                    UInt8(40 + y * 25),
+                    UInt8(100)
+                ])
+            }
+        }
+        try ppm.write(to: URL(fileURLWithPath: ppmPath))
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/sips")
+        proc.arguments = ["-s", "format", "jpeg", "-s",
+                          "formatOptions", "75",
+                          ppmPath, "--out", jpgPath]
+        proc.standardOutput = Pipe()
+        proc.standardError = Pipe()
+        try proc.run()
+        proc.waitUntilExit()
+        guard proc.terminationStatus == 0 else {
+            throw XCTSkip("sips conversion failed")
+        }
+        let jpg = try Data(contentsOf:
+            URL(fileURLWithPath: jpgPath))
+        let tables = try JPEGStructure.quantTables(in: jpg)
+        // sips writes 2 tables (luma + chroma) by default for RGB.
+        XCTAssertGreaterThanOrEqual(tables.count, 1)
+        for t in tables {
+            XCTAssertEqual(t.zigZagValues.count, 64)
+            // DC factor (zig-zag index 0) should be a small positive
+            // integer for a quality-75 luma table.
+            if t.tableId == 0 {
+                XCTAssertGreaterThan(t.zigZagValues[0], 0)
+                XCTAssertLessThan(t.zigZagValues[0], 100)
+            }
+        }
+    }
+
     // MARK: - byte-stuffing + RST skip stress
 
     func testJPEGSegmentReader_HandlesByteStuffing() throws {

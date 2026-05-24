@@ -695,6 +695,16 @@ The `benchmark` subcommand previously hardcoded the M0 placeholder codec — so 
 - **End-to-end manual verification.** Multi-value, repeated, and glob forms all produce the same 169 B 3-frame animation; the single-frame form unchanged.
 - **432 tests passing, 5 skipped, 0 failures.**
 
+### v0.11.0bz — Phase J: JPEG DQT (quantisation-table) payload parser
+
+Second bite on the Phase J road. The segment walker (v0.11.0by) gives us "here's a DQT payload, raw bytes"; v0.11.0bz turns those bytes into typed `JPEGQuantTable` records ready for the eventual transcoder to feed into the JXL-side quant pipeline.
+
+- **`Sources/JXLSwift/JPEG/JPEGQuantTable.swift`** (new) — DQT layout per ITU-T T.81 §B.2.4.1. `JPEGQuantPrecision` (`bits8` / `bits16`), `JPEGQuantTable` (tableId, precision, 64-element zig-zag value array stored as `[UInt16]` regardless of source width). `JPEGQuantTable.parse(dqtPayload:)` walks one DQT segment payload — segments may carry multiple tables concatenated, each prefixed with a packed `Pq << 4 | Tq` header byte. `JPEGStructure.quantTables(in:)` walks the whole file and returns the concatenated table list across every DQT segment.
+- **`Sources/JXLTool/Info.swift`** — `jxl info` on a JPEG now adds a one-line `Quant DC: T0[DC]=…, T1[DC]=…` summary showing the DC factor of each quant table — small DC → high quality, large DC → low quality. Cheap diagnostic for the transcoder-curious.
+- **6 new tests**: 8-bit single-table parse, 16-bit single-table parse (big-endian value reconstruction), multi-table-in-one-segment parse, truncated-payload rejection, invalid-precision-nibble rejection, structure-level helper against the minimal fixture (returns the all-1s table we baked in) AND the real sips-generated JPEG (returns ≥1 table with 64 values each and a 1..99 DC factor for the luma table).
+- **456 tests passing, 6 skipped, 0 failures** (was 449; +7 — six DQT tests + one extra sips invocation).
+- **End-to-end smoke** on a 16×16 RGB sips-JPEG: `jxl info` reports `Quant DC: T0[DC]=2, T1[DC]=2` (default sips luma + chroma tables at q=80).
+
 ### v0.11.0by — Phase J foundation: JPEG marker / segment walker
 
 First concrete deliverable on the Phase J (JPEG ↔ JXL reversible transcoding) road. Adds a pure-Swift JPEG structural reader so `jxl info` can recognise plain JPEG inputs today and so the transcoder (when it lands) has a clean foundation already in place + tested.

@@ -191,6 +191,16 @@ private func printJPEGInfo(path: String, data: Data) throws {
     print("Frame kind:   \(s.frameKind.label)")
     print("DQT segments: \(s.dqtSegmentCount)")
     print("DHT segments: \(s.dhtSegmentCount)")
+    // DC factor (zig-zag index 0) is the most diagnostic single
+    // number from a quant table — small → high quality, large →
+    // low quality. Cheap one-liner for the transcoder-curious.
+    if let qts = try? JPEGStructure.quantTables(in: data),
+       !qts.isEmpty {
+        let dcs = qts.map { qt in
+            "T\(qt.tableId)[DC]=\(qt.zigZagValues.first ?? 0)"
+        }.joined(separator: ", ")
+        print("Quant DC:     \(dcs)")
+    }
     var markers: [String] = []
     if s.hasJFIF { markers.append("JFIF") }
     if s.hasEXIF { markers.append("EXIF") }
