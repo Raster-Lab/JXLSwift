@@ -37,8 +37,12 @@ struct Batch: ParsableCommand {
     )
 }
 
-/// PNM file extensions the encode-side batch scans for.
-private let pnmExtensions: Set<String> = ["pgm", "ppm", "pam", "pnm"]
+/// Source-image extensions the encode-side batch scans for. PNM
+/// family + JPEG (decoded transparently via `JPEGDecoder`).
+private let pnmExtensions: Set<String> = [
+    "pgm", "ppm", "pam", "pnm",
+    "jpg", "jpeg",
+]
 
 /// JXL extensions the decode-side batch scans for. `.jxl` is the
 /// canonical one; `.jxc` shows up occasionally for codestream-only
@@ -107,7 +111,16 @@ struct BatchEncode: ParsableCommand {
                 try ensureDirectory(parent(of: dst))
                 let pnmData = try Data(contentsOf:
                     URL(fileURLWithPath: src))
-                let frame = try PNM.read(pnmData)
+                // Auto-detect JPEG (SOI magic) vs PNM by content
+                // — the extension is the scan filter, content is
+                // the source of truth so `foo.ppm` that's actually
+                // a stuffed JPEG fails cleanly inside PNM.read.
+                let frame: ImageFrame
+                if JPEGSegmentReader.looksLikeJPEG(pnmData) {
+                    frame = try JPEGDecoder.decode(pnmData)
+                } else {
+                    frame = try PNM.read(pnmData)
+                }
                 let encoded = try encoder.encode(frame)
                 try encoded.data.write(to: URL(fileURLWithPath: dst))
                 summary.recordOk(

@@ -60,24 +60,38 @@ struct Encode: ParsableCommand {
         }
         let outputURL = URL(fileURLWithPath: output)
 
-        // Read every input PNM into an ImageFrame.
+        // Read every input into an ImageFrame. JPEG inputs are
+        // auto-detected via SOI magic and routed through
+        // JPEGDecoder; everything else is parsed as PNM. Mixing
+        // PNM + JPEG inputs in the same multi-frame invocation
+        // works too — the encoder downstream just sees frames.
         var frames: [ImageFrame] = []
         var rawTotal = 0
         for path in input {
             let inputURL = URL(fileURLWithPath: path)
-            let pnmData: Data
-            do { pnmData = try Data(contentsOf: inputURL) }
+            let bytes: Data
+            do { bytes = try Data(contentsOf: inputURL) }
             catch {
                 print("error reading \(path): \(error)",
                       to: &standardError)
                 throw JXLExitCode.generalError
             }
-            rawTotal += pnmData.count
-            do { frames.append(try PNM.read(pnmData)) }
-            catch let e as PNMError {
-                print("PNM parse error in \(path): \(e)",
-                      to: &standardError)
-                throw JXLExitCode.invalidArguments
+            rawTotal += bytes.count
+            if JPEGSegmentReader.looksLikeJPEG(bytes) {
+                do { frames.append(try JPEGDecoder.decode(bytes)) }
+                catch let e as JPEGDecoderError {
+                    print("JPEG decode error in \(path): "
+                        + (e.errorDescription ?? "\(e)"),
+                          to: &standardError)
+                    throw JXLExitCode.invalidArguments
+                }
+            } else {
+                do { frames.append(try PNM.read(bytes)) }
+                catch let e as PNMError {
+                    print("PNM parse error in \(path): \(e)",
+                          to: &standardError)
+                    throw JXLExitCode.invalidArguments
+                }
             }
         }
 

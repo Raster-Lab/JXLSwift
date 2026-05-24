@@ -234,6 +234,20 @@ private func loadComparableImage(
             throw JXLExitCode.generalError
         }
     }
+    if JPEGSegmentReader.looksLikeJPEG(data) {
+        if frameIndex != 0 {
+            print("compare: --frame \(frameIndex) ignored for "
+                + "JPEG input \(path) (JPEG is single-frame)",
+                to: &standardError)
+        }
+        do { return try JPEGDecoder.decode(data) }
+        catch let e as JPEGDecoderError {
+            print("compare: JPEG decode failed for \(path): "
+                + (e.errorDescription ?? "\(e)"),
+                to: &standardError)
+            throw JXLExitCode.generalError
+        }
+    }
     if frameIndex != 0 {
         print("compare: --frame \(frameIndex) ignored for PNM "
             + "input \(path) (PNM is single-frame)",
@@ -265,6 +279,19 @@ private func loadComparableFrames(
         catch let e as DecoderError {
             print("compare: JXL decodeAll failed for \(path): "
                 + "\(e.localizedDescription)", to: &standardError)
+            throw JXLExitCode.generalError
+        }
+    }
+    if JPEGSegmentReader.looksLikeJPEG(data) {
+        // JPEG is single-frame — return a 1-element array, same
+        // as PNM. --all-frames on a JPEG ↔ JXL-animation pair
+        // will surface as a frame-count mismatch downstream,
+        // which is the correct behaviour.
+        do { return [try JPEGDecoder.decode(data)] }
+        catch let e as JPEGDecoderError {
+            print("compare: JPEG decode failed for \(path): "
+                + (e.errorDescription ?? "\(e)"),
+                to: &standardError)
             throw JXLExitCode.generalError
         }
     }

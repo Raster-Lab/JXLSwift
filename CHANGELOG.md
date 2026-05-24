@@ -695,6 +695,16 @@ The `benchmark` subcommand previously hardcoded the M0 placeholder codec — so 
 - **End-to-end manual verification.** Multi-value, repeated, and glob forms all produce the same 169 B 3-frame animation; the single-frame form unchanged.
 - **432 tests passing, 5 skipped, 0 failures.**
 
+### v0.11.0cl — CLI: JPEG inputs flow through `encode`, `compare`, and `batch encode`
+
+`v0.11.0ck` wired `jxl decode foo.jpg`. v0.11.0cl finishes the JPEG plumbing on the rest of the CLI so users can `encode`, `compare`, and `batch encode` directly from JPEG sources without the manual "decode JPEG first" step.
+
+- **`jxl encode -i foo.jpg`** — auto-detected via `JPEGSegmentReader.looksLikeJPEG`, routed through `JPEGDecoder.decode` to produce an `ImageFrame`, then encoded normally. The multi-input animation form works too: `jxl encode -i a.jpg b.jpg c.ppm -o anim.jxl` produces a 3-frame animation mixing JPEG and PNM sources transparently. End-to-end smoke: 16×16 JPEG (797 B) → JXL q=90 (91 B, 11.4% of source).
+- **`jxl compare`** — `loadComparableImage(path:frameIndex:)` and `loadComparableFrames(path:)` both gain a JPEG branch sitting between the existing JXL and PNM branches. `jxl compare ref.ppm test.jpg --quiet` reports PSNR / MSE / MAE / max-error against any JPEG. `--frame N != 0` on a JPEG input emits the same "JPEG is single-frame" warning as on PNM. `--all-frames` against a JPEG returns a 1-element list (frame-count mismatch with a JXL animation surfaces as a clean error downstream).
+- **`jxl batch encode`** — `pnmExtensions` set extended to include `jpg` / `jpeg`. Per-file dispatch in the loop uses the same SOI-magic check as `encode` so even a `.ppm` file that's actually a stuffed JPEG decodes correctly (and vice versa). Real run: 3-file mixed-format directory (2 JPEG + 1 PPM) batch-encoded to 3 JXL files, no errors.
+- **No new tests** — the JPEG-decode + the CLI-loadComparableImage paths are already covered by their own test files; CLI wiring is a thin dispatch layer best verified by end-to-end smoke (done in the commit description).
+- **508 tests passing, 6 skipped, 0 failures** (unchanged from v0.11.0ck — pure CLI plumbing).
+
 ### v0.11.0ch–ck — Phase J: JPEG → ImageFrame end-to-end pipeline
 
 Four bites bundled — IDCT, pixel assembler, YCbCr → RGB conversion, and the `JPEGDecoder` facade — completing the **decode** side of Phase J. After v0.11.0cg the JPEG side could produce dequantised DCT coefficients; v0.11.0ch–ck takes those to RGB pixels, packages it as an `ImageFrame`, and wires `jxl decode foo.jpg` to use it. **First time `jxl decode` accepts JPEG inputs and produces matching pixels.**
