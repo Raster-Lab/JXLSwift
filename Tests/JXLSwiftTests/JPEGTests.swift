@@ -1433,6 +1433,376 @@ final class JPEGFoundationTests: XCTestCase {
         }
     }
 
+    // MARK: - JPEGIDCT
+
+    /// DC-only block (DC = 8 × N, all AC = 0) reconstructs to a
+    /// flat sample plane of value N + 128 (level shift).
+    /// Reasoning: orthonormal DCT of a constant N-value flat plane
+    /// is `[8N, 0, 0, …]` (because the DC basis function has
+    /// magnitude `1/√64 = 1/8`, so the inner product with a flat
+    /// plane of value N is `N · 64 · 1/8 = 8N`). Inverse should
+    /// recover the constant plane.
+    func testJPEGIDCT_DCOnlyReconstructsFlat() {
+        var coeffs = [Int32](repeating: 0, count: 64)
+        coeffs[0] = 8 * 50  // 50 above the centred zero
+        let block = JPEGCoefficientBlock(coeffs)
+        let samples = JPEGIDCT.inverseTransform8Bit(block)
+        for s in samples {
+            XCTAssertEqual(s, UInt8(50 + 128),
+                "DC-only block must reconstruct to a flat plane")
+        }
+    }
+
+    /// All-zero block reconstructs to a flat mid-grey plane
+    /// (the +128 level shift on top of zero is the unsigned
+    /// origin in 8-bit JPEG).
+    func testJPEGIDCT_AllZeroIsMidGrey() {
+        let block = JPEGCoefficientBlock(
+            Array(repeating: Int32(0), count: 64))
+        let samples = JPEGIDCT.inverseTransform8Bit(block)
+        XCTAssertEqual(samples,
+            Array(repeating: UInt8(128), count: 64))
+    }
+
+    /// Negative DC saturates at zero — confirms the clamp is in
+    /// the right direction.
+    func testJPEGIDCT_ClampSaturatesLow() {
+        var coeffs = [Int32](repeating: 0, count: 64)
+        coeffs[0] = 8 * -200  // far below the visible range
+        let block = JPEGCoefficientBlock(coeffs)
+        let samples = JPEGIDCT.inverseTransform8Bit(block)
+        for s in samples { XCTAssertEqual(s, 0) }
+    }
+
+    /// Very-large DC saturates at 255 — confirms the other clamp.
+    func testJPEGIDCT_ClampSaturatesHigh() {
+        var coeffs = [Int32](repeating: 0, count: 64)
+        coeffs[0] = 8 * 500
+        let block = JPEGCoefficientBlock(coeffs)
+        let samples = JPEGIDCT.inverseTransform8Bit(block)
+        for s in samples { XCTAssertEqual(s, 255) }
+    }
+
+    /// On the sips real-fixture pipeline: take the first Y block
+    /// of a sips JPEG, IDCT it, and confirm every sample is in
+    /// the visible 0..255 range. The exact values depend on
+    /// content + quantisation; the *shape* assertion (no clamps,
+    /// no NaN propagation) is what we want here.
+    func testJPEGIDCT_RealSIPSPipeline() throws {
+        guard FileManager.default.isExecutableFile(
+            atPath: "/usr/bin/sips") else {
+            throw XCTSkip("sips not available on this host")
+        }
+        let tmp = NSTemporaryDirectory()
+        let ppmPath = tmp + "jpegtest-\(UUID().uuidString).ppm"
+        let jpgPath = tmp + "jpegtest-\(UUID().uuidString).jpg"
+        defer {
+            try? FileManager.default.removeItem(atPath: ppmPath)
+            try? FileManager.default.removeItem(atPath: jpgPath)
+        }
+        // 16×16 mid-grey constant — IDCT should reconstruct
+        // something close to (128, 128, 128) for each pixel.
+        var ppm = Data("P6\n16 16\n255\n".utf8)
+        ppm.append(Data(repeating: 128, count: 16 * 16 * 3))
+        try ppm.write(to: URL(fileURLWithPath: ppmPath))
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/sips")
+        proc.arguments = ["-s", "format", "jpeg",
+                          "-s", "formatOptions", "90",
+                          ppmPath, "--out", jpgPath]
+        proc.standardOutput = Pipe()
+        proc.standardError = Pipe()
+        try proc.run()
+        proc.waitUntilExit()
+        guard proc.terminationStatus == 0 else {
+            throw XCTSkip("sips conversion failed")
+        }
+        let jpg = try Data(contentsOf:
+            URL(fileURLWithPath: jpgPath))
+
+        // Reuse the walk pattern from
+        // testJPEGScanDecoder_RealSIPSFixture but stop at SOS.
+        var reader = JPEGSegmentReader(jpg)
+        var dcMap = JPEGHuffmanCodebookMap()
+        var acMap = JPEGHuffmanCodebookMap()
+        var quantTables: [JPEGQuantTable] = []
+        var frameComponents: [JPEGFrameComponent] = []
+        var width = 0, height = 0
+        var scanHeader: JPEGScanHeader?
+        var entropyStartOffset = 0
+        while let seg = try reader.next() {
+            switch seg.kind {
+            case .startOfFrame:
+                width = (Int(seg.payload[3]) << 8)
+                    | Int(seg.payload[4])
+                height = (Int(seg.payload[1]) << 8)
+                    | Int(seg.payload[2])
+                frameComponents = try JPEGFrameComponent
+                    .parseSOFComponents(sofPayload: seg.payload)
+            case .defineQuantizationTable:
+                quantTables.append(contentsOf:
+                    try JPEGQuantTable.parse(
+                        dqtPayload: seg.payload))
+            case .defineHuffmanTable:
+                for t in try JPEGHuffmanTable.parse(
+                    dhtPayload: seg.payload)
+                {
+                    let book = try t.buildCodebook()
+                    if t.class == .dc {
+                        dcMap[t.tableId] = (book, t.huffvals)
+                    } else {
+                        acMap[t.tableId] = (book, t.huffvals)
+                    }
+                }
+            case .startOfScan:
+                scanHeader = try JPEGScanHeader.parse(
+                    sosPayload: seg.payload)
+                entropyStartOffset = reader.byteOffset
+            default: break
+            }
+            if seg.kind == .startOfScan { break }
+        }
+        guard let scan = scanHeader else {
+            XCTFail("no SOS"); return
+        }
+        var bitReader = JPEGBitReader(jpg,
+            startingAt: entropyStartOffset)
+        let comps = try JPEGScanDecoder.decodeBaselineSequential(
+            from: &bitReader, scanHeader: scan,
+            frameComponents: frameComponents,
+            imageWidth: width, imageHeight: height,
+            dcCodebooks: dcMap, acCodebooks: acMap)
+        // Dequantise + IDCT the first Y block.
+        let yc = comps[0]
+        let yqt = quantTables.first(where: {
+            $0.tableId == frameComponents.first(where: {
+                $0.componentId == yc.componentId
+            })?.quantTableId ?? 0
+        }) ?? quantTables[0]
+        let dq = JPEGDequantiser.dequantising(
+            yc.blocks[0], using: yqt)
+        let samples = JPEGIDCT.inverseTransform8Bit(dq)
+        XCTAssertEqual(samples.count, 64)
+        // For a mid-grey input at q=90, the Y block samples
+        // should land very close to 128 — large clamp deviation
+        // would indicate the dequant or IDCT scaling is off.
+        for s in samples {
+            XCTAssertGreaterThanOrEqual(Int(s), 100,
+                "Y sample \(s) unexpectedly low for mid-grey")
+            XCTAssertLessThanOrEqual(Int(s), 156,
+                "Y sample \(s) unexpectedly high for mid-grey")
+        }
+    }
+
+    // MARK: - JPEGColorConversion
+
+    /// JFIF identity: Y=128 Cb=128 Cr=128 → grey (128,128,128).
+    func testJPEGColor_NeutralGreyIsGrey() {
+        let n = 4
+        let y = JPEGSamplePlane(
+            componentId: 1, width: n, height: n,
+            samples: Array(repeating: 128, count: n * n))
+        let cb = JPEGSamplePlane(
+            componentId: 2, width: n, height: n,
+            samples: Array(repeating: 128, count: n * n))
+        let cr = JPEGSamplePlane(
+            componentId: 3, width: n, height: n,
+            samples: Array(repeating: 128, count: n * n))
+        let rgb = JPEGColorConversion.ycbcrToRGB8(
+            y: y, cb: cb, cr: cr)
+        XCTAssertEqual(rgb,
+            Array(repeating: UInt8(128), count: n * n * 3))
+    }
+
+    /// Pure red — Y=76, Cb=85, Cr=255 → (255, 0, 0) per JFIF.
+    /// (Worked from the inverse direction: R=255 G=0 B=0 →
+    /// Y ≈ 76, Cb ≈ 85, Cr ≈ 255 via BT.601 forward).
+    func testJPEGColor_NeutralReachesPureRed() {
+        let y = JPEGSamplePlane(
+            componentId: 1, width: 1, height: 1,
+            samples: [76])
+        let cb = JPEGSamplePlane(
+            componentId: 2, width: 1, height: 1,
+            samples: [85])
+        let cr = JPEGSamplePlane(
+            componentId: 3, width: 1, height: 1,
+            samples: [255])
+        let rgb = JPEGColorConversion.ycbcrToRGB8(
+            y: y, cb: cb, cr: cr)
+        // R = 76 + 1.402·(255−128) = 254.054 → rounds to 254;
+        // G/B near 0. Allow ±2 since the input Y/Cb/Cr were
+        // themselves rounded forward-direction.
+        XCTAssertGreaterThanOrEqual(Int(rgb[0]), 252)
+        XCTAssertLessThanOrEqual(Int(rgb[1]), 2)
+        XCTAssertLessThanOrEqual(Int(rgb[2]), 2)
+    }
+
+    // MARK: - JPEGPixelAssembler upsampling
+
+    func testJPEGUpsample_NearestDoubleHorizontal() {
+        let plane = JPEGSamplePlane(
+            componentId: 1, width: 2, height: 2,
+            samples: [10, 20, 30, 40])
+        let up = JPEGPixelAssembler.upsampleNearest(
+            plane, toWidth: 4, height: 2)
+        XCTAssertEqual(up.samples, [
+            10, 10, 20, 20,
+            30, 30, 40, 40,
+        ])
+    }
+
+    func testJPEGUpsample_NearestDoubleBoth() {
+        let plane = JPEGSamplePlane(
+            componentId: 1, width: 2, height: 2,
+            samples: [10, 20, 30, 40])
+        let up = JPEGPixelAssembler.upsampleNearest(
+            plane, toWidth: 4, height: 4)
+        XCTAssertEqual(up.samples, [
+            10, 10, 20, 20,
+            10, 10, 20, 20,
+            30, 30, 40, 40,
+            30, 30, 40, 40,
+        ])
+    }
+
+    func testJPEGUpsample_NoOpWhenAlreadyTarget() {
+        let plane = JPEGSamplePlane(
+            componentId: 1, width: 2, height: 2,
+            samples: [1, 2, 3, 4])
+        let up = JPEGPixelAssembler.upsampleNearest(
+            plane, toWidth: 2, height: 2)
+        XCTAssertEqual(up.samples, [1, 2, 3, 4])
+    }
+
+    // MARK: - JPEGDecoder end-to-end
+
+    /// Round-trip: synthesise a 16×16 grayscale PPM, encode via
+    /// sips, decode with our JPEG pipeline, and confirm the
+    /// recovered ImageFrame matches the input within a small
+    /// per-sample tolerance (JPEG is lossy at q=90).
+    func testJPEGDecoder_GrayscaleRoundTrip() throws {
+        guard FileManager.default.isExecutableFile(
+            atPath: "/usr/bin/sips") else {
+            throw XCTSkip("sips not available on this host")
+        }
+        let tmp = NSTemporaryDirectory()
+        let pgmPath = tmp + "jpegdec-\(UUID().uuidString).pgm"
+        let jpgPath = tmp + "jpegdec-\(UUID().uuidString).jpg"
+        defer {
+            try? FileManager.default.removeItem(atPath: pgmPath)
+            try? FileManager.default.removeItem(atPath: jpgPath)
+        }
+        // 16×16 horizontal grey ramp.
+        var pgm = Data("P5\n16 16\n255\n".utf8)
+        for y in 0..<16 {
+            for x in 0..<16 {
+                pgm.append(UInt8(20 + x * 14))
+                _ = y
+            }
+        }
+        try pgm.write(to: URL(fileURLWithPath: pgmPath))
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/sips")
+        proc.arguments = ["-s", "format", "jpeg",
+                          "-s", "formatOptions", "90",
+                          pgmPath, "--out", jpgPath]
+        proc.standardOutput = Pipe()
+        proc.standardError = Pipe()
+        try proc.run()
+        proc.waitUntilExit()
+        guard proc.terminationStatus == 0 else {
+            throw XCTSkip("sips conversion failed")
+        }
+        let jpg = try Data(contentsOf:
+            URL(fileURLWithPath: jpgPath))
+        let frame = try JPEGDecoder.decode(jpg)
+        XCTAssertEqual(frame.width, 16)
+        XCTAssertEqual(frame.height, 16)
+        XCTAssertEqual(frame.channels, 1)
+        XCTAssertEqual(frame.colorSpace, .grayscale)
+        // The decoded ramp should track the input within ±15
+        // per sample (q=90 JPEG plus YCbCr round-trip slack).
+        // Read original PPM bytes back for comparison.
+        let original = Array(pgm.suffix(16 * 16))
+        var maxErr = 0
+        for i in 0..<(16 * 16) {
+            let d = abs(Int(frame.data[i]) - Int(original[i]))
+            if d > maxErr { maxErr = d }
+        }
+        XCTAssertLessThan(maxErr, 16,
+            "grayscale max-error \(maxErr) too high for q=90")
+    }
+
+    func testJPEGDecoder_RGBRoundTrip() throws {
+        guard FileManager.default.isExecutableFile(
+            atPath: "/usr/bin/sips") else {
+            throw XCTSkip("sips not available on this host")
+        }
+        let tmp = NSTemporaryDirectory()
+        let ppmPath = tmp + "jpegdec-\(UUID().uuidString).ppm"
+        let jpgPath = tmp + "jpegdec-\(UUID().uuidString).jpg"
+        defer {
+            try? FileManager.default.removeItem(atPath: ppmPath)
+            try? FileManager.default.removeItem(atPath: jpgPath)
+        }
+        // 16×16 mid-grey constant — well within JPEG's
+        // tolerance regardless of subsampling.
+        var ppm = Data("P6\n16 16\n255\n".utf8)
+        ppm.append(Data(repeating: 128, count: 16 * 16 * 3))
+        try ppm.write(to: URL(fileURLWithPath: ppmPath))
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/sips")
+        proc.arguments = ["-s", "format", "jpeg",
+                          "-s", "formatOptions", "90",
+                          ppmPath, "--out", jpgPath]
+        proc.standardOutput = Pipe()
+        proc.standardError = Pipe()
+        try proc.run()
+        proc.waitUntilExit()
+        guard proc.terminationStatus == 0 else {
+            throw XCTSkip("sips conversion failed")
+        }
+        let jpg = try Data(contentsOf:
+            URL(fileURLWithPath: jpgPath))
+        let frame = try JPEGDecoder.decode(jpg)
+        XCTAssertEqual(frame.width, 16)
+        XCTAssertEqual(frame.height, 16)
+        XCTAssertEqual(frame.channels, 3)
+        XCTAssertEqual(frame.colorSpace, .sRGB)
+        // Every recovered RGB pixel should be near (128, 128, 128).
+        var maxErr = 0
+        for i in 0..<frame.data.count {
+            let d = abs(Int(frame.data[i]) - 128)
+            if d > maxErr { maxErr = d }
+        }
+        XCTAssertLessThan(maxErr, 16,
+            "RGB max-error \(maxErr) too high for mid-grey q=90")
+    }
+
+    func testJPEGDecoder_RejectsProgressive() throws {
+        // We don't have an easy progressive-JPEG generator
+        // available at test time, but we can construct a minimal
+        // SOF2 fixture by mutating the minimal fixture's SOF
+        // marker byte. The decoder should reject with .unsupported.
+        var data = minimalJPEG()
+        // Find the SOF0 byte (0xFF 0xC0) and change to SOF2.
+        for i in 0..<(data.count - 1) {
+            if data[i] == 0xFF && data[i + 1] == 0xC0 {
+                data[i + 1] = 0xC2
+                break
+            }
+        }
+        XCTAssertThrowsError(try JPEGDecoder.decode(data)) { err in
+            guard let e = err as? JPEGDecoderError else {
+                XCTFail("expected JPEGDecoderError, got \(err)")
+                return
+            }
+            if case .unsupported = e {} else {
+                XCTFail("expected .unsupported, got \(e)")
+            }
+        }
+    }
+
     // MARK: - byte-stuffing + RST skip stress
 
     func testJPEGSegmentReader_HandlesByteStuffing() throws {

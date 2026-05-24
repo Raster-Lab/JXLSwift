@@ -49,6 +49,20 @@ struct Decode: ParsableCommand {
             throw JXLExitCode.invalidArguments
         }
 
+        // Phase J — `jxl decode` recognises plain JPEG inputs and
+        // routes through JPEGDecoder. Auto-detected via SOI magic.
+        if JPEGSegmentReader.looksLikeJPEG(jxlData) {
+            if allFrames || frameIndex != nil {
+                print("error: --all-frames / --frame are "
+                    + "JXL-only (JPEG is single-frame)",
+                    to: &standardError)
+                throw JXLExitCode.invalidArguments
+            }
+            try runJPEG(jpgData: jxlData,
+                        outputURL: URL(fileURLWithPath: output))
+            return
+        }
+
         if allFrames {
             try runMultiFrame(jxlData: jxlData)
         } else if let idx = frameIndex {
@@ -59,6 +73,36 @@ struct Decode: ParsableCommand {
             try runSingleFrame(jxlData: jxlData,
                                outputURL: URL(fileURLWithPath: output))
         }
+    }
+
+    private func runJPEG(jpgData: Data, outputURL: URL) throws {
+        let frame: ImageFrame
+        do { frame = try JPEGDecoder.decode(jpgData) }
+        catch let e as JPEGDecoderError {
+            print("JPEG decode error: "
+                + (e.errorDescription ?? "\(e)"),
+                to: &standardError)
+            throw JXLExitCode.generalError
+        }
+        let pnm: Data
+        do { pnm = try PNM.write(frame) }
+        catch let e as PNMError {
+            print("PNM write error: \(e)", to: &standardError)
+            throw JXLExitCode.generalError
+        }
+        do { try pnm.write(to: outputURL) }
+        catch {
+            print("error writing \(output): \(error)",
+                to: &standardError)
+            throw JXLExitCode.generalError
+        }
+        print(
+            "decoded JPEG \(frame.width)×\(frame.height) "
+            + "\(channelDescription(frame.channels))"
+            + " \(frame.pixelType.bitsPerSample)-bit: "
+            + "\(formatBytes(jpgData.count)) → "
+            + "\(formatBytes(pnm.count))"
+        )
     }
 
     private func runSingleFrameAt(
