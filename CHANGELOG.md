@@ -11,6 +11,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0b — CLI: `jxl info foo.jpg` surfaces coefficient-image structure
+
+Small follow-on to v0.12.0a. The new `JPEGDecoder.decodeToCoefficients(_:)` API just landed; `jxl info` on a JPEG now uses it to print a per-component coefficient diagnostic alongside the existing structural summary. Useful for anyone working on the in-progress JPEG → JXL coefficient bridge — the per-component sampling factors, quant-table bindings, and block grid sizes are all visible at a glance.
+
+- **`Sources/JXLTool/Info.swift`** — when `decodeToCoefficients(_:)` succeeds on a JPEG input, print a `--- JPEG coefficients (Phase J) ---` block listing total coefficient count and per-component `(blocksWide × blocksHigh, sampling, quant-table ID, DC factor)`. For out-of-scope inputs (progressive / 12-bit / CMYK), the helper silently skips so the basic structural summary still prints — no throw propagation to the user.
+- **End-to-end smoke** on a 16×16 RGB sips JPEG: reports `Total coefs: 384 (6 × 8×8 blocks)` then `[0] comp=1 2×2 blocks (H=2 V=2, qt=0, DC=1)`, `[1] comp=2 1×1 blocks (H=1 V=1, qt=1, DC=1)`, `[2] comp=3 1×1 blocks (H=1 V=1, qt=1, DC=1)` — the 4:2:0 chroma subsampling is immediately visible.
+- **No new tests** — the JPEG-decode side is covered by the v0.12.0a coefficient-image tests; `jxl info` is thin dispatch best smoke-tested manually.
+- **511 tests passing, 6 skipped, 0 failures** (unchanged from v0.12.0a — pure CLI plumbing).
+
 ### v0.12.0a — Phase J: `JPEGCoefficientImage` + `decodeToCoefficients(_:)`
 
 First v0.12.0 bite — opens the data-handoff seam between the JPEG decode stack and the eventual JXL VarDCT *coefficient bridge* (the libjxl-style transcode shortcut that packs JPEG quantised coefficients into a JXL frame without IDCT). No JXL-side machinery yet; this commit just exposes the right structured output from the JPEG side so the bridge can be built against a stable type.

@@ -214,6 +214,41 @@ private func printJPEGInfo(path: String, data: Data) throws {
     if s.hasRestartInterval {
         print("Restart:      DRI present")
     }
+    // Phase J coefficient diagnostic — when the file is in scope
+    // for `JPEGDecoder.decodeToCoefficients` (baseline-sequential
+    // 1 or 3 components, 8-bit), report the coefficient-image
+    // shape that the eventual JXL coefficient bridge will see.
+    // For out-of-scope inputs (progressive / 12-bit / CMYK /
+    // arithmetic-coded), silently skip — the basic structural
+    // summary above is still useful and the throw shouldn't
+    // poison `jxl info`.
+    if let coef = try? JPEGDecoder.decodeToCoefficients(data) {
+        print()
+        print("--- JPEG coefficients (Phase J) ---")
+        let totalBlocks = coef.quantisedComponents.reduce(0) {
+            $0 + $1.blocks.count
+        }
+        print("Total coefs:  \(coef.totalCoefficientCount) "
+            + "(\(totalBlocks) × 8×8 blocks)")
+        for (i, cb) in coef.quantisedComponents.enumerated() {
+            let fc = coef.frameComponents.first(
+                where: { $0.componentId == cb.componentId })
+            let sampling = fc.map {
+                "H=\($0.hSamplingFactor) V=\($0.vSamplingFactor)"
+            } ?? "?"
+            let qt = fc.flatMap { fc in
+                coef.quantTables.first(where: {
+                    $0.tableId == fc.quantTableId
+                })
+            }
+            let dc = qt?.zigZagValues.first.map(String.init)
+                ?? "?"
+            print("  [\(i)] comp=\(cb.componentId) "
+                + "\(cb.blocksWide)×\(cb.blocksHigh) blocks "
+                + "(\(sampling), qt=\(fc?.quantTableId ?? -1), "
+                + "DC=\(dc))")
+        }
+    }
     print()
     print("Note: JPEG → JXL transcoding (Phase J) is on the roadmap "
         + "but not yet implemented. `jxl info` reads JPEG structure "
