@@ -311,11 +311,12 @@ Frontier-marker test: [`testVarDCT_RealCjxlFixture_ProgressMarker`](Tests/JXLSwi
 
 | Item | Status |
 |---|---|
-| Lossless JPEG-1 → JXL transcoding | ⏳ |
+| JPEG marker / segment walker (`JPEGSegmentReader`, `JPEGMarkerKind`, `JPEGStructure`) | ✅ — `Sources/JXLSwift/JPEG/`. Walks SOI → EOI honouring byte-stuffing and RSTn markers; extracts dimensions, frame kind (SOF0/1/2/3/…), component count, precision, DQT/DHT segment counts, JFIF / EXIF / Adobe metadata, DAC / DRI presence. 11 tests (hand-crafted minimal-JPEG fixture covering SOI / APP0 / DQT / DHT / SOF0 / SOS / EOI sequence + payload-length assertions, byte-stuffing + RST skip stress, non-JPEG rejection, magic-byte detector) plus 1 real-fixture test (`sips` generates a JPEG from a synthetic 8×8 PPM, structure asserts dimensions / components / DCT mode). `jxl info` auto-recognises JPEG inputs and prints the structure. |
+| Lossless JPEG-1 → JXL transcoding | ⏳ — needs Huffman decoder + dequantiser + JXL-side encoder bridge above the segment reader. |
 | Bitwise-identical JXL → JPEG-1 reconstruction | ⏳ |
 | `jbrd` box (JPEG bitstream reconstruction data) handling | ⏳ |
 
-This is a distinguishing feature of JPEG XL and a stated project requirement.
+This is a distinguishing feature of JPEG XL and a stated project requirement. The Phase J foundation landed v0.11.0by; transcode pipeline still requires the Huffman / quantiser / coefficient layers above the structural walker.
 
 ### Phase O — Optimisation paths (independent of correctness)
 

@@ -25,6 +25,14 @@ struct Info: ParsableCommand {
             throw JXLExitCode.invalidArguments
         }
         let data = try Data(contentsOf: url)
+        // Phase J kickoff: `jxl info` recognises plain JPEG inputs
+        // as a courtesy — useful for the transcoding workflow
+        // where users will eventually feed `.jpg` into the same
+        // tool. Pure structural read; no entropy decode.
+        if JPEGSegmentReader.looksLikeJPEG(data) {
+            try printJPEGInfo(path: input, data: data)
+            return
+        }
         let inspection = try JXLDecoder().inspect(data)
 
         print("File:         \(input)")
@@ -158,4 +166,46 @@ private func formatBitDepth(_ bd: BitDepth) -> String {
         return "\(bd.bitsPerSample)-bit float (exp=\(bd.exponentBitsPerSample))"
     }
     return "\(bd.bitsPerSample)-bit unsigned"
+}
+
+/// Print the high-level structure of a plain JPEG file. First step
+/// on the Phase J (JXL ↔ JPEG transcoding) road — the same input
+/// will eventually feed `jxl transcode` and produce a JXL output
+/// that round-trips byte-for-byte back to the JPEG.
+private func printJPEGInfo(path: String, data: Data) throws {
+    let s: JPEGStructure
+    do { s = try JPEGStructure.read(data) }
+    catch let e as JPEGParseError {
+        print("error parsing JPEG \(path): "
+            + (e.errorDescription ?? "\(e)"),
+              to: &standardError)
+        throw JXLExitCode.generalError
+    }
+    print("File:         \(path)")
+    print("Size:         \(formatBytes(data.count))")
+    print("Form:         JPEG (ISO/IEC 10918-1)")
+    print("Dimensions:   \(s.width)×\(s.height)")
+    print("Components:   \(s.componentCount) "
+        + "(\(channelDescription(s.componentCount)))")
+    print("Precision:    \(s.precision)-bit")
+    print("Frame kind:   \(s.frameKind.label)")
+    print("DQT segments: \(s.dqtSegmentCount)")
+    print("DHT segments: \(s.dhtSegmentCount)")
+    var markers: [String] = []
+    if s.hasJFIF { markers.append("JFIF") }
+    if s.hasEXIF { markers.append("EXIF") }
+    if s.hasAdobe { markers.append("Adobe") }
+    if !markers.isEmpty {
+        print("Metadata:     \(markers.joined(separator: ", "))")
+    }
+    if s.usesArithmeticCoding {
+        print("Coding:       arithmetic (uncommon)")
+    }
+    if s.hasRestartInterval {
+        print("Restart:      DRI present")
+    }
+    print()
+    print("Note: JPEG → JXL transcoding (Phase J) is on the roadmap "
+        + "but not yet implemented. `jxl info` reads JPEG structure "
+        + "today as the first Phase J deliverable.")
 }
