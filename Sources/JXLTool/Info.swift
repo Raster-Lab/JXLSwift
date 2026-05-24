@@ -14,6 +14,10 @@ struct Info: ParsableCommand {
     @Argument(help: "JPEG XL file path")
     var input: String
 
+    @Flag(name: .long,
+          help: "List every frame's duration / isLast / encoding / section count (multi-frame animations).")
+    var frames: Bool = false
+
     func run() throws {
         let url = URL(fileURLWithPath: input)
         guard FileManager.default.fileExists(atPath: url.path) else {
@@ -104,6 +108,25 @@ struct Info: ParsableCommand {
                 }
                 if let upc = fi.usePrefixCode {
                     print("Pixel codec:  \(upc ? "prefix codes" : "rANS")")
+                }
+            }
+            // Per-frame listing for multi-frame animations.
+            if frames {
+                if let summaries = try? JXLDecoder()
+                    .inspectFrames(data) {
+                    print()
+                    print("--- Per-frame structure ---")
+                    for s in summaries {
+                        let enc = s.encoding == .modular
+                            ? "Modular" : "VarDCT"
+                        let lastFlag = s.isLast ? " (last)" : ""
+                        print(
+                            "  [\(s.index)] dur=\(s.duration) "
+                            + "encoding=\(enc) "
+                            + "sections=\(s.sectionCount) "
+                            + "bytes=\(formatBytes(s.totalSectionBytes))"
+                            + "\(lastFlag)")
+                    }
                 }
             }
         }

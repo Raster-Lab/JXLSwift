@@ -3062,6 +3062,97 @@ public struct JXLDecoder: Sendable {
         return (try? SizeHeader.read(from: &r).ysize) ?? 0
     }
 
+    /// One-line summary of an animation frame. Returned by
+    /// `inspectFrames(_:)`. Cheap to compute — no pixel decode.
+    public struct FrameSummary: Sendable, Equatable {
+        /// 0-based frame index.
+        public let index: Int
+        /// Frame duration in tps units (libjxl-default 100 tps,
+        /// so 1 unit = 10 ms). Multi-frame codestreams carry this
+        /// in each FrameHeader's animation block; single-frame
+        /// codestreams return 0.
+        public let duration: UInt32
+        /// True only on the last frame; signals end of animation.
+        public let isLast: Bool
+        /// VarDCT (lossy) or Modular (lossless) per-frame encoding.
+        public let encoding: FrameEncoding
+        /// Number of TOC sections in this frame.
+        public let sectionCount: Int
+        /// Total byte size of this frame's section payloads
+        /// (header + TOC + sections). Useful for estimating
+        /// per-frame bitrate.
+        public let totalSectionBytes: Int
+    }
+
+    /// Walk every frame's FrameHeader + TOC and return a per-frame
+    /// summary. Same cost order as `countFrames(_:)` — no pixel
+    /// decode. Useful for `jxl info --frames` and any caller that
+    /// wants to inspect an animation's per-frame structure
+    /// (durations, encoding, sizes) without paying for the full
+    /// decode.
+    public func inspectFrames(_ data: Data) throws -> [FrameSummary] {
+        if MinimalLosslessCodec.isM0(data) {
+            return [FrameSummary(
+                index: 0, duration: 0, isLast: true,
+                encoding: .modular, sectionCount: 0,
+                totalSectionBytes: 0)]
+        }
+        let codestream: Data
+        do {
+            switch try parseJXLContainer(data) {
+            case .naked:
+                codestream = data
+            case .iso(let boxes):
+                codestream = try extractCodestream(
+                    from: boxes, in: data)
+            }
+        } catch let e as ContainerError {
+            throw DecoderError.container(e)
+        }
+        guard hasCodestreamSignature(codestream) else {
+            throw DecoderError.missingSignature
+        }
+        var r = BitReader(codestream, startingAt: 16)
+        let _ = try SizeHeader.read(from: &r)
+        let metadata = try ImageMetadata.read(from: &r)
+        try r.readCustomTransformData(
+            xybEncoded: metadata.xybEncoded)
+        try r.alignToByte()
+        let ctx = FrameHeaderContext(
+            xybEncoded: metadata.xybEncoded,
+            numExtraChannels: metadata.extraChannels.count,
+            haveAnimation: metadata.animation != nil,
+            haveTimecodes:
+                metadata.animation?.haveTimecodes ?? false)
+        var out: [FrameSummary] = []
+        while true {
+            let fh = try FrameHeader.read(from: &r, context: ctx)
+            let xs = Int(codestreamXSize(codestream))
+            let ys = Int(codestreamYSize(codestream))
+            let groupDim = 128 << Int(fh.groupSizeShift)
+            let dcGroupDim = groupDim << 3
+            let numG = ((xs + groupDim - 1) / groupDim)
+                * ((ys + groupDim - 1) / groupDim)
+            let numDG = ((xs + dcGroupDim - 1) / dcGroupDim)
+                * ((ys + dcGroupDim - 1) / dcGroupDim)
+            let entries = TOC.numEntries(
+                numGroups: numG, numDcGroups: numDG,
+                numPasses: Int(fh.passes.numPasses))
+            let toc = try TOC.read(from: &r, numEntries: entries)
+            let total = toc.entrySizes.reduce(0) { $0 + Int($1) }
+            out.append(FrameSummary(
+                index: out.count,
+                duration: fh.animationFrame.duration,
+                isLast: fh.isLast,
+                encoding: fh.encoding,
+                sectionCount: toc.entrySizes.count,
+                totalSectionBytes: total))
+            try r.skip(bits: total * 8)
+            if fh.isLast { break }
+        }
+        return out
+    }
+
     /// Count the number of frames in a JPEG XL codestream without
     /// decoding any pixels — walks each frame's FrameHeader + TOC
     /// + skips the section bytes, stopping at the frame whose

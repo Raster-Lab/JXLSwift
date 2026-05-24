@@ -636,6 +636,22 @@ v0.11.0bj's `encodeModularAnimation8` was 8-bit RGB / RGBA only. v0.11.0bl gener
 - **Verified.** `testJXLEncoder_LosslessMultiFrameGeneralised` exercises (1) 8-bit grayscale 3-frame animation (full-array byte equality) and (2) 16-bit grayscale 3-frame animation (full-array byte equality across the 16-bit-packed `f.data`). Both round-trip exactly through our `decodeAll`.
 - **430 tests passing, 5 skipped, 0 failures.**
 
+### v0.11.0bm — `JXLDecoder.inspectFrames(_:)` + `jxl info --frames` per-frame listing
+
+`countFrames` reports only the total count; v0.11.0bm adds a per-frame summary that includes duration, isLast, encoding (VarDCT / Modular), section count, and total section bytes. Same cost as `countFrames` — no pixel decode.
+
+- **`JXLDecoder.FrameSummary`** — new public struct: `index`, `duration`, `isLast`, `encoding`, `sectionCount`, `totalSectionBytes`.
+- **`JXLDecoder.inspectFrames(_:) -> [FrameSummary]`** — walks each frame's FrameHeader + TOC + skips sections, returns one summary per frame. For single-frame codestreams returns `[summary]` (1 entry); for multi-frame animations returns N entries.
+- **`Info` subcommand `--frames` flag** — prints a `Per-frame structure` block listing every frame's stats. Example for a 3-frame animation with `--frame-duration 50,10,100`:
+  ```
+  --- Per-frame structure ---
+    [0] dur=50 encoding=VarDCT sections=1 bytes=33 B
+    [1] dur=10 encoding=VarDCT sections=1 bytes=34 B
+    [2] dur=100 encoding=VarDCT sections=1 bytes=31 B (last)
+  ```
+- **Verified.** `testJXLDecoder_InspectFrames` pins down the values for a 3-frame variable-duration animation (50, 10, 100 — last frame flagged `isLast`) and a single-frame codestream (1 summary, duration=0, isLast=true).
+- **431 tests passing, 5 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)

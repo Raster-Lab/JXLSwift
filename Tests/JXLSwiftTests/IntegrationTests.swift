@@ -10318,6 +10318,45 @@ extension FoundationTests {
             "djxl rejected the RGBA animation; stderr: \(err)")
     }
 
+    /// `JXLDecoder.inspectFrames(_:)` reports per-frame duration /
+    /// isLast / encoding / section count without decoding pixels.
+    /// Pin the values down: 3-frame animation with non-uniform
+    /// durations, isLast set only on the last frame.
+    func testJXLDecoder_InspectFrames() throws {
+        let dim = 16
+        var f = ImageFrame(width: dim, height: dim, channels: 3)
+        for i in 0..<(dim * dim) {
+            f.data[i * 3 + 0] = UInt8((i * 7) & 0xff)
+            f.data[i * 3 + 1] = UInt8((i * 11) & 0xff)
+            f.data[i * 3 + 2] = UInt8((i * 13) & 0xff)
+        }
+        // 3-frame animation with varied durations.
+        let cs = try VarDCTBitstreamWriter.encodeAnimation(
+            frames: [f, f, f],
+            frameDurations: [50, 10, 100])
+        let summaries = try JXLDecoder().inspectFrames(cs)
+        XCTAssertEqual(summaries.count, 3)
+        XCTAssertEqual(summaries[0].index, 0)
+        XCTAssertEqual(summaries[0].duration, 50)
+        XCTAssertFalse(summaries[0].isLast)
+        XCTAssertEqual(summaries[1].duration, 10)
+        XCTAssertFalse(summaries[1].isLast)
+        XCTAssertEqual(summaries[2].duration, 100)
+        XCTAssertTrue(summaries[2].isLast)
+        for s in summaries {
+            XCTAssertEqual(s.encoding, .varDCT)
+            XCTAssertGreaterThan(s.sectionCount, 0)
+            XCTAssertGreaterThan(s.totalSectionBytes, 0)
+        }
+        // Single-frame codestream — 1 summary, isLast=true,
+        // duration=0 (no animation metadata).
+        let single = try VarDCTBitstreamWriter.encode(frame: f)
+        let sumSingle = try JXLDecoder().inspectFrames(single)
+        XCTAssertEqual(sumSingle.count, 1)
+        XCTAssertTrue(sumSingle[0].isLast)
+        XCTAssertEqual(sumSingle[0].duration, 0)
+    }
+
     /// Generalised lossless animation — grayscale and 16-bit
     /// frames. The v0.11.0bj initial implementation only handled
     /// 8-bit RGB/RGBA; v0.11.0bl extends to grayscale (1ch) and
