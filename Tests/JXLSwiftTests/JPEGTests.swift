@@ -793,6 +793,71 @@ final class JPEGFoundationTests: XCTestCase {
         XCTAssertEqual(calls, 1)
     }
 
+    // MARK: - JPEGBitReader
+
+    func testJPEGBitReader_ReadsMSBFirst() throws {
+        // 0b10110011 = 0xB3 — reading bits one at a time should
+        // yield 1, 0, 1, 1, 0, 0, 1, 1.
+        var r = JPEGBitReader(Data([0xB3]))
+        let bits = (0..<8).map { _ in try! r.readBit() }
+        XCTAssertEqual(bits, [1, 0, 1, 1, 0, 0, 1, 1])
+    }
+
+    func testJPEGBitReader_ReadBitsAcrossByteBoundary() throws {
+        // 0xB3 0x95 = 10110011 10010101. Reading 12 bits MSB-first
+        // yields 0b1011_0011_1001 = 0xB39.
+        var r = JPEGBitReader(Data([0xB3, 0x95]))
+        let v = try r.readBits(12)
+        XCTAssertEqual(v, 0xB39)
+    }
+
+    func testJPEGBitReader_HandlesStuffedFF() throws {
+        // The literal byte 0xFF arrives as 0xFF 0x00; the bit
+        // reader should silently consume the 0x00. So 0xFF 0x00
+        // 0xC3 streamed bit-by-bit gives the bits of 0xFFC3.
+        var r = JPEGBitReader(Data([0xFF, 0x00, 0xC3]))
+        let v = try r.readBits(16)
+        XCTAssertEqual(v, 0xFFC3)
+    }
+
+    func testJPEGBitReader_DetectsRSTMarker() throws {
+        // 0x10 0xFF 0xD2 0x20 — second byte is FF D2 (RST2),
+        // should be silently skipped and markerSeen set to 0xD2.
+        var r = JPEGBitReader(
+            Data([0x10, 0xFF, 0xD2, 0x20]))
+        _ = try r.readBits(8)       // consume 0x10
+        XCTAssertNil(r.markerSeen)
+        let v = try r.readBits(8)   // pull next entropy byte
+        XCTAssertEqual(v, 0x20)
+        XCTAssertEqual(r.markerSeen, 0xD2)
+    }
+
+    func testJPEGBitReader_ThrowsOnNonRSTMarker() throws {
+        // 0xAA 0xFF 0xD9 — entropy data ends at the EOI marker.
+        // Reading past the 8th bit should throw .sawMarker(0xD9).
+        var r = JPEGBitReader(Data([0xAA, 0xFF, 0xD9]))
+        _ = try r.readBits(8)
+        XCTAssertThrowsError(try r.readBit()) { err in
+            guard case let JPEGBitReaderError.sawMarker(m) = err
+            else {
+                XCTFail("expected .sawMarker, got \(err)")
+                return
+            }
+            XCTAssertEqual(m, 0xD9)
+        }
+        // The marker pair should still be visible at the source
+        // cursor for the caller to re-read.
+        XCTAssertEqual(r.sourceByteOffset, 1)
+    }
+
+    func testJPEGBitReader_ThrowsOnTruncated() throws {
+        var r = JPEGBitReader(Data())
+        XCTAssertThrowsError(try r.readBit()) { err in
+            XCTAssertEqual(err as? JPEGBitReaderError,
+                           .truncated)
+        }
+    }
+
     // MARK: - byte-stuffing + RST skip stress
 
     func testJPEGSegmentReader_HandlesByteStuffing() throws {

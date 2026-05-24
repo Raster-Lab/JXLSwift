@@ -695,6 +695,18 @@ The `benchmark` subcommand previously hardcoded the M0 placeholder codec — so 
 - **End-to-end manual verification.** Multi-value, repeated, and glob forms all produce the same 169 B 3-frame animation; the single-frame form unchanged.
 - **432 tests passing, 5 skipped, 0 failures.**
 
+### v0.11.0cd — Phase J: JPEG MSB-first bit reader (byte-unstuffing + RST-aware)
+
+Sixth Phase J bite. Sits between the JPEG entropy *byte* stream and the Huffman codebook's `decodeSymbol` loop. Three concerns: MSB-first bit packing (JPEG §F.2.2.5), 0xFF 0x00 byte-stuffing (§F.1.2.3), RST-marker skipping mid-scan.
+
+- **`Sources/JXLSwift/JPEG/JPEGBitReader.swift`** (new). `JPEGBitReader.readBit()` returns one bit MSB-first; `readBits(N)` reads 1..32 bits as a big-endian unsigned int. The byte-fill path detects `0xFF` and dispatches:
+  - `0xFF 0x00` → silently consume the stuffed pair, emit `0xFF` as the literal byte.
+  - `0xFF D0..D7` (RSTn) → silently consume + set `markerSeen` for the caller's DC-differential reset; recurse to fetch the next entropy byte.
+  - `0xFF` + anything else → push the marker pair back and throw `JPEGBitReaderError.sawMarker(markerByte:)`, signalling end-of-scan.
+- **Why not share the JXL `BitReader`?** That one is LSB-first with no byte-stuffing — extending it would muddy two clean abstractions. The JPEG bit reader is its own type; the per-source-cursor pattern lets callers split a scan across RST intervals if needed.
+- **6 new tests**: MSB-first read of `0xB3` (bits 1,0,1,1,0,0,1,1), 12-bit read across a byte boundary (`0xB3 0x95 → 0xB39`), stuffed-FF transparency (`0xFF 0x00 0xC3 → 0xFFC3`), RST2 skip with `markerSeen` set, non-RST marker → `.sawMarker(0xD9)` + cursor preserved, truncated-input → `.truncated`.
+- **479 tests passing, 6 skipped, 0 failures** (was 473; +6).
+
 ### v0.11.0cc — Phase J: JPEG canonical Huffman codebook builder (§C.2)
 
 Fifth Phase J bite. Turns the `(bits, huffvals)` records produced by v0.11.0ca into queryable runtime Huffman codebooks via the ITU-T T.81 §C.2 canonical-code algorithm. With this layer the JPEG side has everything a Huffman *decoder* needs — building the actual entropy-decoder loop on top is the next bite.
