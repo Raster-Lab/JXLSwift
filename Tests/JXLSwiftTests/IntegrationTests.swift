@@ -9997,8 +9997,8 @@ extension FoundationTests {
     /// carrying real detail.
     /// Diagnostic measurement (not an assertion) — print the
     /// encoder's mean round-trip error and codestream size across
-    /// all four (gaborish, adaptiveQF) combinations on a smooth
-    /// 24×24 gradient. Useful for spotting regressions in encoder
+    /// all four (gaborish, adaptiveQF) combinations on multiple
+    /// fixture types. Useful for spotting regressions in encoder
     /// quality. Skipped unless `JXL_PRINT_ENC_QUALITY` is set in
     /// the environment.
     func testVarDCTBitstreamWriter_EncodeQualityMatrix() throws {
@@ -10007,29 +10007,58 @@ extension FoundationTests {
             throw XCTSkip("set JXL_PRINT_ENC_QUALITY to run")
         }
         let dim = 24
-        var frame = ImageFrame(width: dim, height: dim, channels: 3)
-        for y in 0..<dim {
-            for x in 0..<dim {
-                let i = (y * dim + x) * 3
-                frame.data[i + 0] = UInt8(40 + x * 3)
-                frame.data[i + 1] = UInt8(50 + y * 3)
-                frame.data[i + 2] = UInt8(70 + (x + y) * 2)
-            }
-        }
-        for gab in [true, false] {
-            for aqf in [true, false] {
-                let cs = try VarDCTBitstreamWriter.encode(
-                    frame: frame, gaborish: gab, adaptiveQF: aqf)
-                let dec = try JXLDecoder().decode(cs)
-                var s = 0
-                for i in 0..<(dim * dim * 3) {
-                    s += abs(Int(dec.data[i])
-                             - Int(frame.data[i]))
+        let fixtures: [(name: String, build: (Int, Int) -> (UInt8, UInt8, UInt8))] = [
+            ("smooth-gradient",   { x, y in
+                (UInt8(40 + x * 3), UInt8(50 + y * 3),
+                 UInt8(70 + (x + y) * 2))
+            }),
+            ("checkerboard",      { x, y in
+                let c = (x + y).isMultiple(of: 2)
+                return (c ? 220 : 30, c ? 30 : 220, c ? 180 : 70)
+            }),
+            ("colour-mosaic",     { x, y in
+                let r = UInt8(((x * 17 + y * 5) & 0xff))
+                let g = UInt8(((x * 5 + y * 17) & 0xff))
+                let b = UInt8(((x * 7 + y * 11) & 0xff))
+                return (r, g, b)
+            }),
+            ("smooth-with-edge",  { x, y in
+                let v = UInt8(40 + (x < dim / 2 ? 0 : 100)
+                              + x % 5)
+                return (v, v, UInt8(clamping: Int(v) + 20))
+            }),
+        ]
+        for (name, build) in fixtures {
+            var frame = ImageFrame(
+                width: dim, height: dim, channels: 3)
+            for y in 0..<dim {
+                for x in 0..<dim {
+                    let i = (y * dim + x) * 3
+                    let (r, g, b) = build(x, y)
+                    frame.data[i + 0] = r
+                    frame.data[i + 1] = g
+                    frame.data[i + 2] = b
                 }
-                let mean = Double(s) / Double(dim * dim * 3)
-                FileHandle.standardError.write(Data(
-                    ("ENC-QUALITY gab=\(gab) aqf=\(aqf) "
-                     + "size=\(cs.count)B mean=\(mean)\n").utf8))
+            }
+            for gab in [true, false] {
+                for aqf in [true, false] {
+                    let cs = try VarDCTBitstreamWriter.encode(
+                        frame: frame,
+                        gaborish: gab, adaptiveQF: aqf)
+                    let dec = try JXLDecoder().decode(cs)
+                    var s = 0
+                    for i in 0..<(dim * dim * 3) {
+                        s += abs(Int(dec.data[i])
+                                 - Int(frame.data[i]))
+                    }
+                    let mean = Double(s)
+                        / Double(dim * dim * 3)
+                    FileHandle.standardError.write(Data(
+                        ("ENC-QUALITY [\(name)] "
+                         + "gab=\(gab) aqf=\(aqf) "
+                         + "size=\(cs.count)B "
+                         + "mean=\(mean)\n").utf8))
+                }
             }
         }
     }

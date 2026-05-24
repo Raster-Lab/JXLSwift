@@ -441,6 +441,25 @@ v0.11.0at fixes the bias by giving every cell helper a `currentQFOverride` it co
 - **Quality impact on the 24×24 diagnostic.** Identical to pre-fairness on this fixture (which fits in one 16-region): mean error 1.05 / 92–99 B per channel across the four (gab, aqf) combinations. The fairness fix is structural — its benefit shows on larger frames where the trial decisions actually shift.
 - **421 tests passing, 4 skipped, 0 failures.**
 
+### v0.11.0au — Adaptive-QF heuristic: combined-XYB-stddev driver
+
+v0.11.0am drove the per-block QF from Y-plane variance only. Real images carry detail in chroma too — sharp colour edges, dense mosaics, saturated textures — and a Y-only score under-quantises those cells. v0.11.0au broadens the driver to a weighted combination of per-channel standard deviation:
+
+    detail = (2·√varY + √varX + √varB) / 4
+    qf     = clamp(qfBase + round(50 · detail), [3, 16])
+
+Y still has twice the weight of X+B combined (luminance is the dominant perceptual axis), but chroma variance now contributes — colour-textured cells get fine quantisation alongside luminance-textured ones.
+
+- **`VarDCTEncoder.forward`** — the variance loop now accumulates `(sum, sumSq)` for each of `planeX`, `planeY`, `planeB` and computes the combined-stddev score. `sqrt(variance)` puts the metric in pixel-value units so the linear scale below behaves sanely across magnitudes. Same `[3, 16]` clamp as before.
+- **Measured quality gains** via `JXL_PRINT_ENC_QUALITY=1` over the new 4-fixture diagnostic matrix (24×24, distance 1.0):
+  - **checkerboard:** mean error **13.24** (adaptive on) vs **23.76** (off) — nearly halved; size 968 B vs 749 B.
+  - **colour-mosaic:** **4.85** vs **9.65** — half the error; 712 B vs 607 B.
+  - **smooth-with-edge:** **0.76** vs **0.84** — small gain; 128 B vs 126 B.
+  - **smooth-gradient:** **1.05** vs **1.18** — small gain; 99 B vs 91 B.
+  Default encode (gab=on, aqf=on) is the best or near-best on every fixture.
+- **Expanded diagnostic.** `testVarDCTBitstreamWriter_EncodeQualityMatrix` now iterates four fixture types (smooth-gradient / checkerboard / colour-mosaic / smooth-with-edge) and prints one `ENC-QUALITY [fixture] gab=… aqf=… size=…B mean=…` line per (fixture, gab, aqf) combination — 16 lines total.
+- **421 tests passing, 4 skipped, 0 failures.**
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)

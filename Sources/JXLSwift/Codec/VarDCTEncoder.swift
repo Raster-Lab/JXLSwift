@@ -156,37 +156,61 @@ public enum VarDCTEncoder {
                 to: &planeB, width: pw, height: ph)
         }
 
-        // (1.7) Per-block adaptive QF. Variance of the Y plane in
-        // each 8×8 cell drives the per-block quantisation factor —
-        // smoother cells get a coarser QF, textured cells get a
-        // finer one. Bound to `[qfMin, qfMax]` so the bitstream's
-        // ACMetadata can carry the value (libjxl JXL spec accepts
-        // QFs up to 255). This is a deliberately crude
-        // variance-driven heuristic — far from the butteraugli-
-        // driven adaptive quant libjxl uses, but it captures the
-        // core "spend bits where detail is" intuition.
+        // (1.7) Per-block adaptive QF. Combined per-channel XYB
+        // standard deviation of each 8×8 cell drives the per-block
+        // quantisation factor — smoother cells get a coarser QF,
+        // textured cells get a finer one. Bound to `[qfMin, qfMax]`
+        // so the bitstream's ACMetadata can carry the value (the
+        // JXL spec accepts QFs up to 255). The Y channel is the
+        // dominant perceptual axis (luminance); X and B chroma
+        // contribute with smaller weights so colour-textured cells
+        // (mosaics, sharp colour edges) also get fine quantisation.
+        // This is still a deliberately crude variance-driven
+        // heuristic — far from the butteraugli-driven adaptive
+        // quant libjxl uses — but it captures the core "spend bits
+        // where detail is" intuition for both luminance AND chroma.
         var qfPerBlock = [Int32](
             repeating: qf, count: blocksX * blocksY)
         if adaptiveQF {
             let qfMin: Int32 = 3, qfMax: Int32 = 16
+            // Per-channel weight for the combined detail score. XYB
+            // Y is in [0, 0.6]; X / B have smaller dynamic range, so
+            // their unweighted variances under-contribute. Weights
+            // give Y twice the say of X and B together.
+            let wY: Float = 2.0, wX: Float = 1.0, wB: Float = 1.0
+            let wSum = wY + wX + wB
             for by in 0..<blocksY {
                 for bx in 0..<blocksX {
-                    var sum: Float = 0, sumSq: Float = 0
+                    var sY: Float = 0, sqY: Float = 0
+                    var sX: Float = 0, sqX: Float = 0
+                    var sB: Float = 0, sqB: Float = 0
                     for ly in 0..<8 {
                         for lx in 0..<8 {
-                            let v = planeY[(by * 8 + ly) * pw
-                                           + (bx * 8 + lx)]
-                            sum += v
-                            sumSq += v * v
+                            let idx = (by * 8 + ly) * pw
+                                + (bx * 8 + lx)
+                            let yV = planeY[idx]
+                            let xV = planeX[idx]
+                            let bV = planeB[idx]
+                            sY += yV; sqY += yV * yV
+                            sX += xV; sqX += xV * xV
+                            sB += bV; sqB += bV * bV
                         }
                     }
-                    let mean = sum / 64.0
-                    let variance = max(
-                        0.0, sumSq / 64.0 - mean * mean)
-                    // `5 + round(10·√variance·5)`, clamped — gives
-                    // qf=5 for flat content, qf~10–15 for textured.
+                    let mY = sY / 64.0, mX = sX / 64.0, mB = sB / 64.0
+                    let vY = max(0.0, sqY / 64.0 - mY * mY)
+                    let vX = max(0.0, sqX / 64.0 - mX * mX)
+                    let vB = max(0.0, sqB / 64.0 - mB * mB)
+                    // Combined per-channel standard deviation —
+                    // weighted toward Y. `sqrt(variance)` puts the
+                    // metric in pixel-value units so the linear
+                    // scale below behaves sanely across magnitudes.
+                    let detail =
+                        (wY * vY.squareRoot()
+                         + wX * vX.squareRoot()
+                         + wB * vB.squareRoot()) / wSum
+                    // qf = round(qfBase + 50 · detail), clamped.
                     let scaled = Float(qf)
-                        + (10.0 * variance.squareRoot() * 5.0).rounded()
+                        + (50.0 * detail).rounded()
                     let qfBlock = Int32(min(Float(qfMax),
                         max(Float(qfMin), scaled)))
                     qfPerBlock[by * blocksX + bx] = qfBlock
