@@ -28,6 +28,10 @@ struct Decode: ParsableCommand {
           help: "Decode every frame of an animation. `output` is treated as a per-frame template.")
     var allFrames: Bool = false
 
+    @Option(name: .customLong("frame"),
+            help: "Decode just the frame at this 0-based index from a multi-frame animation. Mutually exclusive with `--all-frames`.")
+    var frameIndex: Int?
+
     func run() throws {
         let inputURL = URL(fileURLWithPath: input)
 
@@ -39,12 +43,55 @@ struct Decode: ParsableCommand {
             throw JXLExitCode.generalError
         }
 
+        if allFrames && frameIndex != nil {
+            print("error: --all-frames and --frame are mutually "
+                + "exclusive", to: &standardError)
+            throw JXLExitCode.invalidArguments
+        }
+
         if allFrames {
             try runMultiFrame(jxlData: jxlData)
+        } else if let idx = frameIndex {
+            try runSingleFrameAt(
+                jxlData: jxlData, index: idx,
+                outputURL: URL(fileURLWithPath: output))
         } else {
             try runSingleFrame(jxlData: jxlData,
                                outputURL: URL(fileURLWithPath: output))
         }
+    }
+
+    private func runSingleFrameAt(
+        jxlData: Data, index: Int, outputURL: URL
+    ) throws {
+        let frame: ImageFrame
+        do {
+            frame = try JXLDecoder().decodeFrame(
+                jxlData, at: index)
+        } catch let e as DecoderError {
+            print("decode error: \(e.localizedDescription)",
+                  to: &standardError)
+            throw JXLExitCode.generalError
+        }
+        let pnm: Data
+        do { pnm = try PNM.write(frame) }
+        catch let e as PNMError {
+            print("PNM write error: \(e)", to: &standardError)
+            throw JXLExitCode.generalError
+        }
+        do { try pnm.write(to: outputURL) }
+        catch {
+            print("error writing \(output): \(error)",
+                  to: &standardError)
+            throw JXLExitCode.generalError
+        }
+        print(
+            "decoded frame \(index): \(frame.width)×\(frame.height) "
+            + "\(channelDescription(frame.channels))"
+            + " \(frame.pixelType.bitsPerSample)-bit: "
+            + "\(formatBytes(jxlData.count)) → "
+            + "\(formatBytes(pnm.count))"
+        )
     }
 
     private func runSingleFrame(

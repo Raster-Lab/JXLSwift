@@ -660,6 +660,14 @@ Companion to `decodeAll(_:)` — when a caller only needs ONE frame of an animat
 - **Verified.** `testJXLDecoder_DecodeFrameAt` exercises (1) byte-exact fetch of each of 3 frames from a lossless animation, (2) out-of-range index throwing, (3) single-frame codestream at `index = 0` working, at `index = 1` throwing.
 - **432 tests passing, 5 skipped, 0 failures.**
 
+### v0.11.0bo — CLI `jxl decode --frame N`: fetch one frame from an animation
+
+The `Decode` subcommand previously offered `--all-frames` (decode every frame) or the default (decode frame 0). v0.11.0bo adds `--frame N` for fetching just frame N — useful for grabbing a specific keyframe or thumbnail without decoding the whole animation.
+
+- **`Decode --frame N`** — dispatches to `JXLDecoder.decodeFrame(_:at:)`. Mutually exclusive with `--all-frames` (using both errors with a clear message).
+- **End-to-end manual verification.** `jxl decode -i varied.jxl -o just-frame-1.ppm --frame 1` extracts only frame 1 (green: 61, 200, 61) from the 3-frame red/green/blue animation. `--frame 99` errors with "index 99 out of range (codestream has 3 frames)". `--all-frames --frame 1` errors "mutually exclusive".
+- **432 tests passing, 5 skipped, 0 failures** (the CLI flag is a thin layer over the already-tested `decodeFrame` API).
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)
