@@ -571,6 +571,14 @@ The `--frame-duration` option from v0.11.0bd was accepted by the CLI but never t
 - **Verified.** `testJXLEncoder_FrameDurationOption` encodes the same 2-frame fixture twice with different `defaultFrameDuration` values (10 vs 50) and confirms the codestreams differ (proves the value flows through to the per-frame `animationFrame.duration` field). End-to-end manual: `jxl encode -i f0 -i f1 -o a.jxl --frame-duration 50` produces a byte-distinct codestream from the default-10 version.
 - **423 tests passing, 5 skipped, 0 failures.**
 
+### v0.11.0bf — CLI: `jxl decode --all-frames` multi-frame decode
+
+`jxl decode` previously only handled single-frame inputs (`JXLDecoder.decode(_:)`). v0.11.0bf adds `--all-frames` for multi-frame inputs — dispatches to `decodeAll(_:)` and writes one PNM per frame using `output` as a `printf`-style template (e.g. `out-%03d.ppm`). When `--all-frames` is set and the template has no `%d` spec, the implementation falls back to inserting `-NN` before the file extension (`out.ppm` → `out-00.ppm`, `out-01.ppm`, …), so users who forget the spec still get distinct per-frame filenames.
+
+- **`Decode` subcommand** — new `--all-frames` flag; existing single-frame path unchanged. Multi-frame path uses a `renderTemplate(_:index:)` helper to produce per-frame paths.
+- **End-to-end manual verification.** Encoded a 3-frame red / green / blue animation via the v0.11.0bd CLI multi-frame encode, decoded with `jxl decode -i anim.jxl -o "dec-%03d.ppm" --all-frames`. Output: three PPM files, first pixel of each `(200, 60, 59)` / `(61, 200, 61)` / `(60, 60, 200)` — within ±1 of the source RGB. The fallback (`out.ppm` without `%d`) writes `out-00.ppm`, `out-01.ppm`, `out-02.ppm`.
+- **423 tests passing, 5 skipped, 0 failures** (the CLI is a thin layer over the already-tested `decodeAll`).
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)
