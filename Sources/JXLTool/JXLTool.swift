@@ -22,8 +22,9 @@ struct JXLTool: ParsableCommand {
             EncodeM0.self, DecodeM0.self,
             // Performance.
             Benchmark.self,
-            // Family-parity stubs (mirror J2KSwift's `j2k`).
+            // Family-parity surface (mirror J2KSwift's `j2k`).
             Version.self, Compare.self, Completions.self, Validate.self,
+            Batch.self,
         ]
     )
 }

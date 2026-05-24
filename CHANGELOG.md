@@ -695,6 +695,18 @@ The `benchmark` subcommand previously hardcoded the M0 placeholder codec — so 
 - **End-to-end manual verification.** Multi-value, repeated, and glob forms all produce the same 169 B 3-frame animation; the single-frame form unchanged.
 - **432 tests passing, 5 skipped, 0 failures.**
 
+### v0.11.0bs — CLI `jxl batch` (encode + decode whole directories)
+
+Adds `jxl batch encode` / `jxl batch decode` — last-missing core CLI subcommand from the J2KSwift parity list. `j2k batch` has been on the parity-divergence audit since the FAMILY-API-PARITY doc was written; v0.11.0bs closes the gap. Mirrors `j2k batch`'s shape: `-i <dir> -o <dir>`, `--recursive` traversal that preserves subdirectory structure into the output tree, `--filter <glob>` to narrow file selection, `--continue-on-error` so one bad file doesn't abort a large run, and `--json` for machine-readable summaries.
+
+- **`Sources/JXLTool/Batch.swift`** (new, ~420 lines) — `Batch` parent ParsableCommand with two sub-subcommands `BatchEncode` and `BatchDecode`. Encode walks PNM/PGM/PPM/PAM files; decode walks `.jxl`/`.jxc` files. Output PNM extension is auto-picked from frame channel count (1→`.pgm`, 3→`.ppm`, 2/4→`.pam`).
+- **Glob filter.** Hand-rolled `fnmatch`-style matcher (`*` runs, `?` single char) — small enough to keep clarity, big enough for the realistic `frame_*.ppm` / `*.jxl` use case.
+- **Summary block.** Per-file progress lines (suppressed with `--quiet`); final "N ok, M failed in T ms" totals plus a list of failures with their error messages. `--json` swaps the whole report for a single-line JSON object with `processed`/`failed`/`inBytes`/`outBytes`/`elapsedMs`/`failures`.
+- **Threading.** Single-threaded for now — parallel `Task`-fan-out is a follow-on once the encoder/decoder caches are audited for concurrent reads.
+- **End-to-end smoke test** on a 4-file PNM dir (3× 8×8 PPM, 1× 8×8 PGM): all four encode cleanly under lossy (607→231 B, 38% of source) and lossless paths; decode round-trip is byte-identical for the lossless grayscale fixture. `--recursive` mirrors `in/sub/nested.ppm` into `out/sub/nested.jxl`; `--continue-on-error` reports the one bad file as `failed=1` in JSON and lets the remaining 5 through; without the flag the binary aborts with exit code 1.
+- **`JXLTool.subcommands`** — `Batch.self` registered between `Validate.self` and the file's tail.
+- **438 tests passing, 6 skipped, 0 failures.** No new XCTest case — batch is CLI-only, covered by manual smoke; behaviour is just per-file dispatch to the already-tested `JXLEncoder.encode(_ frame:)` / `JXLDecoder.decode(_:)` paths.
+
 ---
 
 ## [0.9.0] — in progress (pixel byte-equality push)

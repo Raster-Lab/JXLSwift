@@ -103,7 +103,7 @@ For family parity, JXLSwift's CLI should be **`jxl`** (drop the
 | `benchmark` | ✅ | ✅ |
 | `compare` | ✅ (compare two images) | ❌ |
 | `convert` | ✅ (image format convert) | ❌ |
-| `batch` | ✅ | ❌ |
+| `batch` | ✅ | ✅ (since v0.11.0bs — `encode` + `decode` sub-subcommands, `--recursive`, `--filter`, `--continue-on-error`, `--json`) |
 | `completions` | ✅ (shell completions) | ❌ |
 | `version` | ✅ | (via `--version` flag) |
 | `help` | ✅ | (via `--help` flag) |
