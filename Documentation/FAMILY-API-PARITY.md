@@ -98,7 +98,7 @@ For family parity, JXLSwift's CLI should be **`jxl`** (drop the
 | `encode` | ✅ | ✅ |
 | `decode` | ✅ | ✅ |
 | `info` | ✅ | ✅ |
-| `transcode` | ✅ (lossless transcoding) | ❌ (would map to JPEG↔JXL — Phase J on roadmap) |
+| `transcode` | ✅ (lossless transcoding) | ✅ subcommand surface (since v0.12.0e); forward direction maps to the existing JPEG-decode + JXL-encode pixel-fallback path today; bit-perfect coefficient bridge + JXL → JPEG reverse are in-progress Phase J capstone work — see [Documentation/PHASE-J-COEFFICIENT-BRIDGE.md](PHASE-J-COEFFICIENT-BRIDGE.md). |
 | `validate` | ✅ (conformance) | ❌ |
 | `benchmark` | ✅ | ✅ |
 | `compare` | ✅ (compare two images) | ❌ |

@@ -11,6 +11,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0h docs — README + FAMILY-API-PARITY + STATUS refreshed for v0.12.0a–g
+
+Documentation closes the loop on the v0.12.0a–g code. No code change.
+
+- **README.md** — Quickstart adds the `jxl transcode photo.jpg photo.jxl` example next to the existing `jxl encode -i photo.jpg` line; notes that today's `transcode` is the pixel-fallback path and `--mode coefficient-bridge` is the in-progress bit-perfect target.
+- **Documentation/FAMILY-API-PARITY.md** — `transcode` row flipped from ❌ to ✅ (subcommand surface shipped v0.12.0e), with the coefficient-bridge + reverse caveat preserved.
+- **Documentation/STATUS-2026-05.md** — second addendum dated 2026-05-25 enumerates the v0.12.0a–g sequence, current test count (517 / 6 / 0), and the bite count for the remaining bridge work (12–18 sessions to bit-perfect; 4–5 to forward-only once Brotli starts).
+
 ### v0.12.0g — Phase J: `JXLEncoder.encodeFromJPEGCoefficients(_:)` API stub + CLI wiring
 
 Step 2 from the design doc: freeze the API surface that the eventual coefficient-bridge implementation will fill in. Callers can wire against the stable signature today; the implementation throws `.notImplemented` until the bridge core lands.

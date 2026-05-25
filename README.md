@@ -143,8 +143,14 @@ JPEG inputs are accepted everywhere PNM is (Phase J decode side, since v0.11.0ck
 .build/release/jxl decode -i photo.jpg -o photo.ppm
 
 # JPEG → JXL (decode + re-encode; not bit-perfect transcoding —
-# that's the JXL VarDCT coefficient bridge, still on the roadmap).
+# that's the JXL VarDCT coefficient bridge, in-progress Phase J).
 .build/release/jxl encode -i photo.jpg -o photo.jxl -q 90
+
+# Same conversion via the typed `transcode` subcommand. Today
+# routes through the pixel-fallback path; `--mode coefficient-bridge`
+# is reserved for the eventual bit-perfect path (currently throws
+# with a pointer to Documentation/PHASE-J-COEFFICIENT-BRIDGE.md).
+.build/release/jxl transcode photo.jpg photo.jxl -q 90
 
 # Convert a whole directory of JPEGs (and any PNMs alongside).
 .build/release/jxl batch encode -i photos/ -o jxl/ --recursive
