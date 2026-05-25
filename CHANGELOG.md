@@ -11,6 +11,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0j — Phase J: channel-order remap (step 3.2)
+
+Step 3.2 from `PHASE-J-COEFFICIENT-BRIDGE.md`: maps JPEG component order `[Y, Cb, Cr]` to JXL channel-slot order under the chosen `color_transform`. Direct port of libjxl `frame_header.h::JpegOrder` — under `ColorTransform::kYCbCr` (libjxl's choice for its JPEG transcoder) the mapping is `(1, 0, 2)`, meaning JXL X-slot ← JPEG Cb, Y-slot ← JPEG Y, B-slot ← JPEG Cr. Under `ColorTransform::kNone` the mapping is identity. Grayscale always returns `(0, 0, 0)` (JXL's three channels all read from JPEG component 0).
+
+- **`Sources/JXLSwift/JPEG/JPEGToJXLAdapter.swift`** extended with:
+  - `JXLBridgeColorTransform` enum (`.ycbcr` / `.none`) — mirrors libjxl's `ColorTransform::{kYCbCr, kNone}` enumerators with documentation on the JPEG-component mapping each implies.
+  - `JPEGToJXLAdapter.jpegOrder(colorTransform:isGray:) -> (Int, Int, Int)` — pure port of libjxl `JpegOrder`.
+  - `JXLCoefficientPlanes.remappedForJXLBridge(colorTransform:) -> JXLCoefficientPlanes` — applies the permutation to per-channel DC + AC planes. Grayscale (single-channel) returned unchanged.
+- **4 new tests**: `_JpegOrder_KnownMappings` (all three branches: grayscale, kYCbCr, kNone), `_RemapForJXLBridge_YCbCr` (3-channel round-trip with unique DCs per channel, asserts the (1,0,2) permutation), `_RemapForJXLBridge_NoneIsIdentity`, `_RemapForJXLBridge_GrayscaleUnchanged`.
+- **525 tests passing, 6 skipped, 0 failures** (was 521; +4).
+
 ### v0.12.0i — Phase J: JPEG → JXL coefficient adapter (step 3.1)
 
 First *concrete* substantive piece of step 3 from `PHASE-J-COEFFICIENT-BRIDGE.md`: shape adapter that converts a `JPEGCoefficientImage` (per-component blocks, JPEG channel order) into per-channel quantised DC + AC planes in the shape the JXL VarDCT bitstream writer consumes.

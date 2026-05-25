@@ -78,6 +78,23 @@ public struct JXLCoefficientPlanes: Sendable {
     }
 }
 
+/// JXL frame `color_transform` choice for the JPEG bridge.
+/// Matches libjxl `frame_header.h::ColorTransform`. The choice
+/// determines the JPEG-component → JXL-channel mapping (see
+/// `JPEGToJXLAdapter.jpegOrder(colorTransform:isGray:)`).
+public enum JXLBridgeColorTransform: Sendable, Equatable {
+    /// JPEG's YCbCr is treated as YCbCr by JXL — the decoder
+    /// applies the YCbCr → RGB conversion at output time. JPEG
+    /// component → JXL channel mapping under this mode is
+    /// `(1, 0, 2)`: JXL X-slot = JPEG Cb, JXL Y-slot = JPEG Y,
+    /// JXL B-slot = JPEG Cr. This is libjxl's choice for its
+    /// JPEG transcoder.
+    case ycbcr
+    /// JPEG components are treated as opaque colour data with no
+    /// JXL-side colour transform. Mapping is identity `(0, 1, 2)`.
+    case none
+}
+
 /// Errors specific to the JPEG → JXL coefficient adapter.
 public enum JPEGToJXLAdapterError: Error, Sendable, Equatable,
                                    LocalizedError {
@@ -96,6 +113,64 @@ public enum JPEGToJXLAdapterError: Error, Sendable, Equatable,
             return "JPEG → JXL adapter: \(n)-component frames "
                 + "not supported (only 1 or 3)"
         }
+    }
+}
+
+/// Helper namespace for the JPEG → JXL coefficient bridge.
+public enum JPEGToJXLAdapter {
+
+    /// Port of libjxl `frame_header.h::JpegOrder`. Returns the
+    /// `(jxlChannel0 → jpegComponent, jxlChannel1 → jpegComponent,
+    /// jxlChannel2 → jpegComponent)` mapping for the chosen JXL
+    /// `color_transform` and a flag indicating whether the source
+    /// is grayscale (1 component).
+    ///
+    /// - `isGray == true`: returns `(0, 0, 0)` — JXL's three
+    ///   channels all read from JPEG component 0.
+    /// - `colorTransform == .ycbcr`: returns `(1, 0, 2)` — JXL
+    ///   X-slot = Cb, Y-slot = Y, B-slot = Cr.
+    /// - `colorTransform == .none`: returns `(0, 1, 2)` — identity.
+    public static func jpegOrder(
+        colorTransform: JXLBridgeColorTransform,
+        isGray: Bool
+    ) -> (Int, Int, Int) {
+        if isGray { return (0, 0, 0) }
+        switch colorTransform {
+        case .ycbcr: return (1, 0, 2)
+        case .none:  return (0, 1, 2)
+        }
+    }
+}
+
+extension JXLCoefficientPlanes {
+
+    /// Reorder per-channel planes by the JPEG → JXL channel map
+    /// for the chosen `color_transform`. Returns a new
+    /// `JXLCoefficientPlanes` whose `dcPerChannel[i]` /
+    /// `acPerChannel[i]` are the source's `[jpegOrder[i]]`. For
+    /// grayscale (`channelCount == 1`) the input is returned
+    /// unchanged.
+    ///
+    /// This is the channel-permutation that takes the
+    /// adapter's output (JPEG channel order, [Y, Cb, Cr]) to JXL's
+    /// XYB-slot order ([Cb, Y, Cr] under kYCbCr; [Y, Cb, Cr]
+    /// under kNone).
+    public func remappedForJXLBridge(
+        colorTransform: JXLBridgeColorTransform
+    ) -> JXLCoefficientPlanes {
+        if channelCount == 1 { return self }
+        precondition(channelCount == 3,
+            "remappedForJXLBridge requires 1 or 3 channels")
+        let order = JPEGToJXLAdapter.jpegOrder(
+            colorTransform: colorTransform, isGray: false)
+        let mapping = [order.0, order.1, order.2]
+        let newDC = mapping.map { dcPerChannel[$0] }
+        let newAC = mapping.map { acPerChannel[$0] }
+        return JXLCoefficientPlanes(
+            blocksX: blocksX, blocksY: blocksY,
+            channelCount: 3,
+            dcPerChannel: newDC,
+            acPerChannel: newAC)
     }
 }
 

@@ -2236,6 +2236,92 @@ final class JPEGFoundationTests: XCTestCase {
         }
     }
 
+    // MARK: - JPEGToJXLAdapter.jpegOrder + remap (v0.12.0j — step 3.2)
+
+    /// `jpegOrder` per libjxl `frame_header.h::JpegOrder`.
+    func testJPEGToJXLAdapter_JpegOrder_KnownMappings() {
+        let g = JPEGToJXLAdapter.jpegOrder(
+            colorTransform: .ycbcr, isGray: true)
+        XCTAssertEqual(g.0, 0)
+        XCTAssertEqual(g.1, 0)
+        XCTAssertEqual(g.2, 0)
+
+        let yc = JPEGToJXLAdapter.jpegOrder(
+            colorTransform: .ycbcr, isGray: false)
+        XCTAssertEqual(yc.0, 1)
+        XCTAssertEqual(yc.1, 0)
+        XCTAssertEqual(yc.2, 2)
+
+        let none = JPEGToJXLAdapter.jpegOrder(
+            colorTransform: .none, isGray: false)
+        XCTAssertEqual(none.0, 0)
+        XCTAssertEqual(none.1, 1)
+        XCTAssertEqual(none.2, 2)
+    }
+
+    /// Round-trip: build a 3-channel `JXLCoefficientPlanes` with
+    /// channels [Y, Cb, Cr] each carrying unique DC values, remap
+    /// for `.ycbcr` (yields [Cb, Y, Cr]), then remap again for
+    /// `.none` (identity, no change) — confirms the permutation
+    /// happens exactly where it should.
+    func testJPEGToJXLAdapter_RemapForJXLBridge_YCbCr() {
+        let dcY: [Int32] = [10, 11, 12, 13]
+        let dcCb: [Int32] = [20, 21, 22, 23]
+        let dcCr: [Int32] = [30, 31, 32, 33]
+        let zeroAC = [[Int32]](
+            repeating: [Int32](repeating: 0, count: 64),
+            count: 4)
+        let planes = JXLCoefficientPlanes(
+            blocksX: 2, blocksY: 2, channelCount: 3,
+            dcPerChannel: [dcY, dcCb, dcCr],
+            acPerChannel: [zeroAC, zeroAC, zeroAC])
+        let remapped = planes.remappedForJXLBridge(
+            colorTransform: .ycbcr)
+        // Under .ycbcr: jpegOrder = (1, 0, 2) →
+        //   JXL channel 0 = source channel 1 = Cb
+        //   JXL channel 1 = source channel 0 = Y
+        //   JXL channel 2 = source channel 2 = Cr
+        XCTAssertEqual(remapped.dcPerChannel[0], dcCb)
+        XCTAssertEqual(remapped.dcPerChannel[1], dcY)
+        XCTAssertEqual(remapped.dcPerChannel[2], dcCr)
+    }
+
+    func testJPEGToJXLAdapter_RemapForJXLBridge_NoneIsIdentity() {
+        let planes = JXLCoefficientPlanes(
+            blocksX: 1, blocksY: 1, channelCount: 3,
+            dcPerChannel: [[100], [200], [300]],
+            acPerChannel: [
+                [[Int32](repeating: 0, count: 64)],
+                [[Int32](repeating: 0, count: 64)],
+                [[Int32](repeating: 0, count: 64)],
+            ])
+        let remapped = planes.remappedForJXLBridge(
+            colorTransform: .none)
+        XCTAssertEqual(remapped.dcPerChannel[0], [100])
+        XCTAssertEqual(remapped.dcPerChannel[1], [200])
+        XCTAssertEqual(remapped.dcPerChannel[2], [300])
+    }
+
+    /// Grayscale (1-channel) is returned unchanged regardless of
+    /// the colorTransform argument — the JPEG order is `(0, 0, 0)`
+    /// so the JXL frame would just read channel 0 thrice, but at
+    /// the `JXLCoefficientPlanes` level the input is already
+    /// single-channel and that's preserved.
+    func testJPEGToJXLAdapter_RemapForJXLBridge_GrayscaleUnchanged() {
+        let planes = JXLCoefficientPlanes(
+            blocksX: 1, blocksY: 1, channelCount: 1,
+            dcPerChannel: [[42]],
+            acPerChannel: [
+                [[Int32](repeating: 0, count: 64)]
+            ])
+        let r1 = planes.remappedForJXLBridge(
+            colorTransform: .ycbcr)
+        let r2 = planes.remappedForJXLBridge(
+            colorTransform: .none)
+        XCTAssertEqual(r1.dcPerChannel, planes.dcPerChannel)
+        XCTAssertEqual(r2.dcPerChannel, planes.dcPerChannel)
+    }
+
     // MARK: - byte-stuffing + RST skip stress
 
     func testJPEGSegmentReader_HandlesByteStuffing() throws {
