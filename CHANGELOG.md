@@ -11,6 +11,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0i — Phase J: JPEG → JXL coefficient adapter (step 3.1)
+
+First *concrete* substantive piece of step 3 from `PHASE-J-COEFFICIENT-BRIDGE.md`: shape adapter that converts a `JPEGCoefficientImage` (per-component blocks, JPEG channel order) into per-channel quantised DC + AC planes in the shape the JXL VarDCT bitstream writer consumes.
+
+- **`Sources/JXLSwift/JPEG/JPEGToJXLAdapter.swift`** (new). `JXLCoefficientPlanes` (per-channel `dcPerChannel: [[Int32]]` indexed `[ch][by * blocksX + bx]`, per-block `acPerChannel: [[[Int32]]]` indexed `[ch][blockIdx][position 0..63]` with position 0 left zero since DC is carried separately). `JPEGCoefficientImage.toJXLCoefficientPlanes()` extension method.
+- **Scope (v0.12.0i).** 4:4:4 only (all components share `(H, V)` sampling factors) — 4:2:2 / 4:2:0 chroma subsampling throws `.nonUniformSampling` and is a follow-on bite that needs the JXL `chroma_subsampling` frame-header wiring. 1- or 3-component frames only (matches `JPEGDecoder.decode(_:)` envelope).
+- **Out of scope.** Color decorrelation (`B − Y`), quant-matrix selection, frame-header construction — all the bridge encoder's job in subsequent bites.
+- **4 new tests**: `_RejectsUnsupportedComponentCount` (4-component CMYK), `_RejectsNonUniformSampling` (synthetic 4:2:0), `_GrayscaleRoundTrip` (synthetic 2×2 blocks with known DC + AC values; confirms preserve-coefficient-values + DC/AC split), `_RealSIPSEmits420ChromaSubsampling` (real sips JPEG; confirms it triggers `.nonUniformSampling` as expected, anchoring the 4:2:0-not-supported boundary against a real-world fixture).
+- **521 tests passing, 6 skipped, 0 failures** (was 517; +4).
+- **Plan progress.** `PHASE-J-COEFFICIENT-BRIDGE.md` step 3 is "coefficient-bridge forward implementation (items 2.2.1–2.2.7)" estimated 3–4 sessions. v0.12.0i ships sub-step 3.1 (the shape adapter). Remaining sub-steps: 3.2 channel-order remap (JPEG Y/Cb/Cr → JXL X/Y/B), 3.3 color decorrelation, 3.4 quant-matrix injection via `kQuantModeRAW` (math primitive shipped v0.12.0f), 3.5 frame-header construction (`color_transform = None`, all-DCT8×8 strategy plane, chroma_subsampling), 3.6 wire into `VarDCTBitstreamWriter`, 3.7 swap `encodeFromJPEGCoefficients(_:)` stub to call the real path.
+
 ### v0.12.0h docs — README + FAMILY-API-PARITY + STATUS refreshed for v0.12.0a–g
 
 Documentation closes the loop on the v0.12.0a–g code. No code change.

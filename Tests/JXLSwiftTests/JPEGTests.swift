@@ -2040,6 +2040,202 @@ final class JPEGFoundationTests: XCTestCase {
         }
     }
 
+    // MARK: - JPEGToJXLAdapter (v0.12.0i — step 3.1)
+
+    /// Adapter rejects 4-component JPEGs (CMYK). Constructed
+    /// inline because sips emits 3-component RGB.
+    func testJPEGToJXLAdapter_RejectsUnsupportedComponentCount()
+        throws
+    {
+        let img = JPEGCoefficientImage(
+            width: 8, height: 8, precision: 8,
+            frameKind: .baselineDCT,
+            frameComponents: (0..<4).map { i in
+                JPEGFrameComponent(
+                    componentId: i + 1,
+                    hSamplingFactor: 1, vSamplingFactor: 1,
+                    quantTableId: 0)
+            },
+            quantisedComponents: (0..<4).map { i in
+                JPEGComponentBlocks(
+                    componentId: i + 1,
+                    blocksWide: 1, blocksHigh: 1,
+                    blocks: [JPEGCoefficientBlock()])
+            },
+            quantTables: [JPEGQuantTable(
+                tableId: 0, precision: .bits8,
+                zigZagValues: Array(repeating: 1, count: 64))])
+        XCTAssertThrowsError(
+            try img.toJXLCoefficientPlanes())
+        { err in
+            guard case JPEGToJXLAdapterError
+                .unsupportedComponentCount(let n) = err
+            else {
+                XCTFail("expected .unsupportedComponentCount, "
+                    + "got \(err)")
+                return
+            }
+            XCTAssertEqual(n, 4)
+        }
+    }
+
+    /// Adapter rejects non-uniform sampling factors (chroma
+    /// subsampling). Constructed inline — sips' 4:2:0 output
+    /// goes through `nonUniformSampling` in the real-fixture
+    /// test below.
+    func testJPEGToJXLAdapter_RejectsNonUniformSampling() throws {
+        let img = JPEGCoefficientImage(
+            width: 16, height: 16, precision: 8,
+            frameKind: .baselineDCT,
+            frameComponents: [
+                JPEGFrameComponent(componentId: 1,
+                    hSamplingFactor: 2, vSamplingFactor: 2,
+                    quantTableId: 0),
+                JPEGFrameComponent(componentId: 2,
+                    hSamplingFactor: 1, vSamplingFactor: 1,
+                    quantTableId: 1),
+                JPEGFrameComponent(componentId: 3,
+                    hSamplingFactor: 1, vSamplingFactor: 1,
+                    quantTableId: 1),
+            ],
+            quantisedComponents: [
+                JPEGComponentBlocks(componentId: 1,
+                    blocksWide: 4, blocksHigh: 4,
+                    blocks: Array(
+                        repeating: JPEGCoefficientBlock(),
+                        count: 16)),
+                JPEGComponentBlocks(componentId: 2,
+                    blocksWide: 2, blocksHigh: 2,
+                    blocks: Array(
+                        repeating: JPEGCoefficientBlock(),
+                        count: 4)),
+                JPEGComponentBlocks(componentId: 3,
+                    blocksWide: 2, blocksHigh: 2,
+                    blocks: Array(
+                        repeating: JPEGCoefficientBlock(),
+                        count: 4)),
+            ],
+            quantTables: [
+                JPEGQuantTable(tableId: 0,
+                    precision: .bits8,
+                    zigZagValues: Array(repeating: 1, count: 64)),
+                JPEGQuantTable(tableId: 1,
+                    precision: .bits8,
+                    zigZagValues: Array(repeating: 1, count: 64)),
+            ])
+        XCTAssertThrowsError(
+            try img.toJXLCoefficientPlanes())
+        { err in
+            guard case JPEGToJXLAdapterError
+                .nonUniformSampling = err else {
+                XCTFail("expected .nonUniformSampling, "
+                    + "got \(err)")
+                return
+            }
+        }
+    }
+
+    /// Round-trip on a synthetic 4:4:4 grayscale image (single
+    /// component, trivially uniform sampling). Confirms the
+    /// adapter preserves coefficient values and DC/AC split.
+    func testJPEGToJXLAdapter_GrayscaleRoundTrip() throws {
+        // 2×2 blocks of synthetic content.
+        var blocks: [JPEGCoefficientBlock] = []
+        for bi in 0..<4 {
+            var coefs = [Int32](repeating: 0, count: 64)
+            coefs[0] = Int32(10 + bi)      // unique DC per block
+            coefs[1] = Int32(-3 + bi)      // unique AC@1
+            coefs[63] = Int32(7 - bi)      // unique AC@63
+            blocks.append(JPEGCoefficientBlock(coefs))
+        }
+        let img = JPEGCoefficientImage(
+            width: 16, height: 16, precision: 8,
+            frameKind: .baselineDCT,
+            frameComponents: [JPEGFrameComponent(
+                componentId: 1,
+                hSamplingFactor: 1, vSamplingFactor: 1,
+                quantTableId: 0)],
+            quantisedComponents: [JPEGComponentBlocks(
+                componentId: 1,
+                blocksWide: 2, blocksHigh: 2,
+                blocks: blocks)],
+            quantTables: [JPEGQuantTable(
+                tableId: 0, precision: .bits8,
+                zigZagValues: Array(repeating: 1, count: 64))])
+        let planes = try img.toJXLCoefficientPlanes()
+        XCTAssertEqual(planes.channelCount, 1)
+        XCTAssertEqual(planes.blocksX, 2)
+        XCTAssertEqual(planes.blocksY, 2)
+        XCTAssertEqual(planes.dcPerChannel[0],
+                       [10, 11, 12, 13])
+        for bi in 0..<4 {
+            // AC position 0 zeroed (DC carried separately).
+            XCTAssertEqual(planes.acPerChannel[0][bi][0], 0)
+            XCTAssertEqual(planes.acPerChannel[0][bi][1],
+                           Int32(-3 + bi))
+            XCTAssertEqual(planes.acPerChannel[0][bi][63],
+                           Int32(7 - bi))
+        }
+    }
+
+    /// Real sips JPEG: tries the adapter on a sips 3-component
+    /// output. sips emits 4:2:0 chroma subsampling by default,
+    /// so the adapter throws `.nonUniformSampling` — that's
+    /// expected and what we assert. Confirms the real-world path
+    /// surfaces the right error today.
+    func testJPEGToJXLAdapter_RealSIPSEmits420ChromaSubsampling()
+        throws
+    {
+        guard FileManager.default.isExecutableFile(
+            atPath: "/usr/bin/sips") else {
+            throw XCTSkip("sips not available on this host")
+        }
+        let tmp = NSTemporaryDirectory()
+        let ppmPath = tmp + "adapter-\(UUID().uuidString).ppm"
+        let jpgPath = tmp + "adapter-\(UUID().uuidString).jpg"
+        defer {
+            try? FileManager.default.removeItem(atPath: ppmPath)
+            try? FileManager.default.removeItem(atPath: jpgPath)
+        }
+        var ppm = Data("P6\n16 16\n255\n".utf8)
+        for y in 0..<16 {
+            for x in 0..<16 {
+                ppm.append(contentsOf: [
+                    UInt8(50 + x * 8),
+                    UInt8(70 + y * 8),
+                    UInt8(180)
+                ])
+            }
+        }
+        try ppm.write(to: URL(fileURLWithPath: ppmPath))
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/sips")
+        proc.arguments = ["-s", "format", "jpeg",
+                          "-s", "formatOptions", "85",
+                          ppmPath, "--out", jpgPath]
+        proc.standardOutput = Pipe()
+        proc.standardError = Pipe()
+        try proc.run()
+        proc.waitUntilExit()
+        guard proc.terminationStatus == 0 else {
+            throw XCTSkip("sips conversion failed")
+        }
+        let jpg = try Data(contentsOf:
+            URL(fileURLWithPath: jpgPath))
+        let coef = try JPEGDecoder.decodeToCoefficients(jpg)
+        // sips → 4:2:0, so the adapter should reject.
+        XCTAssertThrowsError(
+            try coef.toJXLCoefficientPlanes())
+        { err in
+            guard case JPEGToJXLAdapterError
+                .nonUniformSampling = err else {
+                XCTFail("expected .nonUniformSampling for sips "
+                    + "4:2:0 output, got \(err)")
+                return
+            }
+        }
+    }
+
     // MARK: - byte-stuffing + RST skip stress
 
     func testJPEGSegmentReader_HandlesByteStuffing() throws {
