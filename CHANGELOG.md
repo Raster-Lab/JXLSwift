@@ -11,6 +11,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0l — Phase J: DC color decorrelation (`DCzero`, step 3.3)
+
+Step 3.3 from `PHASE-J-COEFFICIENT-BRIDGE.md`. Ports the per-block DC adjustment that libjxl's `enc_frame.cc::ComputeJPEGTranscodingData` (line 956 in 0.11.2) performs when packing JPEG coefficients into a JXL frame:
+
+- **`ColorTransform::kYCbCr`** (libjxl's default for its JPEG transcoder): JPEG DC stored as-is (`DCzero = true`). JXL's YCbCr→RGB conversion at output handles the centering.
+- **`ColorTransform::kNone`**: JPEG DC gets `1024 / qt[DC]` integer offset added per channel (`DCzero = false`), recentering the JPEG raw DC integer into JXL's expected range.
+
+The AC-side CFL (chroma-from-luma) decorrelation that libjxl applies when `cparams.force_cfl_jpeg_recompression` is set is **off** by default in libjxl's transcoder, so we match that default and leave AC untouched. AC CFL is a follow-on bite once the bridge has end-to-end pixel verification.
+
+- **`Sources/JXLSwift/JPEG/JPEGToJXLAdapter.swift`** — new `JXLCoefficientPlanes.applyJPEGBridgeDC(colorTransform:quantDCPerChannel:) -> JXLCoefficientPlanes`. Per-channel DC offset is `1024 / quantDCPerChannel[c]` (integer division matching libjxl's `1024 / qt[c*64]`). Zero quant entry treated as no-op (defensive — JPEG parser already rejects zero entries).
+- **4 new tests**: `_BridgeDC_YCbCrLeavesDCUnchanged` (DCzero=true verified), `_BridgeDC_NoneAddsQuantOffset` (per-channel offsets 1024/16=64, 1024/11=93, 1024/17=60 verified), `_BridgeDC_LeavesACUntouched` (AC arrays unchanged by DC adjustment), `_BridgeDC_HandlesZeroQuantSafely` (defensive no-op on zero quant entry).
+- **529 tests passing, 6 skipped, 0 failures** (was 525; +4).
+- **Plan progress.** Steps 3.0 (foundation), 3.1 (shape adapter), 3.2 (channel-order remap), and 3.3 (DC decorrelation) are now ✅. Remaining for forward-only coefficient bridge: 3.4 (RAW quant injection — math primitive ready as v0.12.0f), 3.5 (frame-header construction), 3.6 (wire into `VarDCTBitstreamWriter`), 3.7 (swap stub to real path + integration test).
+
 ### v0.12.0j — Phase J: channel-order remap (step 3.2)
 
 Step 3.2 from `PHASE-J-COEFFICIENT-BRIDGE.md`: maps JPEG component order `[Y, Cb, Cr]` to JXL channel-slot order under the chosen `color_transform`. Direct port of libjxl `frame_header.h::JpegOrder` — under `ColorTransform::kYCbCr` (libjxl's choice for its JPEG transcoder) the mapping is `(1, 0, 2)`, meaning JXL X-slot ← JPEG Cb, Y-slot ← JPEG Y, B-slot ← JPEG Cr. Under `ColorTransform::kNone` the mapping is identity. Grayscale always returns `(0, 0, 0)` (JXL's three channels all read from JPEG component 0).

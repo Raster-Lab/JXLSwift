@@ -145,7 +145,7 @@ Parser is a deserialiser over a Brotli-decompressed byte stream. ~1 session once
 | 3.0 | `JXLEncoder.encodeFromJPEGCoefficients(_:)` API stub + CLI wire | ✅ v0.12.0g |
 | 3.1 | Shape adapter: `JPEGCoefficientImage` → `JXLCoefficientPlanes` (4:4:4 only) | ✅ v0.12.0i |
 | 3.2 | Channel-order remap (`JpegOrder` port) for `.ycbcr` / `.none` color_transforms | ✅ v0.12.0j |
-| 3.3 | Color decorrelation (`DCzero` for DC, optional AC CFL for `.ycbcr` mode) | ⏳ |
+| 3.3 | Color decorrelation (`DCzero` for DC, optional AC CFL for `.ycbcr` mode) | ✅ v0.12.0l — DC adjustment done; AC CFL deferred (libjxl default is off too) |
 | 3.4 | Quant-matrix injection: write a custom `DequantMatrices` payload using `kQuantModeRAW` with `qtableDen` chosen so JXL dequant matches JPEG dequant | ⏳ |
 | 3.5 | Frame-header construction: `color_transform`, `chroma_subsampling`, all-DCT8×8 strategy plane | ⏳ |
 | 3.6 | Wire the above into `VarDCTBitstreamWriter` (parallel path that bypasses `VarDCTEncoder.forward`) | ⏳ |

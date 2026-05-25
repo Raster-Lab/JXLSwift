@@ -2322,6 +2322,95 @@ final class JPEGFoundationTests: XCTestCase {
         XCTAssertEqual(r2.dcPerChannel, planes.dcPerChannel)
     }
 
+    // MARK: - JPEGToJXLAdapter.applyJPEGBridgeDC (v0.12.0l — step 3.3)
+
+    /// Under `.ycbcr` color_transform, JPEG DC is stored as-is
+    /// (libjxl's DCzero=true branch). Verify the helper leaves
+    /// every DC value unchanged.
+    func testJPEGToJXLAdapter_BridgeDC_YCbCrLeavesDCUnchanged() {
+        let planes = JXLCoefficientPlanes(
+            blocksX: 2, blocksY: 1, channelCount: 3,
+            dcPerChannel: [[10, 20], [30, 40], [50, 60]],
+            acPerChannel: [
+                Array(repeating:
+                    [Int32](repeating: 0, count: 64),
+                    count: 2),
+                Array(repeating:
+                    [Int32](repeating: 0, count: 64),
+                    count: 2),
+                Array(repeating:
+                    [Int32](repeating: 0, count: 64),
+                    count: 2),
+            ])
+        let adjusted = planes.applyJPEGBridgeDC(
+            colorTransform: .ycbcr,
+            quantDCPerChannel: [16, 11, 11])
+        XCTAssertEqual(adjusted.dcPerChannel, planes.dcPerChannel,
+            ".ycbcr DCzero path must leave DC values unchanged")
+    }
+
+    /// Under `.none` color_transform, JPEG DC gets a `1024 / qt[DC]`
+    /// offset added per channel. Verify the per-channel offset and
+    /// integer-division semantics match libjxl.
+    func testJPEGToJXLAdapter_BridgeDC_NoneAddsQuantOffset() {
+        let planes = JXLCoefficientPlanes(
+            blocksX: 2, blocksY: 1, channelCount: 3,
+            dcPerChannel: [[10, 20], [30, 40], [50, 60]],
+            acPerChannel: [
+                Array(repeating:
+                    [Int32](repeating: 0, count: 64),
+                    count: 2),
+                Array(repeating:
+                    [Int32](repeating: 0, count: 64),
+                    count: 2),
+                Array(repeating:
+                    [Int32](repeating: 0, count: 64),
+                    count: 2),
+            ])
+        // Channel-wise offsets: 1024 / 16 = 64; 1024 / 11 = 93;
+        // 1024 / 17 = 60.
+        let adjusted = planes.applyJPEGBridgeDC(
+            colorTransform: .none,
+            quantDCPerChannel: [16, 11, 17])
+        XCTAssertEqual(adjusted.dcPerChannel[0],
+            [Int32(10 + 64), Int32(20 + 64)])
+        XCTAssertEqual(adjusted.dcPerChannel[1],
+            [Int32(30 + 93), Int32(40 + 93)])
+        XCTAssertEqual(adjusted.dcPerChannel[2],
+            [Int32(50 + 60), Int32(60 + 60)])
+    }
+
+    /// AC planes are never touched by the DC adjustment.
+    func testJPEGToJXLAdapter_BridgeDC_LeavesACUntouched() {
+        var ac = [Int32](repeating: 0, count: 64)
+        ac[1] = 5; ac[63] = -7
+        let planes = JXLCoefficientPlanes(
+            blocksX: 1, blocksY: 1, channelCount: 1,
+            dcPerChannel: [[100]],
+            acPerChannel: [[ac]])
+        let adjusted = planes.applyJPEGBridgeDC(
+            colorTransform: .none,
+            quantDCPerChannel: [8])
+        XCTAssertEqual(adjusted.acPerChannel[0][0], ac)
+        XCTAssertEqual(adjusted.dcPerChannel[0][0], 100 + 128)
+    }
+
+    /// Zero quant table entry would division-by-zero; we treat
+    /// it as a no-op rather than crash (JPEG parsers already
+    /// reject zero entries, so this is paranoid defence).
+    func testJPEGToJXLAdapter_BridgeDC_HandlesZeroQuantSafely() {
+        let planes = JXLCoefficientPlanes(
+            blocksX: 1, blocksY: 1, channelCount: 1,
+            dcPerChannel: [[42]],
+            acPerChannel: [
+                [[Int32](repeating: 0, count: 64)]
+            ])
+        let adjusted = planes.applyJPEGBridgeDC(
+            colorTransform: .none, quantDCPerChannel: [0])
+        XCTAssertEqual(adjusted.dcPerChannel[0][0], 42,
+            "zero quant entry must be a no-op, not a crash")
+    }
+
     // MARK: - byte-stuffing + RST skip stress
 
     func testJPEGSegmentReader_HandlesByteStuffing() throws {

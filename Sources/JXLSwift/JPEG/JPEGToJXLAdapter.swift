@@ -144,6 +144,64 @@ public enum JPEGToJXLAdapter {
 
 extension JXLCoefficientPlanes {
 
+    /// Apply the JPEG → JXL DC adjustment that libjxl's
+    /// `enc_frame.cc::ComputeJPEGTranscodingData` performs (line
+    /// 956 in libjxl 0.11.2): under `ColorTransform::kYCbCr` the
+    /// JPEG DC is stored as-is (`DCzero = true`); under
+    /// `ColorTransform::kNone` an offset of `1024 / qt[DC]` is
+    /// added to each block's DC (`DCzero = false`), recentering
+    /// the JPEG raw DC integer into JXL's expected range.
+    ///
+    /// `quantDCPerChannel` is the DC factor (zig-zag index 0)
+    /// of each component's quant table, in the same channel
+    /// order as `dcPerChannel`. For 4:4:4 inputs this matches
+    /// the order produced by the shape adapter (JPEG component
+    /// order; remap to JXL channel slots first if you've already
+    /// applied `remappedForJXLBridge`).
+    ///
+    /// **What this does NOT do.** The AC-side CFL (chroma-from-
+    /// luma) decorrelation that libjxl applies when
+    /// `cparams.force_cfl_jpeg_recompression` is set is **off**
+    /// by default in libjxl's own transcoder. Matching that
+    /// default we don't apply it here; it can be a follow-on
+    /// bite once the bridge has end-to-end pixel verification.
+    public func applyJPEGBridgeDC(
+        colorTransform: JXLBridgeColorTransform,
+        quantDCPerChannel: [UInt16]
+    ) -> JXLCoefficientPlanes {
+        precondition(quantDCPerChannel.count == channelCount,
+            "applyJPEGBridgeDC: quantDCPerChannel.count must "
+            + "equal channelCount")
+        var newDC = dcPerChannel
+        switch colorTransform {
+        case .ycbcr:
+            // DCzero — DC stored as-is, no offset.
+            break
+        case .none:
+            // Add 1024 / qt[DC] to every block of every channel.
+            // Integer division matches libjxl's `1024 / qt[c*64]`.
+            for c in 0..<channelCount {
+                let qDC = Int32(quantDCPerChannel[c])
+                guard qDC != 0 else {
+                    // Should never happen — JPEG quant tables
+                    // reject zero entries at parse time. If it
+                    // does, leave DC unchanged rather than
+                    // dividing by zero.
+                    continue
+                }
+                let offset = Int32(1024) / qDC
+                for i in 0..<newDC[c].count {
+                    newDC[c][i] &+= offset
+                }
+            }
+        }
+        return JXLCoefficientPlanes(
+            blocksX: blocksX, blocksY: blocksY,
+            channelCount: channelCount,
+            dcPerChannel: newDC,
+            acPerChannel: acPerChannel)
+    }
+
     /// Reorder per-channel planes by the JPEG → JXL channel map
     /// for the chosen `color_transform`. Returns a new
     /// `JXLCoefficientPlanes` whose `dcPerChannel[i]` /
