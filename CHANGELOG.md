@@ -11,6 +11,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0g — Phase J: `JXLEncoder.encodeFromJPEGCoefficients(_:)` API stub + CLI wiring
+
+Step 2 from the design doc: freeze the API surface that the eventual coefficient-bridge implementation will fill in. Callers can wire against the stable signature today; the implementation throws `.notImplemented` until the bridge core lands.
+
+- **`Sources/JXLSwift/Codec/JXLEncoder.swift`** — new `encodeFromJPEGCoefficients(_ jpeg: JPEGCoefficientImage) throws -> EncodedImage`. The method validates input shape (8-bit precision, baseline-DCT frame, 1- or 3-component) and throws `.unsupportedFrame` for out-of-scope inputs; on valid input it throws `.notImplemented` with a pointer to the design doc and the pixel-fallback workaround. When the bridge core ships, the implementation slots in behind this stable signature with no API break.
+- **`Sources/JXLTool/Transcode.swift`** — `jxl transcode --mode coefficient-bridge foo.jpg foo.jxl` now actually calls `encodeFromJPEGCoefficients(_:)`. Today: the call throws `.notImplemented` and the CLI re-formats the message (the wrapping `EncoderError.localizedDescription` template doesn't quite fit a sentence-form message). Tomorrow: the call returns a real `EncodedImage` and the CLI writes it. Same wiring either way.
+- **2 new tests**: `testJXLEncoder_BridgeAPIStub_ThrowsNotImplementedOnValidInput` (sips JPEG round-trip through `decodeToCoefficients` then `encodeFromJPEGCoefficients` produces `.notImplemented`, confirming the validation passes), `testJXLEncoder_BridgeAPIStub_RejectsBadPrecision` (12-bit precision input throws `.unsupportedFrame` *before* `.notImplemented`, pinning the validation early-return path).
+- **517 tests passing, 6 skipped, 0 failures** (was 515; +2).
+
 ### v0.12.0f — Phase J: `QuantWeights.getRAWQuantWeights` (coefficient-bridge foundation)
 
 First concrete code bite toward the JPEG → JXL coefficient bridge per the v0.12.0e design doc's step 1. Ports the math of libjxl's `kQuantModeRAW` quant-weight synthesis — the path the bridge will use to translate JPEG quant tables into JXL quant matrices.

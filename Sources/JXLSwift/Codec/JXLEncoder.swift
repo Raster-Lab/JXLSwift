@@ -416,6 +416,65 @@ public struct JXLEncoder: Sendable {
             )
         )
     }
+
+    /// **Phase J coefficient bridge (v0.12.0g — API stub).**
+    ///
+    /// Encode a JPEG decoded as quantised DCT coefficients
+    /// (`JPEGCoefficientImage`, from `JPEGDecoder.decodeToCoefficients`)
+    /// directly into a JXL VarDCT frame **without** running the
+    /// pixel pipeline (no IDCT → re-DCT round-trip, no XYB
+    /// transformation, no Gaborish / adaptive-QF pre-pass). Output
+    /// JXL decodes to pixels matching the source JPEG exactly.
+    ///
+    /// **Status today (v0.12.0g):** the API surface is in place
+    /// so callers can wire against it; the implementation throws
+    /// `EncoderError.notImplemented`. The coefficient-bridge core
+    /// (writing a JXL frame whose VarDCT decoder produces the
+    /// source JPEG's pixels) is the in-progress Phase J capstone —
+    /// see `Documentation/PHASE-J-COEFFICIENT-BRIDGE.md` for the
+    /// step plan. Today, use the pixel-fallback path:
+    /// `JXLEncoder().encode(JPEGDecoder.decode(jpegBytes))` (or
+    /// equivalently `jxl encode -i foo.jpg` / `jxl transcode
+    /// foo.jpg foo.jxl`).
+    ///
+    /// Once the bridge ships, this method's output will be smaller
+    /// than the pixel-fallback path (typically ~0.75 × the source
+    /// JPEG bytes at equivalent visual quality) and bit-exact
+    /// reverse-transcodable to the source JPEG via a future
+    /// `JXLDecoder.decodeToJPEG(_:)` reverse direction (gated on
+    /// a pure-Swift Brotli decompressor for the `jbrd` box).
+    public func encodeFromJPEGCoefficients(
+        _ jpeg: JPEGCoefficientImage
+    ) throws -> EncodedImage {
+        // Defensive validation while the implementation is stubbed:
+        // throw early on input shapes the eventual bridge wouldn't
+        // accept either, so callers get useful errors today.
+        guard jpeg.precision == 8 else {
+            throw EncoderError.unsupportedFrame(
+                "JPEG coefficient bridge: only 8-bit precision "
+                + "supported (got \(jpeg.precision)-bit)")
+        }
+        guard jpeg.frameKind == .baselineDCT else {
+            throw EncoderError.unsupportedFrame(
+                "JPEG coefficient bridge: only baseline-DCT "
+                + "frames supported (got \(jpeg.frameKind.label))")
+        }
+        let nComponents = jpeg.frameComponents.count
+        guard nComponents == 1 || nComponents == 3 else {
+            throw EncoderError.unsupportedFrame(
+                "JPEG coefficient bridge: only 1- or 3-component "
+                + "frames supported (got \(nComponents))")
+        }
+        // Future bridge implementation goes here. See
+        // Documentation/PHASE-J-COEFFICIENT-BRIDGE.md step 3.
+        throw EncoderError.notImplemented(
+            "JPEG coefficient bridge: not yet implemented (Phase J "
+            + "capstone, in-progress — see "
+            + "Documentation/PHASE-J-COEFFICIENT-BRIDGE.md). "
+            + "Use the pixel-fallback path "
+            + "`encode(JPEGDecoder.decode(jpegBytes))` today."
+        )
+    }
 }
 
 /// Split a 3-channel interleaved uint8 `ImageFrame` into per-channel

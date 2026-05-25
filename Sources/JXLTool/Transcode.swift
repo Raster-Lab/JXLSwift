@@ -118,13 +118,50 @@ struct Transcode: ParsableCommand {
         case .pixelFallback:
             break  // proceed with the pixel-fallback path below
         case .coefficientBridge:
-            print("error: --mode coefficient-bridge is not yet "
-                + "implemented; this is the in-progress Phase J "
-                + "capstone (see Documentation/"
-                + "PHASE-J-COEFFICIENT-BRIDGE.md). Re-run with "
-                + "--mode pixel-fallback for today's behaviour.",
-                to: &standardError)
-            throw JXLExitCode.notImplemented
+            // Wire to the v0.12.0g API stub — it throws today but
+            // surfaces useful validation errors (bad precision /
+            // frame kind / component count) before the bridge core
+            // lands. This keeps the CLI surface aligned with the
+            // library API as the implementation evolves.
+            let coef: JPEGCoefficientImage
+            do {
+                coef = try JPEGDecoder.decodeToCoefficients(
+                    jpegBytes)
+            } catch let e as JPEGDecoderError {
+                print("JPEG decode error: "
+                    + (e.errorDescription ?? "\(e)"),
+                    to: &standardError)
+                throw JXLExitCode.generalError
+            }
+            do {
+                _ = try JXLEncoder().encodeFromJPEGCoefficients(
+                    coef)
+            } catch EncoderError.notImplemented(_) {
+                // Expected today — the bridge is stubbed.
+                print("error: JPEG → JXL coefficient bridge "
+                    + "(--mode coefficient-bridge) is not yet "
+                    + "implemented. This is the in-progress "
+                    + "Phase J capstone; see "
+                    + "Documentation/PHASE-J-COEFFICIENT-BRIDGE.md "
+                    + "for the plan. Use --mode pixel-fallback "
+                    + "(the default) for today's behaviour.",
+                    to: &standardError)
+                throw JXLExitCode.notImplemented
+            } catch let e as EncoderError {
+                // Input-shape validation rejected (bad precision /
+                // frame kind / component count). The eventual
+                // bridge would reject these too — surface them
+                // cleanly today.
+                print("error: \(e.localizedDescription)",
+                    to: &standardError)
+                throw JXLExitCode.invalidArguments
+            }
+            // Unreachable today; safety net for when the bridge
+            // lands and starts returning real EncodedImage.
+            print("error: coefficient-bridge unexpectedly "
+                + "succeeded without writing output — please file "
+                + "a bug.", to: &standardError)
+            throw JXLExitCode.generalError
         case .reverse:
             print("error: --mode reverse runs JXL → JPEG, but "
                 + "input \(input) is a JPEG. Did you mean to "

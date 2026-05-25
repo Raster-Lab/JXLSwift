@@ -1959,6 +1959,87 @@ final class JPEGFoundationTests: XCTestCase {
             try JPEGDecoder.decodeToCoefficients(data))
     }
 
+    // MARK: - JXLEncoder.encodeFromJPEGCoefficients (v0.12.0g stub)
+
+    /// API stub today throws `.notImplemented`, but **only after**
+    /// the input-shape validation passes. So a valid JPEG produces
+    /// `.notImplemented`; bad input shapes (out-of-scope frames)
+    /// throw `.unsupportedFrame` before reaching the stub. The two
+    /// behaviours pin the validation early-return path so the
+    /// eventual bridge implementation slots into the right place.
+    func testJXLEncoder_BridgeAPIStub_ThrowsNotImplementedOnValidInput()
+        throws
+    {
+        guard FileManager.default.isExecutableFile(
+            atPath: "/usr/bin/sips") else {
+            throw XCTSkip("sips not available on this host")
+        }
+        let tmp = NSTemporaryDirectory()
+        let ppmPath = tmp + "bridge-\(UUID().uuidString).ppm"
+        let jpgPath = tmp + "bridge-\(UUID().uuidString).jpg"
+        defer {
+            try? FileManager.default.removeItem(atPath: ppmPath)
+            try? FileManager.default.removeItem(atPath: jpgPath)
+        }
+        var ppm = Data("P6\n8 8\n255\n".utf8)
+        ppm.append(Data(repeating: 128, count: 8 * 8 * 3))
+        try ppm.write(to: URL(fileURLWithPath: ppmPath))
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/sips")
+        proc.arguments = ["-s", "format", "jpeg",
+                          "-s", "formatOptions", "90",
+                          ppmPath, "--out", jpgPath]
+        proc.standardOutput = Pipe()
+        proc.standardError = Pipe()
+        try proc.run()
+        proc.waitUntilExit()
+        guard proc.terminationStatus == 0 else {
+            throw XCTSkip("sips conversion failed")
+        }
+        let jpg = try Data(contentsOf:
+            URL(fileURLWithPath: jpgPath))
+        let coef = try JPEGDecoder.decodeToCoefficients(jpg)
+        XCTAssertThrowsError(
+            try JXLEncoder().encodeFromJPEGCoefficients(coef))
+        { err in
+            guard case EncoderError.notImplemented = err else {
+                XCTFail("expected .notImplemented, got \(err)")
+                return
+            }
+        }
+    }
+
+    /// Out-of-scope input (e.g. 12-bit precision) is rejected by
+    /// the API stub's early validation, NOT by the .notImplemented
+    /// path. Catches a bug where the eventual bridge implementation
+    /// would silently accept these.
+    func testJXLEncoder_BridgeAPIStub_RejectsBadPrecision() throws {
+        // Build a JPEGCoefficientImage directly with bogus shape;
+        // we can't easily produce a 12-bit JPEG from sips, so
+        // construct the input from scratch.
+        let badImg = JPEGCoefficientImage(
+            width: 8, height: 8, precision: 12,
+            frameKind: .baselineDCT,
+            frameComponents: [JPEGFrameComponent(
+                componentId: 1, hSamplingFactor: 1,
+                vSamplingFactor: 1, quantTableId: 0)],
+            quantisedComponents: [JPEGComponentBlocks(
+                componentId: 1, blocksWide: 1, blocksHigh: 1,
+                blocks: [JPEGCoefficientBlock()])],
+            quantTables: [JPEGQuantTable(
+                tableId: 0, precision: .bits8,
+                zigZagValues: Array(repeating: 1, count: 64))])
+        XCTAssertThrowsError(
+            try JXLEncoder().encodeFromJPEGCoefficients(badImg))
+        { err in
+            guard case EncoderError.unsupportedFrame = err else {
+                XCTFail("expected .unsupportedFrame for 12-bit, "
+                    + "got \(err)")
+                return
+            }
+        }
+    }
+
     // MARK: - byte-stuffing + RST skip stress
 
     func testJPEGSegmentReader_HandlesByteStuffing() throws {
