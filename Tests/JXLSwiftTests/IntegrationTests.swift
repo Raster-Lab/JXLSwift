@@ -8502,6 +8502,86 @@ extension FoundationTests {
             "DCT4×8 block round-trip max error \(maxErr)")
     }
 
+    // MARK: - kQuantModeRAW (v0.12.0f — coefficient-bridge foundation)
+
+    /// `getRAWQuantWeights` math: `weight = 1 / (qtableDen × qtable[i])`
+    /// per libjxl `quant_weights.cc::ComputeQuantTable` case
+    /// `kQuantModeRAW`.
+    func testQuantWeights_RAW_BasicFormula() throws {
+        let qtable: [Int32] = [
+            1, 2, 4, 8,    // X
+            1, 2, 4, 8,    // Y
+            1, 2, 4, 8,    // B
+        ]
+        let den: Float = 0.5
+        let weights = try QuantWeights.getRAWQuantWeights(
+            qtable: qtable, qtableDen: den)
+        XCTAssertEqual(weights.count, 12)
+        // weight = 1 / (0.5 × q) = 2 / q
+        for i in 0..<12 {
+            let expected = 2.0 / Float(qtable[i])
+            XCTAssertEqual(weights[i], expected, accuracy: 1e-6,
+                "RAW weight mismatch at index \(i)")
+        }
+    }
+
+    /// Round-trip with the JXL VarDCT dequant formula:
+    /// `dequant(quant) = quant / weight × invQuantAC` should give
+    /// back the JPEG-style dequantised value `quant × jpegQt[k]`
+    /// when `weight = 1 / (jpegQt[k] / invQuantAC)`, i.e. when
+    /// `qtableDen = 1 / invQuantAC`.
+    ///
+    /// This confirms the formula the eventual coefficient bridge
+    /// will rely on for byte-exact dequant matching between JPEG
+    /// and the bridged JXL frame.
+    func testQuantWeights_RAW_DequantRoundTrip() throws {
+        let invQuantAC: Float = 0.5
+        // Make qtableDen so that weight = invQuantAC / jpegQt[k]:
+        //   1 / (qtableDen × jpegQt) = invQuantAC / jpegQt
+        //   → qtableDen = 1 / invQuantAC
+        let jpegQt: [Int32] = [16, 11, 10, 12]
+        let qtableDen: Float = 1.0 / invQuantAC
+        let weights = try QuantWeights.getRAWQuantWeights(
+            qtable: jpegQt + jpegQt + jpegQt, qtableDen: qtableDen)
+        // For each JPEG quantised value, JXL's dequant formula
+        // `quant / weight × invQuantAC` should yield
+        // `quant × jpegQt[k]`.
+        let jpegQuantised: [Int32] = [5, -3, 7, 0]
+        for k in 0..<4 {
+            let jxlDequant = Float(jpegQuantised[k])
+                / weights[k] * invQuantAC
+            let jpegDequant = Float(jpegQuantised[k])
+                * Float(jpegQt[k])
+            XCTAssertEqual(jxlDequant, jpegDequant, accuracy: 1e-4,
+                "JXL-dequant vs JPEG-dequant mismatch at \(k)")
+        }
+    }
+
+    /// Zero entries in qtable would cause division-by-zero in the
+    /// dequant formula — must reject.
+    func testQuantWeights_RAW_RejectsZeroEntry() throws {
+        let qtable: [Int32] = [
+            1, 2, 0, 8,
+            1, 2, 4, 8,
+            1, 2, 4, 8,
+        ]
+        XCTAssertThrowsError(
+            try QuantWeights.getRAWQuantWeights(
+                qtable: qtable, qtableDen: 1.0))
+    }
+
+    /// qtable.count not a multiple of 3 — must reject (3 channels).
+    func testQuantWeights_RAW_RejectsBadShape() throws {
+        XCTAssertThrowsError(
+            try QuantWeights.getRAWQuantWeights(
+                qtable: [1, 2, 3, 4, 5], qtableDen: 1.0))
+        XCTAssertThrowsError(
+            try QuantWeights.getRAWQuantWeights(
+                qtable: [], qtableDen: 1.0))
+    }
+
+    // MARK: -
+
     /// DCT8×4 encoder DSP foundation. `forwardDCT8x4Block` packs an
     /// 8×8 patch into the libjxl two-half coefficient layout (two
     /// 8-tall × 4-wide DCTs side-by-side, transposed to 4×8 storage

@@ -253,6 +253,54 @@ extension QuantWeights {
         }
         return out
     }
+
+    /// `kQuantModeRAW` weight synthesis — libjxl
+    /// `quant_weights.cc::ComputeQuantTable` (case `kQuantModeRAW`).
+    ///
+    /// RAW mode is used by libjxl's JPEG → JXL coefficient bridge:
+    /// the encoder packages an arbitrary per-coefficient quant
+    /// table (one Int32 per coefficient × 3 channels) into the
+    /// codestream, and the decoder converts each entry to a
+    /// weight via `weight = 1 / (qtableDen × qtable[i])`. This
+    /// path lets the bridge use JPEG quant tables as JXL quant
+    /// matrices directly.
+    ///
+    /// **Status (v0.12.0f).** This is the math primitive only —
+    /// the **bitstream-decode** side of RAW (extracting the
+    /// embedded Int32 quant table from the codestream) is gated
+    /// on Modular-decoder plumbing for the embedded sub-image
+    /// and lands in a later bite. Today this helper is the
+    /// foundation the eventual encoder will build against; the
+    /// decoder side of RAW is the v0.12.0g+ work.
+    ///
+    /// - Parameters:
+    ///   - qtable: `3 * coefCount` Int32 values in the per-block
+    ///     coefficient layout (typically natural row-major,
+    ///     channel-major: `[X-coef-0..N, Y-coef-0..N, B-coef-0..N]`).
+    ///   - qtableDen: shared denominator (libjxl's
+    ///     `encoding.qraw.qtable_den`). Typically a small float
+    ///     like 1/8 or 1/16 representing the JPEG quant-table
+    ///     scale.
+    /// - Returns: `3 * coefCount` weight floats.
+    /// - Throws: `QuantWeightsError.misshapedBands("invalid RAW qtable")` if `qtable`
+    ///   contains a zero entry (division by zero).
+    public static func getRAWQuantWeights(
+        qtable: [Int32], qtableDen: Float
+    ) throws -> [Float] {
+        guard !qtable.isEmpty,
+              qtable.count.isMultiple(of: 3) else {
+            throw QuantWeightsError.misshapedBands("invalid RAW qtable")
+        }
+        var out = [Float](repeating: 0, count: qtable.count)
+        for i in 0..<qtable.count {
+            let q = qtable[i]
+            guard q != 0 else {
+                throw QuantWeightsError.misshapedBands("invalid RAW qtable")
+            }
+            out[i] = 1.0 / (qtableDen * Float(q))
+        }
+        return out
+    }
 }
 
 /// libjxl-frozen distance bands for the default AC strategies.

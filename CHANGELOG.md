@@ -11,6 +11,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0f — Phase J: `QuantWeights.getRAWQuantWeights` (coefficient-bridge foundation)
+
+First concrete code bite toward the JPEG → JXL coefficient bridge per the v0.12.0e design doc's step 1. Ports the math of libjxl's `kQuantModeRAW` quant-weight synthesis — the path the bridge will use to translate JPEG quant tables into JXL quant matrices.
+
+- **`Sources/JXLSwift/VarDCT/QuantWeights.swift`** — `getRAWQuantWeights(qtable:qtableDen:) -> [Float]` per libjxl `quant_weights.cc::ComputeQuantTable` case `kQuantModeRAW`. Formula: `weight[i] = 1 / (qtableDen × qtable[i])`. Rejects zero qtable entries (would cause division-by-zero in the JXL dequant formula) and non-3-channel-multiple sizes.
+- **What this unlocks.** The eventual coefficient bridge will pick `qtableDen = 1 / invQuantAC` so that JXL's dequant formula `quant / weight × invQuantAC` recovers `quant × jpegQt[k]` — the same dequantised value JPEG would produce. Pin-down test `testQuantWeights_RAW_DequantRoundTrip` verifies this algebra with concrete numbers.
+- **What this DOESN'T do.** The **bitstream-decode** side of RAW (extracting the embedded Int32 quant table from the codestream) is gated on Modular-decoder plumbing for the embedded quant-table sub-image. That's step 2 from the design doc and lands in a later bite. Today's helper is the foundation the eventual encoder will build against; if a real-world coefficient-bridge JXL is fed to our current decoder, the RAW-mode dispatch will need that follow-up to decode it.
+- **4 new tests**: `testQuantWeights_RAW_BasicFormula` (per-entry math), `testQuantWeights_RAW_DequantRoundTrip` (the full JPEG ↔ JXL dequant algebra round-trip), `testQuantWeights_RAW_RejectsZeroEntry`, `testQuantWeights_RAW_RejectsBadShape`. **515 tests passing, 6 skipped, 0 failures** (was 511; +4).
+
 ### v0.12.0e — CLI: `jxl transcode` + Phase J design doc
 
 Closes the last remaining J2KSwift parity gap (`transcode` subcommand) by adding `jxl transcode <input> <output>` — typed CLI entry point for JPEG → JXL and (future) JXL → JPEG conversion. Today the forward direction maps to the existing JPEG-decode + JXL-encode pixel-fallback path; the reverse direction throws with a pointer to the design doc that explains the Brotli gating.
