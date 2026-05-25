@@ -11,6 +11,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0r — Phase J: local-tree modular sub-image encode + decode (step 3.6 dep 1)
+
+Knocks out the first of the three step-3.6-write dependencies from `PHASE-J-COEFFICIENT-BRIDGE.md` §4b. Ships **both halves** of the embedded-modular-sub-image format that libjxl's `ModularGenericCompress` / `ModularDecode` use for sub-images inside other payloads (canonical case: the embedded quant-table inside `DequantMatrices` RAW). The pair validates itself via round-trip tests without needing a surrounding JXL frame and `djxl` for verification.
+
+- **`Sources/JXLSwift/Modular/ModularSubImage.swift`** (new). `ModularSubImage.write(channels:width:height:bitsPerSample:to:)` and `ModularSubImage.read(from:width:height:bitsPerSample:channelCount:)`. Bitstream layout per libjxl `modular/encoding/encoding.cc::ModularDecode`:
+  1. `GroupHeader` with `useGlobalTree = false`, default WP, no transforms.
+  2. Local tree section: `EntropySectionHeader` (6 contexts) + `MultiClusterCodebook` + tree tokens for a single-leaf default tree (predictor = Gradient, rawPredictor = 5, multiplier = 1, offset = 0).
+  3. Post-tree pixel codebook: `EntropySectionHeader` (1 context) + `MultiClusterCodebook` built from observed residual histogram via length-limited canonical Huffman.
+  4. Per-channel pixel residuals: row-major, `ZigZag.pack(pixel − predictor.gradient(W, N, NW))` per pixel through the post-tree codebook.
+- **Scope (v0.12.0r)**: no transforms, single-leaf default tree, no Weighted-Predictor custom. Multi-leaf trees + transforms are follow-on. Matches the quant-table 3×8×8 use case the JPEG-bridge needs.
+- **6 round-trip tests**: constant single-channel, three distinct channels (catches per-channel bookkeeping bugs), the 3×8×8 quant-table shape with realistic positive values (encoded form smaller than raw 192 bytes), deterministic pseudo-random content (exercises entropy coding without happening to compress well), bad-input-shape rejection at write, channel-count mismatch at read produces `.truncated`.
+- **546 tests passing, 6 skipped, 0 failures** (was 540; +6).
+- **Plan progress.** Step 3.6-write dep 1 ✅. Remaining: dep 2 (`VarDCTBitstreamWriter` parallel path bypassing `VarDCTEncoder.forward` — ~2 sessions), dep 3 (decoder-side local-tree decode, not blocking ship — ~1 session). The `ModularSubImage.read(...)` method shipped here is a useful seed for dep 3, modulo integration with the JXLDecoder's frame-level flow.
+
 ### v0.12.0q — Phase J: bridge write-step stub + dependency mapping (step 3.6 write)
 
 Continuing autonomous push on the v0.12.0 line: investigated the bitstream-write step (3.6 write) for the JPEG → JXL coefficient bridge. **Discovered a hidden dependency:** our decoder throws `.notImplemented` on `useGlobalTree = false` (modular sub-image with local tree — see `JXLDecoder.swift` ~line 381). The embedded RAW quant-table sub-image needs a local tree on encode side AND eventually decode side for round-trip validation through our own decoder.

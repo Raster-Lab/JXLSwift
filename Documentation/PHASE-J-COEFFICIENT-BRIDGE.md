@@ -149,7 +149,10 @@ Parser is a deserialiser over a Brotli-decompressed byte stream. ~1 session once
 | 3.4 | Quant-matrix injection: data payload (qtable + qtable_den + dcQuantization) | ✅ v0.12.0m — payload structure built per libjxl `enc_frame.cc:770-799`; bitstream-write side (`enc_modular.cc::EncodeQuantTable` calls `ModularGenericCompress`) is a side-quest before 3.6 |
 | 3.5 | Frame-header parameter derivation (colorTransform, chromaSubsampling, LoopFilter, encoding) | ✅ v0.12.0n — `JXLBridgeFrameHeaderParams` builder; LoopFilter pinned writable as `gab=false, epfIters=0`. AC strategy plane (all-DCT8×8) is a bridge-encoder concern, not a frame-header field. |
 | 3.6 entry | `JXLBridgeEncoder.prepareFromJPEG(_:colorTransform:)` composes 3.1–3.5 into a `JXLBridgeEncoderState` | ✅ v0.12.0o |
-| 3.6 write | `JXLBridgeEncoder.write(state:) -> Data` emits a JXL codestream from the prepared state | ⏳ — stub shipped v0.12.0q; **three** dependencies before it can be filled in (see §4b below) |
+| 3.6 write — dep 1 | local-tree modular sub-image encode + decode | ✅ v0.12.0r |
+| 3.6 write — dep 2 | `VarDCTBitstreamWriter` parallel path bypassing `VarDCTEncoder.forward` | ⏳ (~2 sessions) |
+| 3.6 write — dep 3 | decoder-side local-tree decode (not blocking ship — `djxl` verifies bridge output) | ⏳ (~1 session) |
+| 3.6 write — `JXLBridgeEncoder.write(state:)` proper | wires dep 1 + dep 2 into bytes | ⏳ stub shipped v0.12.0q |
 | 3.7 | Swap `encodeFromJPEGCoefficients(_:)` stub to call the real path; integration test asserts byte-identical pixels vs `JPEGDecoder.decode` on the source bytes | ⏳ |
 | 4   | Lift the 4:4:4-only restriction in the adapter (4:2:0 / 4:2:2 chroma subsampling support) | ⏳ |
 | 5   | Pure-Swift Brotli decoder (unblocks `jbrd` + compressed ICC) | ⏳ |
@@ -163,18 +166,13 @@ Parser is a deserialiser over a Brotli-decompressed byte stream. ~1 session once
 
 `JXLBridgeEncoder.write(state:)` was stubbed in v0.12.0q with three named dependencies. Each is a real session of work; the order below minimises rework.
 
-### Dep 1: Modular sub-image encoder with a local tree
+### Dep 1: Modular sub-image encoder with a local tree ✅ shipped v0.12.0r
 
-libjxl's `EncodeQuantTable` (`enc_modular.cc:1743`) embeds a small modular sub-image inside the `DequantMatrices` RAW payload via `ModularGenericCompress(image, opts, writer)`. The embedded sub-image uses a **local** tree because there's no surrounding frame-level global tree it can reuse.
+`Sources/JXLSwift/Modular/ModularSubImage.swift` ships both halves — `ModularSubImage.write(...)` and `ModularSubImage.read(...)` — so they validate each other via round-trip tests without needing a surrounding JXL frame for `djxl` verification. 6 round-trip tests cover constant single-channel, three distinct channels, the 3×8×8 quant-table shape, deterministic pseudo-random content, plus bad-input-shape + channel-count-mismatch rejection paths.
 
-Our `SpecModularEncoder.buildSingleSection` is structurally close but writes a *frame-level* section: it emits `matrices_dc_default` + frame-level `has_tree` + the tree section + post-tree codebook + `GroupHeader` (with `useGlobalTree=true`) + pixel tokens. The embedded sub-image case wants:
+Scope: no transforms, single-leaf default tree (Gradient predictor / multiplier 1 / offset 0). Multi-leaf trees + transforms are follow-on extensions; the v0.12.0r scope matches what the quant-table embedded sub-image needs.
 
-  1. `GroupHeader` with `useGlobalTree = false`
-  2. A local tree section (tree codebook + tree tokens) — same writer machinery as the frame-level case, just emitted inside this group's bitstream rather than at frame level
-  3. Post-tree codebook (per-pixel-token codebook)
-  4. Pixel tokens
-
-Estimated work: ~1 session. Most pieces (`PrefixCodeTable`, `EntropySectionHeader`, `MultiClusterCodebook`, `TokenStreamWriter`, `ModularTree`, `GroupHeader`) exist; this is composition into a new entry point.
+The `read(...)` method here is the foundation for dep 3 (decoder-side local-tree decode), modulo integration with `JXLDecoder`'s frame-level flow.
 
 ### Dep 2: VarDCTBitstreamWriter parallel path bypassing `VarDCTEncoder.forward`
 

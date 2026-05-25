@@ -2879,6 +2879,144 @@ final class JPEGFoundationTests: XCTestCase {
         }
     }
 
+    // MARK: - ModularSubImage round-trips (v0.12.0r — bridge dep 1)
+
+    /// Identity round-trip on a constant single-channel image.
+    /// Smallest possible case — DC-only, all pixels equal.
+    func testModularSubImage_RoundTrip_ConstantSingleChannel() throws {
+        let width = 8, height = 8
+        let pix = [Int32](repeating: 42, count: width * height)
+        var w = BitWriter()
+        try ModularSubImage.write(
+            channels: [pix], width: width, height: height,
+            bitsPerSample: 8, to: &w)
+        let bytes = w.finishToData()
+        XCTAssertGreaterThan(bytes.count, 0)
+        var r = BitReader(bytes)
+        let decoded = try ModularSubImage.read(
+            from: &r, width: width, height: height,
+            bitsPerSample: 8, channelCount: 1)
+        XCTAssertEqual(decoded.count, 1)
+        XCTAssertEqual(decoded[0], pix)
+    }
+
+    /// Three-channel image with distinct per-channel content —
+    /// catches per-channel bookkeeping bugs. All values in
+    /// `[0, sampleHi]` since the predictor's `lo: 0` clamp
+    /// matches that range (intended for image-pixel inputs).
+    func testModularSubImage_RoundTrip_ThreeChannels() throws {
+        let width = 4, height = 4
+        let ch0: [Int32] = (0..<16).map { Int32($0) }
+        let ch1: [Int32] = (0..<16).map { Int32(100 - $0) }
+        let ch2: [Int32] = (0..<16).map { Int32($0 * 3 + 5) }
+        var w = BitWriter()
+        try ModularSubImage.write(
+            channels: [ch0, ch1, ch2],
+            width: width, height: height,
+            bitsPerSample: 8, to: &w)
+        var r = BitReader(w.finishToData())
+        let decoded = try ModularSubImage.read(
+            from: &r, width: width, height: height,
+            bitsPerSample: 8, channelCount: 3)
+        XCTAssertEqual(decoded.count, 3)
+        XCTAssertEqual(decoded[0], ch0)
+        XCTAssertEqual(decoded[1], ch1)
+        XCTAssertEqual(decoded[2], ch2)
+    }
+
+    /// The 3×8×8 case the JPEG → JXL coefficient bridge needs —
+    /// a realistic quant-table sub-image with non-trivial
+    /// per-channel content.
+    func testModularSubImage_RoundTrip_QuantTableShape() throws {
+        let width = 8, height = 8
+        // Synthetic "quant table"-ish: each channel a different
+        // 64-entry table with values in 1..255 (JPEG 8-bit DQT
+        // range).
+        let ch0: [Int32] = (0..<64).map { Int32(1 + $0) }       // 1..64
+        let ch1: [Int32] = (0..<64).map { Int32(64 - $0 + 1) }  // 64..1
+        let ch2: [Int32] = (0..<64).map { Int32(($0 * 3) % 99 + 1) }
+        var w = BitWriter()
+        try ModularSubImage.write(
+            channels: [ch0, ch1, ch2],
+            width: width, height: height,
+            bitsPerSample: 8, to: &w)
+        let bytes = w.finishToData()
+        var r = BitReader(bytes)
+        let decoded = try ModularSubImage.read(
+            from: &r, width: width, height: height,
+            bitsPerSample: 8, channelCount: 3)
+        XCTAssertEqual(decoded[0], ch0)
+        XCTAssertEqual(decoded[1], ch1)
+        XCTAssertEqual(decoded[2], ch2)
+        // Sanity: the encoded form should be smaller than the
+        // raw 192-byte uncompressed table for this shape (the
+        // gradient predictor + Huffman codes save a bunch).
+        XCTAssertLessThan(bytes.count, 192,
+            "encoded \(bytes.count)B not smaller than raw 192B")
+    }
+
+    /// Random-looking content — exercises the entropy-coding
+    /// path without happening to compress well.
+    func testModularSubImage_RoundTrip_RandomLooking() throws {
+        let width = 8, height = 8
+        // Deterministic pseudo-random via LCG so the test is
+        // reproducible.
+        var state: UInt32 = 0xDEADBEEF
+        var pix: [Int32] = []
+        for _ in 0..<(width * height) {
+            state = state &* 1664525 &+ 1013904223
+            pix.append(Int32(state & 0xFF))
+        }
+        var w = BitWriter()
+        try ModularSubImage.write(
+            channels: [pix], width: width, height: height,
+            bitsPerSample: 8, to: &w)
+        var r = BitReader(w.finishToData())
+        let decoded = try ModularSubImage.read(
+            from: &r, width: width, height: height,
+            bitsPerSample: 8, channelCount: 1)
+        XCTAssertEqual(decoded[0], pix)
+    }
+
+    /// Mismatched channel-count dimensions should be rejected
+    /// by the writer.
+    func testModularSubImage_RejectsBadInputShape() throws {
+        var w = BitWriter()
+        XCTAssertThrowsError(
+            try ModularSubImage.write(
+                channels: [[1, 2, 3]],  // 3 pixels, not 8×8=64
+                width: 8, height: 8, bitsPerSample: 8, to: &w))
+        { err in
+            guard case ModularSubImageError.invalidInput =
+                err else {
+                XCTFail("expected .invalidInput, got \(err)")
+                return
+            }
+        }
+    }
+
+    /// Trying to read with a wrong channelCount produces a
+    /// clean truncation error rather than a crash.
+    func testModularSubImage_DetectsChannelCountMismatch() throws {
+        // Encode 1 channel, try to read 3.
+        let pix = [Int32](repeating: 7, count: 16)
+        var w = BitWriter()
+        try ModularSubImage.write(
+            channels: [pix], width: 4, height: 4,
+            bitsPerSample: 8, to: &w)
+        var r = BitReader(w.finishToData())
+        XCTAssertThrowsError(
+            try ModularSubImage.read(
+                from: &r, width: 4, height: 4,
+                bitsPerSample: 8, channelCount: 3))
+        { err in
+            // .truncated when we run off the end of the
+            // single-channel pixel data partway through channel 2.
+            XCTAssertEqual(err as? ModularSubImageError,
+                           .truncated)
+        }
+    }
+
     // MARK: - byte-stuffing + RST skip stress
 
     func testJPEGSegmentReader_HandlesByteStuffing() throws {
