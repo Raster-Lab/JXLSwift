@@ -11,6 +11,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0e — CLI: `jxl transcode` + Phase J design doc
+
+Closes the last remaining J2KSwift parity gap (`transcode` subcommand) by adding `jxl transcode <input> <output>` — typed CLI entry point for JPEG → JXL and (future) JXL → JPEG conversion. Today the forward direction maps to the existing JPEG-decode + JXL-encode pixel-fallback path; the reverse direction throws with a pointer to the design doc that explains the Brotli gating.
+
+- **`Sources/JXLTool/Transcode.swift`** (new). Auto-detects JPEG vs JXL via magic bytes (SOI marker; naked-codestream `0xFF 0x0A`; ISOBMFF `JXL ` signature box). Three modes via `--mode`:
+  - `pixel-fallback` (default) — today's behaviour: JPEG → `JPEGDecoder.decode` → `ImageFrame` → `JXLEncoder.encode` → JXL. Lossy at both steps; **not** bit-perfect transcoding.
+  - `coefficient-bridge` — reserved for the in-progress Phase J coefficient bridge; throws `.notImplemented` with a pointer to the new design doc.
+  - `reverse` — JXL → JPEG; throws (gated on Brotli for `jbrd` box decompression).
+- **`Sources/JXLTool/JXLTool.swift`** — `Transcode.self` registered in the subcommand list.
+- **`Documentation/PHASE-J-COEFFICIENT-BRIDGE.md`** (new, ~150 lines). Implementation plan + work-item enumeration for the four pieces (`JPEGCoefficientImage` ✅, forward bridge ⏳, reverse bridge ⏳, `jbrd` parser ⏳) with surgical-change list for VarDCTBitstreamWriter (skip `VarDCTEncoder.forward`, custom `DequantMatrices`, `color_transform = None`, chroma_subsampling mapping, all-DCT8×8 strategy plane, skip Gaborish/adaptiveQF, per-component QF = 1), the blocking `kQuantModeRAW` decoder port, the Brotli dependency for reverse direction, recommended implementation order (8 steps, 12–18 sessions total to bit-perfect; 4.5–5.5 sessions to forward-only coefficient bridge), and open questions.
+- **End-to-end smoke** verified all four paths:
+  - `jxl transcode foo.jpg foo.jxl -q 85` → 953 B JPEG → 150 B JXL (15.7% of source). Output JXL decodes through djxl.
+  - `jxl transcode foo.jxl foo.jpg` → errors with clear message + exit 1.
+  - `jxl transcode bogus.bin x.jxl` → errors with "neither JPEG nor JXL" + exit 1.
+  - `jxl transcode foo.jpg foo.jxl --mode coefficient-bridge` → errors with "not yet implemented" pointer + exit 1.
+- **511 tests passing, 6 skipped, 0 failures** (unchanged — pure CLI plumbing over already-tested paths).
+- **README.md known-limitations update.** The "Bit-perfect JPEG ↔ JXL transcoding (Phase J capstone) — NOT in v0.11.0" line still holds; `jxl transcode` exists today as the typed CLI entry point but the underlying coefficient-bridge path is not yet implemented.
+
 ### v0.12.0d docs — EPF0 is already shipped, the v0.11.0 "deferred" claim was stale
 
 Pure docs correction. `EPF.applyEPF0(...)` in `Sources/JXLSwift/VarDCT/EPF.swift` is a complete port of libjxl `render_pipeline/stage_epf.cc::EPF0Stage` (12-neighbour 5×5 plus, 3×3-plus SAD shape, `pass0SigmaScale × 1.65` sigma scale, edge-pixel `borderSadMul`), and `EPF.applyAllStages` dispatches it when `epf_iters >= 3`. The "deferred" claim in the v0.11.0 README / CHANGELOG / ROADMAP was stale — the implementation shipped during the v0.10.0 EPF batch and just wasn't re-validated in the v0.11.0 release-prep audit. Updated:
