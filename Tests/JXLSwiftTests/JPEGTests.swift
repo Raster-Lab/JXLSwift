@@ -2848,6 +2848,37 @@ final class JPEGFoundationTests: XCTestCase {
                        .yCbCr)
     }
 
+    // MARK: - JXLBridgeEncoder.write stub (v0.12.0q)
+
+    /// `write(state:)` throws `.notImplemented` today — pin that
+    /// down so a future "swap stub to real path" bite has to
+    /// remove this assertion deliberately.
+    func testJXLBridgeEncoder_WriteStubThrowsNotImplemented() throws {
+        let qt = JPEGQuantTable(tableId: 0, precision: .bits8,
+            zigZagValues: Array(repeating: 1, count: 64))
+        let img = JPEGCoefficientImage(
+            width: 8, height: 8, precision: 8,
+            frameKind: .baselineDCT,
+            frameComponents: [JPEGFrameComponent(
+                componentId: 1, hSamplingFactor: 1,
+                vSamplingFactor: 1, quantTableId: 0)],
+            quantisedComponents: [JPEGComponentBlocks(
+                componentId: 1, blocksWide: 1, blocksHigh: 1,
+                blocks: [JPEGCoefficientBlock()])],
+            quantTables: [qt])
+        let state = try JXLBridgeEncoder.prepareFromJPEG(img)
+        XCTAssertThrowsError(
+            try JXLBridgeEncoder.write(state: state))
+        { err in
+            guard case JXLBridgeEncoderError.notImplemented =
+                err else {
+                XCTFail("expected .notImplemented from write "
+                    + "stub, got \(err)")
+                return
+            }
+        }
+    }
+
     // MARK: - byte-stuffing + RST skip stress
 
     func testJPEGSegmentReader_HandlesByteStuffing() throws {

@@ -149,7 +149,7 @@ Parser is a deserialiser over a Brotli-decompressed byte stream. ~1 session once
 | 3.4 | Quant-matrix injection: data payload (qtable + qtable_den + dcQuantization) | ✅ v0.12.0m — payload structure built per libjxl `enc_frame.cc:770-799`; bitstream-write side (`enc_modular.cc::EncodeQuantTable` calls `ModularGenericCompress`) is a side-quest before 3.6 |
 | 3.5 | Frame-header parameter derivation (colorTransform, chromaSubsampling, LoopFilter, encoding) | ✅ v0.12.0n — `JXLBridgeFrameHeaderParams` builder; LoopFilter pinned writable as `gab=false, epfIters=0`. AC strategy plane (all-DCT8×8) is a bridge-encoder concern, not a frame-header field. |
 | 3.6 entry | `JXLBridgeEncoder.prepareFromJPEG(_:colorTransform:)` composes 3.1–3.5 into a `JXLBridgeEncoderState` | ✅ v0.12.0o |
-| 3.6 write | `JXLBridgeEncoder.write(state:) -> Data` emits a JXL codestream from the prepared state | ⏳ — gated on a `ModularGenericCompress`-style encoder for the RAW quant-table embedded sub-image (decoder side exists; encoder doesn't yet) |
+| 3.6 write | `JXLBridgeEncoder.write(state:) -> Data` emits a JXL codestream from the prepared state | ⏳ — stub shipped v0.12.0q; **three** dependencies before it can be filled in (see §4b below) |
 | 3.7 | Swap `encodeFromJPEGCoefficients(_:)` stub to call the real path; integration test asserts byte-identical pixels vs `JPEGDecoder.decode` on the source bytes | ⏳ |
 | 4   | Lift the 4:4:4-only restriction in the adapter (4:2:0 / 4:2:2 chroma subsampling support) | ⏳ |
 | 5   | Pure-Swift Brotli decoder (unblocks `jbrd` + compressed ICC) | ⏳ |
@@ -158,6 +158,46 @@ Parser is a deserialiser over a Brotli-decompressed byte stream. ~1 session once
 | 8   | `jxl transcode --mode reverse` wiring + tests | ⏳ |
 
 **Next concrete bite when picking this back up:** sub-step 3.3 (color decorrelation). It's the one that needs the most libjxl-source consultation — `DCzero` semantics in `enc_frame.cc::ComputeJPEGTranscodingData` and the relationship between JPEG DC values and JXL's modular DC sub-image storage. After 3.3, 3.4 is a straightforward use of the `kQuantModeRAW` math from v0.12.0f (just figure out `qtableDen` so the JXL dequant formula `quant / weight × invQuantAC` recovers `quant × jpegQt[k]`). 3.5–3.7 are then mechanical wiring once 3.3+3.4 produce verifiable per-channel inputs.
+
+## 4b. Step 3.6 write — three blocking dependencies (added v0.12.0q)
+
+`JXLBridgeEncoder.write(state:)` was stubbed in v0.12.0q with three named dependencies. Each is a real session of work; the order below minimises rework.
+
+### Dep 1: Modular sub-image encoder with a local tree
+
+libjxl's `EncodeQuantTable` (`enc_modular.cc:1743`) embeds a small modular sub-image inside the `DequantMatrices` RAW payload via `ModularGenericCompress(image, opts, writer)`. The embedded sub-image uses a **local** tree because there's no surrounding frame-level global tree it can reuse.
+
+Our `SpecModularEncoder.buildSingleSection` is structurally close but writes a *frame-level* section: it emits `matrices_dc_default` + frame-level `has_tree` + the tree section + post-tree codebook + `GroupHeader` (with `useGlobalTree=true`) + pixel tokens. The embedded sub-image case wants:
+
+  1. `GroupHeader` with `useGlobalTree = false`
+  2. A local tree section (tree codebook + tree tokens) — same writer machinery as the frame-level case, just emitted inside this group's bitstream rather than at frame level
+  3. Post-tree codebook (per-pixel-token codebook)
+  4. Pixel tokens
+
+Estimated work: ~1 session. Most pieces (`PrefixCodeTable`, `EntropySectionHeader`, `MultiClusterCodebook`, `TokenStreamWriter`, `ModularTree`, `GroupHeader`) exist; this is composition into a new entry point.
+
+### Dep 2: VarDCTBitstreamWriter parallel path bypassing `VarDCTEncoder.forward`
+
+The existing `VarDCTBitstreamWriter.encode(frame:distance:gaborish:adaptiveQF:)` calls `VarDCTEncoder.forward(frame:…)` which runs the full **pixel → linear → OpsinXYB → pad → DCT8×8 → quantise** pipeline. The bridge skips all of that and supplies pre-quantised coefficients directly via `JXLBridgeEncoderState`.
+
+The parallel path needs to:
+  - Build the JXL `Quantized` shape from `JXLBridgeEncoderState.planes` (DC plane from `planes.dcPerChannel`; AC blocks from `planes.acPerChannel`; AC strategy plane all DCT8×8).
+  - Skip Gaborish and adaptive-QF (they don't apply when input is already-quantised coefficients).
+  - Write `DequantMatrices` with `kQuantModeRAW` using `state.rawQuantPayload` + Dep 1's encoder for the embedded qtable sub-image.
+  - Write `FrameHeader` from `state.frameHeaderParams` (color_transform, chroma_subsampling, loop_filter, encoding).
+  - Use `state.colorTransform == .ycbcr ? (1, 0, 2) : (0, 1, 2)` for the JPEG-component → JXL-channel mapping at the AC encoder level (already pre-applied at the data-layer in `state.planes`; just needs to match the FrameHeader).
+
+Estimated work: ~2 sessions. The largest piece by far.
+
+### Dep 3: Decoder-side local-tree decode
+
+Our `JXLDecoder` throws `.notImplemented` on `useGlobalTree = false` (`JXLDecoder.swift` ~line 381). This blocks **decode** of bridge-emitted JXLs through our decoder. The bridge **encoder** doesn't depend on this — verification can use `djxl` against `JPEGDecoder.decode` pixels — but for "decode any in-the-wild cjxl `--lossless_jpeg=1` output" we need it.
+
+Estimated work: ~1 session. Reuse the existing tree-decode machinery (`ModularTree.decode`) at the per-group level instead of pulling from the frame's global tree.
+
+### Recommended order
+
+Dep 1 → Dep 2 → ship `write` → ship 3.7 (swap `encodeFromJPEGCoefficients` stub) → forward-only bridge end-to-end testable via `djxl` verification. Then Dep 3 to unlock decode of bridge output through our own decoder. Then steps 4–8 (subsampling, Brotli, reverse).
 
 ## 5. Until then: what `jxl transcode` does today (v0.12.0e)
 

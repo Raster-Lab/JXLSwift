@@ -11,6 +11,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0q — Phase J: bridge write-step stub + dependency mapping (step 3.6 write)
+
+Continuing autonomous push on the v0.12.0 line: investigated the bitstream-write step (3.6 write) for the JPEG → JXL coefficient bridge. **Discovered a hidden dependency:** our decoder throws `.notImplemented` on `useGlobalTree = false` (modular sub-image with local tree — see `JXLDecoder.swift` ~line 381). The embedded RAW quant-table sub-image needs a local tree on encode side AND eventually decode side for round-trip validation through our own decoder.
+
+Rather than half-implement multi-session work, this bite ships the **stubbed write entry point** with three named blocking dependencies documented in `Documentation/PHASE-J-COEFFICIENT-BRIDGE.md` section 4b. A future "swap stub to real path" bite has a clear, structured target to fill in.
+
+- **`Sources/JXLSwift/JPEG/JXLBridgeEncoder.swift`** — `JXLBridgeEncoder.write(state:) throws -> Data` stub + `JXLBridgeEncoderError.notImplemented(_:)`. Throws with a concrete pointer to PHASE-J-COEFFICIENT-BRIDGE.md §4b.
+- **`Documentation/PHASE-J-COEFFICIENT-BRIDGE.md` §4b** — three blocking dependencies enumerated:
+  1. **Modular sub-image encoder with a local tree** (`useGlobalTree = false`). Composition of existing encoder primitives (`PrefixCodeTable`, `EntropySectionHeader`, `MultiClusterCodebook`, `TokenStreamWriter`, `ModularTree`, `GroupHeader`) into a new entry point; ~1 session.
+  2. **VarDCTBitstreamWriter parallel path bypassing `VarDCTEncoder.forward`** — accepts pre-quantised coefficients, writes `DequantMatrices` with `kQuantModeRAW` (uses Dep 1 for the embedded qtable), writes `FrameHeader` from `state.frameHeaderParams`. ~2 sessions.
+  3. **Decoder-side local-tree decode** — unblocks our own decoder from reading bridge-emitted JXLs (verification can use `djxl` against `JPEGDecoder.decode` pixels, so this isn't blocking for ship). ~1 session.
+- Recommended order: Dep 1 → Dep 2 → ship write → swap 3.7 → forward-only bridge end-to-end testable via `djxl`. Then Dep 3 for our-decoder round-trip. Then steps 4–8.
+- **1 new test**: `testJXLBridgeEncoder_WriteStubThrowsNotImplemented` — pin-down so the "swap stub to real path" bite has to remove this assertion deliberately.
+- **540 tests passing, 6 skipped, 0 failures** (was 539; +1).
+
 ### v0.12.0o — Phase J: bridge state composition (step 3.6 entry point)
 
 Step 3.6 entry point — `JXLBridgeEncoder.prepareFromJPEG(_:colorTransform:)` composes the five data-layer builders (v0.12.0i shape adapter, v0.12.0j channel remap, v0.12.0l DC adjustment, v0.12.0m RAW quant payload, v0.12.0n frame-header params) into one call that returns a fully-populated `JXLBridgeEncoderState`. Locks down the API the eventual bitstream-write step will consume so the wire-up bite can be a single-responsibility "take this known-good state and emit bytes" commit.

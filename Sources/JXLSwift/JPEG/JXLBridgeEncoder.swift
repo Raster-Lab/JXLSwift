@@ -50,8 +50,77 @@ public struct JXLBridgeEncoderState: Sendable {
     public let frameHeaderParams: JXLBridgeFrameHeaderParams
 }
 
+/// Errors specific to the JXL bridge encoder.
+public enum JXLBridgeEncoderError: Error, Sendable, Equatable,
+                                   LocalizedError {
+    /// Bitstream-write step needs encoder primitives that aren't
+    /// yet ported. See PHASE-J-COEFFICIENT-BRIDGE.md for the
+    /// dependency chain.
+    case notImplemented(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .notImplemented(let m):
+            return "JXLBridgeEncoder: \(m)"
+        }
+    }
+}
+
 /// Bridge-encoder namespace.
 public enum JXLBridgeEncoder {
+
+    /// Emit a JXL codestream from a prepared `JXLBridgeEncoderState`.
+    ///
+    /// **Status today (v0.12.0q).** Throws `.notImplemented`. The
+    /// write step requires three bitstream-write capabilities our
+    /// codebase doesn't yet have:
+    ///
+    /// 1. **Modular sub-image encoder with a local tree
+    ///    (`useGlobalTree = false`).** libjxl's `EncodeQuantTable`
+    ///    embeds a small modular sub-image inside the
+    ///    `DequantMatrices` RAW payload to carry the JPEG quant
+    ///    table. Our `SpecModularEncoder.buildSingleSection` is
+    ///    close but writes a *frame-level* section (with
+    ///    `matrices_dc_default` + frame-`has_tree` prelude); the
+    ///    embedded sub-image case wants `GroupHeader` (with
+    ///    `useGlobalTree = false`) followed by a local tree
+    ///    section + post-tree codebook + pixel tokens.
+    ///
+    /// 2. **VarDCT bitstream writer parallel path** that bypasses
+    ///    `VarDCTEncoder.forward` and consumes pre-quantised
+    ///    coefficients directly. The existing
+    ///    `VarDCTBitstreamWriter.encode(frame:distance:…)` is
+    ///    pixel-input only; the bridge needs an entry point that
+    ///    accepts a `JXLBridgeEncoderState` and emits matching
+    ///    DC plane, AC plane, and quant-matrix bitstream.
+    ///
+    /// 3. **Decoder-side local-tree decode**, for round-trip
+    ///    validation. Our `JXLDecoder` throws `.notImplemented`
+    ///    on `useGlobalTree = false` (see JXLDecoder.swift line
+    ///    ~381). Validating the bridge output against
+    ///    `JPEGDecoder.decode` pixels can use `djxl` instead in
+    ///    the test corpus, so this dep is for general-purpose
+    ///    decode of bridge-emitted files (and any cjxl
+    ///    `--lossless_jpeg=1` output found in the wild) rather
+    ///    than for verifying the bridge ships byte-faithful
+    ///    output.
+    ///
+    /// See `Documentation/PHASE-J-COEFFICIENT-BRIDGE.md` section
+    /// 4a (sub-step 3.6 write) for the implementation order.
+    /// Step 3.7 swaps `JXLEncoder.encodeFromJPEGCoefficients(_:)`
+    /// to call `prepareFromJPEG` + `write` once this lands.
+    public static func write(
+        state: JXLBridgeEncoderState
+    ) throws -> Data {
+        _ = state
+        throw JXLBridgeEncoderError.notImplemented(
+            "bitstream-write step requires (1) local-tree "
+            + "modular sub-image encoder for the embedded RAW "
+            + "quant table, (2) VarDCTBitstreamWriter parallel "
+            + "path bypassing VarDCTEncoder.forward. See "
+            + "Documentation/PHASE-J-COEFFICIENT-BRIDGE.md "
+            + "section 4a (step 3.6 write).")
+    }
 
     /// Run the five data-layer builders from v0.12.0i–n in
     /// sequence and return the fully-populated bridge state.
