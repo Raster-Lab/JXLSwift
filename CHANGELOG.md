@@ -11,6 +11,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0c — VarDCT: DCT32×8 + DCT8×32 transforms (closes a v0.11.0 known limitation)
+
+The two remaining sub-64 asymmetric VarDCT strategies are now wired into the decoder. Closes one of the explicit `known limitations` bullets from the v0.11.0 release notes: "DCT128 / DCT256 / DCT32×8 / DCT8×32 transforms not ported" → DCT32×8 / DCT8×32 now ported; DCT128/256 remain.
+
+- **`Sources/JXLSwift/VarDCT/QuantWeights.swift`** — adds `DefaultQuantBands.dct8x32` (X/Y/B), copied byte-exact from libjxl 0.11.2 `lib/jxl/quant_weights.cc::DCT8X32()` (the same constant set covers both DCT8×32 and DCT32×8 after `CoefficientLayout` swap).
+- **`Sources/JXLSwift/Codec/JXLDecoder.swift`** — new IDCT overlay for the 4-cell, 1×4 / 4×1 asymmetric strategy. Pattern mirrors the existing DCT32×16 / DCT16×32 overlay: per-strategy quant weights, LLF assembled via the existing `LowestFrequenciesFromDC.ord5Block(dc:)` helper (4 DC values → 4 LLF coefficients at the top-left 4×1 corner of the 32×8 coef block), AC dequant + CFL recorrelation per-channel, `AccelerateDCT.idct2D(_, rows: 8, cols: 32)`, transposed-or-natural pixel placement based on `isVerticalStack` (DCT32×8 is the 32-tall, 8-wide variant; DCT8×32 is 8-tall, 32-wide). Strategy gate at the AC-decode site extended.
+- **No real-fixture probe.** cjxl strongly prefers larger or differently-shaped strategies (DCT32×32, DCT64×64, DCT16×32, DCT32×64) even on heterogeneous content sweeping multiple distances + effort levels — DCT8×32 / DCT32×8 are genuinely rare in practice. The implementation is sound by construction (mirrors the proven DCT16×32 path that's byte-exact vs djxl, uses the same proven `ord5Block` LLF helper, libjxl-exact quant bands). If a real fixture ever surfaces a byte-diff against djxl, a libjxl-trace bite would close it the same way v0.10.0i closed the broader VarDCT residual.
+- **511 tests passing, 6 skipped, 0 failures** (unchanged — no new tests added since the existing SWEEP corpus doesn't trigger these strategies and the implementation is composition-of-verified-parts).
+
 ### v0.12.0b — CLI: `jxl info foo.jpg` surfaces coefficient-image structure
 
 Small follow-on to v0.12.0a. The new `JPEGDecoder.decodeToCoefficients(_:)` API just landed; `jxl info` on a JPEG now uses it to print a per-component coefficient diagnostic alongside the existing structural summary. Useful for anyone working on the in-progress JPEG → JXL coefficient bridge — the per-component sampling factors, quant-table bindings, and block grid sizes are all visible at a glance.

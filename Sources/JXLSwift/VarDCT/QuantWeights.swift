@@ -344,6 +344,42 @@ public enum DefaultQuantBands {
         b: [ 506.854140754517, -1.4, -0.2, -0.5, -0.5, -1.5, -3.6]
     )
 
+    /// DCT8x32 / DCT32x8 bands per libjxl `quant_weights.cc`
+    /// `DCT8X32()`. Both share the 32×8 (after `CoefficientLayout`)
+    /// coef layout and therefore the same quant table.
+    public static let dct8x32: (x: [Float], y: [Float], b: [Float]) = (
+        x: [
+            16283.2494710648897,
+               -1.7812845336559429,
+               -1.6309059012653515,
+               -1.0382179034313539,
+               -0.85,
+               -0.7,
+               -0.9,
+               -1.2360638576849587,
+        ],
+        y: [
+             5089.15750884921511936,
+               -0.320049391452786891,
+               -0.35362849922161446,
+               -0.30340000000000003,
+               -0.61,
+               -0.5,
+               -0.5,
+               -0.6,
+        ],
+        b: [
+             3397.77603275308720128,
+               -0.321327362693153371,
+               -0.34507619223117997,
+               -0.70340000000000003,
+               -0.9,
+               -1.0,
+               -1.0,
+               -1.1754605576265209,
+        ]
+    )
+
     /// DCT64x32 / DCT32x64 bands per libjxl `quant_weights.cc`
     /// `DCT32X64()`. Both share the 64×32 (after `CoefficientLayout`)
     /// coef layout. libjxl bakes a `0.65 *` factor into the seed.
