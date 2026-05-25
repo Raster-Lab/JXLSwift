@@ -134,6 +134,30 @@ Parser is a deserialiser over a Brotli-decompressed byte stream. ~1 session once
 
 ---
 
+## 4a. v0.12.0 progress checklist
+
+| sub-step | what | status |
+|---|---|---|
+| 3.0 | `JPEGCoefficientImage` + `decodeToCoefficients(_:)` data handoff | ✅ v0.12.0a |
+| 3.0 | `jxl info` surfaces coefficient-image structure | ✅ v0.12.0b |
+| 3.0 | `jxl transcode` CLI surface + this design doc | ✅ v0.12.0e |
+| 3.0 | `QuantWeights.getRAWQuantWeights` math primitive | ✅ v0.12.0f |
+| 3.0 | `JXLEncoder.encodeFromJPEGCoefficients(_:)` API stub + CLI wire | ✅ v0.12.0g |
+| 3.1 | Shape adapter: `JPEGCoefficientImage` → `JXLCoefficientPlanes` (4:4:4 only) | ✅ v0.12.0i |
+| 3.2 | Channel-order remap (`JpegOrder` port) for `.ycbcr` / `.none` color_transforms | ✅ v0.12.0j |
+| 3.3 | Color decorrelation (`DCzero` for DC, optional AC CFL for `.ycbcr` mode) | ⏳ |
+| 3.4 | Quant-matrix injection: write a custom `DequantMatrices` payload using `kQuantModeRAW` with `qtableDen` chosen so JXL dequant matches JPEG dequant | ⏳ |
+| 3.5 | Frame-header construction: `color_transform`, `chroma_subsampling`, all-DCT8×8 strategy plane | ⏳ |
+| 3.6 | Wire the above into `VarDCTBitstreamWriter` (parallel path that bypasses `VarDCTEncoder.forward`) | ⏳ |
+| 3.7 | Swap `encodeFromJPEGCoefficients(_:)` stub to call the real path; integration test asserts byte-identical pixels vs `JPEGDecoder.decode` on the source bytes | ⏳ |
+| 4   | Lift the 4:4:4-only restriction in the adapter (4:2:0 / 4:2:2 chroma subsampling support) | ⏳ |
+| 5   | Pure-Swift Brotli decoder (unblocks `jbrd` + compressed ICC) | ⏳ |
+| 6   | `jbrd` box parser | ⏳ |
+| 7   | Reverse bridge implementation | ⏳ |
+| 8   | `jxl transcode --mode reverse` wiring + tests | ⏳ |
+
+**Next concrete bite when picking this back up:** sub-step 3.3 (color decorrelation). It's the one that needs the most libjxl-source consultation — `DCzero` semantics in `enc_frame.cc::ComputeJPEGTranscodingData` and the relationship between JPEG DC values and JXL's modular DC sub-image storage. After 3.3, 3.4 is a straightforward use of the `kQuantModeRAW` math from v0.12.0f (just figure out `qtableDen` so the JXL dequant formula `quant / weight × invQuantAC` recovers `quant × jpegQt[k]`). 3.5–3.7 are then mechanical wiring once 3.3+3.4 produce verifiable per-channel inputs.
+
 ## 5. Until then: what `jxl transcode` does today (v0.12.0e)
 
 - **Forward (JPEG → JXL):** pixel-fallback path. Decode JPEG to RGB pixels via `JPEGDecoder.decode`, then VarDCT-encode via `JXLEncoder.encode`. Lossy at both steps. Source JPEG is **not** recoverable from the output.
