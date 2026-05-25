@@ -2609,6 +2609,78 @@ final class JPEGFoundationTests: XCTestCase {
         }
     }
 
+    // MARK: - JPEGToJXLAdapter.buildJXLBridgeFrameHeaderParams (v0.12.0n — step 3.5)
+
+    private func bridgeParamsFixture() -> JPEGCoefficientImage {
+        // 3-component 8×8 frame (1 block), uniform sampling, one
+        // shared quant table — enough to exercise the params
+        // builder without exercising any subsampling restriction.
+        let qt = JPEGQuantTable(
+            tableId: 0, precision: .bits8,
+            zigZagValues: Array(repeating: 1, count: 64))
+        return JPEGCoefficientImage(
+            width: 8, height: 8, precision: 8,
+            frameKind: .baselineDCT,
+            frameComponents: (0..<3).map { i in
+                JPEGFrameComponent(
+                    componentId: i + 1,
+                    hSamplingFactor: 1, vSamplingFactor: 1,
+                    quantTableId: 0)
+            },
+            quantisedComponents: (0..<3).map { _ in
+                JPEGComponentBlocks(componentId: 1,
+                    blocksWide: 1, blocksHigh: 1,
+                    blocks: [JPEGCoefficientBlock()])
+            },
+            quantTables: [qt])
+    }
+
+    func testJPEGToJXLAdapter_FrameHeaderParams_YCbCr() {
+        let p = bridgeParamsFixture()
+            .buildJXLBridgeFrameHeaderParams(
+                colorTransform: .ycbcr)
+        XCTAssertEqual(p.colorTransform, .yCbCr)
+        XCTAssertEqual(p.encoding, .varDCT)
+        XCTAssertEqual(p.chromaSubsampling.channelModes.0, 0)
+        XCTAssertEqual(p.chromaSubsampling.channelModes.1, 0)
+        XCTAssertEqual(p.chromaSubsampling.channelModes.2, 0)
+        XCTAssertEqual(p.loopFilter.gab, false,
+            "JPEG transcode disables Gaborish so JXL decoder "
+            + "matches JPEG decoder's no-loop-filter pipeline")
+        XCTAssertEqual(p.loopFilter.epfIters, 0,
+            "JPEG transcode disables EPF for the same reason")
+        XCTAssertEqual(p.loopFilter.allDefault, false,
+            "non-default values require allDefault=false")
+    }
+
+    func testJPEGToJXLAdapter_FrameHeaderParams_None() {
+        let p = bridgeParamsFixture()
+            .buildJXLBridgeFrameHeaderParams(
+                colorTransform: .none)
+        XCTAssertEqual(p.colorTransform, .none)
+        XCTAssertEqual(p.encoding, .varDCT)
+        XCTAssertEqual(p.loopFilter.gab, false)
+        XCTAssertEqual(p.loopFilter.epfIters, 0)
+    }
+
+    /// The chosen LoopFilter shape (`gab = false, epfIters = 0,
+    /// allDefault = false`) is one that the existing
+    /// `LoopFilter.write` supports — pin that down so the bridge
+    /// encoder doesn't hit the "unsupported field" throw path.
+    func testJPEGToJXLAdapter_FrameHeaderParams_LoopFilterIsBitstreamWritable()
+        throws
+    {
+        let p = bridgeParamsFixture()
+            .buildJXLBridgeFrameHeaderParams(
+                colorTransform: .ycbcr)
+        var w = BitWriter()
+        XCTAssertNoThrow(try p.loopFilter.write(to: &w),
+            "bridge LoopFilter must round-trip through the "
+            + "existing non-default writer (gab=false, "
+            + "epfIters=0 is the 'Modular case' branch)")
+        XCTAssertGreaterThan(w.finishToData().count, 0)
+    }
+
     // MARK: - byte-stuffing + RST skip stress
 
     func testJPEGSegmentReader_HandlesByteStuffing() throws {

@@ -11,6 +11,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0n — Phase J: bridge frame-header parameters (step 3.5)
+
+Step 3.5 — derives the JXL `FrameHeader` fields the bridge encoder needs to set when packing JPEG coefficients into a JXL frame. Returned as a typed `JXLBridgeFrameHeaderParams` struct rather than a built `FrameHeader` because the bridge encoder will assemble the rest of the header (frame type, animation fields, blending info, etc.) from its own state.
+
+- **`Sources/JXLSwift/JPEG/JPEGToJXLAdapter.swift`** — `JXLBridgeFrameHeaderParams` (`colorTransform`, `chromaSubsampling`, `loopFilter`, `encoding`) + `JPEGCoefficientImage.buildJXLBridgeFrameHeaderParams(colorTransform:)`. Each field corresponds to a specific JXL bitstream slot the bridge must populate:
+  - **`colorTransform`** — maps `.ycbcr` → `ColorTransform.yCbCr`, `.none` → `.none`. (The `.xyb` mode is the JXL default but unused for the bridge — XYB would lose the JPEG-quant-faithfulness we're trying to preserve.)
+  - **`chromaSubsampling`** — all-zero for the 4:4:4-only adapter envelope; when broader sampling support lands the helper will compute per-channel mode from JPEG `(H, V)` sampling factors.
+  - **`loopFilter`** — `gab = false, epfIters = 0`. JPEG decoding doesn't apply Gaborish or EPF, so the bridge disables both so the JXL decode pipeline matches JPEG's pipeline exactly. The existing `LoopFilter.write` supports this configuration natively (it's the "Modular case" branch — no custom Gaborish weights, no EPF custom tables).
+  - **`encoding`** — always `.varDCT`.
+- **3 new tests**: `_YCbCr` / `_None` (mapping correctness + loopFilter shape), `_LoopFilterIsBitstreamWritable` (round-trips the chosen LoopFilter through `LoopFilter.write` without throwing — pins down that the bridge's choice doesn't hit the "non-default LoopFilter writer epfIters > 0" throw path).
+- **536 tests passing, 6 skipped, 0 failures** (was 533; +3).
+- **Plan progress.** Steps 3.0 through 3.5 are ✅. Remaining for forward-only coefficient bridge: 3.6 wire all five data-layer pieces (planes adapter, channel remap, DC adjustment, RAW quant payload, frame-header params) into `VarDCTBitstreamWriter` as a parallel path that bypasses `VarDCTEncoder.forward`; 3.7 swap `encodeFromJPEGCoefficients(_:)` stub to call the real path + integration test. Step 3.6 has a side-quest: the qtable's bitstream-write requires a `ModularGenericCompress`-style encoder for the embedded quant-table sub-image, which our codebase doesn't have yet (decoder only).
+
 ### v0.12.0m — Phase J: RAW quant-matrix payload builder (step 3.4)
 
 Step 3.4 — the data layer for libjxl's `kQuantModeRAW` JPEG-quant-table injection. Port of `enc_frame.cc::ComputeJPEGTranscodingData` lines 770–799 (the `qt[192]` build and `QuantEncoding::RAW(std::move(qt))` call).

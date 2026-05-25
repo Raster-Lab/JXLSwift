@@ -267,7 +267,64 @@ public struct JXLBridgeRAWQuantPayload: Sendable {
     }
 }
 
+/// All the JXL `FrameHeader` parameters the bridge encoder needs
+/// to set, derived from the `JPEGCoefficientImage` and the
+/// caller's choice of `color_transform`. Step 3.5 from
+/// `Documentation/PHASE-J-COEFFICIENT-BRIDGE.md`.
+///
+/// Returned as a typed struct rather than a built `FrameHeader`
+/// because the bridge encoder will assemble the rest of the
+/// header (frame type, animation fields, blending info, etc.)
+/// from its own state. This layer just resolves the
+/// JPEG-derived fields.
+public struct JXLBridgeFrameHeaderParams: Sendable, Equatable {
+    /// `color_transform`. For .ycbcr the JXL decoder applies
+    /// YCbCr → RGB at output. For .none JXL treats the channels
+    /// as opaque colour data with no conversion.
+    public let colorTransform: ColorTransform
+    /// `chroma_subsampling`. For 4:4:4 (which is all the
+    /// v0.12.0i adapter supports) this is all zeros.
+    public let chromaSubsampling: YCbCrChromaSubsampling
+    /// `loop_filter`. JPEG decoding doesn't apply Gaborish or
+    /// EPF, so the bridge disables both so the JXL decode
+    /// pipeline matches JPEG's. `gab = false, epfIters = 0`.
+    public let loopFilter: LoopFilter
+    /// `encoding`. Always VarDCT for the bridge.
+    public let encoding: FrameEncoding
+}
+
 extension JPEGCoefficientImage {
+
+    /// Build the JXL frame-header parameters the bridge encoder
+    /// needs to set (step 3.5). Today supports 4:4:4 only
+    /// (matching the v0.12.0i adapter envelope); the
+    /// `chroma_subsampling` field is zero for now. When
+    /// `chroma_subsampling` support lands the helper will compute
+    /// per-channel mode from the JPEG `(H, V)` sampling factors.
+    public func buildJXLBridgeFrameHeaderParams(
+        colorTransform: JXLBridgeColorTransform
+    ) -> JXLBridgeFrameHeaderParams {
+        let jxlCT: ColorTransform
+        switch colorTransform {
+        case .ycbcr: jxlCT = .yCbCr
+        case .none:  jxlCT = .none
+        }
+        // 4:4:4 — every channel mode = 0. Subsampled inputs are
+        // gated upstream in `toJXLCoefficientPlanes()`, so the
+        // caller never reaches here with non-uniform sampling.
+        let css = YCbCrChromaSubsampling(y: 0, cb: 0, cr: 0)
+        // JPEG decoding doesn't apply Gaborish/EPF, so disable
+        // both. The non-default-LoopFilter writer in
+        // `LoopFilter.write` supports `gab = false, epfIters = 0`
+        // directly (this is the "Modular case" path).
+        let lf = LoopFilter(
+            allDefault: false, gab: false, epfIters: 0)
+        return JXLBridgeFrameHeaderParams(
+            colorTransform: jxlCT,
+            chromaSubsampling: css,
+            loopFilter: lf,
+            encoding: .varDCT)
+    }
 
     /// Build the RAW quant-matrix payload (step 3.4 from
     /// `Documentation/PHASE-J-COEFFICIENT-BRIDGE.md`) from this
