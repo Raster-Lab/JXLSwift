@@ -3132,6 +3132,84 @@ final class JPEGFoundationTests: XCTestCase {
             "raw mode = 7 in first 3 bits")
     }
 
+    // MARK: - QuantEncodingBitstream.writeDequantMatrices (v0.12.0u)
+
+    /// Empty `rawSlotOverrides` → all_default = true → just 1 bit.
+    func testQuantEncodingBitstream_DequantMatrices_AllDefault() throws {
+        var w = BitWriter()
+        try QuantEncodingBitstream.writeDequantMatrices(
+            rawSlotOverrides: [:], to: &w)
+        let bytes = w.finishToData()
+        XCTAssertEqual(bytes.count, 1,
+            "all-default writes exactly 1 bit (rounds to 1 byte)")
+        var r = BitReader(bytes)
+        let allDefault = try r.readBit()
+        XCTAssertTrue(allDefault)
+    }
+
+    /// Single RAW slot at index 0 (DCT8×8): writes
+    /// `false` + 17 per-slot encodings (1 RAW + 16 library).
+    /// Verifies the byte count is non-trivial and the all_default
+    /// bit reads back as false.
+    func testQuantEncodingBitstream_DequantMatrices_OneRAWSlot() throws {
+        let img = bridgeParamsFixture()  // 3-comp 8×8 fixture
+        let payload = img.buildJXLBridgeRAWQuantPayload(
+            colorTransform: .ycbcr)
+        var w = BitWriter()
+        try QuantEncodingBitstream.writeDequantMatrices(
+            rawSlotOverrides: [0: payload], to: &w)
+        let bytes = w.finishToData()
+        // 1 bit (false) + 1 RAW slot (~50-100 bytes) + 16 library
+        // slots (3 bits each = 48 bits = 6 bytes).
+        XCTAssertGreaterThan(bytes.count, 10)
+        var r = BitReader(bytes)
+        let allDefault = try r.readBit()
+        XCTAssertFalse(allDefault)
+        // Slot 0 should start with mode bits 0b111 = 7 (RAW).
+        XCTAssertEqual(try r.read(bits: 3),
+            UInt32(QuantMode.raw.rawValue))
+    }
+
+    /// After the slot-0 RAW slot, slots 1-16 should each be a
+    /// 3-bit mode = 0 (library), no extra bits per slot since
+    /// `kCeilLog2NumPredefinedTables == 0`. We don't bit-perfect-
+    /// parse the RAW slot (that's a v0.12.0r ModularSubImage
+    /// concern), but we can sanity-check the library tails.
+    func testQuantEncodingBitstream_DequantMatrices_LibrarySlots() throws {
+        // Empty rawSlotOverrides → writes all_default=false would
+        // be wrong (empty → true). Force a non-default by adding
+        // a RAW at slot 0, then verify slot 1 begins with the
+        // library 3-bit mode = 0 pattern. Locating slot 1 in the
+        // bit stream requires consuming the RAW slot's variable-
+        // length payload via the spec parsers — we use the
+        // existing decoder primitives.
+        let img = bridgeParamsFixture()
+        let payload = img.buildJXLBridgeRAWQuantPayload(
+            colorTransform: .ycbcr)
+        var w = BitWriter()
+        try QuantEncodingBitstream.writeDequantMatrices(
+            rawSlotOverrides: [0: payload], to: &w)
+        var r = BitReader(w.finishToData())
+        _ = try r.readBit()              // all_default = false
+        // Slot 0 (RAW): mode + F16 + ModularSubImage.
+        XCTAssertEqual(try r.read(bits: 3),
+                       UInt32(QuantMode.raw.rawValue))
+        _ = try r.read(bits: 16)         // skip F16
+        _ = try ModularSubImage.read(
+            from: &r, width: 8, height: 8,
+            bitsPerSample: 8, channelCount: 3)
+        // Now at slot 1. The next 3 bits should be 0 (library).
+        XCTAssertEqual(try r.read(bits: 3), 0,
+            "slot 1 (after RAW slot 0) should start with library "
+            + "mode bits 0b000")
+        // Slots 2..16: each is 3 zero bits.
+        for slot in 2..<kNumQuantTables {
+            XCTAssertEqual(try r.read(bits: 3), 0,
+                "slot \(slot) should start with library mode "
+                + "bits 0b000")
+        }
+    }
+
     // MARK: - byte-stuffing + RST skip stress
 
     func testJPEGSegmentReader_HandlesByteStuffing() throws {

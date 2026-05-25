@@ -11,6 +11,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0u — Phase J: `DequantMatrices` envelope writer (step 3.6 dep 2)
+
+Closes the quant-matrix bitstream-write story for the JPEG → JXL coefficient bridge. Port of libjxl `enc_quant_weights.cc::DequantMatricesEncode` — the 1-bit `all_default` envelope around 17 per-slot encodings.
+
+- **`Sources/JXLSwift/VarDCT/QuantEncodingBitstream.swift`** — `writeDequantMatrices(rawSlotOverrides:to:)` accepts a dict of `slotIndex → JXLBridgeRAWQuantPayload`. Empty dict → `all_default = true` + nothing else (1 bit total). Non-empty → `all_default = false` + 17 per-slot writes (RAW for any slot present in `rawSlotOverrides`, library for the rest). For the JPEG bridge today, the only override is slot 0 (DCT8×8).
+- **Slot sizing.** libjxl `EncodeQuant` lines 44-45 pre-multiply `kRequiredSize{X,Y}[i]` by `kBlockDim = 8`; for slot 0 (DCT8×8) the cell-grid is 1×1 so the modular sub-image is 8×8 pixels with 3 channels.
+- **3 new tests**: `_AllDefault` (empty overrides → exactly 1 byte output, all_default bit = true), `_OneRAWSlot` (slot 0 RAW override produces > 10 bytes, all_default = false, slot 0 starts with mode bits = 7), `_LibrarySlots` (after consuming the RAW slot via `ModularSubImage.read`, verifies slots 1..16 each start with 3-bit library mode = 0). The third test does a deep walk through the entire 17-slot envelope using the existing decoder primitives.
+- **552 tests passing, 6 skipped, 0 failures** (was 549; +3).
+- **Plan progress.** With this, the quant-matrix bitstream side of step 3.6 write is **complete**. What remains for `JXLBridgeEncoder.write(state:)`: the `VarDCTBitstreamWriter` parallel path that wraps the outer codestream (signature + SizeHeader + ImageMetadata + FrameHeader from `state.frameHeaderParams` + TOC) and emits the DC plane, this DequantMatrices envelope, and the AC plane from `state.planes`. Roughly the structure of `VarDCTBitstreamWriter.encode(frame:…)` minus the `VarDCTEncoder.forward` call (which builds DC/AC from pixels — the bridge skips that and uses `state.planes` directly).
+
 ### v0.12.0t — Latent decoder bug: `QuantMode` rawValues now match libjxl
 
 Building the v0.12.0s `QuantEncodingBitstream` surfaced a latent inconsistency in the existing `QuantMode` enum in `Sources/JXLSwift/VarDCT/QuantEncoding.swift`. Our rawValues were `dct=5, raw=6, afv=7`; libjxl's `QuantEncoding::Mode` is `afv=5, dct=6, raw=7` (`lib/jxl/quant_weights.h:58`). Three mode IDs were swapped vs spec.

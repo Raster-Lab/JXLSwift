@@ -103,4 +103,47 @@ public enum QuantEncodingBitstream {
             width: size.x, height: size.y,
             bitsPerSample: 8, to: &w)
     }
+
+    /// Write the full `DequantMatrices` payload — port of libjxl
+    /// `enc_quant_weights.cc::DequantMatricesEncode`. Bit layout:
+    ///
+    ///     u(1) all_default
+    ///     if !all_default:
+    ///         for i in 0..<kNumQuantTables (=17):
+    ///             EncodeQuant(slot i)
+    ///
+    /// libjxl treats the payload as all-default iff every slot is
+    /// `kQuantModeLibrary` with `predefined == 0`. We model that
+    /// by accepting a dictionary of "override" slots: any slot
+    /// present in `rawSlotOverrides` is written via
+    /// `writeRAWEncoding`; the rest are `writeLibraryEncoding`.
+    /// All-default mode applies iff `rawSlotOverrides.isEmpty`.
+    ///
+    /// For the JPEG → JXL coefficient bridge today, the only
+    /// override is slot 0 (DCT8×8, `kRequiredSizeX[0]=1`,
+    /// `kRequiredSizeY[0]=1`).
+    public static func writeDequantMatrices(
+        rawSlotOverrides: [Int: JXLBridgeRAWQuantPayload],
+        to w: inout BitWriter
+    ) throws {
+        let allDefault = rawSlotOverrides.isEmpty
+        w.writeBit(allDefault)
+        if allDefault { return }
+        for i in 0..<kNumQuantTables {
+            if let payload = rawSlotOverrides[i] {
+                // libjxl `EncodeQuant` line 44-45: size_x/y get
+                // pre-multiplied by `kBlockDim = 8`. Our
+                // `kRequiredSizeX[i]` stores the cell-grid size
+                // (1 for DCT8×8), so the modular sub-image is
+                // (8 × 1) × (8 × 1) = 8×8 pixels.
+                let sx = kRequiredSizeX[i] * 8
+                let sy = kRequiredSizeY[i] * 8
+                try writeRAWEncoding(
+                    payload: payload,
+                    size: (x: sx, y: sy), to: &w)
+            } else {
+                writeLibraryEncoding(to: &w)
+            }
+        }
+    }
 }
