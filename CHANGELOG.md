@@ -11,6 +11,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0d docs — EPF0 is already shipped, the v0.11.0 "deferred" claim was stale
+
+Pure docs correction. `EPF.applyEPF0(...)` in `Sources/JXLSwift/VarDCT/EPF.swift` is a complete port of libjxl `render_pipeline/stage_epf.cc::EPF0Stage` (12-neighbour 5×5 plus, 3×3-plus SAD shape, `pass0SigmaScale × 1.65` sigma scale, edge-pixel `borderSadMul`), and `EPF.applyAllStages` dispatches it when `epf_iters >= 3`. The "deferred" claim in the v0.11.0 README / CHANGELOG / ROADMAP was stale — the implementation shipped during the v0.10.0 EPF batch and just wasn't re-validated in the v0.11.0 release-prep audit. Updated:
+
+- **README.md** — "EPF0 7×7 kernel deferred until a fixture forces it" → "EPF0 / EPF1 / EPF2 restoration" (matches reality).
+- **ROADMAP.md** — EPF0 row now marked ✅ with the implementation pointer + the test-pin-down follow-up (a real `epf_iters=3` fixture for the byte-equality assertion).
+- **CHANGELOG.md** — v0.11.0 known-limitations bullet for EPF0 struck-through with the correction.
+
+No code change; only documentation that was out of date. The pin-down byte-equality test on a real `epf_iters=3` fixture is still open follow-up work (the SWEEP corpus uses default `epf_iters=2` so EPF0 never fires in those tests).
+
 ### v0.12.0c — VarDCT: DCT32×8 + DCT8×32 transforms (closes a v0.11.0 known limitation)
 
 The two remaining sub-64 asymmetric VarDCT strategies are now wired into the decoder. Closes one of the explicit `known limitations` bullets from the v0.11.0 release notes: "DCT128 / DCT256 / DCT32×8 / DCT8×32 transforms not ported" → DCT32×8 / DCT8×32 now ported; DCT128/256 remain.
@@ -62,7 +72,7 @@ First v0.12.0 bite — opens the data-handoff seam between the JPEG decode stack
 - VarDCT decoder: `cjxl -d 2/5/10` has a small B-channel byte-diff (max ~12–14) — visually indistinguishable but not bit-exact. Pixel-byte-equality close-out is open Phase V work.
 - VarDCT decoder: Splines / Noise / Patches synthesis frame flags throw `.notImplemented`.
 - Modular: Palette transform throws `.paletteUnsupported`; ICC compressed-profile boxes not parsed (uncompressed profiles work).
-- EPF0 7×7 kernel deferred until a real fixture forces it.
+- ~~EPF0 7×7 kernel deferred until a real fixture forces it.~~ **Stale claim — EPF0 is implemented + dispatched (corrected in v0.12.0d docs); the existing SWEEP corpus just uses `epf_iters = 2` so EPF0 never fires in those tests.**
 - JPEG: progressive / 12-bit / arithmetic / CMYK rejected with a clear error message.
 - **Bit-perfect JPEG ↔ JXL transcoding (Phase J capstone) — NOT in v0.11.0**, planned for v0.12.0 (VarDCT coefficient bridge + JXL → JPEG reverse + `jbrd` box).
 
