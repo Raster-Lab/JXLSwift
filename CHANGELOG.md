@@ -11,6 +11,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0s — Phase J: per-slot quant-encoding writers (step 3.6 dep 2 starter)
+
+First substantive piece of step-3.6-write dep 2 (`VarDCTBitstreamWriter` parallel path). Ships the **per-slot** quant-encoding writers for the two modes the JPEG bridge needs: `kQuantModeLibrary` (mode 0, used for the 16 slots the bridge keeps at library defaults) and `kQuantModeRAW` (mode 7, used for the DCT8×8 slot to inject the JPEG quant table via the v0.12.0r `ModularSubImage` encoder).
+
+- **`Sources/JXLSwift/VarDCT/QuantEncodingBitstream.swift`** (new). Ports libjxl `enc_quant_weights.cc::EncodeQuant` per mode:
+  - `writeLibraryEncoding(predefined:to:)` — `u(3) mode=0` + `u(kCeilLog2NumPredefinedTables=0) predefined` (the predefined field collapses to zero bits in libjxl 0.11.2 since `kNumPredefinedTables == 1`; asserts `predefined == 0` to catch theoretical-future misuse).
+  - `writeRAWEncoding(payload:size:to:)` — `u(3) mode=7` + `F16(qtable_den)` + `ModularSubImage` of the 3-channel qtable. Uses the v0.12.0r local-tree `ModularSubImage.write`. Output is decodable by `ModularSubImage.read` for round-trip validation today; integration with cjxl-style global-tree RAW (the libjxl default for `--lossless_jpeg=1` output) is the dep 3 / future enhancement.
+  - `QuantEncodingMode` enum mirrors libjxl `QuantEncoding::Mode` values.
+- **3 new tests**:
+  - `_Library_RoundTrip` — writes via `writeLibraryEncoding`, reads back through the existing `QuantEncoding.read` (which already handles library mode), asserts mode + predefined match.
+  - `_RAW_RoundTrip` — writes a real JPEG-derived RAW payload, manually parses mode (3 bits) + F16(qtable_den) + `ModularSubImage.read` for the remainder, and confirms the recovered flat qtable matches the source byte-exactly.
+  - `_ModeBitPattern` — pins down that library mode emits `0b000` in the first 3 bits and RAW mode emits `0b111`.
+- **549 tests passing, 6 skipped, 0 failures** (was 546; +3).
+- **Plan progress.** Step 3.6 write decomposes into: dep 1 (✅ v0.12.0r) + dep 2 (this bite + remaining VarDCT parallel-path wiring) + dep 3 (decoder-side local-tree). With dep 1 and the per-slot quant writers shipped, what remains for the full bridge `write(state:)` is: (a) `DequantMatrices` envelope writer that wraps 17 per-slot encodings (16 library + 1 RAW); (b) `VarDCTBitstreamWriter.encodeFromBridgeState(state:)` parallel path that bypasses `VarDCTEncoder.forward` and emits the DC plane, AC plane, frame header, TOC. Estimate ~1.5 more sessions to ship `write(state:)`, then 3.7 swaps the `encodeFromJPEGCoefficients(_:)` stub.
+
 ### v0.12.0r — Phase J: local-tree modular sub-image encode + decode (step 3.6 dep 1)
 
 Knocks out the first of the three step-3.6-write dependencies from `PHASE-J-COEFFICIENT-BRIDGE.md` §4b. Ships **both halves** of the embedded-modular-sub-image format that libjxl's `ModularGenericCompress` / `ModularDecode` use for sub-images inside other payloads (canonical case: the embedded quant-table inside `DequantMatrices` RAW). The pair validates itself via round-trip tests without needing a surrounding JXL frame and `djxl` for verification.

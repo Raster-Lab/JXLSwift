@@ -3017,6 +3017,121 @@ final class JPEGFoundationTests: XCTestCase {
         }
     }
 
+    // MARK: - QuantEncodingBitstream (v0.12.0s — bridge dep 2 starter)
+
+    /// Library-mode write round-trips through `QuantEncoding.read`
+    /// — mode 0, no payload bits beyond the 3-bit selector.
+    func testQuantEncodingBitstream_Library_RoundTrip() throws {
+        var w = BitWriter()
+        QuantEncodingBitstream.writeLibraryEncoding(to: &w)
+        let bytes = w.finishToData()
+        XCTAssertGreaterThan(bytes.count, 0)
+        var r = BitReader(bytes)
+        let enc = try QuantEncoding.read(
+            from: &r,
+            requiredSizeX: 1, requiredSizeY: 1)
+        XCTAssertEqual(enc.mode, .library)
+        XCTAssertEqual(enc.predefined, 0)
+    }
+
+    /// RAW-mode write: we don't have a local-tree-aware decoder
+    /// for the full RAW encoding yet (existing
+    /// `QuantEncoding.read` requires `useGlobalTree=true`), but
+    /// the wire format is `mode(3) + F16(qtable_den) +
+    /// ModularSubImage`. Validate by manually reading the
+    /// 3-bit mode + 16-bit F16, then `ModularSubImage.read` for
+    /// the remainder, and confirm the recovered qtable matches.
+    func testQuantEncodingBitstream_RAW_RoundTrip() throws {
+        // Build a payload from a synthetic JPEG coefficient image.
+        var zz = [UInt16](repeating: 7, count: 64)
+        zz[0] = 16
+        let qt = JPEGQuantTable(
+            tableId: 0, precision: .bits8, zigZagValues: zz)
+        let img = JPEGCoefficientImage(
+            width: 8, height: 8, precision: 8,
+            frameKind: .baselineDCT,
+            frameComponents: [JPEGFrameComponent(
+                componentId: 1, hSamplingFactor: 1,
+                vSamplingFactor: 1, quantTableId: 0)],
+            quantisedComponents: [JPEGComponentBlocks(
+                componentId: 1, blocksWide: 1, blocksHigh: 1,
+                blocks: [JPEGCoefficientBlock()])],
+            quantTables: [qt])
+        let payload = img.buildJXLBridgeRAWQuantPayload(
+            colorTransform: .ycbcr)
+
+        var w = BitWriter()
+        try QuantEncodingBitstream.writeRAWEncoding(
+            payload: payload, size: (x: 8, y: 8), to: &w)
+        let bytes = w.finishToData()
+        XCTAssertGreaterThan(bytes.count, 0)
+
+        // Manual parse: mode (3 bits) + F16 (16 bits).
+        var r = BitReader(bytes)
+        let modeRaw = try r.read(bits: 3)
+        XCTAssertEqual(modeRaw,
+            QuantEncodingMode.raw.rawValue)
+        let denBits = try r.read(bits: 16)
+        let qtableDen = halfToFloat(UInt16(denBits))
+        // F16 round-trip introduces small precision loss.
+        XCTAssertEqual(qtableDen,
+            Float(1.0 / (8.0 * 255.0)), accuracy: 1e-5)
+
+        // Modular sub-image: 3 channels of 8×8 each.
+        let recovered = try ModularSubImage.read(
+            from: &r, width: 8, height: 8,
+            bitsPerSample: 8, channelCount: 3)
+        XCTAssertEqual(recovered.count, 3)
+        // Flatten recovered into channel-major Int32 array and
+        // compare with payload.qtable.
+        var flat: [Int32] = []
+        flat.reserveCapacity(payload.qtable.count)
+        for ch in recovered {
+            flat.append(contentsOf: ch)
+        }
+        XCTAssertEqual(flat, payload.qtable,
+            "RAW write + manual parse should recover the "
+            + "original qtable byte-exactly")
+    }
+
+    /// Mode bits are 3 bits per `kLog2NumQuantModes`. Pin down
+    /// that the library and RAW selectors are 0 and 7 in those
+    /// bits.
+    func testQuantEncodingBitstream_ModeBitPattern() throws {
+        var libW = BitWriter()
+        QuantEncodingBitstream.writeLibraryEncoding(to: &libW)
+        let libBytes = libW.finishToData()
+        // First 3 bits should be 0b000.
+        var libR = BitReader(libBytes)
+        XCTAssertEqual(try libR.read(bits: 3), 0,
+            "library mode = 0 in first 3 bits")
+
+        // RAW writer needs a valid payload; reuse the v0.12.0m
+        // builder.
+        let qt = JPEGQuantTable(tableId: 0,
+            precision: .bits8,
+            zigZagValues: Array(repeating: 1, count: 64))
+        let img = JPEGCoefficientImage(
+            width: 8, height: 8, precision: 8,
+            frameKind: .baselineDCT,
+            frameComponents: [JPEGFrameComponent(
+                componentId: 1, hSamplingFactor: 1,
+                vSamplingFactor: 1, quantTableId: 0)],
+            quantisedComponents: [JPEGComponentBlocks(
+                componentId: 1, blocksWide: 1, blocksHigh: 1,
+                blocks: [JPEGCoefficientBlock()])],
+            quantTables: [qt])
+        let payload = img.buildJXLBridgeRAWQuantPayload(
+            colorTransform: .ycbcr)
+        var rawW = BitWriter()
+        try QuantEncodingBitstream.writeRAWEncoding(
+            payload: payload, size: (x: 8, y: 8), to: &rawW)
+        var rawR = BitReader(rawW.finishToData())
+        // First 3 bits should be 0b111 = 7 (.raw).
+        XCTAssertEqual(try rawR.read(bits: 3), 7,
+            "raw mode = 7 in first 3 bits")
+    }
+
     // MARK: - byte-stuffing + RST skip stress
 
     func testJPEGSegmentReader_HandlesByteStuffing() throws {
