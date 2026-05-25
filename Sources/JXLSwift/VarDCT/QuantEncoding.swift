@@ -38,16 +38,31 @@ public let kRequiredSizeY: [Int] =
     [1, 1, 1, 1, 2, 4, 2, 4, 4, 1, 1, 8, 8, 16, 16, 32, 32]
 
 /// One of libjxl's 8 quant modes. Stored alongside the per-mode
-/// payload below.
+/// payload below. Raw values match libjxl's
+/// `QuantEncoding::Mode` enum order
+/// (`lib/jxl/quant_weights.h:58`):
+///
+///   `kQuantModeLibrary=0, kQuantModeID=1, kQuantModeDCT2=2,
+///    kQuantModeDCT4=3, kQuantModeDCT4X8=4, kQuantModeAFV=5,
+///    kQuantModeDCT=6, kQuantModeRAW=7`.
+///
+/// **v0.12.0t fix.** Earlier versions had `dct=5, raw=6, afv=7`
+/// — wrong vs libjxl's order. The bug was dormant because the
+/// only call site (`JXLDecoder.swift` ~line 791) throws
+/// `.notImplemented` on non-default DequantMatrices and never
+/// reaches the `QuantMode(rawValue:)` dispatch. With the
+/// v0.12.0s+ bridge encoder writing actual non-default mode
+/// bits, the latent inconsistency would surface; fix is a
+/// pre-emptive correction.
 public enum QuantMode: UInt8, Sendable, Equatable {
     case library  = 0
     case id       = 1
     case dct2     = 2
     case dct4     = 3
     case dct4x8   = 4
-    case dct      = 5
-    case raw      = 6
-    case afv      = 7
+    case afv      = 5
+    case dct      = 6
+    case raw      = 7
 }
 
 /// libjxl's `DctQuantWeightParams` — distance bands shared by the

@@ -11,6 +11,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0t — Latent decoder bug: `QuantMode` rawValues now match libjxl
+
+Building the v0.12.0s `QuantEncodingBitstream` surfaced a latent inconsistency in the existing `QuantMode` enum in `Sources/JXLSwift/VarDCT/QuantEncoding.swift`. Our rawValues were `dct=5, raw=6, afv=7`; libjxl's `QuantEncoding::Mode` is `afv=5, dct=6, raw=7` (`lib/jxl/quant_weights.h:58`). Three mode IDs were swapped vs spec.
+
+**Why the bug was dormant.** The only call site (`JXLDecoder.swift` ~line 791) throws `.notImplemented` on non-default `DequantMatrices` and never reaches the `QuantMode(rawValue:)` dispatch. The cjxl test corpus has always emitted `all_default = true` for DequantMatrices, so the bad rawValues never decoded any real bits.
+
+**Why fix it now.** The in-progress v0.12.0s coefficient-bridge `writeRAWEncoding` writes real non-default mode-7 RAW bits. With the existing rawValues, our future RAW reader would have parsed those bits as `.afv` and the bitstream would have desynced immediately. The fix is a pre-emptive correction so the bridge encoder output and the future bridge decoder agree on what mode 7 means.
+
+- **`Sources/JXLSwift/VarDCT/QuantEncoding.swift`** — `QuantMode` enum rawValues reordered to match libjxl (`afv=5, dct=6, raw=7`); doc comment updated with a "v0.12.0t fix" note pointing at the surfacing context.
+- **`Sources/JXLSwift/VarDCT/QuantEncodingBitstream.swift`** — removes the parallel `QuantEncodingMode` enum that v0.12.0s introduced (the two have the same shape now; one is enough). The bitstream writers use `QuantMode.library.rawValue` / `QuantMode.raw.rawValue` directly.
+- **`Tests/JXLSwiftTests/IntegrationTests.swift`** — `testVarDCT_QuantEncoding_DCTMode` was the only test writing mode bits 5/6/7 directly; it had `mode = 5` (intended DCT but matched the buggy enum). Corrected to `mode = 6` per libjxl, with a v0.12.0t note.
+- **549 tests passing, 6 skipped, 0 failures** (unchanged).
+- Net: one latent correctness fix; no API change beyond removing the v0.12.0s-introduced `QuantEncodingMode` enum (which never made it to a release).
+
 ### v0.12.0s — Phase J: per-slot quant-encoding writers (step 3.6 dep 2 starter)
 
 First substantive piece of step-3.6-write dep 2 (`VarDCTBitstreamWriter` parallel path). Ships the **per-slot** quant-encoding writers for the two modes the JPEG bridge needs: `kQuantModeLibrary` (mode 0, used for the 16 slots the bridge keeps at library defaults) and `kQuantModeRAW` (mode 7, used for the DCT8×8 slot to inject the JPEG quant table via the v0.12.0r `ModularSubImage` encoder).

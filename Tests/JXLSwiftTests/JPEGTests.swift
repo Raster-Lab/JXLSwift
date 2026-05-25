@@ -3070,7 +3070,7 @@ final class JPEGFoundationTests: XCTestCase {
         var r = BitReader(bytes)
         let modeRaw = try r.read(bits: 3)
         XCTAssertEqual(modeRaw,
-            QuantEncodingMode.raw.rawValue)
+            UInt32(QuantMode.raw.rawValue))
         let denBits = try r.read(bits: 16)
         let qtableDen = halfToFloat(UInt16(denBits))
         // F16 round-trip introduces small precision loss.

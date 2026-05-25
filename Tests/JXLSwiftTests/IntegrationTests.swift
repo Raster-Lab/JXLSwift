@@ -12090,7 +12090,7 @@ extension FoundationTests {
     /// + 3 channels of F16 weights; first per channel × 64).
     func testVarDCT_QuantEncoding_DCTMode() throws {
         var w = BitWriter()
-        w.write(bits: 3, value: 5)                   // mode = DCT
+        w.write(bits: 3, value: 6)                   // mode = DCT (libjxl: kQuantModeDCT = 6; v0.12.0t fix)
         w.write(bits: 4, value: 1)                   // num_bands - 1 = 1 ⇒ 2 bands
         for _ in 0..<3 {
             w.write(bits: 16, value: UInt32(floatToHalf(50.0)))   // seed × 64 ⇒ 3200

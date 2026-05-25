@@ -31,17 +31,10 @@ import Foundation
 /// at the start of each quant-encoding slot.
 private let kQuantModeBits = 3
 
-/// libjxl `quant_weights.h::QuantEncoding::Mode` enum values.
-public enum QuantEncodingMode: UInt32, Sendable, Equatable {
-    case library = 0
-    case identity = 1
-    case dct2 = 2
-    case dct4 = 3
-    case dct4x8 = 4
-    case afv = 5
-    case dct = 6
-    case raw = 7
-}
+// (The libjxl `QuantEncoding::Mode` enum values are mirrored by
+//  the existing `QuantMode` in QuantEncoding.swift — `raw=7`,
+//  `library=0`, etc. v0.12.0t corrected those rawValues to match
+//  libjxl. Don't introduce a parallel enum; use `QuantMode`.)
 
 public enum QuantEncodingBitstream {
 
@@ -67,7 +60,7 @@ public enum QuantEncodingBitstream {
             "kQuantModeLibrary predefined > 0 is not used in "
             + "libjxl 0.11.2 (kNumPredefinedTables == 1)")
         w.write(bits: kQuantModeBits,
-                value: QuantEncodingMode.library.rawValue)
+                value: UInt32(QuantMode.library.rawValue))
         // predefined field is zero bits in 0.11.2 — no write.
     }
 
@@ -93,7 +86,7 @@ public enum QuantEncodingBitstream {
                 + "≠ 3 × \(size.x) × \(size.y) = \(need)")
         }
         w.write(bits: kQuantModeBits,
-                value: QuantEncodingMode.raw.rawValue)
+                value: UInt32(QuantMode.raw.rawValue))
         let half = floatToHalf(payload.qtableDen)
         w.write(bits: 16, value: UInt32(half))
         // Slice qtable into 3 per-channel buffers for the
