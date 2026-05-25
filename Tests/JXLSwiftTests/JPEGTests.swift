@@ -2411,6 +2411,204 @@ final class JPEGFoundationTests: XCTestCase {
             "zero quant entry must be a no-op, not a crash")
     }
 
+    // MARK: - JPEGToJXLAdapter.buildJXLBridgeRAWQuantPayload (v0.12.0m — step 3.4)
+
+    /// Construct a synthetic JPEG with two distinguishable quant
+    /// tables (one for luma, one for chroma) and verify the
+    /// payload:
+    ///   - Each JXL channel's `qt` block holds the right JPEG
+    ///     component's quant values (via `JpegOrder` permutation).
+    ///   - The transpose (`qt[c*64 + 8*x + y] = nat[8*y + x]`) is
+    ///     applied — we use a single non-symmetric high-frequency
+    ///     entry to pin down the transpose direction.
+    ///   - `qtable_den == 1 / (8*255)` (libjxl canonical value).
+    ///   - `dcQuantization[c] == 255*8 / qt[0]` per channel.
+    func testJPEGToJXLAdapter_RAWPayload_YCbCrPermutationAndTranspose() {
+        // Build qt 0 (luma): all 1s except natural[1] = 99 (this
+        // is qt at (y=0, x=1) — a horizontal-AC quant factor).
+        // Zig-zag position 1 maps to natural index 1 per Figure A.6.
+        var lumaZZ = [UInt16](repeating: 1, count: 64)
+        lumaZZ[0] = 16          // DC factor
+        lumaZZ[1] = 99          // distinguishable horizontal-AC factor
+        let lumaQt = JPEGQuantTable(
+            tableId: 0, precision: .bits8,
+            zigZagValues: lumaZZ)
+
+        // qt 1 (chroma): all 2s except natural[8] = 77 (vertical-AC).
+        // Zig-zag position 2 maps to natural index 8 per Figure A.6.
+        var chromaZZ = [UInt16](repeating: 2, count: 64)
+        chromaZZ[0] = 24
+        chromaZZ[2] = 77        // distinguishable vertical-AC factor
+        let chromaQt = JPEGQuantTable(
+            tableId: 1, precision: .bits8,
+            zigZagValues: chromaZZ)
+
+        let img = JPEGCoefficientImage(
+            width: 8, height: 8, precision: 8,
+            frameKind: .baselineDCT,
+            frameComponents: [
+                JPEGFrameComponent(componentId: 1,
+                    hSamplingFactor: 1, vSamplingFactor: 1,
+                    quantTableId: 0),   // Y → qt 0
+                JPEGFrameComponent(componentId: 2,
+                    hSamplingFactor: 1, vSamplingFactor: 1,
+                    quantTableId: 1),   // Cb → qt 1
+                JPEGFrameComponent(componentId: 3,
+                    hSamplingFactor: 1, vSamplingFactor: 1,
+                    quantTableId: 1),   // Cr → qt 1
+            ],
+            quantisedComponents: (0..<3).map { _ in
+                JPEGComponentBlocks(componentId: 1,
+                    blocksWide: 1, blocksHigh: 1,
+                    blocks: [JPEGCoefficientBlock()])
+            },
+            quantTables: [lumaQt, chromaQt])
+
+        let payload = img.buildJXLBridgeRAWQuantPayload(
+            colorTransform: .ycbcr)
+        XCTAssertEqual(payload.qtableDen,
+                       Float(1.0 / (8.0 * 255.0)),
+                       accuracy: 1e-9)
+        // Under .ycbcr, JpegOrder = (1, 0, 2) →
+        //   JXL channel 0 → JPEG component 1 (Cb) → qt 1 (chroma)
+        //   JXL channel 1 → JPEG component 0 (Y)  → qt 0 (luma)
+        //   JXL channel 2 → JPEG component 2 (Cr) → qt 1 (chroma)
+        //
+        // Luma DC = 16, chroma DC = 24. So dcQuantization should be:
+        //   dcQ[0] = 255*8/24 (Cb DC)
+        //   dcQ[1] = 255*8/16 (Y DC)
+        //   dcQ[2] = 255*8/24 (Cr DC)
+        XCTAssertEqual(payload.dcQuantization[0],
+                       255.0 * 8.0 / 24.0, accuracy: 1e-5)
+        XCTAssertEqual(payload.dcQuantization[1],
+                       255.0 * 8.0 / 16.0, accuracy: 1e-5)
+        XCTAssertEqual(payload.dcQuantization[2],
+                       255.0 * 8.0 / 24.0, accuracy: 1e-5)
+
+        // Transpose check:
+        //   Luma natural[1] = 99 lives at (y=0, x=1).
+        //   After transpose this lands at qt[Y_channel*64 + 8*1 + 0]
+        //     = qt[1*64 + 8] = qt[72].
+        //   JXL channel 1 = Y (luma) per the permutation above.
+        XCTAssertEqual(payload.qtable[1 * 64 + 8], 99,
+            "luma natural[1]=99 should land at qt[Y*64 + 8*1+0]")
+
+        //   Chroma natural[8] = 77 lives at (y=1, x=0).
+        //   After transpose this lands at qt[c*64 + 8*0 + 1]
+        //     = qt[c*64 + 1].
+        //   JXL channels 0 and 2 are chroma per the permutation.
+        XCTAssertEqual(payload.qtable[0 * 64 + 1], 77,
+            "chroma natural[8]=77 should land at qt[Cb*64 + 1]")
+        XCTAssertEqual(payload.qtable[2 * 64 + 1], 77,
+            "chroma natural[8]=77 should land at qt[Cr*64 + 1]")
+
+        // DC entries (natural index 0 → coef position 0 after
+        // transpose) per channel:
+        XCTAssertEqual(payload.qtable[0 * 64 + 0], 24)
+        XCTAssertEqual(payload.qtable[1 * 64 + 0], 16)
+        XCTAssertEqual(payload.qtable[2 * 64 + 0], 24)
+    }
+
+    /// Grayscale: all three JXL channels read JPEG component 0
+    /// (JpegOrder returns `(0, 0, 0)`). Verify all three qt
+    /// blocks are identical.
+    func testJPEGToJXLAdapter_RAWPayload_GrayscaleReplicates() {
+        var zz = [UInt16](repeating: 5, count: 64)
+        zz[0] = 12       // DC factor
+        let qt = JPEGQuantTable(
+            tableId: 0, precision: .bits8, zigZagValues: zz)
+        let img = JPEGCoefficientImage(
+            width: 8, height: 8, precision: 8,
+            frameKind: .baselineDCT,
+            frameComponents: [JPEGFrameComponent(
+                componentId: 1, hSamplingFactor: 1,
+                vSamplingFactor: 1, quantTableId: 0)],
+            quantisedComponents: [JPEGComponentBlocks(
+                componentId: 1, blocksWide: 1, blocksHigh: 1,
+                blocks: [JPEGCoefficientBlock()])],
+            quantTables: [qt])
+        let payload = img.buildJXLBridgeRAWQuantPayload(
+            colorTransform: .ycbcr)
+        // All three channels should hold the same qt block.
+        for jxlChannel in 0..<3 {
+            for k in 0..<64 {
+                XCTAssertEqual(
+                    payload.qtable[jxlChannel * 64 + k],
+                    payload.qtable[k],
+                    "channel \(jxlChannel) k=\(k): grayscale "
+                    + "should replicate")
+            }
+            XCTAssertEqual(payload.dcQuantization[jxlChannel],
+                           255.0 * 8.0 / 12.0, accuracy: 1e-5)
+        }
+    }
+
+    /// `qtable_den` is the canonical value libjxl's JPEG
+    /// transcoder hard-codes: `1 / (8 × 255)`. Pin it down
+    /// because the JXL dequant-formula round-trip depends on it.
+    func testJPEGToJXLAdapter_RAWPayload_QtableDenIsCanonical() {
+        let qt = JPEGQuantTable(
+            tableId: 0, precision: .bits8,
+            zigZagValues: Array(repeating: 1, count: 64))
+        let img = JPEGCoefficientImage(
+            width: 8, height: 8, precision: 8,
+            frameKind: .baselineDCT,
+            frameComponents: [JPEGFrameComponent(
+                componentId: 1, hSamplingFactor: 1,
+                vSamplingFactor: 1, quantTableId: 0)],
+            quantisedComponents: [JPEGComponentBlocks(
+                componentId: 1, blocksWide: 1, blocksHigh: 1,
+                blocks: [JPEGCoefficientBlock()])],
+            quantTables: [qt])
+        for ct in [JXLBridgeColorTransform.ycbcr,
+                   JXLBridgeColorTransform.none] {
+            let p = img.buildJXLBridgeRAWQuantPayload(
+                colorTransform: ct)
+            XCTAssertEqual(p.qtableDen,
+                           Float(1.0 / (8.0 * 255.0)),
+                           accuracy: 1e-9,
+                           "qtable_den must be libjxl's canonical "
+                           + "1/(8×255) under \(ct)")
+        }
+    }
+
+    /// Round-trip with the v0.12.0f math primitive: build the
+    /// payload, feed it through `getRAWQuantWeights`, confirm
+    /// the resulting weights match what the JXL decoder will use
+    /// (`8 × 255 / qtable[i]`).
+    func testJPEGToJXLAdapter_RAWPayload_RoundTripsThroughQuantWeights()
+        throws
+    {
+        var zz = [UInt16](repeating: 1, count: 64)
+        zz[0] = 16; zz[1] = 11; zz[2] = 10
+        let qt = JPEGQuantTable(
+            tableId: 0, precision: .bits8, zigZagValues: zz)
+        let img = JPEGCoefficientImage(
+            width: 8, height: 8, precision: 8,
+            frameKind: .baselineDCT,
+            frameComponents: [JPEGFrameComponent(
+                componentId: 1, hSamplingFactor: 1,
+                vSamplingFactor: 1, quantTableId: 0)],
+            quantisedComponents: [JPEGComponentBlocks(
+                componentId: 1, blocksWide: 1, blocksHigh: 1,
+                blocks: [JPEGCoefficientBlock()])],
+            quantTables: [qt])
+        let p = img.buildJXLBridgeRAWQuantPayload(
+            colorTransform: .ycbcr)
+        let weights = try QuantWeights.getRAWQuantWeights(
+            qtable: p.qtable, qtableDen: p.qtableDen)
+        // Spot-check: weight[0] for any channel should be
+        //   1 / (qtable_den × qt[c*64+0])
+        // = 8 × 255 / qt[c*64+0].
+        for c in 0..<3 {
+            let q = Float(p.qtable[c * 64])
+            let expected = 8.0 * 255.0 / q
+            XCTAssertEqual(weights[c * 64], expected,
+                accuracy: 1e-3,
+                "weight[\(c * 64)] doesn't match libjxl formula")
+        }
+    }
+
     // MARK: - byte-stuffing + RST skip stress
 
     func testJPEGSegmentReader_HandlesByteStuffing() throws {

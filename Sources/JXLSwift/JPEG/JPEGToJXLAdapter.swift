@@ -232,7 +232,121 @@ extension JXLCoefficientPlanes {
     }
 }
 
+/// The data the eventual JXL bridge encoder will need to inject
+/// a JPEG-derived quantisation table into the JXL DequantMatrices
+/// payload via `kQuantModeRAW` (libjxl `quant_weights.h::RAW`).
+///
+/// - `qtable`: `3 × 64` Int32 values in JXL coef layout (channel-
+///   major, **transposed** from JPEG natural order within each
+///   8×8 — JXL's `ComputeScaledDCT` swaps rows and cols relative
+///   to JPEG's row-major DCT layout, so the quant table follows).
+/// - `qtableDen`: `1 / (8 × 255)` — the canonical value libjxl's
+///   JPEG transcoder hard-codes (`quant_weights.h:181`,
+///   `enc_modular.cc:1751`). Combined with `qtable[i]` via
+///   `weight[i] = 1 / (qtableDen × qtable[i])` (the math from
+///   v0.12.0f) this yields `weight = 8 × 255 / qtable[i]` per
+///   coefficient — the JPEG quant value treated as a JXL weight.
+/// - `dcQuantization`: per-channel `255 × 8 / qtableDC` —
+///   feeds the JXL `DequantMatrices` DC slot (libjxl
+///   `DequantMatricesSetCustomDC`).
+public struct JXLBridgeRAWQuantPayload: Sendable {
+    public let qtable: [Int32]
+    public let qtableDen: Float
+    public let dcQuantization: [Float]
+
+    public init(qtable: [Int32], qtableDen: Float,
+                dcQuantization: [Float]) {
+        precondition(qtable.count == 3 * 64,
+            "JXLBridgeRAWQuantPayload.qtable must be 3×64")
+        precondition(dcQuantization.count == 3,
+            "JXLBridgeRAWQuantPayload.dcQuantization must be "
+            + "3 entries")
+        self.qtable = qtable
+        self.qtableDen = qtableDen
+        self.dcQuantization = dcQuantization
+    }
+}
+
 extension JPEGCoefficientImage {
+
+    /// Build the RAW quant-matrix payload (step 3.4 from
+    /// `Documentation/PHASE-J-COEFFICIENT-BRIDGE.md`) from this
+    /// JPEG coefficient image's quant tables. Port of libjxl
+    /// `enc_frame.cc::ComputeJPEGTranscodingData` lines 770–799
+    /// (the `qt[192]` build + `QuantEncoding::RAW(std::move(qt))`).
+    ///
+    /// Three concerns it handles:
+    ///
+    ///   1. **Channel reorder** per `JpegOrder(colorTransform,
+    ///      isGray)` (libjxl `frame_header.h::JpegOrder`). For 3-
+    ///      component YCbCr inputs under `.ycbcr` the mapping is
+    ///      `(1, 0, 2)` — JXL X-slot ← JPEG Cb's quant table,
+    ///      JXL Y-slot ← JPEG Y's quant table, JXL B-slot ←
+    ///      JPEG Cr's quant table. Grayscale `(0, 0, 0)` reads
+    ///      JPEG component 0's quant table for all three slots.
+    ///
+    ///   2. **Zig-zag → natural** unpacking. Our
+    ///      `JPEGQuantTable.zigZagValues` is zig-zag-ordered (as
+    ///      the DQT payload stores it); libjxl's
+    ///      `jpeg_data.quant[].values` is natural-order.
+    ///
+    ///   3. **Transpose** to JXL coef layout. libjxl comment:
+    ///      "JPEG XL transposes the DCT, JPEG doesn't." So
+    ///      `qt[c * 64 + 8 * x + y] = naturalQuant[8 * y + x]`.
+    ///
+    /// Returns a populated `JXLBridgeRAWQuantPayload` ready for
+    /// the bridge encoder to package into `DequantMatrices` via
+    /// `kQuantModeRAW`. The actual bitstream-write step
+    /// (Modular sub-image of the qtable) is step 3.5+ work.
+    public func buildJXLBridgeRAWQuantPayload(
+        colorTransform: JXLBridgeColorTransform
+    ) -> JXLBridgeRAWQuantPayload {
+        let nc = frameComponents.count
+        let isGray = (nc == 1)
+        let order = JPEGToJXLAdapter.jpegOrder(
+            colorTransform: colorTransform, isGray: isGray)
+        let mapping = [order.0, order.1, order.2]
+
+        var qt = [Int32](repeating: 1, count: 3 * 64)
+        var dcQ = [Float](repeating: 1.0, count: 3)
+
+        for jxlChannel in 0..<3 {
+            let jpegC = mapping[jxlChannel]
+            guard jpegC < nc else { continue }
+            // Pull the quant table this JPEG component points at.
+            let qtId = frameComponents[jpegC].quantTableId
+            guard let qtable = quantTables.first(
+                where: { $0.tableId == qtId }) else {
+                continue
+            }
+            // Zig-zag → natural unpack. JPEG zig-zag position k
+            // maps to natural row-major index `JPEGZigZag.order[k]`.
+            var naturalQuant = [Int32](
+                repeating: 1, count: 64)
+            for k in 0..<64 {
+                naturalQuant[JPEGZigZag.order[k]] =
+                    Int32(qtable.zigZagValues[k])
+            }
+            // DC quantization per channel: 255 × 8 / qt[0].
+            // qt[0] in natural order is the DC factor.
+            let qDC = naturalQuant[0]
+            dcQ[jxlChannel] = qDC != 0
+                ? 255.0 * 8.0 / Float(qDC)
+                : 1.0
+            // Transpose into JXL's coef layout (rows ↔ cols).
+            for y in 0..<8 {
+                for x in 0..<8 {
+                    qt[jxlChannel * 64 + 8 * x + y] =
+                        naturalQuant[8 * y + x]
+                }
+            }
+        }
+
+        return JXLBridgeRAWQuantPayload(
+            qtable: qt,
+            qtableDen: 1.0 / (8.0 * 255.0),
+            dcQuantization: dcQ)
+    }
 
     /// Convert this JPEG coefficient image into per-channel
     /// quantised DC + AC planes ready for the JXL VarDCT bridge

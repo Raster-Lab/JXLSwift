@@ -11,6 +11,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0m — Phase J: RAW quant-matrix payload builder (step 3.4)
+
+Step 3.4 — the data layer for libjxl's `kQuantModeRAW` JPEG-quant-table injection. Port of `enc_frame.cc::ComputeJPEGTranscodingData` lines 770–799 (the `qt[192]` build and `QuantEncoding::RAW(std::move(qt))` call).
+
+- **`Sources/JXLSwift/JPEG/JPEGToJXLAdapter.swift`** — `JXLBridgeRAWQuantPayload` struct (`qtable: [Int32]` 3×64 in JXL coef layout, `qtableDen: Float`, `dcQuantization: [Float]` per channel) + `JPEGCoefficientImage.buildJXLBridgeRAWQuantPayload(colorTransform:)`.
+- **Three concerns it handles** (each pinned by its own test):
+  1. **Channel reorder** per `JpegOrder(colorTransform, isGray)` — `.ycbcr` 3-comp gives (1, 0, 2), `.none` gives (0, 1, 2), grayscale gives (0, 0, 0). Pulls the right JPEG quant table per JXL channel slot.
+  2. **Zig-zag → natural** unpack — our `JPEGQuantTable.zigZagValues` stores in zig-zag, libjxl's `jpeg_data.quant[].values` in natural row-major. Reorders via `JPEGZigZag.order`.
+  3. **Transpose** to JXL coef layout — libjxl comment "JPEG XL transposes the DCT, JPEG doesn't" → `qt[c*64 + 8*x + y] = naturalQuant[8*y + x]`.
+- **Canonical constants**: `qtable_den = 1 / (8 × 255)` (libjxl `quant_weights.h:181`); `dcQuantization[c] = 255 × 8 / qt[0]` (libjxl `enc_frame.cc:776`).
+- **4 new tests**:
+  - `_YCbCrPermutationAndTranspose` — synthetic two-quant-table fixture with distinguishable horizontal-AC (luma natural[1]=99) and vertical-AC (chroma natural[8]=77) factors; asserts they land at the right transposed coef positions in the right JXL channel slots per the (1, 0, 2) permutation.
+  - `_GrayscaleReplicates` — single quant table replicated across all three JXL channels per `JpegOrder = (0, 0, 0)`.
+  - `_QtableDenIsCanonical` — `qtable_den == 1 / (8 × 255)` under both `.ycbcr` and `.none`.
+  - `_RoundTripsThroughQuantWeights` — feeds the payload through `QuantWeights.getRAWQuantWeights` (v0.12.0f) and confirms the resulting weights match libjxl's formula `weight = 8 × 255 / qtable[i]`.
+- **533 tests passing, 6 skipped, 0 failures** (was 529; +4).
+- **Plan progress.** Step 3.4 ✅. The math + data are in place for the bridge encoder; remaining is: 3.5 frame-header construction, 3.6 wire into `VarDCTBitstreamWriter`, 3.7 swap `encodeFromJPEGCoefficients(_:)` stub to call the real path. Step 3.5 also has a hidden dependency on a Modular sub-image encoder for writing the qtable's bitstream payload (`enc_modular.cc::EncodeQuantTable` calls `ModularGenericCompress`) — that's a side-quest before 3.6 wires into the actual bitstream.
+
 ### v0.12.0l — Phase J: DC color decorrelation (`DCzero`, step 3.3)
 
 Step 3.3 from `PHASE-J-COEFFICIENT-BRIDGE.md`. Ports the per-block DC adjustment that libjxl's `enc_frame.cc::ComputeJPEGTranscodingData` (line 956 in 0.11.2) performs when packing JPEG coefficients into a JXL frame:
