@@ -148,7 +148,8 @@ Parser is a deserialiser over a Brotli-decompressed byte stream. ~1 session once
 | 3.3 | Color decorrelation (`DCzero` for DC, optional AC CFL for `.ycbcr` mode) | ✅ v0.12.0l — DC adjustment done; AC CFL deferred (libjxl default is off too) |
 | 3.4 | Quant-matrix injection: data payload (qtable + qtable_den + dcQuantization) | ✅ v0.12.0m — payload structure built per libjxl `enc_frame.cc:770-799`; bitstream-write side (`enc_modular.cc::EncodeQuantTable` calls `ModularGenericCompress`) is a side-quest before 3.6 |
 | 3.5 | Frame-header parameter derivation (colorTransform, chromaSubsampling, LoopFilter, encoding) | ✅ v0.12.0n — `JXLBridgeFrameHeaderParams` builder; LoopFilter pinned writable as `gab=false, epfIters=0`. AC strategy plane (all-DCT8×8) is a bridge-encoder concern, not a frame-header field. |
-| 3.6 | Wire the above into `VarDCTBitstreamWriter` (parallel path that bypasses `VarDCTEncoder.forward`) | ⏳ |
+| 3.6 entry | `JXLBridgeEncoder.prepareFromJPEG(_:colorTransform:)` composes 3.1–3.5 into a `JXLBridgeEncoderState` | ✅ v0.12.0o |
+| 3.6 write | `JXLBridgeEncoder.write(state:) -> Data` emits a JXL codestream from the prepared state | ⏳ — gated on a `ModularGenericCompress`-style encoder for the RAW quant-table embedded sub-image (decoder side exists; encoder doesn't yet) |
 | 3.7 | Swap `encodeFromJPEGCoefficients(_:)` stub to call the real path; integration test asserts byte-identical pixels vs `JPEGDecoder.decode` on the source bytes | ⏳ |
 | 4   | Lift the 4:4:4-only restriction in the adapter (4:2:0 / 4:2:2 chroma subsampling support) | ⏳ |
 | 5   | Pure-Swift Brotli decoder (unblocks `jbrd` + compressed ICC) | ⏳ |

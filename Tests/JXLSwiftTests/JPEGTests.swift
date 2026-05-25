@@ -2681,6 +2681,173 @@ final class JPEGFoundationTests: XCTestCase {
         XCTAssertGreaterThan(w.finishToData().count, 0)
     }
 
+    // MARK: - JXLBridgeEncoder.prepareFromJPEG (v0.12.0o — step 3.6 entry point)
+
+    /// Composition test: `prepareFromJPEG(_:colorTransform:)`
+    /// must produce the same state as calling the individual
+    /// builders manually in the documented order
+    /// (adapter → remap → DC adjust → RAW payload → params).
+    func testJXLBridgeEncoder_PrepareFromJPEG_MatchesManualComposition()
+        throws
+    {
+        // Synthetic 3-component 4:4:4 fixture (8×8, 1 block each).
+        var lumaZZ = [UInt16](repeating: 5, count: 64)
+        lumaZZ[0] = 16
+        var chromaZZ = [UInt16](repeating: 3, count: 64)
+        chromaZZ[0] = 11
+        let lumaQt = JPEGQuantTable(tableId: 0,
+            precision: .bits8, zigZagValues: lumaZZ)
+        let chromaQt = JPEGQuantTable(tableId: 1,
+            precision: .bits8, zigZagValues: chromaZZ)
+        var blockY = JPEGCoefficientBlock()
+        blockY.coefficients[0] = 100
+        blockY.coefficients[1] = 7
+        var blockCb = JPEGCoefficientBlock()
+        blockCb.coefficients[0] = -50
+        blockCb.coefficients[2] = -3
+        var blockCr = JPEGCoefficientBlock()
+        blockCr.coefficients[0] = 25
+        blockCr.coefficients[63] = 9
+        let img = JPEGCoefficientImage(
+            width: 8, height: 8, precision: 8,
+            frameKind: .baselineDCT,
+            frameComponents: [
+                JPEGFrameComponent(componentId: 1,
+                    hSamplingFactor: 1, vSamplingFactor: 1,
+                    quantTableId: 0),
+                JPEGFrameComponent(componentId: 2,
+                    hSamplingFactor: 1, vSamplingFactor: 1,
+                    quantTableId: 1),
+                JPEGFrameComponent(componentId: 3,
+                    hSamplingFactor: 1, vSamplingFactor: 1,
+                    quantTableId: 1),
+            ],
+            quantisedComponents: [
+                JPEGComponentBlocks(componentId: 1,
+                    blocksWide: 1, blocksHigh: 1,
+                    blocks: [blockY]),
+                JPEGComponentBlocks(componentId: 2,
+                    blocksWide: 1, blocksHigh: 1,
+                    blocks: [blockCb]),
+                JPEGComponentBlocks(componentId: 3,
+                    blocksWide: 1, blocksHigh: 1,
+                    blocks: [blockCr]),
+            ],
+            quantTables: [lumaQt, chromaQt])
+
+        let prepared = try JXLBridgeEncoder.prepareFromJPEG(
+            img, colorTransform: .ycbcr)
+
+        // Manual composition mirrors the documented sequence.
+        let manualPlanes = try img.toJXLCoefficientPlanes()
+        let manualRemap = manualPlanes.remappedForJXLBridge(
+            colorTransform: .ycbcr)
+        let manualPayload = img.buildJXLBridgeRAWQuantPayload(
+            colorTransform: .ycbcr)
+        // Reconstruct DC quant per JXL channel from the payload's
+        // dcQuantization (same algebra the composition uses).
+        var dcQuantPerChannel: [UInt16] = []
+        for c in 0..<manualRemap.channelCount {
+            let dcq = manualPayload.dcQuantization[c]
+            dcQuantPerChannel.append(
+                UInt16(round(255.0 * 8.0 / dcq)))
+        }
+        let manualWithDC = manualRemap.applyJPEGBridgeDC(
+            colorTransform: .ycbcr,
+            quantDCPerChannel: dcQuantPerChannel)
+        let manualParams = img.buildJXLBridgeFrameHeaderParams(
+            colorTransform: .ycbcr)
+
+        XCTAssertEqual(prepared.planes.dcPerChannel,
+                       manualWithDC.dcPerChannel)
+        XCTAssertEqual(prepared.planes.acPerChannel,
+                       manualWithDC.acPerChannel)
+        XCTAssertEqual(prepared.rawQuantPayload.qtable,
+                       manualPayload.qtable)
+        XCTAssertEqual(prepared.rawQuantPayload.qtableDen,
+                       manualPayload.qtableDen)
+        XCTAssertEqual(prepared.rawQuantPayload.dcQuantization,
+                       manualPayload.dcQuantization)
+        XCTAssertEqual(prepared.frameHeaderParams,
+                       manualParams)
+        XCTAssertEqual(prepared.colorTransform, .ycbcr)
+    }
+
+    /// Composition propagates errors from the underlying
+    /// builders — sub-sampled JPEG input should throw
+    /// `.nonUniformSampling` from the shape-adapter step.
+    func testJXLBridgeEncoder_PrepareFromJPEG_PropagatesSubsamplingError()
+        throws
+    {
+        let qt = JPEGQuantTable(tableId: 0, precision: .bits8,
+            zigZagValues: Array(repeating: 1, count: 64))
+        let img = JPEGCoefficientImage(
+            width: 16, height: 16, precision: 8,
+            frameKind: .baselineDCT,
+            frameComponents: [
+                JPEGFrameComponent(componentId: 1,
+                    hSamplingFactor: 2, vSamplingFactor: 2,
+                    quantTableId: 0),
+                JPEGFrameComponent(componentId: 2,
+                    hSamplingFactor: 1, vSamplingFactor: 1,
+                    quantTableId: 0),
+                JPEGFrameComponent(componentId: 3,
+                    hSamplingFactor: 1, vSamplingFactor: 1,
+                    quantTableId: 0),
+            ],
+            quantisedComponents: [
+                JPEGComponentBlocks(componentId: 1,
+                    blocksWide: 2, blocksHigh: 2,
+                    blocks: Array(repeating:
+                        JPEGCoefficientBlock(), count: 4)),
+                JPEGComponentBlocks(componentId: 2,
+                    blocksWide: 1, blocksHigh: 1,
+                    blocks: [JPEGCoefficientBlock()]),
+                JPEGComponentBlocks(componentId: 3,
+                    blocksWide: 1, blocksHigh: 1,
+                    blocks: [JPEGCoefficientBlock()]),
+            ],
+            quantTables: [qt])
+        XCTAssertThrowsError(
+            try JXLBridgeEncoder.prepareFromJPEG(img))
+        { err in
+            guard case JPEGToJXLAdapterError
+                .nonUniformSampling = err else {
+                XCTFail("expected .nonUniformSampling, got \(err)")
+                return
+            }
+        }
+    }
+
+    /// Grayscale (1-component) routes through cleanly — the
+    /// channel-remap is a no-op and the DC adjustment uses the
+    /// single channel's quant.
+    func testJXLBridgeEncoder_PrepareFromJPEG_Grayscale() throws {
+        var zz = [UInt16](repeating: 1, count: 64)
+        zz[0] = 8
+        let qt = JPEGQuantTable(tableId: 0, precision: .bits8,
+            zigZagValues: zz)
+        var block = JPEGCoefficientBlock()
+        block.coefficients[0] = 50
+        let img = JPEGCoefficientImage(
+            width: 8, height: 8, precision: 8,
+            frameKind: .baselineDCT,
+            frameComponents: [JPEGFrameComponent(
+                componentId: 1, hSamplingFactor: 1,
+                vSamplingFactor: 1, quantTableId: 0)],
+            quantisedComponents: [JPEGComponentBlocks(
+                componentId: 1, blocksWide: 1, blocksHigh: 1,
+                blocks: [block])],
+            quantTables: [qt])
+        let state = try JXLBridgeEncoder.prepareFromJPEG(
+            img, colorTransform: .ycbcr)
+        XCTAssertEqual(state.planes.channelCount, 1)
+        // .ycbcr → DCzero, so DC is unchanged from source.
+        XCTAssertEqual(state.planes.dcPerChannel[0][0], 50)
+        XCTAssertEqual(state.frameHeaderParams.colorTransform,
+                       .yCbCr)
+    }
+
     // MARK: - byte-stuffing + RST skip stress
 
     func testJPEGSegmentReader_HandlesByteStuffing() throws {

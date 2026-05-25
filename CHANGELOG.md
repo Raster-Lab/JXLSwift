@@ -11,6 +11,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0o — Phase J: bridge state composition (step 3.6 entry point)
+
+Step 3.6 entry point — `JXLBridgeEncoder.prepareFromJPEG(_:colorTransform:)` composes the five data-layer builders (v0.12.0i shape adapter, v0.12.0j channel remap, v0.12.0l DC adjustment, v0.12.0m RAW quant payload, v0.12.0n frame-header params) into one call that returns a fully-populated `JXLBridgeEncoderState`. Locks down the API the eventual bitstream-write step will consume so the wire-up bite can be a single-responsibility "take this known-good state and emit bytes" commit.
+
+- **`Sources/JXLSwift/JPEG/JXLBridgeEncoder.swift`** (new). `JXLBridgeEncoderState` (source + colorTransform + planes + rawQuantPayload + frameHeaderParams). `JXLBridgeEncoder.prepareFromJPEG(_:colorTransform:)` runs:
+  1. `toJXLCoefficientPlanes()` — JPEG component blocks → per-channel DC + AC planes (also runs the 4:4:4 chroma-sampling check).
+  2. `remappedForJXLBridge(colorTransform:)` — apply `JpegOrder` permutation to JXL X / Y / B slots.
+  3. `buildJXLBridgeRAWQuantPayload(colorTransform:)` — RAW quant payload + per-channel DC quant scale.
+  4. `applyJPEGBridgeDC(colorTransform:quantDCPerChannel:)` — `DCzero` adjustment (uses per-channel quant DC recovered from the payload's `dcQuantization`).
+  5. `buildJXLBridgeFrameHeaderParams(colorTransform:)` — JXL frame-header params.
+- **3 new tests**:
+  - `_MatchesManualComposition` — composition equals calling each builder manually in documented order (synthetic 3-component fixture with distinct DC values per channel).
+  - `_PropagatesSubsamplingError` — chroma-subsampled JPEG input throws `.nonUniformSampling` from step 1; the composition layer doesn't swallow it.
+  - `_Grayscale` — 1-component input routes through cleanly (channel remap is a no-op).
+- **539 tests passing, 6 skipped, 0 failures** (was 536; +3).
+- **Plan progress.** Steps 3.0 through 3.6-entry-point are ✅. Remaining for forward-only coefficient bridge: a `JXLBridgeEncoder.write(state:) -> Data` method that takes the `JXLBridgeEncoderState` and emits a JXL codestream. That method's hard dependency is a `ModularGenericCompress`-style **encoder** for the embedded quant-table sub-image (the decoder side exists; the encoder side is the side-quest). After write lands: step 3.7 swaps `JXLEncoder.encodeFromJPEGCoefficients(_:)` stub to call `prepareFromJPEG` + `write` + integration test asserting byte-identical pixels vs `JPEGDecoder.decode` on the source bytes.
+
 ### v0.12.0n — Phase J: bridge frame-header parameters (step 3.5)
 
 Step 3.5 — derives the JXL `FrameHeader` fields the bridge encoder needs to set when packing JPEG coefficients into a JXL frame. Returned as a typed `JXLBridgeFrameHeaderParams` struct rather than a built `FrameHeader` because the bridge encoder will assemble the rest of the header (frame type, animation fields, blending info, etc.) from its own state.
