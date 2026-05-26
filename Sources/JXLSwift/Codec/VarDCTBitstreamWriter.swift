@@ -918,9 +918,23 @@ public enum VarDCTBitstreamWriter {
         let dc = DequantMatricesDC(
             jpegBridgeScales: state.rawQuantPayload.dcQuantization)
         dc.write(to: &w)
-        // 2. QuantizerParams — bridge defaults.
+        // 2. QuantizerParams — bridge values for `InvGlobalScale = 1`.
+        // libjxl `enc_frame.cc::ComputeJPEGTranscodingData` line 804:
+        //   `shared.quantizer = Quantizer(matrices, 1, kGlobalScaleDenom)`
+        // sets `quant_dc = 1` and `global_scale = kGlobalScaleDenom = 65536`.
+        // The Quantizer ctor then computes
+        //   `inv_global_scale_ = kGlobalScaleDenom / global_scale_ = 1`,
+        // which is what the AC dequant formula
+        // `dequant = coeff × matrices[k] × inv_global_scale / qf` expects
+        // to recover the JPEG-domain coefficient values.
+        //
+        // Earlier draft wrote `globalScale: 1, quantDC: 16` here — that
+        // sent the decoder into a 65 536× scaling cascade because
+        // `inv_global_scale_` then evaluates to 65536. djxl decoded
+        // every pixel to saturated white (0xFF) for any non-zero AC
+        // coefficient. (Fixed v0.12.0fm.)
         try QuantizerParams(
-            globalScale: 1, quantDC: 16).write(to: &w)
+            globalScale: 65536, quantDC: 1).write(to: &w)
         // 3. BlockCtxMap all_default.
         w.writeBit(true)
         // 4. ColorCorrelation DC all_default.

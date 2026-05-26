@@ -3030,6 +3030,12 @@ final class JPEGFoundationTests: XCTestCase {
         let meanDiff = Double(sumDiff) / Double(expectedPixelBytes)
         print("[bridge real-JPEG pixel diff] max=\(maxDiff), "
             + "mean=\(String(format: "%.2f", meanDiff))")
+        let djxlFirst = Array(djxlPixels.prefix(12))
+        let refFirst = Array(refPixels.prefix(12))
+        print("[djxl first 12]: "
+            + djxlFirst.map { String(format: "%02X", $0) }.joined(separator: " "))
+        print("[ref  first 12]: "
+            + refFirst.map { String(format: "%02X", $0) }.joined(separator: " "))
         // Pin-down assertion: the diff should be measurably bounded
         // (not random noise). When the math layer lands, lower this.
         XCTAssertLessThanOrEqual(maxDiff, 255,
@@ -3893,8 +3899,11 @@ final class JPEGFoundationTests: XCTestCase {
         // Bridge uses non-default values (3 F16 scales).
         XCTAssertNotEqual(dc.dcQuant.0, 1.0 / 128.0)
         let qp = try QuantizerParams.read(from: &r)
-        XCTAssertEqual(qp.globalScale, 1)
-        XCTAssertEqual(qp.quantDC, 16)
+        // v0.12.0fm: bridge writes `(globalScale: 65536, quantDC: 1)`
+        // — libjxl's `Quantizer(matrices, 1, kGlobalScaleDenom)` for
+        // JPEG transcode (ensures `InvGlobalScale == 1`).
+        XCTAssertEqual(qp.globalScale, 65536)
+        XCTAssertEqual(qp.quantDC, 1)
         let blockCtxDefault = try r.readBit()
         XCTAssertTrue(blockCtxDefault,
             "bridge emits BlockCtxMap all_default")
@@ -3936,7 +3945,7 @@ final class JPEGFoundationTests: XCTestCase {
         var r = BitReader(w.finishToData())
         _ = try DequantMatricesDC.read(from: &r)
         let qp = try QuantizerParams.read(from: &r)
-        XCTAssertEqual(qp.globalScale, 1)
+        XCTAssertEqual(qp.globalScale, 65536)  // v0.12.0fm
     }
 
     // MARK: - writeBridgeDCGroup (v0.12.0z)
