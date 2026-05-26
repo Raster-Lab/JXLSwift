@@ -98,7 +98,7 @@ JXLSwift is designed to be:
 
 ## Implementation status
 
-Spec sections from ISO/IEC 18181-1 and ISO/IEC 18181-2. Each row is verified by a test (where ✅) or a milestone target (where ⏳). The current test suite is **368 passing, 3 skipped, 0 failing** (release config, ~24 s on Apple Silicon).
+Spec sections from ISO/IEC 18181-1 and ISO/IEC 18181-2. Each row is verified by a test (where ✅) or a milestone target (where ⏳). The current test suite is **573 passing, 7 skipped, 0 failing** (release config, ~38 s on Apple Silicon, as of v0.12.0fi 2026-05-27).
 
 **🎉 VarDCT pixel byte-equality with `djxl` achieved (v0.10.0i)** for the cjxl-d=0.5 and d=1.0 64×64 textured SWEEP fixtures (max byte-diff 1) and the DCT8x8/16x16/32x32/64x64 gradient fixtures. Closed via an instrumented libjxl 0.11.2 side-by-side trace that exposed seven decoder bugs (AC channel swap, spurious ×64 on LIBRARY quant matrices, `ComputeScaledIDCT` transpose, wrong LLF resample scales, the LLF `ReinterpretingDCT` transpose, `scaledDCT4` √2 scaling, `AdjustQuantBias` per-channel `|q|==1` bias). d=2/5/10 SWEEP retains a small B-channel residual (max ~12–14 on a handful of pixels, mean < 0.7). See CHANGELOG `v0.10.0i`.
 
@@ -324,9 +324,9 @@ Frontier-marker test: [`testVarDCT_RealCjxlFixture_ProgressMarker`](Tests/JXLSwi
 | JPEG pixel assembler + chroma upsampling (`JPEGPixelAssembler`, `JPEGSamplePlane`) | ✅ — `Sources/JXLSwift/JPEG/JPEGPixelAssembler.swift`. Walks per-component block grids, runs dequantiser + IDCT, stitches sample tiles into a flat plane. Nearest-neighbour chroma upsampling for 4:2:0/4:2:2 (bilinear is a follow-on). 3 tests on the upsampler. |
 | JPEG YCbCr → RGB (`JPEGColorConversion`) | ✅ — `Sources/JXLSwift/JPEG/JPEGColorConversion.swift`. JFIF BT.601 full-range pivots; grayscale pass-through. 2 tests (neutral grey, pure red). |
 | `JPEGDecoder` facade (`JPEGDecoder.decode(_:) -> ImageFrame`) | ✅ — `Sources/JXLSwift/JPEG/JPEGDecoder.swift`. Single-call "JPEG bytes → ImageFrame" pipeline supporting 1-component grayscale + 3-component baseline-sequential YCbCr at 8-bit precision. Throws `.unsupported` for progressive / 12-bit / 4-component / arithmetic-coded with clear message. 3 round-trip tests (grayscale, RGB, progressive rejection). `jxl decode foo.jpg -o foo.ppm` works end-to-end. |
-| Lossless JPEG-1 → JXL transcoding | ⏳ — JPEG **decode** side is complete end-to-end (`jxl decode foo.jpg` produces matching pixels, byte-identical round-trip when chained with JXL lossless). The transcode-specific work remaining is the JXL VarDCT coefficient bridge (libjxl's shortcut — pack JPEG coefficients into a JXL frame *without* the IDCT step, preserving exact reconstruction). |
-| Bitwise-identical JXL → JPEG-1 reconstruction | ⏳ |
-| `jbrd` box (JPEG bitstream reconstruction data) handling | ⏳ |
+| Lossless JPEG-1 → JXL transcoding | ⏳ in progress — full structural stack shipped through v0.12.0fi. `JXLEncoder.encodeFromJPEGCoefficients(_:)` produces structurally-valid JXL bytes for any 4:4:4 / 8-bit / 1-or-3-component / baseline-DCT JPEG; codestream envelope (signature + SizeHeader + ImageMetadata + CustomTransformData + FrameHeader + TOC) is **byte-identical** to `cjxl --lossless_jpeg=1` (verified by side-by-side parser diff). **Remaining**: `djxl` rejects the section content (LfGlobal / DC group / HfGlobal / AC group); ≥1 more diverging field. `testJXLEncoder_FromJPEGCoefficients_DjxlAccepts` is `XCTSkip`-with-diagnostic; `JXLSWIFT_BRIDGE_DJXL_DIAG=1` flips it to a hard fail for iterative debugging. See `Documentation/PHASE-J-COEFFICIENT-BRIDGE.md` §4a step 3.7 for the next-bite plan. |
+| Bitwise-identical JXL → JPEG-1 reconstruction | ⏳ — gated on a pure-Swift Brotli decoder for the `jbrd` box (4–8 sessions) |
+| `jbrd` box (JPEG bitstream reconstruction data) handling | ⏳ — gated on Brotli |
 
 This is a distinguishing feature of JPEG XL and a stated project requirement. The Phase J foundation landed v0.11.0by; transcode pipeline still requires the Huffman / quantiser / coefficient layers above the structural walker.
 

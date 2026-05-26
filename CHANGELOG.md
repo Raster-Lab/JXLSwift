@@ -11,6 +11,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0fi — Bridge test fixture uses realistic JPEG quant (qt[0]=8)
+
+`DequantMatricesDC` stores `dcQuant × 128` as F16 (max ~65504), capping the encodable `dcQuant` at ~511.75 and therefore the JPEG `qt[0]` at ≥ 4. The previous fixture used `zigZagValues: Array(repeating: 1, count: 64)` — `qt[0]=1` produced `dcQuant = 2040`, overflowing F16 and writing `+inf`. The djxl test fixture now uses `qt[0]=8` (typical real-world quality-90 luma DC factor); other 63 zig-zag entries set to 16 (benign for the all-zero-coefficient body). Bridge still has more section-content bugs that djxl trips on after this — but the fixture is no longer the limiting factor.
+
+### v0.12.0fh — Bridge DC channel swap [Y, X, B] + ACMetadata per-channel dimensions
+
+Two structural fixes verified against libjxl 0.11.2 source; both are real correctness improvements even though djxl still rejects the bridge output after them.
+
+- **DC channel wire order** — `enc_modular.cc::AddVarDCTDC` stores the DC sub-image channels in **[Y, X, B]** order via the XOR remap `image.channel[c < 2 ? c^1 : c]`. Our `state.planes.dcPerChannel` after `remappedForJXLBridge` for `.ycbcr` is in **[X, Y, B]** order (JpegOrder = (1, 0, 2)). The writer was iterating naive `0..<3` and emitting the wrong channel order. Fix: iterate as `[1, 0, 2]` for 3-channel frames. The existing AC-token generator already had `iterToXYB = [1, 0, 2]` hardcoded — this aligns the DC sub-image to the same convention.
+- **ACMetadata per-channel dimensions** — `dec_modular.cc::DecodeAcMetadata` creates four sub-image channels with **different** dimensions: `channel[0]` (YToX) and `channel[1]` (YToB) are `((bx+7)/8) × ((by+7)/8)` (64-px CFL tiles); `channel[2]` (ACS+QF) is `count × 2` (two rows: AC strategy codes + QF deltas); `channel[3]` (EPF sharpness) is `blocksX × blocksY`. The writer was emitting `4 × blockCount` tokens uniformly, under-counting `channel[2]` (should be ×2) and over-counting `channel[0]/[1]` when blocksX or blocksY > 8. `buildBridgePostCodebook` histogram-zero-count also updated to match.
+
+### v0.12.0fg — Zero compiler warnings (`var → let`; dead `try`)
+
+Six warnings cleaned up. One production-code site (`JXLEncoder.swift:302` `var arr` → `let arr` — the `_ = arr` "silence unused warning" workaround was leftover; `arr` is read on the next line) plus five test-code sites. `swift test -c release` now emits zero warnings.
+
 ### v0.12.0ff — Phase J: bridge FrameHeader↔TOC contiguity + `kSkipAdaptiveLFSmoothing` flag
 
 Two structural fixes against the djxl-rejection issue from v0.12.0ee. The bridge prelude now produces a bitstream that's **byte-identical to libjxl's `cjxl --lossless_jpeg=1`** through the entire FrameHeader + TOC envelope (verified with a side-by-side diff on a 4:4:4 RGB JPEG fixture). djxl still rejects the bridge output — the remaining bug is now confirmed to be inside section content (LfGlobal / DC group / HfGlobal / AC group), not in the codestream envelope.
