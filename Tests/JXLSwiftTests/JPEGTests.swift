@@ -2898,6 +2898,145 @@ final class JPEGFoundationTests: XCTestCase {
             "grayscale bridge frame stores raw, not XYB")
     }
 
+    // MARK: - JPEG → JXL bridge real-content round-trip (v0.12.0fl)
+
+    /// **End-to-end real-content bridge test.** Generates a 4:4:4
+    /// JPEG via `cjpeg -sample 1x1,1x1,1x1`, decodes it to coefficients
+    /// via `JPEGDecoder.decodeToCoefficients`, encodes through the
+    /// bridge via `JXLEncoder().encodeFromJPEGCoefficients`, then runs
+    /// the JXL output through `djxl` and checks the result is non-empty
+    /// + the dimensions match. Skipped if `cjpeg` or `djxl` is
+    /// unavailable.
+    ///
+    /// Doesn't (yet) assert pixel byte-equivalence against
+    /// `JPEGDecoder.decode(jpgBytes)` — that's the closing pixel-
+    /// parity bite. This test catches whether the bridge handles
+    /// non-zero AC content at all (the v0.12.0fk fix only verified
+    /// the all-zero fixture).
+    func testJXLEncoder_FromJPEGCoefficients_RealJPEG_DjxlAccepts() throws {
+        let cjpeg = "/opt/homebrew/bin/cjpeg"
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: cjpeg),
+              FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("cjpeg + djxl required for this test")
+        }
+        let tmp = NSTemporaryDirectory()
+        let ppmPath = tmp + "bridge-real-\(UUID().uuidString).ppm"
+        let jpgPath = tmp + "bridge-real-\(UUID().uuidString).jpg"
+        let jxlPath = tmp + "bridge-real-\(UUID().uuidString).jxl"
+        let outPath = tmp + "bridge-real-\(UUID().uuidString).ppm"
+        defer {
+            for p in [ppmPath, jpgPath, jxlPath, outPath] {
+                try? FileManager.default.removeItem(atPath: p)
+            }
+        }
+        // 1. Build a tiny 8×8 RGB PPM with a gradient pattern.
+        var ppm = Data("P6\n8 8\n255\n".utf8)
+        for y in 0..<8 {
+            for x in 0..<8 {
+                ppm.append(UInt8(50 + x * 20))
+                ppm.append(UInt8(80 + y * 15))
+                ppm.append(UInt8(min(255, 100 + (x + y) * 10)))
+            }
+        }
+        try ppm.write(to: URL(fileURLWithPath: ppmPath))
+        // 2. Convert to 4:4:4 JPEG via cjpeg.
+        let p1 = Process()
+        p1.launchPath = cjpeg
+        p1.arguments = ["-outfile", jpgPath, "-sample", "1x1,1x1,1x1",
+                        "-quality", "75", "-baseline", ppmPath]
+        p1.standardOutput = Pipe()
+        p1.standardError = Pipe()
+        try p1.run()
+        p1.waitUntilExit()
+        XCTAssertEqual(p1.terminationStatus, 0,
+            "cjpeg failed to produce JPEG fixture")
+        let jpgData = try Data(contentsOf: URL(fileURLWithPath: jpgPath))
+        XCTAssertGreaterThan(jpgData.count, 0)
+        // 3. Decode JPEG to coefficient image.
+        let coeffs = try JPEGDecoder.decodeToCoefficients(jpgData)
+        XCTAssertEqual(coeffs.width, 8)
+        XCTAssertEqual(coeffs.height, 8)
+        // 4. Encode through the bridge.
+        let result = try JXLEncoder()
+            .encodeFromJPEGCoefficients(coeffs)
+        XCTAssertGreaterThan(result.data.count, 0)
+        try result.data.write(to: URL(fileURLWithPath: jxlPath))
+        // 5. djxl the bridge output.
+        let p2 = Process()
+        p2.launchPath = djxl
+        p2.arguments = [jxlPath, outPath]
+        let p2err = Pipe()
+        p2.standardOutput = Pipe()
+        p2.standardError = p2err
+        try p2.run()
+        p2.waitUntilExit()
+        if p2.terminationStatus != 0 {
+            let err = String(data: p2err.fileHandleForReading
+                .readDataToEndOfFile(), encoding: .utf8) ?? ""
+            XCTFail("djxl rejected real-content bridge bytes "
+                + "(status \(p2.terminationStatus)): \(err)")
+            return
+        }
+        let outPPM = try Data(contentsOf: URL(fileURLWithPath: outPath))
+        XCTAssertGreaterThan(outPPM.count, 0, "djxl produced empty PPM")
+        // Extract ASCII header (up to 3rd newline).
+        var headerEnd = 0
+        var newlines = 0
+        for (i, b) in outPPM.enumerated() {
+            if b == 0x0A {
+                newlines += 1
+                if newlines == 3 {
+                    headerEnd = i
+                    break
+                }
+            }
+        }
+        let header = String(
+            data: outPPM.prefix(headerEnd),
+            encoding: .ascii) ?? ""
+        XCTAssertTrue(header.contains("8 8"),
+            "djxl PPM should be 8×8, got: \(header)")
+        let pixelStart = headerEnd + 1
+        let expectedPixelBytes = 8 * 8 * 3
+        XCTAssertEqual(outPPM.count - pixelStart, expectedPixelBytes,
+            "PPM pixel-data byte count should be width × height × 3")
+        // **Pixel parity characterisation** (v0.12.0fl). The
+        // coefficient bridge is supposed to make `djxl(bridge(jpg))`
+        // pixels equal `JPEGDecoder.decode(jpg)` pixels byte-for-byte
+        // (the entire point of the bridge — same quant + same DCT,
+        // just different entropy coding). Today the diff is **large**
+        // (max ~200, mean ~110) — i.e. the bridge produces decodable
+        // bytes but the dequant / colour-conversion path doesn't yet
+        // recover the JPEG pixels. The next bite chases this down;
+        // for now, this test pins the **current behaviour** (djxl
+        // decodes the bytes + produces an 8×8 PPM with correct
+        // dimensions) so any regression to "djxl rejects" is caught.
+        // The actual pixel-equivalence assertion lands once the
+        // remaining math layer is debugged.
+        let referenceFrame = try JPEGDecoder.decode(jpgData)
+        XCTAssertEqual(referenceFrame.data.count, expectedPixelBytes,
+            "reference frame should match bridge output byte count")
+        let djxlPixels = outPPM[pixelStart..<outPPM.count]
+        let refPixels = referenceFrame.data
+        var maxDiff = 0
+        var sumDiff = 0
+        for i in 0..<expectedPixelBytes {
+            let d = abs(Int(djxlPixels[djxlPixels.startIndex + i])
+                - Int(refPixels[i]))
+            if d > maxDiff { maxDiff = d }
+            sumDiff += d
+        }
+        let meanDiff = Double(sumDiff) / Double(expectedPixelBytes)
+        print("[bridge real-JPEG pixel diff] max=\(maxDiff), "
+            + "mean=\(String(format: "%.2f", meanDiff))")
+        // Pin-down assertion: the diff should be measurably bounded
+        // (not random noise). When the math layer lands, lower this.
+        XCTAssertLessThanOrEqual(maxDiff, 255,
+            "trivially-bounded sanity; expect tighter once "
+            + "the dequant / colour-conversion path is fixed")
+    }
+
     // MARK: - JXLEncoder.encodeFromJPEGCoefficients (v0.12.0ee, step 3.7)
 
     /// Step 3.7 swap: `JXLEncoder.encodeFromJPEGCoefficients(_:)`
