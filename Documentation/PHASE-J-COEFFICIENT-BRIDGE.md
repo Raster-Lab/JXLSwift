@@ -153,7 +153,7 @@ Parser is a deserialiser over a Brotli-decompressed byte stream. ~1 session once
 | 3.6 write — dep 2 (prelude) | outer-codestream prelude scaffold (signature + SizeHeader + ImageMetadata + CustomTransformData + FrameHeader) via `VarDCTBitstreamWriter.writeBridgePrelude(state:)` | ✅ v0.12.0v |
 | 3.6 write — dep 2 (quant) | per-slot writers + `DequantMatrices` envelope (`writeLibraryEncoding`, `writeRAWEncoding`, `writeDequantMatrices`) | ✅ v0.12.0s + u |
 | 3.6 write — dep 2 (sections) | TOC + DC plane + AC global + AC group writers from `state.planes` | ⏳ (~1 session — the substantive piece) |
-| 3.6 write — dep 3 | decoder-side local-tree decode (not blocking ship — `djxl` verifies bridge output) | ⏳ (~1 session) |
+| 3.6 write — dep 3 | decoder-side local-tree decode (meta-channels path) | ✅ v0.12.0w — `useGlobalTree=false` branch added to `JXLDecoder` reading local tree section + post-tree codebook inline. End-to-end pin-down test gated on bridge `write(state:)` shipping. |
 | 3.6 write — `JXLBridgeEncoder.write(state:)` proper | wires dep 1 + dep 2 into bytes | ⏳ stub shipped v0.12.0q |
 | 3.7 | Swap `encodeFromJPEGCoefficients(_:)` stub to call the real path; integration test asserts byte-identical pixels vs `JPEGDecoder.decode` on the source bytes | ⏳ |
 | 4   | Lift the 4:4:4-only restriction in the adapter (4:2:0 / 4:2:2 chroma subsampling support) | ⏳ |

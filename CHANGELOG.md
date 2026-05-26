@@ -11,6 +11,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0w — Phase J: decoder local-tree support for meta-channels (step 3.6 dep 3)
+
+**Tier-1 bite B from the v0.12.0u next-work plan.** Extends `JXLDecoder` to accept `useGlobalTree=false` in the VarDCT meta-channels path — the previously-thrown branch (`.notImplemented` at `JXLDecoder.swift:~381`). Unblocks our-decoder round-trip of bridge-emitted JXLs where each embedded modular sub-image carries its own tree (per libjxl `ModularGenericCompress` when no surrounding frame-level global tree applies).
+
+- **`Sources/JXLSwift/Codec/JXLDecoder.swift`** — the existing `guard giGH.useGlobalTree, let giTree = globalTree, …` throw-and-bail block becomes an `if/else`:
+  - **Global tree path** (cjxl's typical output, the only path supported pre-v0.12.0w) — unchanged. Pulls tree + post-tree codebook from the LfGlobal-decoded shared state.
+  - **Local tree path** (new) — reads `EntropySectionHeader` (6 contexts) + `MultiClusterCodebook` + tree tokens (via `ModularTree.decode` driven by a `TokenStreamReader`) + `EntropySectionHeader` (1 context) + post-tree `MultiClusterCodebook` inline. Same pattern as `ModularSubImage.read` from v0.12.0r. Subsequent `decodeAllChannels` call is identical between the two paths.
+- **No new tests** — the local-tree read pattern is composition-tested via `ModularSubImage`'s 6 round-trip tests from v0.12.0r (identical bit-stream layout). An end-to-end pin-down (encode a bridge JXL → decode through our decoder → assert pixels match `JPEGDecoder.decode`) is gated on `JXLBridgeEncoder.write(state:)` shipping section payloads.
+- **555 tests passing, 6 skipped, 0 failures** (unchanged — the global-tree path is untouched).
+- **Plan progress.** Phase J step 3.6 write dependencies: prelude ✅ (v0.12.0v) · quant-matrix bitstream ✅ (v0.12.0r/s/u) · decoder local-tree ✅ (this) · TOC + DC/AC section writers ⏳ (the only remaining piece before 3.7 swap).
+
 ### v0.12.0v — Phase J: bridge outer-codestream prelude scaffold (step 3.6 dep 2 frame, partial)
 
 **Tier-1 bite A from the v0.12.0u next-work plan.** Emits the bytes up to and including the FrameHeader for a `JXLBridgeEncoderState` — enough for `JXLDecoder.inspect(_:)` to round-trip dimensions + metadata. TOC + section payloads (LfGlobal / DequantMatrices / AC global / AC groups) are the next bite.

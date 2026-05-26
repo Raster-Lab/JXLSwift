@@ -378,13 +378,85 @@ public struct JXLDecoder: Sendable {
                     "VarDCT decode: meta-channels GroupHeader read "
                     + "failed: \(e)")
             }
-            guard giGH.useGlobalTree, let giTree = globalTree,
-                  let giPostHdr = globalPostHeader,
-                  let giPostCb = globalPostCodebook else {
-                throw DecoderError.notImplemented(
-                    "VarDCT decode: meta-channels image with a local "
-                    + "tree (use_global_tree=false / has_tree=false) "
-                    + "not implemented")
+            // Determine the tree + post-tree codebook this group
+            // will use. The two paths:
+            //   `useGlobalTree=true`  — read from the frame's
+            //     LfGlobal-decoded shared state (the common case for
+            //     cjxl output and the only path supported pre-v0.12.0w).
+            //   `useGlobalTree=false` — the **local-tree** path: read
+            //     the embedded tree section + post-tree codebook
+            //     directly from the bitstream here. Lands v0.12.0w to
+            //     unlock decode of bridge-emitted JXLs (where each
+            //     embedded modular sub-image carries its own tree per
+            //     libjxl `ModularGenericCompress` when no surrounding
+            //     frame-level global tree applies).
+            let giTree: ModularTree
+            let giPostHdr: EntropySectionHeader
+            let giPostCb: MultiClusterCodebook
+            if giGH.useGlobalTree {
+                guard let gt = globalTree,
+                      let gph = globalPostHeader,
+                      let gpc = globalPostCodebook else {
+                    throw DecoderError.notImplemented(
+                        "VarDCT decode: meta-channels image with "
+                        + "useGlobalTree=true but no global tree "
+                        + "/ codebook supplied")
+                }
+                giTree = gt; giPostHdr = gph; giPostCb = gpc
+            } else {
+                // Local tree path. Mirror
+                // ModularSubImage.read's tree+codebook prefix.
+                let treeHdr: EntropySectionHeader
+                do {
+                    treeHdr = try EntropySectionHeader.read(
+                        from: &r, numContexts: 6)
+                } catch {
+                    throw DecoderError.notImplemented(
+                        "VarDCT decode: meta-channels local tree "
+                        + "EntropySectionHeader: \(error)")
+                }
+                let treeCb: MultiClusterCodebook
+                do {
+                    treeCb = try MultiClusterCodebook.read(
+                        from: &r, header: treeHdr)
+                } catch {
+                    throw DecoderError.notImplemented(
+                        "VarDCT decode: meta-channels local tree "
+                        + "MultiClusterCodebook: \(error)")
+                }
+                var treeReader = TokenStreamReader(
+                    header: treeHdr, codebook: treeCb)
+                do {
+                    giTree = try ModularTree.decode(
+                        from: &r, stream: &treeReader)
+                } catch {
+                    throw DecoderError.notImplemented(
+                        "VarDCT decode: meta-channels local "
+                        + "tree decode: \(error)")
+                }
+                do {
+                    giPostHdr = try EntropySectionHeader.read(
+                        from: &r, numContexts: 1)
+                } catch {
+                    throw DecoderError.notImplemented(
+                        "VarDCT decode: meta-channels local "
+                        + "post-tree EntropySectionHeader: "
+                        + "\(error)")
+                }
+                do {
+                    giPostCb = try MultiClusterCodebook.read(
+                        from: &r, header: giPostHdr)
+                } catch {
+                    throw DecoderError.notImplemented(
+                        "VarDCT decode: meta-channels local "
+                        + "post-tree MultiClusterCodebook: "
+                        + "\(error)")
+                }
+                if trace {
+                    let m = "TRACE meta local tree: nodes="
+                        + "\(giTree.nodes.count)\n"
+                    FileHandle.standardError.write(Data(m.utf8))
+                }
             }
             // Build the extra-channel modular image (no colour
             // channels for VarDCT). Each extra channel is sized by
