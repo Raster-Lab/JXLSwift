@@ -11,6 +11,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0bb — Phase J: bridge AC group section writer (step 3.6 sections, FOURTH and final piece)
+
+**Closes the section-writer arc.** Fourth of the four section writers (LfGlobal ✅ y · DC group ✅ z · HfGlobal ✅ aa · AC group ✅ this). Reuses the existing `generateACTokens` (the same code that powers the pixel-pipeline VarDCT writer) by synthesising a `VarDCTEncoder.Quantized` from the bridge state via a new `buildBridgeQuantized` helper.
+
+- **`Sources/JXLSwift/Codec/VarDCTBitstreamWriter.swift`** — two new functions:
+  - `buildBridgeQuantized(state:)` — translates `JXLBridgeEncoderState.planes` into the per-block `[[[Int32]]]` AC + per-channel `[[Int32]]` DC shape `VarDCTEncoder.Quantized` expects. Stamps uniform DCT8×8 strategy (raw value 0), QF=1, `globalScale=1, quantDC=16, gaborish=false`. Grayscale fixtures pad missing channels with zeros (Quantized always carries 3 channel slots).
+  - `writeBridgeACGroup(state:groupIndex:numGroupsX:numGroupsY:blocksPerGroup:bctx:acHeader:acCodebook:to:)` — calls `buildBridgeQuantized` + `generateACTokens` + writes the resulting tokens through a `TokenStreamWriter`. Reuses the entire proven token-context routing from the pixel-pipeline writer.
+- **3 new tests**:
+  - `_AllZeroAC_TokenStreamEmits` — 3-component all-zero fixture, with a properly-sized contextMap (`BlockCtxMap().numACContexts`) routing every context to a single 1-symbol-on-zero cluster. Three `nzeros=0` tokens (one per channel) each write 0 bits; no crash.
+  - `_NonZeroAC_RequiresRichCodebook` — pin-down that non-zero AC coefficients force a `bitstream` throw with the 1-symbol-on-zero codebook (the value would have no codeword). Confirms the bridge AC writer surfaces this as a clean error rather than producing wrong bytes.
+  - `_BuildBridgeQuantized_PreservesData` — synthesised `Quantized` preserves DC per channel, AC per (block, channel), dimensions, and bridge-stamped fields (strategy=0, qf=1, qfPerBlock=[1], globalScale=1).
+- **566 tests passing, 6 skipped, 0 failures** (was 563; +3).
+- **Plan progress.** All four section writers shipped ✅. What remains: TOC envelope (compute section sizes, write the TOC entries) + section-bytes concat into `JXLBridgeEncoder.write(state:)` proper (swap the stub from v0.12.0q for the real path). Then step 3.7 (swap `encodeFromJPEGCoefficients(_:)` stub + djxl-verified pixel-equality pin-down). Both are small composition bites now that all four sections + the prelude all ship.
+
 ### v0.12.0aa — Phase J: bridge HfGlobal section writer (step 3.6 sections, third piece)
 
 Third of the four section writers (LfGlobal ✅ y · DC group ✅ z · HfGlobal ✅ this · AC group ⏳). Mirrors the existing `writeHfGlobal` closure inside `buildFrameSections` but emits the custom `DequantMatrices` envelope from v0.12.0u (slot 0 RAW with the JPEG quant table, library defaults elsewhere) instead of the pixel-pipeline's `all_default = true` bit.

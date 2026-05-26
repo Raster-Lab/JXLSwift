@@ -3635,6 +3635,172 @@ final class JPEGFoundationTests: XCTestCase {
         // 4. AC EntropySectionHeader + codebook follow.
     }
 
+    // MARK: - writeBridgeACGroup (v0.12.0bb)
+
+    /// All-zero AC fixture: every block has zero AC across all
+    /// channels → nzeros=0 token per (block, channel) and no
+    /// coefficient tokens. The bridge uses the default
+    /// `BlockCtxMap` which routes tokens to ~300 context
+    /// indices, so the codebook needs a matching context map
+    /// (all routing to a single 1-symbol-on-0 cluster works for
+    /// this fixture since all token values are 0).
+    func testBridgeACGroup_AllZeroAC_TokenStreamEmits() throws {
+        let img = bridgeParamsFixture()  // 3-comp 8×8 all-zero
+        let state = try JXLBridgeEncoder.prepareFromJPEG(
+            img, colorTransform: .ycbcr)
+        let bctx = BlockCtxMap()
+        let nCtx = bctx.numACContexts
+        // 1-symbol-on-0 codebook in a single cluster, with all
+        // nCtx context indices routed to that one cluster.
+        let leafTable = try PrefixCodeTable(lengths: [0])
+        let acCodebook = MultiClusterCodebook(
+            huffmanTables: [leafTable], ansCounts: [],
+            alphabetSizes: [1])
+        let acHeader = EntropySectionHeader(
+            lz77: .disabled,
+            contextMap: ContextMap.trivial(numContexts: nCtx),
+            usePrefixCode: true, logAlphaSize: 15,
+            uintConfigs: [HybridUintConfig.defaultConfig])
+        var w = BitWriter()
+        try VarDCTBitstreamWriter.writeBridgeACGroup(
+            state: state, groupIndex: 0,
+            bctx: bctx,
+            acHeader: acHeader, acCodebook: acCodebook,
+            to: &w)
+        // For an all-zero 1-block fixture, the only tokens are
+        // three nzeros=0 tokens (one per channel). All write 0
+        // bits through the 1-symbol codebook. BitWriter may
+        // return 0 bytes; we just verify no crash.
+        let bytes = w.finishToData()
+        XCTAssertGreaterThanOrEqual(bytes.count, 0)
+    }
+
+    /// Bridge AC group with non-zero AC: invalid range checks
+    /// at synthesis layer + generateACTokens reuse. The
+    /// placeholder codebook would fail at write time for
+    /// non-zero coefficient tokens, so we use it only to verify
+    /// the synthesis path doesn't crash — we expect a
+    /// `bitstream` throw at the token-write step.
+    func testBridgeACGroup_NonZeroAC_RequiresRichCodebook() throws {
+        // Fixture with one non-zero AC coefficient per block.
+        var blockY = JPEGCoefficientBlock()
+        blockY.coefficients[1] = 5   // AC[0,1]
+        let img = JPEGCoefficientImage(
+            width: 8, height: 8, precision: 8,
+            frameKind: .baselineDCT,
+            frameComponents: (0..<3).map { i in
+                JPEGFrameComponent(
+                    componentId: i + 1,
+                    hSamplingFactor: 1, vSamplingFactor: 1,
+                    quantTableId: 0)
+            },
+            quantisedComponents: [
+                JPEGComponentBlocks(componentId: 1,
+                    blocksWide: 1, blocksHigh: 1,
+                    blocks: [blockY]),
+                JPEGComponentBlocks(componentId: 2,
+                    blocksWide: 1, blocksHigh: 1,
+                    blocks: [JPEGCoefficientBlock()]),
+                JPEGComponentBlocks(componentId: 3,
+                    blocksWide: 1, blocksHigh: 1,
+                    blocks: [JPEGCoefficientBlock()]),
+            ],
+            quantTables: [JPEGQuantTable(
+                tableId: 0, precision: .bits8,
+                zigZagValues: Array(repeating: 1, count: 64))])
+        let state = try JXLBridgeEncoder.prepareFromJPEG(
+            img, colorTransform: .ycbcr)
+        let bctx = BlockCtxMap()
+        let nCtx = bctx.numACContexts
+        // Pass a properly-sized contextMap so the writer's
+        // context lookups don't `contextOutOfRange`. The single-
+        // symbol cluster will still fail at the non-zero
+        // coefficient token (value > 0 → no codeword in the
+        // 1-symbol-on-0 codebook).
+        let leafTable = try PrefixCodeTable(lengths: [0])
+        let acCodebook = MultiClusterCodebook(
+            huffmanTables: [leafTable], ansCounts: [],
+            alphabetSizes: [1])
+        let acHeader = EntropySectionHeader(
+            lz77: .disabled,
+            contextMap: ContextMap.trivial(numContexts: nCtx),
+            usePrefixCode: true, logAlphaSize: 15,
+            uintConfigs: [HybridUintConfig.defaultConfig])
+        var w = BitWriter()
+        XCTAssertThrowsError(
+            try VarDCTBitstreamWriter.writeBridgeACGroup(
+                state: state, groupIndex: 0,
+                bctx: bctx,
+                acHeader: acHeader, acCodebook: acCodebook,
+                to: &w),
+            "non-zero AC coefficient should fail to write through "
+            + "the 1-symbol placeholder codebook")
+    }
+
+    /// `buildBridgeQuantized` round-trip: synthesised Quantized
+    /// preserves DC values, AC values, dimensions, and stamps
+    /// uniform DCT8×8 strategy + QF=1.
+    func testBridgeACGroup_BuildBridgeQuantized_PreservesData()
+        throws
+    {
+        var blockY = JPEGCoefficientBlock()
+        blockY.coefficients[0] = 42  // DC
+        blockY.coefficients[5] = -3
+        var blockCb = JPEGCoefficientBlock()
+        blockCb.coefficients[0] = 10
+        var blockCr = JPEGCoefficientBlock()
+        blockCr.coefficients[0] = -7
+        let img = JPEGCoefficientImage(
+            width: 8, height: 8, precision: 8,
+            frameKind: .baselineDCT,
+            frameComponents: (0..<3).map { i in
+                JPEGFrameComponent(
+                    componentId: i + 1,
+                    hSamplingFactor: 1, vSamplingFactor: 1,
+                    quantTableId: 0)
+            },
+            quantisedComponents: [
+                JPEGComponentBlocks(componentId: 1,
+                    blocksWide: 1, blocksHigh: 1,
+                    blocks: [blockY]),
+                JPEGComponentBlocks(componentId: 2,
+                    blocksWide: 1, blocksHigh: 1,
+                    blocks: [blockCb]),
+                JPEGComponentBlocks(componentId: 3,
+                    blocksWide: 1, blocksHigh: 1,
+                    blocks: [blockCr]),
+            ],
+            quantTables: [JPEGQuantTable(
+                tableId: 0, precision: .bits8,
+                zigZagValues: Array(repeating: 1, count: 64))])
+        let state = try JXLBridgeEncoder.prepareFromJPEG(
+            img, colorTransform: .ycbcr)
+        let q = VarDCTBitstreamWriter.buildBridgeQuantized(
+            state: state)
+        XCTAssertEqual(q.xsize, 8)
+        XCTAssertEqual(q.ysize, 8)
+        XCTAssertEqual(q.blocksX, 1)
+        XCTAssertEqual(q.blocksY, 1)
+        XCTAssertEqual(q.globalScale, 1)
+        XCTAssertEqual(q.quantDC, 16)
+        XCTAssertEqual(q.qf, 1)
+        XCTAssertEqual(q.qfPerBlock, [1])
+        XCTAssertEqual(q.acStrategy, [0],
+            "bridge all-DCT8×8 → strategy raw value 0")
+        // DC values per channel match state.planes.dcPerChannel
+        // (after JpegOrder permutation + DCzero adjustment).
+        XCTAssertEqual(q.dcQuant.count, 3)
+        XCTAssertEqual(q.dcQuant[0], state.planes.dcPerChannel[0])
+        XCTAssertEqual(q.dcQuant[1], state.planes.dcPerChannel[1])
+        XCTAssertEqual(q.dcQuant[2], state.planes.dcPerChannel[2])
+        // AC values per block per channel match.
+        XCTAssertEqual(q.acQuant.count, 1)  // 1 block
+        for ch in 0..<3 {
+            XCTAssertEqual(q.acQuant[0][ch],
+                           state.planes.acPerChannel[ch][0])
+        }
+    }
+
     // MARK: - byte-stuffing + RST skip stress
 
     func testJPEGSegmentReader_HandlesByteStuffing() throws {

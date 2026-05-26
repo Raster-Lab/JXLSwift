@@ -1099,6 +1099,113 @@ public enum VarDCTBitstreamWriter {
         try acCodebook.write(to: &w, header: acHeader)
     }
 
+    /// Synthesise a `VarDCTEncoder.Quantized` from a
+    /// `JXLBridgeEncoderState` so the existing token-generation
+    /// machinery (`generateACTokens`, `BlockCtxMap`, etc.) can be
+    /// reused for the bridge path. All blocks are stamped with
+    /// DCT8×8 strategy (raw value 0) — the bridge's all-DCT8×8
+    /// invariant — and the QF is uniform 1.
+    ///
+    /// The DC + AC values come straight from `state.planes`,
+    /// which has already had the DCzero adjustment + JpegOrder
+    /// channel remap applied (v0.12.0l + j). So the synthetic
+    /// `Quantized` carries the JPEG-derived coefficients in JXL
+    /// XYB-slot indexing, ready for the AC tokeniser.
+    static func buildBridgeQuantized(
+        state: JXLBridgeEncoderState
+    ) -> VarDCTEncoder.Quantized {
+        let bX = state.planes.blocksX
+        let bY = state.planes.blocksY
+        let blockCount = bX * bY
+        // Repack per-block AC: state.planes is [ch][blockIdx][k];
+        // VarDCTEncoder.Quantized.acQuant is [blockIdx][ch][...].
+        var acQuant = [[[Int32]]](
+            repeating: [], count: blockCount)
+        for bi in 0..<blockCount {
+            var perChannel = [[Int32]](
+                repeating: [Int32](repeating: 0, count: 64),
+                count: 3)
+            for ch in 0..<min(3, state.planes.channelCount) {
+                perChannel[ch] = state.planes.acPerChannel[ch][bi]
+            }
+            acQuant[bi] = perChannel
+        }
+        // DC: state.planes.dcPerChannel is [ch][block]; Quantized
+        // expects [ch][block] too. Pad missing channels with zeros
+        // for grayscale fixtures (Quantized always has 3 slots).
+        var dcQuant = [[Int32]](
+            repeating: [Int32](
+                repeating: 0, count: blockCount),
+            count: 3)
+        for ch in 0..<min(3, state.planes.channelCount) {
+            dcQuant[ch] = state.planes.dcPerChannel[ch]
+        }
+        return VarDCTEncoder.Quantized(
+            xsize: state.source.width,
+            ysize: state.source.height,
+            blocksX: bX, blocksY: bY,
+            globalScale: 1, quantDC: 16, qf: 1,
+            dcExtraPrecision: 0,
+            dcQuant: dcQuant,
+            acStrategy: [UInt8](
+                repeating: 0, count: blockCount),  // all DCT8×8
+            acQuant: acQuant,
+            gaborish: false,
+            qfPerBlock: [Int32](
+                repeating: 1, count: blockCount))
+    }
+
+    /// Write the bridge frame's AC group section body. Reuses
+    /// the existing `generateACTokens` (the same code that
+    /// powers the pixel-pipeline VarDCT writer) by passing in a
+    /// `VarDCTEncoder.Quantized` synthesised from the bridge
+    /// state via `buildBridgeQuantized(state:)`. The token
+    /// context routing is identical to the pixel-pipeline case;
+    /// only the input data + DC handling differ.
+    ///
+    /// Section layout (libjxl `dec_group.cc::DecodeACGroup`):
+    ///
+    ///   - Sequence of `(context, value)` tokens — one `nzeros`
+    ///     token per (block, channel) followed by one
+    ///     coefficient token per non-zero AC coefficient in the
+    ///     scan order. Channels are visited in libjxl's storage
+    ///     order `{Y, X, B}` (= indices 1, 0, 2).
+    ///
+    /// **Status (v0.12.0bb).** Fourth and final bridge section
+    /// writer. Composes everything from v0.12.0i–aa into one
+    /// call. The TOC + section-concat into a full JXL frame is
+    /// the wire-up bite (`JXLBridgeEncoder.write(state:)` swap).
+    static func writeBridgeACGroup(
+        state: JXLBridgeEncoderState,
+        groupIndex: Int = 0,
+        numGroupsX: Int = 1,
+        numGroupsY: Int = 1,
+        blocksPerGroup: Int = 32,
+        bctx: BlockCtxMap = BlockCtxMap(),
+        acHeader: EntropySectionHeader,
+        acCodebook: MultiClusterCodebook,
+        to w: inout BitWriter
+    ) throws {
+        let q = buildBridgeQuantized(state: state)
+        let (perGroup, _, _) = generateACTokens(
+            q: q, bctx: bctx,
+            numGroupsX: numGroupsX,
+            numGroupsY: numGroupsY,
+            blocksPerGroup: blocksPerGroup)
+        guard groupIndex < perGroup.count else {
+            throw WriterError.unsupported(
+                "writeBridgeACGroup: groupIndex \(groupIndex) "
+                + "out of range (only \(perGroup.count) groups)")
+        }
+        let acWriter = TokenStreamWriter(
+            header: acHeader, codebook: acCodebook)
+        for tok in perGroup[groupIndex] {
+            try acWriter.writeToken(
+                context: tok.context, value: tok.value, to: &w)
+        }
+        // No alpha for the bridge.
+    }
+
     static func writeBridgePrelude(
         state: JXLBridgeEncoderState
     ) throws -> Data {
