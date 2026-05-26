@@ -11,6 +11,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0ff — Phase J: bridge FrameHeader↔TOC contiguity + `kSkipAdaptiveLFSmoothing` flag
+
+Two structural fixes against the djxl-rejection issue from v0.12.0ee. The bridge prelude now produces a bitstream that's **byte-identical to libjxl's `cjxl --lossless_jpeg=1`** through the entire FrameHeader + TOC envelope (verified with a side-by-side diff on a 4:4:4 RGB JPEG fixture). djxl still rejects the bridge output — the remaining bug is now confirmed to be inside section content (LfGlobal / DC group / HfGlobal / AC group), not in the codestream envelope.
+
+- **`Sources/JXLSwift/Codec/VarDCTBitstreamWriter.swift`**:
+  - Split `writeBridgePrelude(state:)` into two helpers — `writeBridgePreludeImageLevel(state:to:)` (Signature + SizeHeader + ImageMetadata + CustomTransformData, byte-aligned at end) and `writeBridgeFrameHeader(state:to:)` (FrameHeader only). The original `writeBridgePrelude` still exists as a wrapper that calls both for callers that don't need to continue writing into the same `BitWriter`.
+  - `writeBridgeFrameHeader` now sets `flags = 128` (`kSkipAdaptiveLFSmoothing`) — the bit libjxl flips on JPEG-bridge frames per `enc_frame.cc`'s `MakeFrameHeader` when `jpeg_data != nullptr`. Without this flag, libjxl's decoder applies adaptive LF smoothing to the JPEG-domain DC values and the frame body never decodes.
+- **`Sources/JXLSwift/JPEG/JXLBridgeEncoder.swift`** — `write(state:)` now writes the FrameHeader **and** TOC into a **single** `BitWriter` (instead of two separate writers concatenated as `Data`s). The spec doesn't byte-align between the FrameHeader end and the TOC's `has_permutation` bit; writing them separately was forcing an unwanted byte boundary and shifting the TOC entry-size by ~10 bits at decode time. Bug found by adding a `JXLSWIFT_BRIDGE_DJXL_DIAG=1` env hatch to the `_DjxlAccepts` test + a `testDiagnostic_CompareBridgeToCjxlReference` developer-only diagnostic that prints both byte streams' parsed FrameHeader fields side by side.
+- **`Tests/JXLSwiftTests/JPEGTests.swift`** — added `testDiagnostic_CompareBridgeToCjxlReference` (skipped unless `/tmp/jxlswift-bridge-debug.jxl` and `/tmp/cjxl-reference.codestream` are both present). Useful infrastructure for the next bite on this same bug.
+- **573 tests passing, 7 skipped, 0 failures** (was 572 / 7; +1 new diagnostic test, currently skipped).
+- **Status of the djxl-rejection bug.** The codestream envelope (Signature + SizeHeader + ImageMetadata + CustomTransformData + FrameHeader + TOC) is now byte-perfect against libjxl. The section content (74 bytes ours vs ~126 bytes cjxl for the same fixture) diverges in the LfGlobal / DC group / HfGlobal / AC group writers somewhere. Next bite: walk the section content bit-by-bit against a libjxl reference and find the diverging field.
+
 ### v0.12.0ee — Phase J: `JXLEncoder.encodeFromJPEGCoefficients` wire-up (step 3.7 partial)
 
 **Swaps the stub from v0.12.0g** that has been throwing `.notImplemented` since the bridge work began. `JXLEncoder().encodeFromJPEGCoefficients(jpeg)` now delegates to `JXLBridgeEncoder.prepareFromJPEG(_:) + write(state:)`, returning an `EncodedImage` whose bytes are a structurally-valid JXL codestream for any 4:4:4, 8-bit, 1/3-component, baseline-DCT JPEG. **Step 3.7 lands the public-API wire-up**; the byte-exact `JPEGDecoder.decode(jpgBytes)`-vs-`djxl(bridgeBytes)` integration piece is deferred to the next bite — see "Known limitation" below.

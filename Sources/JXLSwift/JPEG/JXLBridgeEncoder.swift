@@ -116,13 +116,22 @@ public enum JXLBridgeEncoder {
         // + concat. v0.12.0dd: histogram-derived post-tree + AC
         // codebooks replace the 1-symbol-on-zero placeholders,
         // lifting the all-zero-coefficient restriction.
-        let prelude: Data
+        // Build the image-level prelude bytes (signature + size +
+        // metadata + custom-transform-data, byte-aligned at end).
+        // The FrameHeader + TOC will be written into a separate
+        // BitWriter below so they share one continuous bitstream
+        // (spec doesn't byte-align between them; writing them
+        // separately would offset the TOC's `has_permutation`
+        // bit relative to where libjxl reads it).
+        let imagePrelude: Data
         do {
-            prelude = try VarDCTBitstreamWriter.writeBridgePrelude(
-                state: state)
+            var w = BitWriter()
+            try VarDCTBitstreamWriter
+                .writeBridgePreludeImageLevel(state: state, to: &w)
+            imagePrelude = w.finishToData()
         } catch let e as VarDCTBitstreamWriter.WriterError {
             throw JXLBridgeEncoderError.notImplemented(
-                "bridge prelude: \(e)")
+                "bridge prelude (image-level): \(e)")
         }
         // Per-section codebooks, derived from the observed token
         // histograms (`buildBridgePostCodebook` + `buildBridgeACCodebook`).
@@ -191,21 +200,30 @@ public enum JXLBridgeEncoder {
         combined.appendBytes(ag.finishToData())
         combined.alignToByte()
         let sectionBytes = combined.finishToData()
-        // TOC: single entry sized to combined section bytes.
-        var tocWriter = BitWriter()
+        // FrameHeader + TOC into ONE BitWriter so the bitstream
+        // stays continuous across the header → TOC boundary (spec
+        // requires no byte-alignment between them; libjxl reads
+        // the TOC's `has_permutation` bit at the FrameHeader's
+        // end-of-bits position).
+        var headerAndToc = BitWriter()
         do {
+            try VarDCTBitstreamWriter.writeBridgeFrameHeader(
+                state: state, to: &headerAndToc)
             try TOC(
                 hasPermutation: false,
                 entrySizes: [UInt32(sectionBytes.count)],
                 offsets: [0, UInt64(sectionBytes.count)]
-            ).write(to: &tocWriter)
+            ).write(to: &headerAndToc)
+        } catch let e as VarDCTBitstreamWriter.WriterError {
+            throw JXLBridgeEncoderError.notImplemented(
+                "bridge FrameHeader: \(e)")
         } catch {
             throw JXLBridgeEncoderError.notImplemented(
                 "TOC write: \(error)")
         }
-        // Assemble: prelude + TOC + sectionBytes.
-        var out = prelude
-        out.append(tocWriter.finishToData())
+        // Assemble: imagePrelude + (FrameHeader + TOC) + sectionBytes.
+        var out = imagePrelude
+        out.append(headerAndToc.finishToData())
         out.append(sectionBytes)
         return out
     }

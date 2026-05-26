@@ -3005,6 +3005,11 @@ final class JPEGFoundationTests: XCTestCase {
             try? FileManager.default.removeItem(atPath: pnmPath)
         }
         try result.data.write(to: URL(fileURLWithPath: jxlPath))
+        // Mirror to stable diagnostic path under DIAG mode.
+        if isDiagMode {
+            try? result.data.write(to: URL(
+                fileURLWithPath: "/tmp/jxlswift-bridge-debug.jxl"))
+        }
         let p = Process()
         p.launchPath = djxl
         p.arguments = [jxlPath, pnmPath]
@@ -4114,5 +4119,73 @@ final class JPEGFoundationTests: XCTestCase {
         XCTAssertEqual(kinds, [
             .startOfImage, .startOfScan, .endOfImage
         ])
+    }
+}
+
+extension JPEGFoundationTests {
+    /// One-off diagnostic that compares our bridge output's metadata
+    /// envelope to a reference cjxl JPEG-bridge codestream. Skipped
+    /// unless both reference files exist on /tmp (developer task).
+    func testDiagnostic_CompareBridgeToCjxlReference() throws {
+        let oursPath = "/tmp/jxlswift-bridge-debug.jxl"
+        let refPath = "/tmp/cjxl-reference.codestream"
+        guard FileManager.default.fileExists(atPath: oursPath),
+              FileManager.default.fileExists(atPath: refPath)
+        else {
+            throw XCTSkip("diagnostic files not present")
+        }
+        let ours = try Data(contentsOf: URL(fileURLWithPath: oursPath))
+        let ref = try Data(contentsOf: URL(fileURLWithPath: refPath))
+        func dump(label: String, _ data: Data) {
+            print("=== \(label) (\(data.count) B) ===")
+            let oi = (try? JXLDecoder().inspect(data))
+            if let oi = oi {
+                print("form=\(oi.form) xsize=\(oi.xsize) ysize=\(oi.ysize)")
+                if let m = oi.metadata {
+                    print("meta: xyb=\(m.xybEncoded) bitDepth=\(m.bitDepth.bitsPerSample) modular16=\(m.modular16BitBufferSufficient)")
+                    print("colorEnc: useICC=\(m.colorEncoding.useICC) cs=\(m.colorEncoding.colorSpace) wp=\(String(describing: m.colorEncoding.whitePoint)) prim=\(String(describing: m.colorEncoding.primaries))")
+                }
+            }
+            let fi = JXLDecoder().inspectFrameStructure(data)
+            print("frame: encoding=\(String(describing: fi.encoding)) isLast=\(String(describing: fi.isLast)) flags=\(String(describing: fi.flags)) numPasses=\(String(describing: fi.numPasses))")
+            print("frame: tocSizes=\(String(describing: fi.tocSizes)) hasTree=\(String(describing: fi.hasModularTree)) treeLeafCount=\(String(describing: fi.modularTreeLeafCount)) prefix=\(String(describing: fi.usePrefixCode))")
+        }
+        dump(label: "OURS", ours)
+        dump(label: "REF", ref)
+
+        // Decode FrameHeaders directly + print every field for diff.
+        func dumpFH(label: String, _ data: Data) {
+            var r = BitReader(data, startingAt: 16)
+            _ = try? SizeHeader.read(from: &r)
+            guard let m = try? ImageMetadata.read(from: &r) else {
+                print("[\(label)] FrameHeader: failed to parse meta")
+                return
+            }
+            _ = try? r.readCustomTransformData(xybEncoded: m.xybEncoded)
+            try? r.alignToByte()
+            let ctx = FrameHeaderContext(
+                xybEncoded: m.xybEncoded,
+                numExtraChannels: m.extraChannels.count,
+                haveAnimation: m.animation != nil,
+                haveTimecodes: m.animation?.haveTimecodes ?? false)
+            guard let fh = try? FrameHeader.read(from: &r, context: ctx)
+            else {
+                print("[\(label)] FrameHeader: failed to parse fh")
+                return
+            }
+            print("--- [\(label)] FrameHeader ---")
+            print("  allDefault=\(fh.allDefault) frameType=\(fh.frameType) encoding=\(fh.encoding)")
+            print("  flags=\(fh.flags) colorTransform=\(fh.colorTransform) chromaSub=\(fh.chromaSubsampling)")
+            print("  upsampling=\(fh.upsampling) groupSizeShift=\(fh.groupSizeShift)")
+            print("  xQmScale=\(fh.xQmScale) bQmScale=\(fh.bQmScale)")
+            print("  passes=\(fh.passes) dcLevel=\(fh.dcLevel)")
+            print("  customSizeOrOrigin=\(fh.customSizeOrOrigin) origin=\(fh.frameOrigin) size=\(String(describing: fh.frameSize))")
+            print("  blendingInfo=\(fh.blendingInfo)")
+            print("  animationFrame=\(fh.animationFrame) isLast=\(fh.isLast)")
+            print("  saveAsReference=\(fh.saveAsReference) saveBeforeColorTransform=\(fh.saveBeforeColorTransform)")
+            print("  name='\(fh.name)' loopFilter=\(fh.loopFilter)")
+        }
+        dumpFH(label: "OURS", ours)
+        dumpFH(label: "REF", ref)
     }
 }

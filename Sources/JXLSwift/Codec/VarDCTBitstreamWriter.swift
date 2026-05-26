@@ -1331,6 +1331,27 @@ public enum VarDCTBitstreamWriter {
         state: JXLBridgeEncoderState
     ) throws -> Data {
         var w = BitWriter()
+        try writeBridgePreludeImageLevel(state: state, to: &w)
+        try writeBridgeFrameHeader(state: state, to: &w)
+        return w.finishToData()
+    }
+
+    /// Image-level prelude **only** — Signature + SizeHeader +
+    /// ImageMetadata + CustomTransformData, ending byte-aligned.
+    /// Use this when you need to continue writing more bits
+    /// (FrameHeader + TOC) into the same `BitWriter` so the
+    /// bitstream stays contiguous across FrameHeader → TOC (the
+    /// spec doesn't byte-align between them; writing them into
+    /// separate `BitWriter`s would force an unwanted alignment
+    /// and shift the TOC's `has_permutation` bit, which libjxl
+    /// reads at the FrameHeader's end-of-bits position).
+    ///
+    /// Split out from `writeBridgePrelude` in v0.12.0ff for the
+    /// `JXLBridgeEncoder.write(state:)` codestream-assembly fix.
+    static func writeBridgePreludeImageLevel(
+        state: JXLBridgeEncoderState,
+        to w: inout BitWriter
+    ) throws {
         // 1. Signature.
         w.write(bits: 8, value: 0xFF)
         w.write(bits: 8, value: 0x0A)
@@ -1366,12 +1387,29 @@ public enum VarDCTBitstreamWriter {
         //    all_default = 1, then JumpToByteBoundary.
         w.writeBit(true)
         w.alignToByte()
-        // 5. FrameHeader from bridge params.
+    }
+
+    /// Write the bridge frame's `FrameHeader` into the supplied
+    /// `BitWriter`. Mirrors the FrameHeader section of
+    /// `writeBridgePrelude`. The split exists so callers can keep
+    /// the bitstream continuous from FrameHeader through TOC.
+    ///
+    /// `flags: 128` sets `kSkipAdaptiveLFSmoothing` — the bit
+    /// libjxl flips on JPEG-bridge frames (per `enc_frame.cc`
+    /// `MakeFrameHeader` when `jpeg_data != nullptr`) because the
+    /// adaptive LF smoothing pass assumes XYB-domain input.
+    /// Without this flag, libjxl's `DecompressJxlToPackedPixelFile`
+    /// applies adaptive LF smoothing to the JPEG-domain DC values
+    /// and the frame body never decodes.
+    static func writeBridgeFrameHeader(
+        state: JXLBridgeEncoderState,
+        to w: inout BitWriter
+    ) throws {
         let p = state.frameHeaderParams
         let fh = FrameHeader(
             allDefault: false,
             frameType: .regular, encoding: p.encoding,
-            flags: 0,
+            flags: 128,                              // kSkipAdaptiveLFSmoothing
             colorTransform: p.colorTransform,
             chromaSubsampling: p.chromaSubsampling,
             upsampling: 1, extraChannelUpsampling: [],
@@ -1391,7 +1429,6 @@ public enum VarDCTBitstreamWriter {
         try fh.write(to: &w, context: FrameHeaderContext(
             xybEncoded: false, numExtraChannels: 0,
             haveAnimation: false, haveTimecodes: false))
-        return w.finishToData()
     }
 
     /// Encode N `ImageFrame`s as a single multi-frame VarDCT JPEG XL
