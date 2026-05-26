@@ -112,18 +112,23 @@ public enum JXLBridgeEncoder {
     public static func write(
         state: JXLBridgeEncoderState
     ) throws -> Data {
-        // v0.12.0v: emits the outer-codestream prelude
-        // (signature + SizeHeader + ImageMetadata + CustomTransformData
-        // + FrameHeader) via VarDCTBitstreamWriter.writeBridgePrelude.
-        // The TOC + section payloads (LfGlobal / DequantMatrices /
-        // AC global / AC groups) are the next bite — this method
-        // emits the partial prelude then throws .notImplemented at
-        // the section boundary so callers see real progress vs the
-        // pre-v0.12.0v complete stub.
+        // v0.12.0cc: full wire-up — prelude + 4 section
+        // payloads + TOC + concat. The four bridge section
+        // writers (v0.12.0y/z/aa/bb) feed into the TOC + section-
+        // bytes concat pattern that the pixel-pipeline encoder
+        // already uses (`writeFrameChunk` style).
         //
-        // The prelude alone is enough for JXLDecoder.inspect(_:)
-        // to extract dimensions + metadata, which is the
-        // scaffold's verification path today.
+        // **Caveat (v0.12.0cc).** The post-tree modular codebook
+        // emitted in LfGlobal is a 1-symbol-on-zero placeholder
+        // (v0.12.0y). It only handles fixtures whose DC residuals
+        // + ACMetadata tokens all pack to token 0 (typically:
+        // all-zero-coefficient fixtures). Real content needs the
+        // histogram-derived codebook bite (planned next). Until
+        // then this method will fail with a `bitstream` error
+        // for any fixture whose post-tree token values exceed 0.
+        // The AC group codebook is similar: 1-symbol-on-zero
+        // with a context-map sized to `BlockCtxMap().numACContexts`
+        // — works for all-zero AC fixtures only.
         let prelude: Data
         do {
             prelude = try VarDCTBitstreamWriter.writeBridgePrelude(
@@ -132,16 +137,99 @@ public enum JXLBridgeEncoder {
             throw JXLBridgeEncoderError.notImplemented(
                 "bridge prelude: \(e)")
         }
-        _ = prelude
-        throw JXLBridgeEncoderError.notImplemented(
-            "TOC + section payloads (LfGlobal / DequantMatrices "
-            + "with RAW quant table / AC global / AC groups) — "
-            + "next bite. v0.12.0v ships the prelude scaffold "
-            + "(signature + SizeHeader + ImageMetadata + "
-            + "CustomTransformData + FrameHeader) verifiable via "
-            + "VarDCTBitstreamWriter.writeBridgePrelude(state:). "
-            + "See Documentation/PHASE-J-COEFFICIENT-BRIDGE.md "
-            + "section 4b.")
+        // Per-section codebooks (placeholders for v0.12.0cc).
+        let leafTable: PrefixCodeTable
+        do { leafTable = try PrefixCodeTable(lengths: [0]) }
+        catch {
+            throw JXLBridgeEncoderError.notImplemented(
+                "placeholder codebook construction: \(error)")
+        }
+        let postCodebook = MultiClusterCodebook(
+            huffmanTables: [leafTable], ansCounts: [],
+            alphabetSizes: [1])
+        let postHeader = EntropySectionHeader(
+            lz77: .disabled,
+            contextMap: ContextMap.trivial(numContexts: 1),
+            usePrefixCode: true, logAlphaSize: 15,
+            uintConfigs: [HybridUintConfig.defaultConfig])
+        let bctx = BlockCtxMap()
+        let acCodebook = MultiClusterCodebook(
+            huffmanTables: [leafTable], ansCounts: [],
+            alphabetSizes: [1])
+        let acHeader = EntropySectionHeader(
+            lz77: .disabled,
+            contextMap: ContextMap.trivial(
+                numContexts: bctx.numACContexts),
+            usePrefixCode: true, logAlphaSize: 15,
+            uintConfigs: [HybridUintConfig.defaultConfig])
+        // Build each section into its own BitWriter so we can
+        // measure section sizes for the TOC.
+        var lf = BitWriter()
+        var dcg = BitWriter()
+        var hf = BitWriter()
+        var ag = BitWriter()
+        do {
+            try VarDCTBitstreamWriter.writeBridgeLfGlobal(
+                state: state, to: &lf)
+            try VarDCTBitstreamWriter.writeBridgeDCGroup(
+                state: state, postHeader: postHeader,
+                postCodebook: postCodebook, to: &dcg)
+            try VarDCTBitstreamWriter.writeBridgeHfGlobal(
+                state: state,
+                rawSlotOverrides: [0: state.rawQuantPayload],
+                acHeader: acHeader, acCodebook: acCodebook,
+                acContexts: bctx.numACContexts,
+                numGroups: 1, to: &hf)
+            try VarDCTBitstreamWriter.writeBridgeACGroup(
+                state: state, groupIndex: 0,
+                bctx: bctx,
+                acHeader: acHeader, acCodebook: acCodebook,
+                to: &ag)
+        } catch let e as VarDCTBitstreamWriter.WriterError {
+            throw JXLBridgeEncoderError.notImplemented(
+                "bridge section writer: \(e)")
+        } catch {
+            // Any bitstream/codebook error surfaces here — most
+            // likely a non-zero post-tree token hit the
+            // placeholder codebook. Future codebook-construction
+            // bite lifts this.
+            throw JXLBridgeEncoderError.notImplemented(
+                "bridge section writer (likely codebook-too-small "
+                + "for non-zero tokens; this is the documented "
+                + "placeholder limit): \(error)")
+        }
+        // For a single-section frame layout (matches the
+        // pixel-pipeline encoder's numGroups == 1 path), the
+        // four sub-sections are concatenated into one section
+        // body. Single TOC entry of that combined size.
+        var combined = BitWriter()
+        lf.alignToByte()
+        combined.appendBytes(lf.finishToData())
+        dcg.alignToByte()
+        combined.appendBytes(dcg.finishToData())
+        hf.alignToByte()
+        combined.appendBytes(hf.finishToData())
+        ag.alignToByte()
+        combined.appendBytes(ag.finishToData())
+        combined.alignToByte()
+        let sectionBytes = combined.finishToData()
+        // TOC: single entry sized to combined section bytes.
+        var tocWriter = BitWriter()
+        do {
+            try TOC(
+                hasPermutation: false,
+                entrySizes: [UInt32(sectionBytes.count)],
+                offsets: [0, UInt64(sectionBytes.count)]
+            ).write(to: &tocWriter)
+        } catch {
+            throw JXLBridgeEncoderError.notImplemented(
+                "TOC write: \(error)")
+        }
+        // Assemble: prelude + TOC + sectionBytes.
+        var out = prelude
+        out.append(tocWriter.finishToData())
+        out.append(sectionBytes)
+        return out
     }
 
     /// Run the five data-layer builders from v0.12.0i–n in

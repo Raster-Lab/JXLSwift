@@ -2848,12 +2848,16 @@ final class JPEGFoundationTests: XCTestCase {
                        .yCbCr)
     }
 
-    // MARK: - JXLBridgeEncoder.write stub (v0.12.0q)
+    // MARK: - JXLBridgeEncoder.write — grayscale path (v0.12.0cc)
 
-    /// `write(state:)` throws `.notImplemented` today — pin that
-    /// down so a future "swap stub to real path" bite has to
-    /// remove this assertion deliberately.
-    func testJXLBridgeEncoder_WriteStubThrowsNotImplemented() throws {
+    /// Grayscale all-zero fixture: write(state:) succeeds today
+    /// (post-v0.12.0cc wire-up) for any input whose post-tree
+    /// tokens all pack to 0. Round-trip the output through
+    /// JXLDecoder.inspect to verify dimensions + the
+    /// no-XYB grayscale colorEncoding survive the path.
+    func testJXLBridgeEncoder_Write_Grayscale_ProducesValidBytes()
+        throws
+    {
         let qt = JPEGQuantTable(tableId: 0, precision: .bits8,
             zigZagValues: Array(repeating: 1, count: 64))
         let img = JPEGCoefficientImage(
@@ -2867,16 +2871,14 @@ final class JPEGFoundationTests: XCTestCase {
                 blocks: [JPEGCoefficientBlock()])],
             quantTables: [qt])
         let state = try JXLBridgeEncoder.prepareFromJPEG(img)
-        XCTAssertThrowsError(
-            try JXLBridgeEncoder.write(state: state))
-        { err in
-            guard case JXLBridgeEncoderError.notImplemented =
-                err else {
-                XCTFail("expected .notImplemented from write "
-                    + "stub, got \(err)")
-                return
-            }
-        }
+        let bytes = try JXLBridgeEncoder.write(state: state)
+        XCTAssertGreaterThan(bytes.count, 0)
+        let inspection = try JXLDecoder().inspect(bytes)
+        XCTAssertEqual(Int(inspection.xsize), 8)
+        XCTAssertEqual(Int(inspection.ysize), 8)
+        let meta = try XCTUnwrap(inspection.metadata)
+        XCTAssertFalse(meta.xybEncoded,
+            "grayscale bridge frame stores raw, not XYB")
     }
 
     // MARK: - ModularSubImage round-trips (v0.12.0r — bridge dep 1)
@@ -3269,11 +3271,59 @@ final class JPEGFoundationTests: XCTestCase {
         // ImageMetadata write would have failed if it didn't match.
     }
 
-    /// Updated stub-throw test: write(state:) now emits the
-    /// prelude before throwing, so the `.notImplemented` body
-    /// has a different message than the pre-v0.12.0v stub.
-    func testJXLBridgeEncoder_WriteThrowsAfterPrelude() throws {
-        let img = bridgeParamsFixture()
+    /// v0.12.0cc: write(state:) now produces real bytes for
+    /// all-zero-coefficient bridge fixtures (the only content
+    /// the placeholder codebooks can handle today). Verifies the
+    /// output is non-empty and `JXLDecoder.inspect` parses it
+    /// for dimensions + metadata.
+    func testJXLBridgeEncoder_Write_AllZeroFixture_ProducesValidBytes()
+        throws
+    {
+        let img = bridgeParamsFixture()  // all-zero 3-comp 8×8
+        let state = try JXLBridgeEncoder.prepareFromJPEG(img)
+        let bytes = try JXLBridgeEncoder.write(state: state)
+        XCTAssertGreaterThan(bytes.count, 0)
+        // Inspect: prelude is parseable.
+        let inspection = try JXLDecoder().inspect(bytes)
+        XCTAssertEqual(inspection.form, .naked)
+        XCTAssertEqual(Int(inspection.xsize), 8)
+        XCTAssertEqual(Int(inspection.ysize), 8)
+        let meta = try XCTUnwrap(inspection.metadata)
+        XCTAssertFalse(meta.xybEncoded)
+    }
+
+    /// Non-zero coefficients hit the placeholder-codebook limit
+    /// today and surface as a clean `.notImplemented` (the
+    /// "codebook-too-small" message). Future codebook-construction
+    /// bite lifts this.
+    func testJXLBridgeEncoder_Write_NonZeroFixture_FailsCleanly()
+        throws
+    {
+        var blockY = JPEGCoefficientBlock()
+        blockY.coefficients[0] = 5  // non-zero DC
+        let img = JPEGCoefficientImage(
+            width: 8, height: 8, precision: 8,
+            frameKind: .baselineDCT,
+            frameComponents: (0..<3).map { i in
+                JPEGFrameComponent(
+                    componentId: i + 1,
+                    hSamplingFactor: 1, vSamplingFactor: 1,
+                    quantTableId: 0)
+            },
+            quantisedComponents: [
+                JPEGComponentBlocks(componentId: 1,
+                    blocksWide: 1, blocksHigh: 1,
+                    blocks: [blockY]),
+                JPEGComponentBlocks(componentId: 2,
+                    blocksWide: 1, blocksHigh: 1,
+                    blocks: [JPEGCoefficientBlock()]),
+                JPEGComponentBlocks(componentId: 3,
+                    blocksWide: 1, blocksHigh: 1,
+                    blocks: [JPEGCoefficientBlock()]),
+            ],
+            quantTables: [JPEGQuantTable(
+                tableId: 0, precision: .bits8,
+                zigZagValues: Array(repeating: 1, count: 64))])
         let state = try JXLBridgeEncoder.prepareFromJPEG(img)
         XCTAssertThrowsError(
             try JXLBridgeEncoder.write(state: state))
@@ -3283,11 +3333,9 @@ final class JPEGFoundationTests: XCTestCase {
                 XCTFail("expected .notImplemented, got \(err)")
                 return
             }
-            // Message should mention "TOC + section payloads"
-            // — the next bite's responsibility.
-            XCTAssertTrue(m.contains("TOC"),
-                "stub message should name what's missing now "
-                + "(TOC + section payloads), got: \(m)")
+            XCTAssertTrue(m.contains("codebook"),
+                "throw should name codebook-too-small as the "
+                + "limit, got: \(m)")
         }
     }
 

@@ -11,6 +11,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0cc — Phase J: `JXLBridgeEncoder.write(state:)` wire-up (step 3.6 closed)
+
+**Closes step 3.6** (modulo the codebook-construction sub-bite that lifts the all-zero-coefficient restriction). The stub from v0.12.0q now produces a real JXL byte stream for all-zero-coefficient bridge fixtures, parseable through `JXLDecoder.inspect`.
+
+- **`Sources/JXLSwift/JPEG/JXLBridgeEncoder.swift`** — `write(state:)` now wires together everything shipped through v0.12.0bb:
+  1. Prelude (v0.12.0v) via `VarDCTBitstreamWriter.writeBridgePrelude`.
+  2. Section bytes — LfGlobal (y) + DC group (z) + HfGlobal (aa) + AC group (bb), each into its own BitWriter, byte-aligned, then concatenated into one combined section body (matches the pixel-pipeline's `numGroups == 1` single-section layout).
+  3. TOC with one entry sized to the combined section bytes.
+  4. Final: prelude + TOC + section bytes → `Data`.
+- **Placeholder codebook caveat (documented in the method's comments).** Both the post-tree modular codebook (LfGlobal/DCGroup) and the AC codebook (HfGlobal/ACGroup) are 1-symbol-on-zero placeholders. Output is valid only when every emitted token packs to 0 — typically all-zero-coefficient fixtures. Non-zero content surfaces cleanly as a `.notImplemented("codebook-too-small …")` throw. The histogram-derived-codebook bite (next) lifts this restriction.
+- **3 test updates**:
+  - Old `_WriteStubThrowsNotImplemented` (v0.12.0q) repurposed → `_Write_Grayscale_ProducesValidBytes`: grayscale all-zero fixture now succeeds, parses back through `inspect` with the expected dimensions + no-XYB metadata.
+  - New `_Write_AllZeroFixture_ProducesValidBytes`: 3-component all-zero fixture, same shape of assertion.
+  - New `_Write_NonZeroFixture_FailsCleanly`: non-zero DC fixture → clean `.notImplemented("codebook-too-small …")` throw.
+- **567 tests passing, 6 skipped, 0 failures** (was 566; +1 net — added 2, removed 1 stub).
+- **Plan progress.** Step 3.6 write **CLOSED** for the all-zero envelope. Remaining for full forward bridge:
+  - **Histogram-derived codebooks** in LfGlobal + HfGlobal (replaces 1-symbol placeholders with codebooks built from observed-residual / observed-AC histograms via length-limited canonical Huffman, mirroring `SpecModularEncoder.buildSingleSection`). Lifts the all-zero restriction.
+  - **Step 3.7 swap** of `JXLEncoder.encodeFromJPEGCoefficients(_:)` stub to call `prepareFromJPEG` + `write` + integration test asserting `JPEGDecoder.decode(jpgBytes)` pixels == `djxl(bridgeBytes)` pixels byte-exact.
+
 ### v0.12.0bb — Phase J: bridge AC group section writer (step 3.6 sections, FOURTH and final piece)
 
 **Closes the section-writer arc.** Fourth of the four section writers (LfGlobal ✅ y · DC group ✅ z · HfGlobal ✅ aa · AC group ✅ this). Reuses the existing `generateACTokens` (the same code that powers the pixel-pipeline VarDCT writer) by synthesising a `VarDCTEncoder.Quantized` from the bridge state via a new `buildBridgeQuantized` helper.
