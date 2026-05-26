@@ -3292,15 +3292,18 @@ final class JPEGFoundationTests: XCTestCase {
         XCTAssertFalse(meta.xybEncoded)
     }
 
-    /// Non-zero coefficients hit the placeholder-codebook limit
-    /// today and surface as a clean `.notImplemented` (the
-    /// "codebook-too-small" message). Future codebook-construction
-    /// bite lifts this.
-    func testJXLBridgeEncoder_Write_NonZeroFixture_FailsCleanly()
+    /// v0.12.0dd: non-zero coefficients now write successfully
+    /// through the histogram-derived post-tree + AC codebooks
+    /// (replaces the v0.12.0cc placeholder-failure expectation).
+    /// Fixture has a non-zero DC + a non-zero mid-frequency AC,
+    /// so both the post-tree (DC residuals) and AC (coefficient
+    /// tokens) codebooks have to encode tokens > 0.
+    func testJXLBridgeEncoder_Write_NonZeroFixture_ProducesValidBytes()
         throws
     {
         var blockY = JPEGCoefficientBlock()
-        blockY.coefficients[0] = 5  // non-zero DC
+        blockY.coefficients[0] = 5    // non-zero DC
+        blockY.coefficients[3] = -2   // non-zero mid AC
         let img = JPEGCoefficientImage(
             width: 8, height: 8, precision: 8,
             frameKind: .baselineDCT,
@@ -3325,18 +3328,13 @@ final class JPEGFoundationTests: XCTestCase {
                 tableId: 0, precision: .bits8,
                 zigZagValues: Array(repeating: 1, count: 64))])
         let state = try JXLBridgeEncoder.prepareFromJPEG(img)
-        XCTAssertThrowsError(
-            try JXLBridgeEncoder.write(state: state))
-        { err in
-            guard case JXLBridgeEncoderError.notImplemented(let m)
-                = err else {
-                XCTFail("expected .notImplemented, got \(err)")
-                return
-            }
-            XCTAssertTrue(m.contains("codebook"),
-                "throw should name codebook-too-small as the "
-                + "limit, got: \(m)")
-        }
+        let bytes = try JXLBridgeEncoder.write(state: state)
+        XCTAssertGreaterThan(bytes.count, 0)
+        // Inspect: prelude is parseable.
+        let inspection = try JXLDecoder().inspect(bytes)
+        XCTAssertEqual(inspection.form, .naked)
+        XCTAssertEqual(Int(inspection.xsize), 8)
+        XCTAssertEqual(Int(inspection.ysize), 8)
     }
 
     // MARK: - DequantMatricesDC.write (v0.12.0x)
@@ -3437,6 +3435,91 @@ final class JPEGFoundationTests: XCTestCase {
                        accuracy: 0.1)
     }
 
+    // MARK: - histogram-derived bridge codebooks (v0.12.0dd)
+
+    /// `buildBridgePostCodebook` produces a single-context Huffman
+    /// codebook sized to the observed DC-residual + ACMetadata-zero
+    /// alphabet. For a non-trivial DC fixture the alphabet exceeds
+    /// the single 0 symbol the v0.12.0y placeholder used.
+    func testBuildBridgePostCodebook_NonZeroDC_AlphabetGrows() throws {
+        var blockY = JPEGCoefficientBlock()
+        blockY.coefficients[0] = 7   // non-zero DC residual driver
+        let img = JPEGCoefficientImage(
+            width: 8, height: 8, precision: 8,
+            frameKind: .baselineDCT,
+            frameComponents: (0..<3).map { i in
+                JPEGFrameComponent(
+                    componentId: i + 1,
+                    hSamplingFactor: 1, vSamplingFactor: 1,
+                    quantTableId: 0)
+            },
+            quantisedComponents: [
+                JPEGComponentBlocks(componentId: 1,
+                    blocksWide: 1, blocksHigh: 1,
+                    blocks: [blockY]),
+                JPEGComponentBlocks(componentId: 2,
+                    blocksWide: 1, blocksHigh: 1,
+                    blocks: [JPEGCoefficientBlock()]),
+                JPEGComponentBlocks(componentId: 3,
+                    blocksWide: 1, blocksHigh: 1,
+                    blocks: [JPEGCoefficientBlock()]),
+            ],
+            quantTables: [JPEGQuantTable(
+                tableId: 0, precision: .bits8,
+                zigZagValues: Array(repeating: 1, count: 64))])
+        let state = try JXLBridgeEncoder.prepareFromJPEG(img)
+        let (header, codebook) = try VarDCTBitstreamWriter
+            .buildBridgePostCodebook(state: state)
+        // Single context, single Huffman cluster.
+        XCTAssertEqual(header.contextMap.numContexts, 1)
+        XCTAssertEqual(codebook.alphabetSizes.count, 1)
+        // Alphabet must cover token 0 (the ACMetadata zeros + the
+        // chroma zeros) AND the larger token the non-zero Y DC
+        // residual lands in. Alphabet > 1 distinguishes this from
+        // the v0.12.0y 1-symbol placeholder.
+        XCTAssertGreaterThan(codebook.alphabetSizes[0], 1,
+            "non-zero DC should grow alphabet beyond the placeholder")
+    }
+
+    /// `buildBridgeACCodebook` builds a single-cluster Huffman over
+    /// AC tokens routed through all `bctx.numACContexts` contexts.
+    /// Verifies the trivial context map and codebook shape.
+    func testBuildBridgeACCodebook_TrivialContextMap() throws {
+        var blockY = JPEGCoefficientBlock()
+        blockY.coefficients[0] = 3
+        blockY.coefficients[2] = -1
+        let img = JPEGCoefficientImage(
+            width: 8, height: 8, precision: 8,
+            frameKind: .baselineDCT,
+            frameComponents: (0..<3).map { i in
+                JPEGFrameComponent(
+                    componentId: i + 1,
+                    hSamplingFactor: 1, vSamplingFactor: 1,
+                    quantTableId: 0)
+            },
+            quantisedComponents: [
+                JPEGComponentBlocks(componentId: 1,
+                    blocksWide: 1, blocksHigh: 1,
+                    blocks: [blockY]),
+                JPEGComponentBlocks(componentId: 2,
+                    blocksWide: 1, blocksHigh: 1,
+                    blocks: [JPEGCoefficientBlock()]),
+                JPEGComponentBlocks(componentId: 3,
+                    blocksWide: 1, blocksHigh: 1,
+                    blocks: [JPEGCoefficientBlock()]),
+            ],
+            quantTables: [JPEGQuantTable(
+                tableId: 0, precision: .bits8,
+                zigZagValues: Array(repeating: 1, count: 64))])
+        let state = try JXLBridgeEncoder.prepareFromJPEG(img)
+        let (header, codebook, contexts) = try VarDCTBitstreamWriter
+            .buildBridgeACCodebook(state: state)
+        XCTAssertEqual(contexts, BlockCtxMap().numACContexts)
+        XCTAssertEqual(header.contextMap.numContexts, contexts)
+        XCTAssertEqual(codebook.alphabetSizes.count, 1,
+            "single-cluster Huffman across all AC contexts")
+    }
+
     // MARK: - writeBridgeLfGlobal (v0.12.0y)
 
     /// Structural pin-down: bridge LfGlobal section body emits
@@ -3446,9 +3529,12 @@ final class JPEGFoundationTests: XCTestCase {
         let img = bridgeParamsFixture()
         let state = try JXLBridgeEncoder.prepareFromJPEG(
             img, colorTransform: .ycbcr)
+        let (postHeader, postCodebook) = try VarDCTBitstreamWriter
+            .buildBridgePostCodebook(state: state)
         var w = BitWriter()
         try VarDCTBitstreamWriter.writeBridgeLfGlobal(
-            state: state, to: &w)
+            state: state, postHeader: postHeader,
+            postCodebook: postCodebook, to: &w)
         let bytes = w.finishToData()
         XCTAssertGreaterThan(bytes.count, 0)
         // Parse: DequantMatricesDC + QuantizerParams +
@@ -3495,9 +3581,12 @@ final class JPEGFoundationTests: XCTestCase {
             quantTables: [qt])
         let state = try JXLBridgeEncoder.prepareFromJPEG(
             img, colorTransform: .ycbcr)
+        let (postHeader, postCodebook) = try VarDCTBitstreamWriter
+            .buildBridgePostCodebook(state: state)
         var w = BitWriter()
         try VarDCTBitstreamWriter.writeBridgeLfGlobal(
-            state: state, to: &w)
+            state: state, postHeader: postHeader,
+            postCodebook: postCodebook, to: &w)
         var r = BitReader(w.finishToData())
         _ = try DequantMatricesDC.read(from: &r)
         let qp = try QuantizerParams.read(from: &r)

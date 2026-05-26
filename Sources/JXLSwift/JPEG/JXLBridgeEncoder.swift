@@ -112,23 +112,10 @@ public enum JXLBridgeEncoder {
     public static func write(
         state: JXLBridgeEncoderState
     ) throws -> Data {
-        // v0.12.0cc: full wire-up — prelude + 4 section
-        // payloads + TOC + concat. The four bridge section
-        // writers (v0.12.0y/z/aa/bb) feed into the TOC + section-
-        // bytes concat pattern that the pixel-pipeline encoder
-        // already uses (`writeFrameChunk` style).
-        //
-        // **Caveat (v0.12.0cc).** The post-tree modular codebook
-        // emitted in LfGlobal is a 1-symbol-on-zero placeholder
-        // (v0.12.0y). It only handles fixtures whose DC residuals
-        // + ACMetadata tokens all pack to token 0 (typically:
-        // all-zero-coefficient fixtures). Real content needs the
-        // histogram-derived codebook bite (planned next). Until
-        // then this method will fail with a `bitstream` error
-        // for any fixture whose post-tree token values exceed 0.
-        // The AC group codebook is similar: 1-symbol-on-zero
-        // with a context-map sized to `BlockCtxMap().numACContexts`
-        // — works for all-zero AC fixtures only.
+        // v0.12.0cc: wire-up — prelude + 4 section payloads + TOC
+        // + concat. v0.12.0dd: histogram-derived post-tree + AC
+        // codebooks replace the 1-symbol-on-zero placeholders,
+        // lifting the all-zero-coefficient restriction.
         let prelude: Data
         do {
             prelude = try VarDCTBitstreamWriter.writeBridgePrelude(
@@ -137,31 +124,27 @@ public enum JXLBridgeEncoder {
             throw JXLBridgeEncoderError.notImplemented(
                 "bridge prelude: \(e)")
         }
-        // Per-section codebooks (placeholders for v0.12.0cc).
-        let leafTable: PrefixCodeTable
-        do { leafTable = try PrefixCodeTable(lengths: [0]) }
-        catch {
-            throw JXLBridgeEncoderError.notImplemented(
-                "placeholder codebook construction: \(error)")
-        }
-        let postCodebook = MultiClusterCodebook(
-            huffmanTables: [leafTable], ansCounts: [],
-            alphabetSizes: [1])
-        let postHeader = EntropySectionHeader(
-            lz77: .disabled,
-            contextMap: ContextMap.trivial(numContexts: 1),
-            usePrefixCode: true, logAlphaSize: 15,
-            uintConfigs: [HybridUintConfig.defaultConfig])
+        // Per-section codebooks, derived from the observed token
+        // histograms (`buildBridgePostCodebook` + `buildBridgeACCodebook`).
+        // Single-cluster Huffman in both — multi-cluster is a future
+        // file-size optimisation, not a correctness requirement.
+        let postHeader: EntropySectionHeader
+        let postCodebook: MultiClusterCodebook
+        let acHeader: EntropySectionHeader
+        let acCodebook: MultiClusterCodebook
+        let acContexts: Int
         let bctx = BlockCtxMap()
-        let acCodebook = MultiClusterCodebook(
-            huffmanTables: [leafTable], ansCounts: [],
-            alphabetSizes: [1])
-        let acHeader = EntropySectionHeader(
-            lz77: .disabled,
-            contextMap: ContextMap.trivial(
-                numContexts: bctx.numACContexts),
-            usePrefixCode: true, logAlphaSize: 15,
-            uintConfigs: [HybridUintConfig.defaultConfig])
+        do {
+            (postHeader, postCodebook) =
+                try VarDCTBitstreamWriter.buildBridgePostCodebook(
+                    state: state)
+            (acHeader, acCodebook, acContexts) =
+                try VarDCTBitstreamWriter.buildBridgeACCodebook(
+                    state: state, bctx: bctx)
+        } catch {
+            throw JXLBridgeEncoderError.notImplemented(
+                "bridge codebook construction: \(error)")
+        }
         // Build each section into its own BitWriter so we can
         // measure section sizes for the TOC.
         var lf = BitWriter()
@@ -170,7 +153,8 @@ public enum JXLBridgeEncoder {
         var ag = BitWriter()
         do {
             try VarDCTBitstreamWriter.writeBridgeLfGlobal(
-                state: state, to: &lf)
+                state: state, postHeader: postHeader,
+                postCodebook: postCodebook, to: &lf)
             try VarDCTBitstreamWriter.writeBridgeDCGroup(
                 state: state, postHeader: postHeader,
                 postCodebook: postCodebook, to: &dcg)
@@ -178,7 +162,7 @@ public enum JXLBridgeEncoder {
                 state: state,
                 rawSlotOverrides: [0: state.rawQuantPayload],
                 acHeader: acHeader, acCodebook: acCodebook,
-                acContexts: bctx.numACContexts,
+                acContexts: acContexts,
                 numGroups: 1, to: &hf)
             try VarDCTBitstreamWriter.writeBridgeACGroup(
                 state: state, groupIndex: 0,
@@ -189,14 +173,8 @@ public enum JXLBridgeEncoder {
             throw JXLBridgeEncoderError.notImplemented(
                 "bridge section writer: \(e)")
         } catch {
-            // Any bitstream/codebook error surfaces here — most
-            // likely a non-zero post-tree token hit the
-            // placeholder codebook. Future codebook-construction
-            // bite lifts this.
             throw JXLBridgeEncoderError.notImplemented(
-                "bridge section writer (likely codebook-too-small "
-                + "for non-zero tokens; this is the documented "
-                + "placeholder limit): \(error)")
+                "bridge section writer: \(error)")
         }
         // For a single-section frame layout (matches the
         // pixel-pipeline encoder's numGroups == 1 path), the

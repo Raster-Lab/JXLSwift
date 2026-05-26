@@ -910,6 +910,8 @@ public enum VarDCTBitstreamWriter {
     /// (still only reads up to ImageMetadata).
     static func writeBridgeLfGlobal(
         state: JXLBridgeEncoderState,
+        postHeader: EntropySectionHeader,
+        postCodebook: MultiClusterCodebook,
         to w: inout BitWriter
     ) throws {
         // 1. DequantMatricesDC — custom values per JXL channel.
@@ -925,26 +927,145 @@ public enum VarDCTBitstreamWriter {
         w.writeBit(true)
         // 5. has_tree = true + tree section + post-tree codebook.
         w.writeBit(true)
-        // Minimal post-tree codebook: single-context 1-symbol
-        // alphabet. Suitable when no gi modular data follows
-        // (the bridge case). Subsequent sections will reuse this
-        // codebook for their token streams; with a 1-symbol
-        // alphabet emitted as a 0-bit prefix code, the codebook
-        // size is small and any token written is 0 bits.
-        let leafLengths: [UInt8] = [0]
-        let leafTable = try PrefixCodeTable(lengths: leafLengths)
-        let postCodebook = MultiClusterCodebook(
-            huffmanTables: [leafTable], ansCounts: [],
-            alphabetSizes: [1])
-        let postHeader = EntropySectionHeader(
-            lz77: .disabled,
-            contextMap: ContextMap.trivial(numContexts: 1),
-            usePrefixCode: true, logAlphaSize: 15,
-            uintConfigs: [HybridUintConfig.defaultConfig])
+        // The post-tree codebook is supplied by the caller — for the
+        // bridge it's the histogram-derived Huffman built from the
+        // observed DC residuals + ACMetadata zeros (see
+        // `buildBridgePostCodebook`). Emitting it here makes it
+        // available to the DC group section's `TokenStreamWriter`.
         try writeModularTreeSection(
             to: &w, postHeader: postHeader,
             postCodebook: postCodebook)
         // 6. No gi modular sub-image (bridge frames have no alpha).
+    }
+
+    /// Build the post-tree codebook the bridge's LfGlobal + DCGroup
+    /// share. Simulates the exact token pass `writeBridgeDCGroup`
+    /// performs — gradient-predicted DC residuals across all
+    /// channels, plus the 4 × blockCount ACMetadata zeros — then
+    /// pools them into a single histogram and length-limited
+    /// canonical Huffman. Output cfg is `raw4` to match
+    /// `SpecModularEncoder.buildSingleSection` (and the pixel
+    /// pipeline's `modCfg`), keeping the token alphabet narrow.
+    ///
+    /// Returns `(header, codebook)` ready to pass into
+    /// `writeBridgeLfGlobal` and `writeBridgeDCGroup`. The caller
+    /// **must** route DC group tokens through the same codebook
+    /// or the bitstream will be undecodable.
+    ///
+    /// **Status (v0.12.0dd).** First histogram-derived bridge
+    /// codebook. Replaces the v0.12.0y 1-symbol-on-zero placeholder,
+    /// lifting the all-zero-DC-residual restriction.
+    static func buildBridgePostCodebook(
+        state: JXLBridgeEncoderState
+    ) throws -> (EntropySectionHeader, MultiClusterCodebook) {
+        let cfg = HybridUintConfig.raw4
+        var histo = [Int](repeating: 0, count: cfg.maxToken + 1)
+        var maxTok = 0
+        let blocksX = state.planes.blocksX
+        let blocksY = state.planes.blocksY
+        let blockCount = blocksX * blocksY
+        let predictor: Predictor = .gradient
+        // 8-bit precision; matches writeBridgeDCGroup.
+        let sampleHi: Int32 = 127
+        // DC channels — gradient predict + pack + tokenise.
+        for ch in 0..<state.planes.channelCount {
+            let plane = state.planes.dcPerChannel[ch]
+            for by in 0..<blocksY {
+                for bx in 0..<blocksX {
+                    let nbh = Neighbourhood(
+                        at: bx, by, in: plane, width: blocksX)
+                    let pred = predictor.apply(
+                        to: nbh, lo: 0, hi: sampleHi)
+                    let residual = plane[by * blocksX + bx]
+                        &- pred
+                    let packed = ZigZag.pack(residual)
+                    let t = Int(cfg.encode(packed).token)
+                    histo[t] += 1
+                    if t > maxTok { maxTok = t }
+                }
+            }
+        }
+        // ACMetadata — 4 channels of all-zero residuals (bridge
+        // uses uniform DCT8×8 + QF=1 + no EPF, so every value is
+        // zero, ZigZag.pack(0) = 0, cfg.encode(0).token = 0).
+        // 4 × blockCount zero tokens go into bucket 0.
+        histo[0] += 4 * blockCount
+        // Canonical-Huffman builder is undefined for a 1-symbol
+        // alphabet; pad to at least 2.
+        var alphabet = maxTok + 1
+        var counts = Array(histo[0..<alphabet])
+        if alphabet < 2 {
+            alphabet = 2
+            counts.append(1)
+        }
+        let lengths = lengthLimitedCanonicalHuffman(
+            counts: counts, maxLength: 15, alphabetSize: alphabet)
+        let table = try PrefixCodeTable(lengths: lengths)
+        let codebook = MultiClusterCodebook(
+            huffmanTables: [table], ansCounts: [],
+            alphabetSizes: [alphabet])
+        let header = EntropySectionHeader(
+            lz77: .disabled,
+            contextMap: ContextMap.trivial(numContexts: 1),
+            usePrefixCode: true, logAlphaSize: 15,
+            uintConfigs: [cfg])
+        return (header, codebook)
+    }
+
+    /// Build the AC codebook the bridge's HfGlobal + ACGroup share.
+    /// Pools the observed AC tokens (nzeros + coefficients across
+    /// every block, channel, and group) into a **single-cluster**
+    /// histogram, then length-limited canonical Huffman. All
+    /// `bctx.numACContexts` contexts route to cluster 0 — the
+    /// per-cluster optimisation the pixel pipeline uses
+    /// (`buildFrameSections` 1/2/3-cluster picker) is a future
+    /// size win, not a correctness requirement; the single-cluster
+    /// codebook is decodable today.
+    ///
+    /// **Status (v0.12.0dd).** Second histogram-derived bridge
+    /// codebook. Replaces the v0.12.0aa 1-symbol-on-zero placeholder,
+    /// lifting the all-zero-AC-coefficient restriction.
+    static func buildBridgeACCodebook(
+        state: JXLBridgeEncoderState,
+        numGroupsX: Int = 1, numGroupsY: Int = 1,
+        blocksPerGroup: Int = 32,
+        bctx: BlockCtxMap = BlockCtxMap()
+    ) throws -> (EntropySectionHeader, MultiClusterCodebook, Int) {
+        let cfg = HybridUintConfig.raw4
+        let q = buildBridgeQuantized(state: state)
+        let (perGroup, _, _) = generateACTokens(
+            q: q, bctx: bctx,
+            numGroupsX: numGroupsX,
+            numGroupsY: numGroupsY,
+            blocksPerGroup: blocksPerGroup)
+        var histo = [Int](repeating: 0, count: cfg.maxToken + 1)
+        var maxTok = 0
+        for grp in perGroup {
+            for tok in grp {
+                let t = Int(cfg.encode(tok.value).token)
+                histo[t] += 1
+                if t > maxTok { maxTok = t }
+            }
+        }
+        var alphabet = maxTok + 1
+        var counts = Array(histo[0..<alphabet])
+        if alphabet < 2 {
+            alphabet = 2
+            counts.append(1)
+        }
+        let lengths = lengthLimitedCanonicalHuffman(
+            counts: counts, maxLength: 15, alphabetSize: alphabet)
+        let table = try PrefixCodeTable(lengths: lengths)
+        let codebook = MultiClusterCodebook(
+            huffmanTables: [table], ansCounts: [],
+            alphabetSizes: [alphabet])
+        let contexts = bctx.numACContexts
+        let header = EntropySectionHeader(
+            lz77: .disabled,
+            contextMap: ContextMap.trivial(numContexts: contexts),
+            usePrefixCode: true, logAlphaSize: 15,
+            uintConfigs: [cfg])
+        return (header, codebook, contexts)
     }
 
     /// Write the bridge frame's DC group section body. Mirrors

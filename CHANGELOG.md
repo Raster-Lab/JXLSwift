@@ -11,6 +11,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0dd — Phase J: histogram-derived bridge codebooks (lifts the all-zero restriction)
+
+**Closes the placeholder-codebook caveat from v0.12.0cc.** Both bridge codebooks (post-tree for LfGlobal/DCGroup, and AC for HfGlobal/ACGroup) are now built from the observed token histograms via length-limited canonical Huffman, mirroring the pattern in `SpecModularEncoder.buildSingleSection` and the pixel-pipeline `buildFrameSections` AC clustering. `JXLBridgeEncoder.write(state:)` now produces parseable JXL bytes for **arbitrary JPEG coefficient content**, not just all-zero fixtures.
+
+- **`Sources/JXLSwift/Codec/VarDCTBitstreamWriter.swift`** — two new histogram-derived codebook builders + one signature change:
+  - `buildBridgePostCodebook(state:) -> (EntropySectionHeader, MultiClusterCodebook)` simulates the exact token pass that `writeBridgeDCGroup` performs (gradient-predicted DC residuals across all channels + 4 × blockCount ACMetadata zeros), pools them into a single-context histogram, and emits a length-limited canonical Huffman over `HybridUintConfig.raw4` tokens.
+  - `buildBridgeACCodebook(state:numGroupsX:numGroupsY:blocksPerGroup:bctx:) -> (EntropySectionHeader, MultiClusterCodebook, contexts: Int)` runs `generateACTokens` to pool the actual nzeros + coefficient tokens, then builds a single-cluster canonical Huffman with a trivial `numACContexts`-wide context map (~300 contexts → cluster 0). Multi-cluster optimisation (the pixel pipeline's 1/2/3-cluster picker) is a future file-size win, not a correctness requirement.
+  - `writeBridgeLfGlobal(state:postHeader:postCodebook:to:)` signature now takes the post-tree codebook from the caller (previously hardcoded the 1-symbol-on-zero placeholder). The caller **must** thread the same codebook into `writeBridgeDCGroup`.
+- **`Sources/JXLSwift/JPEG/JXLBridgeEncoder.swift`** — `write(state:)` now constructs both codebooks via the new builders before invoking the section writers. The "placeholder caveat" prose is gone — what remains is the histogram-derived path that handles real content. The wire-up shape (prelude + 4 sections + TOC + concat) is unchanged from v0.12.0cc.
+- **3 test changes**:
+  - `_Write_NonZeroFixture_FailsCleanly` (v0.12.0cc) replaced with `_Write_NonZeroFixture_ProducesValidBytes`: same fixture (non-zero DC + non-zero mid-frequency AC) now writes successfully and inspects back through `JXLDecoder.inspect` with the expected dimensions.
+  - New `testBuildBridgePostCodebook_NonZeroDC_AlphabetGrows`: pin-down that the post-tree codebook's alphabet exceeds 1 symbol once non-zero DC residuals exist (distinguishes the histogram-derived path from the v0.12.0y placeholder).
+  - New `testBuildBridgeACCodebook_TrivialContextMap`: pin-down the AC codebook's `(contexts, header.contextMap.numContexts, codebook.alphabetSizes.count)` shape — `numACContexts` contexts all routed to one cluster.
+  - The two `writeBridgeLfGlobal` structural tests updated for the new signature, threading codebooks from `buildBridgePostCodebook`.
+- **569 tests passing, 6 skipped, 0 failures** (was 567; +2 net — added 2 new unit tests for the codebook builders, others updated in place).
+- **Plan progress.** Step 3.6 write **fully closed**. Next bite: **step 3.7** — swap `JXLEncoder.encodeFromJPEGCoefficients(_:)` from its stub to call `prepareFromJPEG + write`, then ship an integration test asserting `JPEGDecoder.decode(jpgBytes)` pixels match `djxl(bridgeBytes)` pixels byte-exact on a libjxl-decoded round trip.
+
 ### v0.12.0cc — Phase J: `JXLBridgeEncoder.write(state:)` wire-up (step 3.6 closed)
 
 **Closes step 3.6** (modulo the codebook-construction sub-bite that lifts the all-zero-coefficient restriction). The stub from v0.12.0q now produces a real JXL byte stream for all-zero-coefficient bridge fixtures, parseable through `JXLDecoder.inspect`.
