@@ -11,6 +11,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0fm — Bridge QuantizerParams: `globalScale = kGlobalScaleDenom (65536)` for `InvGlobalScale = 1`
+
+libjxl `enc_frame.cc::ComputeJPEGTranscodingData` line 804 sets the quantizer to `Quantizer(matrices, quant_dc=1, global_scale=kGlobalScaleDenom)`. `kGlobalScaleDenom = 1 << 16 = 65536`, and the Quantizer constructor computes `inv_global_scale_ = kGlobalScaleDenom / global_scale_`. Setting `global_scale_ = 65536` makes `inv_global_scale_ = 1`, which is what the AC dequant formula `dequant = coeff × weight × inv_global_scale / qf` needs to recover the JPEG-domain coefficient values.
+
+Earlier draft (v0.12.0y) wrote `(globalScale: 1, quantDC: 16)` here. That sent the decoder into a 65 536× scaling cascade because `inv_global_scale_` then evaluated to 65 536. djxl decoded every pixel to saturated white (0xFF) for any non-zero AC coefficient on real-content fixtures.
+
+Fix on its own doesn't close the full pixel-parity gap (the real-JPEG bridge test still reports a non-zero max diff against `JPEGDecoder.decode`), but it removes one large source of error and brings the bridge dequant cascade in line with libjxl. Two existing pin-down tests updated for the new expected bridge values.
+
+### v0.12.0fl — Real-content JPEG bridge round-trip test
+
+End-to-end real-content bridge test:
+1. `cjpeg -sample 1x1,1x1,1x1 -quality 75` generates a 4:4:4 JPEG from a gradient PPM.
+2. `JPEGDecoder.decodeToCoefficients` extracts coefficients.
+3. `JXLEncoder().encodeFromJPEGCoefficients` produces JXL bytes.
+4. `djxl` decodes the JXL to an 8×8 PPM.
+5. Compares pixels against `JPEGDecoder.decode(jpgBytes)` reference.
+
+**djxl accepts real-content bridge bytes** — the bridge handles non-zero AC coefficients (not just the all-zero-coefficient fixture from v0.12.0fk). The pixel-parity assertion is bounded but not tight — the test prints `[bridge real-JPEG pixel diff] max=N, mean=M` for the next-bite developer to drive towards zero. Test skipped when cjpeg or djxl aren't installed.
+
 ### v0.12.0fk — 🎉 Phase J forward bridge: `djxl` accepts bridge output (step 3.7 CLOSED)
 
 **The JPEG → JXL coefficient bridge forward direction works end-to-end.** `JXLEncoder().encodeFromJPEGCoefficients(jpeg)` produces a JXL byte stream that libjxl's `djxl` decodes to correct pixels (all-mid-gray 0x80 for the all-zero-coefficient fixture, matching what an all-zero JPEG should produce). The `_DjxlAccepts` test no longer needs `XCTSkip`-with-diagnostic — it's a hard pass.
