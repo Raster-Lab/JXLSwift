@@ -3456,6 +3456,122 @@ final class JPEGFoundationTests: XCTestCase {
         XCTAssertEqual(qp.globalScale, 1)
     }
 
+    // MARK: - writeBridgeDCGroup (v0.12.0z)
+
+    /// All-zero-DC fixture exercises the writer without depending
+    /// on a real residual histogram: residual = 0 for every block
+    /// in every channel → token = 0 → fits the placeholder
+    /// 1-symbol-on-0 codebook (0 bits per token). Structural
+    /// pin-down on the section layout: 2-bit prefix +
+    /// GroupHeader + token stream + ACMetadata count +
+    /// GroupHeader + token stream.
+    func testBridgeDCGroup_AllZeroDC_StructureParses() throws {
+        // 8×8 = 1-block fixture with zero coefficients.
+        let qt = JPEGQuantTable(
+            tableId: 0, precision: .bits8,
+            zigZagValues: Array(repeating: 1, count: 64))
+        let img = JPEGCoefficientImage(
+            width: 8, height: 8, precision: 8,
+            frameKind: .baselineDCT,
+            frameComponents: (0..<3).map { i in
+                JPEGFrameComponent(
+                    componentId: i + 1,
+                    hSamplingFactor: 1, vSamplingFactor: 1,
+                    quantTableId: 0)
+            },
+            quantisedComponents: (0..<3).map { _ in
+                JPEGComponentBlocks(componentId: 1,
+                    blocksWide: 1, blocksHigh: 1,
+                    blocks: [JPEGCoefficientBlock()])
+            },
+            quantTables: [qt])
+        let state = try JXLBridgeEncoder.prepareFromJPEG(
+            img, colorTransform: .ycbcr)
+        // Placeholder 1-symbol-on-0 codebook (matches what
+        // v0.12.0y emits in LfGlobal).
+        let leafTable = try PrefixCodeTable(lengths: [0])
+        let codebook = MultiClusterCodebook(
+            huffmanTables: [leafTable], ansCounts: [],
+            alphabetSizes: [1])
+        let header = EntropySectionHeader(
+            lz77: .disabled,
+            contextMap: ContextMap.trivial(numContexts: 1),
+            usePrefixCode: true, logAlphaSize: 15,
+            uintConfigs: [HybridUintConfig.defaultConfig])
+        var w = BitWriter()
+        try VarDCTBitstreamWriter.writeBridgeDCGroup(
+            state: state, postHeader: header,
+            postCodebook: codebook, to: &w)
+        let bytes = w.finishToData()
+        XCTAssertGreaterThan(bytes.count, 0)
+
+        // Parse the structural prefix.
+        var r = BitReader(bytes)
+        // 1. dc_extra_precision = 0 (2 bits).
+        XCTAssertEqual(try r.read(bits: 2), 0)
+        // 2. GroupHeader (default).
+        let gh = try GroupHeader.read(from: &r)
+        XCTAssertTrue(gh.useGlobalTree)
+        XCTAssertTrue(gh.transforms.isEmpty)
+        // 3. DC tokens: 3 channels × 1 block = 3 tokens of 0
+        //    bits each (placeholder codebook). Reader can't
+        //    distinguish them from the next section without
+        //    knowing the codebook, so we trust the writer
+        //    advanced correctly.
+        // 4. ACMetadata count: ceilLog2(1) = 0 bits, skipped.
+        //    Then GroupHeader again.
+        let acGh = try GroupHeader.read(from: &r)
+        XCTAssertTrue(acGh.useGlobalTree)
+    }
+
+    /// Block-count math: ACMetadata count bit width = ceilLog2
+    /// of total blocks. For a 16×16 image (2×2 = 4 blocks),
+    /// that's ceilLog2(4) = 2 bits storing `(4 - 1) = 3`.
+    func testBridgeDCGroup_FourBlock_ACMetadataCountSize() throws {
+        let qt = JPEGQuantTable(
+            tableId: 0, precision: .bits8,
+            zigZagValues: Array(repeating: 1, count: 64))
+        let img = JPEGCoefficientImage(
+            width: 16, height: 16, precision: 8,
+            frameKind: .baselineDCT,
+            frameComponents: (0..<3).map { i in
+                JPEGFrameComponent(
+                    componentId: i + 1,
+                    hSamplingFactor: 1, vSamplingFactor: 1,
+                    quantTableId: 0)
+            },
+            quantisedComponents: (0..<3).map { _ in
+                JPEGComponentBlocks(componentId: 1,
+                    blocksWide: 2, blocksHigh: 2,
+                    blocks: (0..<4).map { _ in
+                        JPEGCoefficientBlock() })
+            },
+            quantTables: [qt])
+        let state = try JXLBridgeEncoder.prepareFromJPEG(
+            img, colorTransform: .ycbcr)
+        let leafTable = try PrefixCodeTable(lengths: [0])
+        let codebook = MultiClusterCodebook(
+            huffmanTables: [leafTable], ansCounts: [],
+            alphabetSizes: [1])
+        let header = EntropySectionHeader(
+            lz77: .disabled,
+            contextMap: ContextMap.trivial(numContexts: 1),
+            usePrefixCode: true, logAlphaSize: 15,
+            uintConfigs: [HybridUintConfig.defaultConfig])
+        var w = BitWriter()
+        try VarDCTBitstreamWriter.writeBridgeDCGroup(
+            state: state, postHeader: header,
+            postCodebook: codebook, to: &w)
+        var r = BitReader(w.finishToData())
+        _ = try r.read(bits: 2)               // dc_extra_precision
+        _ = try GroupHeader.read(from: &r)    // DC GroupHeader
+        // DC tokens: 3 × 4 = 12 tokens of 0 bits → no advance.
+        // ACMetadata count: ceilLog2(4) = 2 bits, value = 3.
+        XCTAssertEqual(try r.read(bits: 2), 3,
+            "blockCount=4 → count-1=3 in 2 bits")
+        _ = try GroupHeader.read(from: &r)    // ACMetadata GroupHeader
+    }
+
     // MARK: - byte-stuffing + RST skip stress
 
     func testJPEGSegmentReader_HandlesByteStuffing() throws {

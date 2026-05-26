@@ -947,6 +947,104 @@ public enum VarDCTBitstreamWriter {
         // 6. No gi modular sub-image (bridge frames have no alpha).
     }
 
+    /// Write the bridge frame's DC group section body. Mirrors
+    /// the existing `writeDCGroup` inside `buildFrameSections`
+    /// but consumes `state.planes.dcPerChannel` directly rather
+    /// than `q.dcQuant` from `VarDCTEncoder.forward`.
+    ///
+    /// Section layout (libjxl `dec_modular.cc::DecodeDCGroup`):
+    ///
+    ///   1. `dc_extra_precision` (2 bits, value 0)
+    ///   2. DC modular sub-image (3 channels):
+    ///      - `GroupHeader.default` (useGlobalTree = true,
+    ///        reuses the frame's LfGlobal tree)
+    ///      - Per-channel gradient-predicted residual tokens
+    ///        through the supplied post-tree codebook.
+    ///   3. ACMetadata count (`CeilLog2(blockCount)` bits,
+    ///      stored as `count - 1`).
+    ///   4. ACMetadata modular sub-image (4 channels: per-block
+    ///      QF, EPF sharpness, AC-strategy first-block delta,
+    ///      AC-strategy code).
+    ///      - `GroupHeader.default`
+    ///      - For the bridge: every block uses DCT8×8 strategy
+    ///        and uniform QF=1, so all ACMetadata residuals are
+    ///        zero after gradient prediction → 0 bits per token
+    ///        with the right codebook.
+    ///
+    /// **Status (v0.12.0z).** Structurally complete DC group
+    /// body. The post-tree codebook (passed in as
+    /// `postHeader` / `postCodebook`) must be one that can
+    /// represent the DC residual + ACMetadata token alphabets;
+    /// the LfGlobal section emits this codebook today as a
+    /// 1-symbol-on-zero placeholder (v0.12.0y) — sufficient for
+    /// the bridge's all-uniform ACMetadata case but **not** for
+    /// arbitrary DC residuals. The "compute observed-residual
+    /// histogram + build matching codebook" pass for LfGlobal is
+    /// the next bite; until then, `writeBridgeDCGroup` will only
+    /// produce decodable output for fixtures whose DC residuals
+    /// happen to all be zero (e.g. constant-DC images).
+    static func writeBridgeDCGroup(
+        state: JXLBridgeEncoderState,
+        postHeader: EntropySectionHeader,
+        postCodebook: MultiClusterCodebook,
+        to w: inout BitWriter
+    ) throws {
+        // 1. dc_extra_precision = 0 (2 bits).
+        w.write(bits: 2, value: 0)
+        // 2. DC modular sub-image: GroupHeader + per-channel
+        //    gradient-predicted residual tokens.
+        try GroupHeader.default.write(to: &w)
+        let dcWriter = TokenStreamWriter(
+            header: postHeader, codebook: postCodebook)
+        let blocksX = state.planes.blocksX
+        let blocksY = state.planes.blocksY
+        let predictor: Predictor = .gradient
+        // 8-bit precision; DC plane values are small JPEG DC
+        // integers (typically ±100 after the DCzero adjustment).
+        let sampleHi: Int32 = 127
+        for ch in 0..<state.planes.channelCount {
+            let plane = state.planes.dcPerChannel[ch]
+            for by in 0..<blocksY {
+                for bx in 0..<blocksX {
+                    let nbh = Neighbourhood(
+                        at: bx, by, in: plane, width: blocksX)
+                    let pred = predictor.apply(
+                        to: nbh, lo: 0, hi: sampleHi)
+                    let residual = plane[by * blocksX + bx]
+                        &- pred
+                    let packed = ZigZag.pack(residual)
+                    try dcWriter.writeToken(
+                        context: 0, value: packed, to: &w)
+                }
+            }
+        }
+        // 3. ACMetadata count = total block count (every block
+        //    is a first-block since the bridge uses all-DCT8×8).
+        let blockCount = blocksX * blocksY
+        let acMetaBits = Int(ceilLog2(
+            UInt32(max(1, blockCount))))
+        if acMetaBits > 0 {
+            // count - 1 stored.
+            w.write(bits: acMetaBits,
+                    value: UInt32(max(0, blockCount - 1)))
+        }
+        // 4. ACMetadata sub-image — GroupHeader + tokens.
+        //    Bridge ACMetadata is uniform (DCT8×8 strategy=0,
+        //    QF=1, no EPF), so all tokens are ZigZag.pack(0) = 0.
+        try GroupHeader.default.write(to: &w)
+        let acMetaWriter = TokenStreamWriter(
+            header: postHeader, codebook: postCodebook)
+        // 4 ACMetadata channels per libjxl `DecodeACMetadata`
+        // (Y QF, X sharpness, B AC-strategy first-block, B
+        // AC-strategy code). Each gets blockCount tokens.
+        for _ in 0..<4 {
+            for _ in 0..<blockCount {
+                try acMetaWriter.writeToken(
+                    context: 0, value: 0, to: &w)
+            }
+        }
+    }
+
     static func writeBridgePrelude(
         state: JXLBridgeEncoderState
     ) throws -> Data {

@@ -11,6 +11,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0z — Phase J: bridge DC group section writer (step 3.6 sections, second piece)
+
+Second of the four section writers (LfGlobal ✅ y · DC group ✅ this · HfGlobal ⏳ · AC group ⏳). Mirrors the existing `writeDCGroup` closure inside `buildFrameSections` but sources data from `state.planes.dcPerChannel` rather than `VarDCTEncoder.forward`'s `q.dcQuant`.
+
+- **`Sources/JXLSwift/Codec/VarDCTBitstreamWriter.swift`** — new `writeBridgeDCGroup(state:postHeader:postCodebook:to:)`:
+  1. `dc_extra_precision = 0` (2 bits)
+  2. DC modular sub-image — `GroupHeader.default` + per-channel gradient-predicted residual tokens (`predictor.gradient` + `ZigZag.pack` + `TokenStreamWriter`)
+  3. ACMetadata count (`ceilLog2(blockCount)` bits, stored as `count − 1`)
+  4. ACMetadata sub-image — `GroupHeader.default` + 4 channels × blockCount tokens, all zero (uniform DCT8×8 strategy + QF=1 + EPF=0 across the bridge frame)
+- **Codebook gating.** The post-tree codebook is passed in by the caller. v0.12.0y's LfGlobal emits a 1-symbol-on-zero placeholder, sufficient for fixtures whose DC residuals all pack to token 0 (e.g. constant-DC images). For arbitrary content, a "compute observed-residual histogram + build matching codebook" pass in LfGlobal is the next bite (would replace v0.12.0y's placeholder codebook with a real one derived from `state.planes`).
+- **2 new tests**:
+  - `testBridgeDCGroup_AllZeroDC_StructureParses` — all-zero DC fixture (residuals all 0 → tokens all 0 → 0 bits each, fits placeholder codebook). Parses back: 2-bit `dc_extra_precision = 0`, default `GroupHeader`, default `GroupHeader` again for ACMetadata.
+  - `testBridgeDCGroup_FourBlock_ACMetadataCountSize` — 16×16 (2×2 = 4 blocks) fixture verifies `ceilLog2(4) = 2 bits` storing `count − 1 = 3`.
+- **562 tests passing, 6 skipped, 0 failures** (was 560; +2).
+- **Plan progress.** Section writers — LfGlobal ✅ y · DC group ✅ this · HfGlobal ⏳ · AC group ⏳. After all four ship: TOC envelope + section-bytes concat in `JXLBridgeEncoder.write(state:)` swap-to-real-path. The codebook-construction sub-bite (replace placeholder with histogram-derived) lifts the all-zero-DC fixture restriction.
+
 ### v0.12.0y — Phase J: bridge LfGlobal section writer (step 3.6 sections, first piece)
 
 Composes the LfGlobal section body for a bridge frame using all the pieces shipped through v0.12.0x. First of the four section writers (LfGlobal / DC group / HfGlobal / AC group) the bridge needs.
