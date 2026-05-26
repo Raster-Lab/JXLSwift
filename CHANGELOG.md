@@ -11,6 +11,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0x — `DequantMatricesDC.write(to:)` + bridge constructor
+
+Adds the encoder counterpart for `DequantMatricesDC` (until now read-only) — the per-channel DC quant scales the JPEG bridge's LfGlobal section needs. Direct port of libjxl `enc_quant_weights.cc::DequantMatricesEncodeDC`. The DC matrices control the DC-coefficient dequantisation scale; for JPEG transcode we set them to `255 × 8 / qt[0]` per JXL channel (libjxl `enc_frame.cc::DequantMatricesSetCustomDC` at line 784).
+
+- **`Sources/JXLSwift/VarDCT/DequantMatricesDC.swift`** — new methods:
+  - `init(jpegBridgeScales: [Float])` — convenience constructor consuming `state.rawQuantPayload.dcQuantization` (the 3-entry per-JXL-channel DC scale array v0.12.0m already builds with the right `JpegOrder` permutation).
+  - `write(to:)` — emits the spec's 1-bit `all_default` flag + (if not default) 3 F16 DC scales inverse-encoded as `dcQuant_c × 128` to invert the reader's `f * (1.0 / 128.0)`. Default detection: emits the all-default path iff all three components match the spec default of `1/128`.
+- **3 new tests**:
+  - `_WriteDefault` — default `DequantMatricesDC()` writes exactly 1 bit; round-trips through `read`.
+  - `_WriteCustom_RoundTrip` — custom `(1/64, 1/96, 1/32)` round-trips at F16 precision (~1e-4).
+  - `_FromBridgePayload_RoundTrip` — synthetic JPEG with luma DC=16, chroma DC=11 → `JpegOrder=(1,0,2)` permutation places chroma scales in X/B slots, luma in Y slot. Verifies `255 × 8 / 11` and `255 × 8 / 16` land at the right channels and round-trip at F16 precision (~0.1 tolerance since the values are large).
+- **558 tests passing, 6 skipped, 0 failures** (was 555; +3).
+- **Plan progress.** The bridge LfGlobal section now has both DequantMatricesDC (this) and the DequantMatrices AC envelope (v0.12.0u). What still gates the LfGlobal writer: a small `QuantizerParams` (globalScale=1, quantDC=0 for the bridge), BlockCtxMap + ColorCorrelation default bits, and the local-tree modular sub-image for alpha (skipped for the bridge today since alpha isn't supported).
+
 ### v0.12.0w — Phase J: decoder local-tree support for meta-channels (step 3.6 dep 3)
 
 **Tier-1 bite B from the v0.12.0u next-work plan.** Extends `JXLDecoder` to accept `useGlobalTree=false` in the VarDCT meta-channels path — the previously-thrown branch (`.notImplemented` at `JXLDecoder.swift:~381`). Unblocks our-decoder round-trip of bridge-emitted JXLs where each embedded modular sub-image carries its own tree (per libjxl `ModularGenericCompress` when no surrounding frame-level global tree applies).

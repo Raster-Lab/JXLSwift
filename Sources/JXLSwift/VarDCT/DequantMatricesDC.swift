@@ -30,6 +30,25 @@ public struct DequantMatricesDC: Sendable {
         return (1.0 / dcQuant.0, 1.0 / dcQuant.1, 1.0 / dcQuant.2)
     }
 
+    /// Construct a `DequantMatricesDC` for the JPEG → JXL
+    /// coefficient bridge from the per-channel DC dequant scales
+    /// that v0.12.0m's `buildJXLBridgeRAWQuantPayload` computed.
+    /// Each scale is `255 × 8 / qt[0]` per JXL channel — the
+    /// inverse of the JPEG DC quant factor in the same
+    /// `(255 × 8)` scale the existing decoder formula expects.
+    ///
+    /// **Status (v0.12.0x).** Foundation helper for the in-
+    /// progress bridge LfGlobal writer; today's `write(to:)`
+    /// emits the values as F16-encoded scales.
+    public init(jpegBridgeScales dcQuantization: [Float]) {
+        precondition(dcQuantization.count == 3,
+            "DequantMatricesDC(jpegBridgeScales:): need 3 entries")
+        self.dcQuant = (
+            dcQuantization[0],
+            dcQuantization[1],
+            dcQuantization[2])
+    }
+
     public static func read(from r: inout BitReader) throws -> DequantMatricesDC {
         let allDefault: Bool
         do { allDefault = try r.readBit() }
@@ -58,6 +77,34 @@ public struct DequantMatricesDC: Sendable {
             }
         }
         return DequantMatricesDC(dcQuant: values)
+    }
+
+    /// Write the spec's 1-bit `all_default` flag + (if not
+    /// default) 3 F16 DC quant scales — inverse of `read(from:)`.
+    /// Inverts the `f * (1.0 / 128.0)` the reader applies, so
+    /// the stored F16 carries `dcQuant_c * 128`.
+    ///
+    /// Default detection: emits the all-default path iff all
+    /// three `dcQuant` components match the spec default of
+    /// `1/128`. The bridge constructs non-default values via
+    /// `init(jpegBridgeScales:)`, so it always hits the F16
+    /// branch.
+    public func write(to w: inout BitWriter) {
+        let defaultVal: Float = 1.0 / 128.0
+        let eps: Float = 1e-9
+        let allDefault =
+            abs(dcQuant.0 - defaultVal) < eps
+            && abs(dcQuant.1 - defaultVal) < eps
+            && abs(dcQuant.2 - defaultVal) < eps
+        w.writeBit(allDefault)
+        if allDefault { return }
+        // Stored F16 = dcQuant * 128 (inverts reader's × 1/128).
+        let storedC0 = floatToHalf(dcQuant.0 * 128.0)
+        let storedC1 = floatToHalf(dcQuant.1 * 128.0)
+        let storedC2 = floatToHalf(dcQuant.2 * 128.0)
+        w.write(bits: 16, value: UInt32(storedC0))
+        w.write(bits: 16, value: UInt32(storedC1))
+        w.write(bits: 16, value: UInt32(storedC2))
     }
 }
 

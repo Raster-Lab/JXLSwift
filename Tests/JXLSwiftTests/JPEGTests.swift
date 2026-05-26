@@ -3291,6 +3291,104 @@ final class JPEGFoundationTests: XCTestCase {
         }
     }
 
+    // MARK: - DequantMatricesDC.write (v0.12.0x)
+
+    /// Default DC values write as a single all_default=1 bit.
+    func testDequantMatricesDC_WriteDefault() throws {
+        var w = BitWriter()
+        DequantMatricesDC().write(to: &w)
+        let bytes = w.finishToData()
+        XCTAssertEqual(bytes.count, 1,
+            "all-default writes exactly 1 bit (rounds to 1 byte)")
+        var r = BitReader(bytes)
+        let decoded = try DequantMatricesDC.read(from: &r)
+        XCTAssertEqual(decoded.dcQuant.0, 1.0 / 128, accuracy: 1e-9)
+        XCTAssertEqual(decoded.dcQuant.1, 1.0 / 128, accuracy: 1e-9)
+        XCTAssertEqual(decoded.dcQuant.2, 1.0 / 128, accuracy: 1e-9)
+    }
+
+    /// Non-default DC values round-trip through write+read with
+    /// F16-precision tolerance.
+    func testDequantMatricesDC_WriteCustom_RoundTrip() throws {
+        let original = DequantMatricesDC(
+            dcQuant: (1.0 / 64, 1.0 / 96, 1.0 / 32))
+        var w = BitWriter()
+        original.write(to: &w)
+        let bytes = w.finishToData()
+        // 1 bit + 48 bits = 49 bits → 7 bytes (rounded up).
+        XCTAssertEqual(bytes.count, 7)
+        var r = BitReader(bytes)
+        let decoded = try DequantMatricesDC.read(from: &r)
+        XCTAssertEqual(decoded.dcQuant.0, original.dcQuant.0,
+                       accuracy: 1e-4,
+                       "F16 round-trip precision")
+        XCTAssertEqual(decoded.dcQuant.1, original.dcQuant.1,
+                       accuracy: 1e-4)
+        XCTAssertEqual(decoded.dcQuant.2, original.dcQuant.2,
+                       accuracy: 1e-4)
+    }
+
+    /// Bridge constructor: bridge `dcQuantization` values per
+    /// JXL channel become `dcQuant` directly. Round-trips
+    /// through write+read at F16 precision.
+    func testDequantMatricesDC_FromBridgePayload_RoundTrip() throws {
+        // Synthetic JPEG with luma DC=16, chroma DC=11 — typical
+        // q=50-ish quant table.
+        var lumaZZ = [UInt16](repeating: 1, count: 64)
+        lumaZZ[0] = 16
+        var chromaZZ = [UInt16](repeating: 1, count: 64)
+        chromaZZ[0] = 11
+        let lumaQt = JPEGQuantTable(
+            tableId: 0, precision: .bits8, zigZagValues: lumaZZ)
+        let chromaQt = JPEGQuantTable(
+            tableId: 1, precision: .bits8, zigZagValues: chromaZZ)
+        let img = JPEGCoefficientImage(
+            width: 8, height: 8, precision: 8,
+            frameKind: .baselineDCT,
+            frameComponents: [
+                JPEGFrameComponent(componentId: 1,
+                    hSamplingFactor: 1, vSamplingFactor: 1,
+                    quantTableId: 0),
+                JPEGFrameComponent(componentId: 2,
+                    hSamplingFactor: 1, vSamplingFactor: 1,
+                    quantTableId: 1),
+                JPEGFrameComponent(componentId: 3,
+                    hSamplingFactor: 1, vSamplingFactor: 1,
+                    quantTableId: 1),
+            ],
+            quantisedComponents: (0..<3).map { _ in
+                JPEGComponentBlocks(componentId: 1,
+                    blocksWide: 1, blocksHigh: 1,
+                    blocks: [JPEGCoefficientBlock()])
+            },
+            quantTables: [lumaQt, chromaQt])
+        let payload = img.buildJXLBridgeRAWQuantPayload(
+            colorTransform: .ycbcr)
+        // Under .ycbcr the JPEG order is (1, 0, 2) →
+        //   JXL X-slot = Cb (chroma) → 255*8/11 = 185.45...
+        //   JXL Y-slot = Y  (luma)   → 255*8/16 = 127.5
+        //   JXL B-slot = Cr (chroma) → 255*8/11 = 185.45...
+        let dc = DequantMatricesDC(
+            jpegBridgeScales: payload.dcQuantization)
+        XCTAssertEqual(dc.dcQuant.0, 255.0 * 8 / 11.0,
+                       accuracy: 1e-4)
+        XCTAssertEqual(dc.dcQuant.1, 255.0 * 8 / 16.0,
+                       accuracy: 1e-4)
+        XCTAssertEqual(dc.dcQuant.2, 255.0 * 8 / 11.0,
+                       accuracy: 1e-4)
+        // Round-trip via the new write method.
+        var w = BitWriter()
+        dc.write(to: &w)
+        var r = BitReader(w.finishToData())
+        let decoded = try DequantMatricesDC.read(from: &r)
+        XCTAssertEqual(decoded.dcQuant.0, dc.dcQuant.0,
+                       accuracy: 0.1)  // F16 lossy at large values
+        XCTAssertEqual(decoded.dcQuant.1, dc.dcQuant.1,
+                       accuracy: 0.1)
+        XCTAssertEqual(decoded.dcQuant.2, dc.dcQuant.2,
+                       accuracy: 0.1)
+    }
+
     // MARK: - byte-stuffing + RST skip stress
 
     func testJPEGSegmentReader_HandlesByteStuffing() throws {
