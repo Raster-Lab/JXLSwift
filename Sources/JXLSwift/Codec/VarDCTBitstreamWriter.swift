@@ -988,8 +988,19 @@ public enum VarDCTBitstreamWriter {
         // ACMetadata — 4 channels of all-zero residuals (bridge
         // uses uniform DCT8×8 + QF=1 + no EPF, so every value is
         // zero, ZigZag.pack(0) = 0, cfg.encode(0).token = 0).
-        // 4 × blockCount zero tokens go into bucket 0.
-        histo[0] += 4 * blockCount
+        // Per-channel token counts (libjxl `dec_modular.cc::
+        // DecodeAcMetadata`):
+        //   YToX:       ((bx+7)/8) × ((by+7)/8)
+        //   YToB:       same
+        //   ACS+QF:     count × 2 = blockCount × 2
+        //   EPF:        blockCount
+        let cflTilesX = (blocksX + 7) >> 3
+        let cflTilesY = (blocksY + 7) >> 3
+        let acMetaZeros = cflTilesX * cflTilesY
+            + cflTilesX * cflTilesY
+            + blockCount * 2
+            + blockCount
+        histo[0] += acMetaZeros
         // Canonical-Huffman builder is undefined for a 1-symbol
         // alphabet; pad to at least 2.
         var alphabet = maxTok + 1
@@ -1123,7 +1134,21 @@ public enum VarDCTBitstreamWriter {
         // 8-bit precision; DC plane values are small JPEG DC
         // integers (typically ±100 after the DCzero adjustment).
         let sampleHi: Int32 = 127
-        for ch in 0..<state.planes.channelCount {
+        // **Channel order in the DC modular sub-image is [Y, X, B]**
+        // (libjxl `AddVarDCTDC`'s XOR remap: `image.channel[c < 2 ?
+        // c^1 : c]`). Our `state.planes.dcPerChannel` is in JpegOrder
+        // remap order [X, Y, B] (post-`remappedForJXLBridge`), so we
+        // iterate as [1, 0, 2] to land Y first on the wire.
+        // **Caveat for 1-channel grayscale**: a single channel is
+        // written as-is (the libjxl XOR only meaningfully swaps the
+        // first two channels of a 3-channel frame).
+        let dcChannelOrder: [Int]
+        if state.planes.channelCount == 3 {
+            dcChannelOrder = [1, 0, 2]
+        } else {
+            dcChannelOrder = Array(0..<state.planes.channelCount)
+        }
+        for ch in dcChannelOrder {
             let plane = state.planes.dcPerChannel[ch]
             for by in 0..<blocksY {
                 for bx in 0..<blocksX {
@@ -1155,11 +1180,30 @@ public enum VarDCTBitstreamWriter {
         try GroupHeader.default.write(to: &w)
         let acMetaWriter = TokenStreamWriter(
             header: postHeader, codebook: postCodebook)
-        // 4 ACMetadata channels per libjxl `DecodeACMetadata`
-        // (Y QF, X sharpness, B AC-strategy first-block, B
-        // AC-strategy code). Each gets blockCount tokens.
-        for _ in 0..<4 {
-            for _ in 0..<blockCount {
+        // **Per-channel dimensions** (libjxl `dec_modular.cc::
+        // DecodeAcMetadata`):
+        //   channel[0] (YToX):  ((bx+7)/8) × ((by+7)/8) — 64-px
+        //                       colour-correlation tiles.
+        //   channel[1] (YToB):  same as channel[0].
+        //   channel[2] (ACS+QF combined): count × 2 — **two
+        //                       rows**, row 0 = AC strategy codes,
+        //                       row 1 = QF deltas. The bridge uses
+        //                       uniform DCT8×8 + QF=1 so all are 0.
+        //   channel[3] (EPF sharpness): blocksX × blocksY — per-block.
+        // count was written above as the total first-block count
+        // for the AC-strategy plane (= blockCount when every block
+        // is DCT8×8). Every value is 0 → every gradient-predicted
+        // residual is 0 → every emitted token is `ZigZag.pack(0) = 0`.
+        let cflTilesX = (blocksX + 7) >> 3
+        let cflTilesY = (blocksY + 7) >> 3
+        let channelTokenCounts = [
+            cflTilesX * cflTilesY,    // YToX
+            cflTilesX * cflTilesY,    // YToB
+            blockCount * 2,           // ACS+QF (count × 2)
+            blocksX * blocksY,        // EPF sharpness
+        ]
+        for ch in 0..<4 {
+            for _ in 0..<channelTokenCounts[ch] {
                 try acMetaWriter.writeToken(
                     context: 0, value: 0, to: &w)
             }
