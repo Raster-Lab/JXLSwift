@@ -11,6 +11,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0fo — Bridge DC scale inversion fix — pixels no longer saturate
+
+libjxl `quant_weights.h::SetDCQuant` stores the **inverse** of the input `dcquantization` value in `dc_quant_[c]`:
+
+```cpp
+void SetDCQuant(const float dc[3]) {
+    for (size_t c = 0; c < 3; c++) {
+        dc_quant_[c] = 1.0f / dc[c];           // INVERTED
+        inv_dc_quant_[c] = dc[c];
+    }
+}
+```
+
+`DequantMatricesEncodeDC` then writes F16 of `dc_quant_[c] * 128`. With the inversion, that's `128 / dcquantization[c]`. For a real-content JPEG with `dcquantization[c] = 255*8/qt[0]` (e.g., 680 for `qt[0]=3`), the inverted F16 = 128/680 ≈ 0.188 — well within F16 range. **Without** the inversion, F16 = 680 × 128 = 87 040 — overflows F16 (max 65 504) → +inf → dequant cascade saturates every pixel to 0xFF.
+
+Our `DequantMatricesDC.init(jpegBridgeScales:)` was storing the un-inverted value. v0.12.0fo fixes the init to apply the same inversion libjxl does internally.
+
+Result on the real-content bridge test (`testJXLEncoder_FromJPEGCoefficients_RealJPEG_DjxlAccepts`):
+- **before**: `max=209, mean=113.97`, every djxl pixel = 0xFF saturated white
+- **after**: `max=139, mean=34.16`, djxl produces actual colour values
+
+The diff is no longer saturation-driven. The remaining gap (max=139) suggests at least one more scaling factor is off — candidates: AC dequant formula, inverse YCbCr conversion, IDCT normalisation gain. The next bite localises it.
+
+One pin-down test updated for the new bridge semantics (`testDequantMatricesDC_FromBridgePayload_RoundTrip`): expects the inverted values (`qt[0]/(255*8)` not `255*8/qt[0]`) and tightens round-trip accuracy to 1e-4 (F16 has plenty of precision at these small magnitudes).
+
 ### v0.12.0fm — Bridge QuantizerParams: `globalScale = kGlobalScaleDenom (65536)` for `InvGlobalScale = 1`
 
 libjxl `enc_frame.cc::ComputeJPEGTranscodingData` line 804 sets the quantizer to `Quantizer(matrices, quant_dc=1, global_scale=kGlobalScaleDenom)`. `kGlobalScaleDenom = 1 << 16 = 65536`, and the Quantizer constructor computes `inv_global_scale_ = kGlobalScaleDenom / global_scale_`. Setting `global_scale_ = 65536` makes `inv_global_scale_ = 1`, which is what the AC dequant formula `dequant = coeff × weight × inv_global_scale / qf` needs to recover the JPEG-domain coefficient values.
