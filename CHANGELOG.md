@@ -11,6 +11,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0aa — Phase J: bridge HfGlobal section writer (step 3.6 sections, third piece)
+
+Third of the four section writers (LfGlobal ✅ y · DC group ✅ z · HfGlobal ✅ this · AC group ⏳). Mirrors the existing `writeHfGlobal` closure inside `buildFrameSections` but emits the custom `DequantMatrices` envelope from v0.12.0u (slot 0 RAW with the JPEG quant table, library defaults elsewhere) instead of the pixel-pipeline's `all_default = true` bit.
+
+- **`Sources/JXLSwift/Codec/VarDCTBitstreamWriter.swift`** — new `writeBridgeHfGlobal(state:rawSlotOverrides:acHeader:acCodebook:acContexts:numGroups:to:)`:
+  1. `DequantMatrices` envelope via `QuantEncodingBitstream.writeDequantMatrices` (v0.12.0u) — passes the `rawSlotOverrides` dict through. For the bridge today: `[0: state.rawQuantPayload]`.
+  2. `num_histograms = 1` encoded as 0 in `CeilLog2(numGroups)` bits (collapses to 0 bits for the single-group case).
+  3. `used_orders = 0` via the libjxl `kOrderEnc` U32 distribution.
+  4. AC `EntropySectionHeader` + AC `MultiClusterCodebook` — passed in by caller so a future histogram-derived codebook can swap in.
+- **1 new test**: `testBridgeHfGlobal_StructureParsesBack` — deep walk through the section, including the 17-slot DequantMatrices envelope:
+  - 1-bit `all_default = false` (RAW override present)
+  - slot 0: mode bits = 7 + F16 + `ModularSubImage.read` for the qtable
+  - slots 1..16: each 3-bit library mode = 0
+  - `used_orders = 0` via the `kOrderEnc` U32 round-trip
+- **563 tests passing, 6 skipped, 0 failures** (was 562; +1).
+- **Plan progress.** Section writers — LfGlobal ✅ y · DC group ✅ z · HfGlobal ✅ this · AC group ⏳. One more section writer + TOC envelope + the wire-up into `JXLBridgeEncoder.write(state:)` and step 3.7 swap.
+
 ### v0.12.0z — Phase J: bridge DC group section writer (step 3.6 sections, second piece)
 
 Second of the four section writers (LfGlobal ✅ y · DC group ✅ this · HfGlobal ⏳ · AC group ⏳). Mirrors the existing `writeDCGroup` closure inside `buildFrameSections` but sources data from `state.planes.dcPerChannel` rather than `VarDCTEncoder.forward`'s `q.dcQuant`.

@@ -3572,6 +3572,69 @@ final class JPEGFoundationTests: XCTestCase {
         _ = try GroupHeader.read(from: &r)    // ACMetadata GroupHeader
     }
 
+    // MARK: - writeBridgeHfGlobal (v0.12.0aa)
+
+    /// Structural pin-down: bridge HfGlobal section body emits
+    /// the expected DequantMatrices envelope + num_histograms +
+    /// used_orders bits, then the AC codebook. Parses back via
+    /// the existing decoder primitives.
+    func testBridgeHfGlobal_StructureParsesBack() throws {
+        let img = bridgeParamsFixture()
+        let state = try JXLBridgeEncoder.prepareFromJPEG(
+            img, colorTransform: .ycbcr)
+        // Reuse the v0.12.0u envelope override map: slot 0 RAW.
+        let rawOverrides: [Int: JXLBridgeRAWQuantPayload] =
+            [0: state.rawQuantPayload]
+        // Placeholder AC codebook (1-symbol-on-0).
+        let leafTable = try PrefixCodeTable(lengths: [0])
+        let acCodebook = MultiClusterCodebook(
+            huffmanTables: [leafTable], ansCounts: [],
+            alphabetSizes: [1])
+        let acHeader = EntropySectionHeader(
+            lz77: .disabled,
+            contextMap: ContextMap.trivial(numContexts: 1),
+            usePrefixCode: true, logAlphaSize: 15,
+            uintConfigs: [HybridUintConfig.defaultConfig])
+        var w = BitWriter()
+        try VarDCTBitstreamWriter.writeBridgeHfGlobal(
+            state: state,
+            rawSlotOverrides: rawOverrides,
+            acHeader: acHeader, acCodebook: acCodebook,
+            acContexts: 1, numGroups: 1, to: &w)
+        let bytes = w.finishToData()
+        XCTAssertGreaterThan(bytes.count, 0)
+
+        // Parse:
+        var r = BitReader(bytes)
+        // 1. DequantMatrices envelope: 1-bit all_default = false
+        //    + 17 per-slot encodings. Verify the bit is 0.
+        XCTAssertFalse(try r.readBit(),
+            "DequantMatrices all_default should be false with "
+            + "RAW override at slot 0")
+        // Skip over slot 0 (RAW: mode 3 bits + F16 + ModularSubImage).
+        XCTAssertEqual(try r.read(bits: 3),
+                       UInt32(QuantMode.raw.rawValue))
+        _ = try r.read(bits: 16)  // F16 qtable_den
+        _ = try ModularSubImage.read(
+            from: &r, width: 8, height: 8,
+            bitsPerSample: 8, channelCount: 3)
+        // Slots 1..16: each is 3 bits of library mode = 0.
+        for _ in 1..<17 {
+            XCTAssertEqual(try r.read(bits: 3), 0)
+        }
+        // 2. num_histograms — for single-group (default), CeilLog2(1)
+        //    = 0 bits, so nothing here. Verify by reading the next
+        //    field directly.
+        // 3. used_orders = 0 via kOrderEnc. Reader: U32 with
+        //    matching distribution.
+        let usedOrders = try r.readU32((
+            .literal(0x5F), .literal(0x13), .literal(0), .bits(13)))
+        XCTAssertEqual(usedOrders, 0,
+            "used_orders should be 0 for the bridge "
+            + "(default coefficient order)")
+        // 4. AC EntropySectionHeader + codebook follow.
+    }
+
     // MARK: - byte-stuffing + RST skip stress
 
     func testJPEGSegmentReader_HandlesByteStuffing() throws {

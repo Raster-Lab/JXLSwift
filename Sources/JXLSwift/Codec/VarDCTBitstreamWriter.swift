@@ -1045,6 +1045,60 @@ public enum VarDCTBitstreamWriter {
         }
     }
 
+    /// Write the bridge frame's HfGlobal section body. Mirrors
+    /// the existing `writeHfGlobal` closure inside
+    /// `buildFrameSections` but emits the custom
+    /// `DequantMatrices` envelope from v0.12.0u (slot 0 RAW from
+    /// `state.rawQuantPayload`, library defaults elsewhere)
+    /// instead of the pixel-pipeline's `all_default = true` bit.
+    ///
+    /// Section layout (libjxl `dec_frame.cc::DecodeHfGlobal`):
+    ///
+    ///   1. `DequantMatrices` envelope — for the bridge: 1-bit
+    ///      `all_default = false` + 17 per-slot encodings
+    ///      (slot 0 RAW with the JPEG quant table; slots 1..16
+    ///      library default).
+    ///   2. `num_histograms = 1` — encoded as 0 in
+    ///      `CeilLog2(numGroups)` bits. For the single-group
+    ///      bridge case (numGroups = 1), this collapses to 0 bits.
+    ///   3. `used_orders = 0` (default coefficient order) via the
+    ///      libjxl `kOrderEnc` U32 distribution.
+    ///   4. AC `EntropySectionHeader` + AC `MultiClusterCodebook`
+    ///      — the codebook the per-AC-group section will use for
+    ///      its coefficient tokens. Passed in by the caller so a
+    ///      future histogram-derived codebook can swap in.
+    ///
+    /// **Status (v0.12.0aa).** Third of the four bridge section
+    /// writers. The AC group writer (which uses this section's
+    /// codebook) is the next bite.
+    static func writeBridgeHfGlobal(
+        state: JXLBridgeEncoderState,
+        rawSlotOverrides: [Int: JXLBridgeRAWQuantPayload],
+        acHeader: EntropySectionHeader,
+        acCodebook: MultiClusterCodebook,
+        acContexts: Int,
+        numGroups: Int = 1,
+        to w: inout BitWriter
+    ) throws {
+        // 1. DequantMatrices envelope (1-bit all_default + 17
+        //    per-slot encodings if any override is present).
+        try QuantEncodingBitstream.writeDequantMatrices(
+            rawSlotOverrides: rawSlotOverrides, to: &w)
+        // 2. num_histograms = 1 → encode 0 in CeilLog2(numGroups)
+        //    bits. CeilLog2(1) = 0 → no bits written for the
+        //    single-group case.
+        let nhBits = Int(ceilLog2(
+            UInt32(max(1, numGroups))))
+        if nhBits > 0 {
+            w.write(bits: nhBits, value: 0)
+        }
+        // 3. used_orders = 0 via kOrderEnc U32.
+        try w.writeU32(0, distributions: kOrderEnc)
+        // 4. AC EntropySectionHeader + codebook.
+        try acHeader.write(to: &w, numContexts: acContexts)
+        try acCodebook.write(to: &w, header: acHeader)
+    }
+
     static func writeBridgePrelude(
         state: JXLBridgeEncoderState
     ) throws -> Data {
