@@ -3210,6 +3210,87 @@ final class JPEGFoundationTests: XCTestCase {
         }
     }
 
+    // MARK: - VarDCTBitstreamWriter.writeBridgePrelude (v0.12.0v)
+
+    /// The bridge prelude alone (no TOC / sections yet) should
+    /// be enough for `JXLDecoder.inspect(_:)` to extract
+    /// dimensions + ImageMetadata. Tests the 3-component path.
+    func testBridgePrelude_ThreeComponent_InspectionMatches() throws {
+        let img = bridgeParamsFixture()
+        let state = try JXLBridgeEncoder.prepareFromJPEG(
+            img, colorTransform: .ycbcr)
+        let prelude = try VarDCTBitstreamWriter
+            .writeBridgePrelude(state: state)
+        XCTAssertGreaterThan(prelude.count, 0)
+        let inspection = try JXLDecoder().inspect(prelude)
+        XCTAssertEqual(inspection.form, .naked)
+        XCTAssertEqual(Int(inspection.xsize),
+                       state.source.width)
+        XCTAssertEqual(Int(inspection.ysize),
+                       state.source.height)
+        let meta = try XCTUnwrap(inspection.metadata)
+        XCTAssertFalse(meta.xybEncoded,
+            "bridge frames store raw colour, not XYB")
+        XCTAssertEqual(meta.bitDepth.bitsPerSample, 8)
+        XCTAssertEqual(meta.extraChannels.count, 0,
+            "bridge alpha not yet supported")
+    }
+
+    /// Grayscale (1-component) prelude path — different
+    /// `colorEncoding` from the 3-component case.
+    func testBridgePrelude_OneComponent_GrayscaleColorEncoding()
+        throws
+    {
+        var zz = [UInt16](repeating: 1, count: 64)
+        zz[0] = 16
+        let qt = JPEGQuantTable(
+            tableId: 0, precision: .bits8, zigZagValues: zz)
+        let img = JPEGCoefficientImage(
+            width: 8, height: 8, precision: 8,
+            frameKind: .baselineDCT,
+            frameComponents: [JPEGFrameComponent(
+                componentId: 1, hSamplingFactor: 1,
+                vSamplingFactor: 1, quantTableId: 0)],
+            quantisedComponents: [JPEGComponentBlocks(
+                componentId: 1, blocksWide: 1, blocksHigh: 1,
+                blocks: [JPEGCoefficientBlock()])],
+            quantTables: [qt])
+        let state = try JXLBridgeEncoder.prepareFromJPEG(
+            img, colorTransform: .ycbcr)
+        let prelude = try VarDCTBitstreamWriter
+            .writeBridgePrelude(state: state)
+        let inspection = try JXLDecoder().inspect(prelude)
+        XCTAssertEqual(Int(inspection.xsize), 8)
+        XCTAssertEqual(Int(inspection.ysize), 8)
+        let meta = try XCTUnwrap(inspection.metadata)
+        XCTAssertFalse(meta.xybEncoded)
+        // colorEncoding for 1-component should be grayscale-flavoured.
+        // We can't easily introspect that via JXLInspection but the
+        // ImageMetadata write would have failed if it didn't match.
+    }
+
+    /// Updated stub-throw test: write(state:) now emits the
+    /// prelude before throwing, so the `.notImplemented` body
+    /// has a different message than the pre-v0.12.0v stub.
+    func testJXLBridgeEncoder_WriteThrowsAfterPrelude() throws {
+        let img = bridgeParamsFixture()
+        let state = try JXLBridgeEncoder.prepareFromJPEG(img)
+        XCTAssertThrowsError(
+            try JXLBridgeEncoder.write(state: state))
+        { err in
+            guard case JXLBridgeEncoderError.notImplemented(let m)
+                = err else {
+                XCTFail("expected .notImplemented, got \(err)")
+                return
+            }
+            // Message should mention "TOC + section payloads"
+            // — the next bite's responsibility.
+            XCTAssertTrue(m.contains("TOC"),
+                "stub message should name what's missing now "
+                + "(TOC + section payloads), got: \(m)")
+        }
+    }
+
     // MARK: - byte-stuffing + RST skip stress
 
     func testJPEGSegmentReader_HandlesByteStuffing() throws {

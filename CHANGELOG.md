@@ -11,6 +11,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0v — Phase J: bridge outer-codestream prelude scaffold (step 3.6 dep 2 frame, partial)
+
+**Tier-1 bite A from the v0.12.0u next-work plan.** Emits the bytes up to and including the FrameHeader for a `JXLBridgeEncoderState` — enough for `JXLDecoder.inspect(_:)` to round-trip dimensions + metadata. TOC + section payloads (LfGlobal / DequantMatrices / AC global / AC groups) are the next bite.
+
+- **`Sources/JXLSwift/Codec/VarDCTBitstreamWriter.swift`** — new `writeBridgePrelude(state:)` static method. Differs from the existing pixel-pipeline `writeCodestreamPrelude` at:
+  - `xybEncoded = false` (bridge stores raw colour, not XYB)
+  - `colorEncoding = .grayscaleD65` for 1-component / `.srgb` for 3-component (instead of unconditional `.srgb`)
+  - `extraChannels = []` (bridge alpha is a future bite)
+  - `FrameHeader.colorTransform / chromaSubsampling / loopFilter` all sourced from `state.frameHeaderParams` rather than hard-coded `.xyb / .default / (gab, epfIters: 0)`
+  - `FrameHeaderContext.xybEncoded = false, numExtraChannels = 0`
+- **`Sources/JXLSwift/JPEG/JXLBridgeEncoder.swift`** — `write(state:)` now calls `writeBridgePrelude` before throwing `.notImplemented`; the throw message is updated to name what's still missing (TOC + section payloads) instead of repeating the whole 3-dep-chain explanation.
+- **3 new tests**:
+  - `testBridgePrelude_ThreeComponent_InspectionMatches` — round-trips a 3-component bridge state through `writeBridgePrelude` → `JXLDecoder.inspect`; asserts naked-form, correct dimensions, `xybEncoded = false`, 8-bit, no extra channels.
+  - `testBridgePrelude_OneComponent_GrayscaleColorEncoding` — same for the grayscale path.
+  - `testJXLBridgeEncoder_WriteThrowsAfterPrelude` — pin-down that the updated stub message mentions "TOC" (the next missing piece).
+- **555 tests passing, 6 skipped, 0 failures** (was 552; +3).
+- **Plan progress.** Step 3.6-write decomposes into: prelude scaffold (✅ v0.12.0v), quant-matrix bitstream (✅ v0.12.0r + s + u), TOC + DC/AC plane section writers (next bite, the substantive piece), final `JXLBridgeEncoder.write(state:)` wire-up replacing the stub. With three of four major sub-components shipped, the next bite finishes step 3.6, then 3.7 (swap `encodeFromJPEGCoefficients(_:)` stub + integration test) ships the forward bridge end-to-end.
+
 ### v0.12.0u — Phase J: `DequantMatrices` envelope writer (step 3.6 dep 2)
 
 Closes the quant-matrix bitstream-write story for the JPEG → JXL coefficient bridge. Port of libjxl `enc_quant_weights.cc::DequantMatricesEncode` — the 1-bit `all_default` envelope around 17 per-slot encodings.

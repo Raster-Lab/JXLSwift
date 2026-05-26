@@ -860,6 +860,100 @@ public enum VarDCTBitstreamWriter {
         return out
     }
 
+    /// **JPEG → JXL coefficient bridge — outer codestream prelude
+    /// scaffold (v0.12.0v — step 3.6 dep 2 frame, partial).**
+    ///
+    /// Emits the bytes up to and including the FrameHeader for a
+    /// `JXLBridgeEncoderState`. **No TOC, no section payloads** —
+    /// the section-write half is the next bite. Output is enough
+    /// for `JXLDecoder.inspect(_:)` to extract dimensions +
+    /// metadata (it stops after `ImageMetadata`), which is the
+    /// scaffold's verification path today.
+    ///
+    /// Differs from `writeCodestreamPrelude(xsize:…)` (the
+    /// pixel-pipeline prelude) in several places:
+    ///   - `xybEncoded = false` (bridge stores raw colour, not XYB)
+    ///   - `colorEncoding = .grayscaleD65` for 1-component;
+    ///     `.srgb` for 3-component
+    ///   - `extraChannels = []` (alpha not currently supported by
+    ///     the bridge; matches `JPEGDecoder.decode`'s envelope)
+    ///   - `customTransformData` still all_default = true (the
+    ///     non-XYB branch)
+    /// And in the FrameHeader, from `state.frameHeaderParams`:
+    ///   - `colorTransform = .yCbCr` or `.none` per the choice
+    ///   - `chromaSubsampling = (0, 0, 0)` for 4:4:4 (lifted
+    ///     when the adapter widens scope)
+    ///   - `loopFilter` = bridge's `gab=false, epfIters=0`
+    ///   - `xQmScale / bQmScale` only emitted with XYB, so the
+    ///     defaults are fine here (the writer skips them
+    ///     correctly when `colorTransform != .xyb`)
+    static func writeBridgePrelude(
+        state: JXLBridgeEncoderState
+    ) throws -> Data {
+        var w = BitWriter()
+        // 1. Signature.
+        w.write(bits: 8, value: 0xFF)
+        w.write(bits: 8, value: 0x0A)
+        // 2. SizeHeader from source dimensions.
+        try SizeHeader(
+            xsize: UInt32(state.source.width),
+            ysize: UInt32(state.source.height)
+        ).write(to: &w)
+        // 3. ImageMetadata — non-XYB, matched to component count.
+        let nch = state.planes.channelCount
+        let colorEncoding: ColorEncoding
+        switch nch {
+        case 1: colorEncoding = .grayscaleD65
+        case 3: colorEncoding = .srgb
+        default:
+            throw WriterError.unsupported(
+                "bridge prelude: channel count \(nch) "
+                + "(only 1 or 3 supported)")
+        }
+        let meta = ImageMetadata(
+            allDefault: false, orientation: 1,
+            intrinsicSize: nil, preview: nil, animation: nil,
+            bitDepth: BitDepth(
+                floatingPoint: false, bitsPerSample: 8),
+            modular16BitBufferSufficient: true,
+            extraChannels: [],
+            xybEncoded: false,
+            colorEncoding: colorEncoding,
+            intensityTarget: 255.0, minNits: 0.0,
+            relativeToMaxDisplay: false, linearBelow: 0.0)
+        try meta.write(to: &w)
+        // 4. CustomTransformData — non-XYB branch: 1-bit
+        //    all_default = 1, then JumpToByteBoundary.
+        w.writeBit(true)
+        w.alignToByte()
+        // 5. FrameHeader from bridge params.
+        let p = state.frameHeaderParams
+        let fh = FrameHeader(
+            allDefault: false,
+            frameType: .regular, encoding: p.encoding,
+            flags: 0,
+            colorTransform: p.colorTransform,
+            chromaSubsampling: p.chromaSubsampling,
+            upsampling: 1, extraChannelUpsampling: [],
+            groupSizeShift: 1,
+            xQmScale: 2, bQmScale: 2,
+            passes: .default, dcLevel: 0,
+            customSizeOrOrigin: false,
+            frameOrigin: (0, 0), frameSize: nil,
+            blendingInfo: .default,
+            extraChannelBlendingInfo: [],
+            animationFrame: .default,
+            isLast: true,
+            saveAsReference: 0,
+            saveBeforeColorTransform: false,
+            name: "",
+            loopFilter: p.loopFilter)
+        try fh.write(to: &w, context: FrameHeaderContext(
+            xybEncoded: false, numExtraChannels: 0,
+            haveAnimation: false, haveTimecodes: false))
+        return w.finishToData()
+    }
+
     /// Encode N `ImageFrame`s as a single multi-frame VarDCT JPEG XL
     /// codestream (animation). All frames must share the same
     /// dimensions and alpha presence. `durations` is per-frame in

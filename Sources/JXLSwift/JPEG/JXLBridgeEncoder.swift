@@ -112,14 +112,36 @@ public enum JXLBridgeEncoder {
     public static func write(
         state: JXLBridgeEncoderState
     ) throws -> Data {
-        _ = state
+        // v0.12.0v: emits the outer-codestream prelude
+        // (signature + SizeHeader + ImageMetadata + CustomTransformData
+        // + FrameHeader) via VarDCTBitstreamWriter.writeBridgePrelude.
+        // The TOC + section payloads (LfGlobal / DequantMatrices /
+        // AC global / AC groups) are the next bite — this method
+        // emits the partial prelude then throws .notImplemented at
+        // the section boundary so callers see real progress vs the
+        // pre-v0.12.0v complete stub.
+        //
+        // The prelude alone is enough for JXLDecoder.inspect(_:)
+        // to extract dimensions + metadata, which is the
+        // scaffold's verification path today.
+        let prelude: Data
+        do {
+            prelude = try VarDCTBitstreamWriter.writeBridgePrelude(
+                state: state)
+        } catch let e as VarDCTBitstreamWriter.WriterError {
+            throw JXLBridgeEncoderError.notImplemented(
+                "bridge prelude: \(e)")
+        }
+        _ = prelude
         throw JXLBridgeEncoderError.notImplemented(
-            "bitstream-write step requires (1) local-tree "
-            + "modular sub-image encoder for the embedded RAW "
-            + "quant table, (2) VarDCTBitstreamWriter parallel "
-            + "path bypassing VarDCTEncoder.forward. See "
-            + "Documentation/PHASE-J-COEFFICIENT-BRIDGE.md "
-            + "section 4a (step 3.6 write).")
+            "TOC + section payloads (LfGlobal / DequantMatrices "
+            + "with RAW quant table / AC global / AC groups) — "
+            + "next bite. v0.12.0v ships the prelude scaffold "
+            + "(signature + SizeHeader + ImageMetadata + "
+            + "CustomTransformData + FrameHeader) verifiable via "
+            + "VarDCTBitstreamWriter.writeBridgePrelude(state:). "
+            + "See Documentation/PHASE-J-COEFFICIENT-BRIDGE.md "
+            + "section 4b.")
     }
 
     /// Run the five data-layer builders from v0.12.0i–n in
