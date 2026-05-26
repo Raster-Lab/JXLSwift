@@ -2994,7 +2994,33 @@ final class JPEGFoundationTests: XCTestCase {
         }
         let isDiagMode = ProcessInfo.processInfo
             .environment["JXLSWIFT_BRIDGE_DJXL_DIAG"] == "1"
-        let img = bridgeParamsFixture()  // 3-comp 8×8 zero blocks
+        // **Realistic quant values needed**. The bridge stores
+        // `dcQuant × 128` as F16 in `DequantMatricesDC.write`; for
+        // F16 to fit (max ~65504) the dcQuant must be ≤ ~511.75,
+        // which means JPEG qt[0] ≥ ceil(255×8 / 511.75) ≈ 4.
+        // qt[0] = 8 is a comfortable real-world choice (~quality-90
+        // luma DC factor). Other 63 zig-zag entries can be anything
+        // ≥ 1 — the all-zero-coefficient fixture means they never
+        // multiply anything.
+        var zigZag = [UInt16](repeating: 16, count: 64)
+        zigZag[0] = 8
+        let qt = JPEGQuantTable(
+            tableId: 0, precision: .bits8, zigZagValues: zigZag)
+        let img = JPEGCoefficientImage(
+            width: 8, height: 8, precision: 8,
+            frameKind: .baselineDCT,
+            frameComponents: (0..<3).map { i in
+                JPEGFrameComponent(
+                    componentId: i + 1,
+                    hSamplingFactor: 1, vSamplingFactor: 1,
+                    quantTableId: 0)
+            },
+            quantisedComponents: (0..<3).map { _ in
+                JPEGComponentBlocks(componentId: 1,
+                    blocksWide: 1, blocksHigh: 1,
+                    blocks: [JPEGCoefficientBlock()])
+            },
+            quantTables: [qt])
         let result = try JXLEncoder()
             .encodeFromJPEGCoefficients(img)
         let tmp = NSTemporaryDirectory()
