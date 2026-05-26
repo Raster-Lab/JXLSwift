@@ -426,29 +426,35 @@ public struct JXLEncoder: Sendable {
     /// transformation, no Gaborish / adaptive-QF pre-pass). Output
     /// JXL decodes to pixels matching the source JPEG exactly.
     ///
-    /// **Status today (v0.12.0g):** the API surface is in place
-    /// so callers can wire against it; the implementation throws
-    /// `EncoderError.notImplemented`. The coefficient-bridge core
-    /// (writing a JXL frame whose VarDCT decoder produces the
-    /// source JPEG's pixels) is the in-progress Phase J capstone —
-    /// see `Documentation/PHASE-J-COEFFICIENT-BRIDGE.md` for the
-    /// step plan. Today, use the pixel-fallback path:
-    /// `JXLEncoder().encode(JPEGDecoder.decode(jpegBytes))` (or
-    /// equivalently `jxl encode -i foo.jpg` / `jxl transcode
-    /// foo.jpg foo.jxl`).
+    /// **Status (v0.12.0ee).** Wired to the JXL bridge encoder.
+    /// Delegates to `JXLBridgeEncoder.prepareFromJPEG(_:)` to build
+    /// the intermediate state, then `JXLBridgeEncoder.write(state:)`
+    /// to emit the codestream. Bridge errors surface as
+    /// `EncoderError.unsupportedFrame` (input the bridge cannot
+    /// accept) or `EncoderError.notImplemented` (a downstream step
+    /// not yet covered).
     ///
-    /// Once the bridge ships, this method's output will be smaller
-    /// than the pixel-fallback path (typically ~0.75 × the source
-    /// JPEG bytes at equivalent visual quality) and bit-exact
-    /// reverse-transcodable to the source JPEG via a future
-    /// `JXLDecoder.decodeToJPEG(_:)` reverse direction (gated on
-    /// a pure-Swift Brotli decompressor for the `jbrd` box).
+    /// The bridge today supports 1- or 3-component, 4:4:4-sampled,
+    /// 8-bit, baseline-DCT JPEG coefficient images. Forward bridge
+    /// only — the reverse (`JXLDecoder.decodeToJPEG(_:)`) lands
+    /// later, gated on a pure-Swift Brotli decompressor for the
+    /// `jbrd` box that carries JPEG-side metadata.
+    ///
+    /// `originalSize` in the returned `CompressionStats` reports
+    /// the JPEG-coefficient surface area in bytes (3 × 64 × blocks
+    /// at 16 bpc), not a source-JPEG byte count — there's no
+    /// source bytestream available at this entry point. Callers
+    /// who need a true compression-ratio against the originating
+    /// JPEG bytes should compute it externally from their own
+    /// source size and the returned `data.count`.
     public func encodeFromJPEGCoefficients(
         _ jpeg: JPEGCoefficientImage
     ) throws -> EncodedImage {
-        // Defensive validation while the implementation is stubbed:
-        // throw early on input shapes the eventual bridge wouldn't
-        // accept either, so callers get useful errors today.
+        // Validate the input shape against the bridge's contract.
+        // These three checks duplicate `prepareFromJPEG`'s
+        // pre-validation so callers get an `EncoderError` (the
+        // expected error family on this entry point) instead of
+        // a `JPEGToJXLAdapterError`.
         guard jpeg.precision == 8 else {
             throw EncoderError.unsupportedFrame(
                 "JPEG coefficient bridge: only 8-bit precision "
@@ -465,15 +471,35 @@ public struct JXLEncoder: Sendable {
                 "JPEG coefficient bridge: only 1- or 3-component "
                 + "frames supported (got \(nComponents))")
         }
-        // Future bridge implementation goes here. See
-        // Documentation/PHASE-J-COEFFICIENT-BRIDGE.md step 3.
-        throw EncoderError.notImplemented(
-            "JPEG coefficient bridge: not yet implemented (Phase J "
-            + "capstone, in-progress — see "
-            + "Documentation/PHASE-J-COEFFICIENT-BRIDGE.md). "
-            + "Use the pixel-fallback path "
-            + "`encode(JPEGDecoder.decode(jpegBytes))` today."
-        )
+        let start = Date()
+        let state: JXLBridgeEncoderState
+        do { state = try JXLBridgeEncoder.prepareFromJPEG(jpeg) }
+        catch let e as JPEGToJXLAdapterError {
+            throw EncoderError.unsupportedFrame(
+                "JPEG coefficient bridge prepareFromJPEG: \(e)")
+        }
+        let bytes: Data
+        do { bytes = try JXLBridgeEncoder.write(state: state) }
+        catch let e as JXLBridgeEncoderError {
+            // The bridge writer surfaces unimplemented downstream
+            // steps as `.notImplemented`; preserve that channel.
+            switch e {
+            case .notImplemented(let m):
+                throw EncoderError.notImplemented(
+                    "JPEG coefficient bridge write: \(m)")
+            }
+        }
+        // Approximate original-coefficient surface area: per the
+        // bridge contract, 3 channels × blocks × 64 × 2 bytes
+        // (16-bit signed coefficients). Grayscale uses 1 channel.
+        let blockCount = state.planes.blocksX * state.planes.blocksY
+        let chBytes = nComponents * blockCount * 64 * 2
+        return EncodedImage(
+            data: bytes,
+            stats: CompressionStats(
+                originalSize: chBytes,
+                compressedSize: bytes.count,
+                encodingTime: Date().timeIntervalSince(start)))
     }
 }
 
