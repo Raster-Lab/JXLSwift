@@ -887,6 +887,66 @@ public enum VarDCTBitstreamWriter {
     ///   - `xQmScale / bQmScale` only emitted with XYB, so the
     ///     defaults are fine here (the writer skips them
     ///     correctly when `colorTransform != .xyb`)
+    /// Write the bridge frame's LfGlobal section body. Composes:
+    ///
+    ///   1. `DequantMatricesDC` — custom per-channel scales from
+    ///      `state.rawQuantPayload.dcQuantization` (v0.12.0x).
+    ///   2. `QuantizerParams` — placeholder `(globalScale=1,
+    ///      quantDC=16)` matching libjxl's "InvGlobalScale = 1"
+    ///      setup for transcoded frames (libjxl `enc_frame.cc:804`).
+    ///   3. `BlockCtxMap` all_default (1 bit).
+    ///   4. `ColorCorrelation` DC default (1 bit).
+    ///   5. `has_tree = true` + `writeModularTreeSection` — default
+    ///      single-leaf Gradient tree + minimal post-tree codebook.
+    ///   6. No gi modular sub-image (bridge doesn't support alpha
+    ///      yet; matches `JPEGDecoder.decode`'s envelope).
+    ///
+    /// **Status (v0.12.0y).** Structurally complete LfGlobal body.
+    /// The bridge's DC/AC group + HfGlobal section writers are
+    /// the next step; this section alone isn't yet a complete
+    /// JXL frame (would need the rest of the sections + TOC).
+    /// Verifiable today by feeding the prelude (v0.12.0v) + this
+    /// LfGlobal payload as a partial section into `JXLDecoder.inspect`
+    /// (still only reads up to ImageMetadata).
+    static func writeBridgeLfGlobal(
+        state: JXLBridgeEncoderState,
+        to w: inout BitWriter
+    ) throws {
+        // 1. DequantMatricesDC — custom values per JXL channel.
+        let dc = DequantMatricesDC(
+            jpegBridgeScales: state.rawQuantPayload.dcQuantization)
+        dc.write(to: &w)
+        // 2. QuantizerParams — bridge defaults.
+        try QuantizerParams(
+            globalScale: 1, quantDC: 16).write(to: &w)
+        // 3. BlockCtxMap all_default.
+        w.writeBit(true)
+        // 4. ColorCorrelation DC all_default.
+        w.writeBit(true)
+        // 5. has_tree = true + tree section + post-tree codebook.
+        w.writeBit(true)
+        // Minimal post-tree codebook: single-context 1-symbol
+        // alphabet. Suitable when no gi modular data follows
+        // (the bridge case). Subsequent sections will reuse this
+        // codebook for their token streams; with a 1-symbol
+        // alphabet emitted as a 0-bit prefix code, the codebook
+        // size is small and any token written is 0 bits.
+        let leafLengths: [UInt8] = [0]
+        let leafTable = try PrefixCodeTable(lengths: leafLengths)
+        let postCodebook = MultiClusterCodebook(
+            huffmanTables: [leafTable], ansCounts: [],
+            alphabetSizes: [1])
+        let postHeader = EntropySectionHeader(
+            lz77: .disabled,
+            contextMap: ContextMap.trivial(numContexts: 1),
+            usePrefixCode: true, logAlphaSize: 15,
+            uintConfigs: [HybridUintConfig.defaultConfig])
+        try writeModularTreeSection(
+            to: &w, postHeader: postHeader,
+            postCodebook: postCodebook)
+        // 6. No gi modular sub-image (bridge frames have no alpha).
+    }
+
     static func writeBridgePrelude(
         state: JXLBridgeEncoderState
     ) throws -> Data {

@@ -11,6 +11,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0y — Phase J: bridge LfGlobal section writer (step 3.6 sections, first piece)
+
+Composes the LfGlobal section body for a bridge frame using all the pieces shipped through v0.12.0x. First of the four section writers (LfGlobal / DC group / HfGlobal / AC group) the bridge needs.
+
+- **`Sources/JXLSwift/Codec/VarDCTBitstreamWriter.swift`** — new `writeBridgeLfGlobal(state:to:)`:
+  1. `DequantMatricesDC` custom (via v0.12.0x's `init(jpegBridgeScales:)` + `write(to:)`)
+  2. `QuantizerParams(globalScale: 1, quantDC: 16)` — matches libjxl's `InvGlobalScale = 1` setup for transcoded frames (`enc_frame.cc:804`)
+  3. `BlockCtxMap` all_default (1 bit)
+  4. `ColorCorrelation` DC default (1 bit)
+  5. `has_tree = 1` bit + `writeModularTreeSection` (default 1-leaf Gradient tree + minimal 1-symbol-alphabet post-tree codebook)
+  6. No gi modular sub-image (bridge doesn't support alpha)
+- **2 new tests**:
+  - `testBridgeLfGlobal_StructureParsesBack` — emits the section body for a 3-component fixture, parses back: `DequantMatricesDC` (verifies non-default bridge values), `QuantizerParams` (globalScale=1, quantDC=16), BlockCtxMap-default bit, ColorCorrelation-default bit, has_tree bit — all expected.
+  - `testBridgeLfGlobal_GrayscaleStructureParses` — grayscale fixture also parses through `DequantMatricesDC.read` + `QuantizerParams.read` cleanly.
+- **560 tests passing, 6 skipped, 0 failures** (was 558; +2).
+- **Plan progress.** Section writers for the bridge: LfGlobal ✅ (this) · DC group ⏳ · HfGlobal ⏳ · AC group ⏳. The remaining three sections + TOC envelope finish step 3.6 write. With QuantizerParams + DequantMatricesDC + DequantMatrices AC envelope + LfGlobal all shipped, the next bite assembles DC group (per-block DC tokens from `state.planes.dcPerChannel`).
+
 ### v0.12.0x — `DequantMatricesDC.write(to:)` + bridge constructor
 
 Adds the encoder counterpart for `DequantMatricesDC` (until now read-only) — the per-channel DC quant scales the JPEG bridge's LfGlobal section needs. Direct port of libjxl `enc_quant_weights.cc::DequantMatricesEncodeDC`. The DC matrices control the DC-coefficient dequantisation scale; for JPEG transcode we set them to `255 × 8 / qt[0]` per JXL channel (libjxl `enc_frame.cc::DequantMatricesSetCustomDC` at line 784).

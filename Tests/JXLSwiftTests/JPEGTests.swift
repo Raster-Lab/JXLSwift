@@ -3389,6 +3389,73 @@ final class JPEGFoundationTests: XCTestCase {
                        accuracy: 0.1)
     }
 
+    // MARK: - writeBridgeLfGlobal (v0.12.0y)
+
+    /// Structural pin-down: bridge LfGlobal section body emits
+    /// the expected bit layout and the first few fields parse
+    /// back through the existing readers.
+    func testBridgeLfGlobal_StructureParsesBack() throws {
+        let img = bridgeParamsFixture()
+        let state = try JXLBridgeEncoder.prepareFromJPEG(
+            img, colorTransform: .ycbcr)
+        var w = BitWriter()
+        try VarDCTBitstreamWriter.writeBridgeLfGlobal(
+            state: state, to: &w)
+        let bytes = w.finishToData()
+        XCTAssertGreaterThan(bytes.count, 0)
+        // Parse: DequantMatricesDC + QuantizerParams +
+        // BlockCtxMap-default-bit + ColorCorrelation-DC-default-bit
+        // + has_tree-bit. Tree section + codebook parsing is
+        // covered by the existing decode pipeline; we don't
+        // re-validate it here.
+        var r = BitReader(bytes)
+        let dc = try DequantMatricesDC.read(from: &r)
+        // Bridge uses non-default values (3 F16 scales).
+        XCTAssertNotEqual(dc.dcQuant.0, 1.0 / 128.0)
+        let qp = try QuantizerParams.read(from: &r)
+        XCTAssertEqual(qp.globalScale, 1)
+        XCTAssertEqual(qp.quantDC, 16)
+        let blockCtxDefault = try r.readBit()
+        XCTAssertTrue(blockCtxDefault,
+            "bridge emits BlockCtxMap all_default")
+        let colorCorrDefault = try r.readBit()
+        XCTAssertTrue(colorCorrDefault,
+            "bridge emits ColorCorrelation DC default")
+        let hasTree = try r.readBit()
+        XCTAssertTrue(hasTree,
+            "bridge emits has_tree = true")
+    }
+
+    /// Grayscale fixture also produces a parseable LfGlobal.
+    /// Grayscale + bridge: all-default-style DC matrices may
+    /// fire (if all three slots resolve to 1/128). Not asserting
+    /// specific values, just that the bits round-trip.
+    func testBridgeLfGlobal_GrayscaleStructureParses() throws {
+        var zz = [UInt16](repeating: 1, count: 64)
+        zz[0] = 8
+        let qt = JPEGQuantTable(
+            tableId: 0, precision: .bits8, zigZagValues: zz)
+        let img = JPEGCoefficientImage(
+            width: 8, height: 8, precision: 8,
+            frameKind: .baselineDCT,
+            frameComponents: [JPEGFrameComponent(
+                componentId: 1, hSamplingFactor: 1,
+                vSamplingFactor: 1, quantTableId: 0)],
+            quantisedComponents: [JPEGComponentBlocks(
+                componentId: 1, blocksWide: 1, blocksHigh: 1,
+                blocks: [JPEGCoefficientBlock()])],
+            quantTables: [qt])
+        let state = try JXLBridgeEncoder.prepareFromJPEG(
+            img, colorTransform: .ycbcr)
+        var w = BitWriter()
+        try VarDCTBitstreamWriter.writeBridgeLfGlobal(
+            state: state, to: &w)
+        var r = BitReader(w.finishToData())
+        _ = try DequantMatricesDC.read(from: &r)
+        let qp = try QuantizerParams.read(from: &r)
+        XCTAssertEqual(qp.globalScale, 1)
+    }
+
     // MARK: - byte-stuffing + RST skip stress
 
     func testJPEGSegmentReader_HandlesByteStuffing() throws {
