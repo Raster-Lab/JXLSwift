@@ -158,21 +158,18 @@ Parser is a deserialiser over a Brotli-decompressed byte stream. ~1 session once
 | 3.7 — wire-up | swap `encodeFromJPEGCoefficients(_:)` stub to call `prepareFromJPEG + write` | ✅ v0.12.0ee |
 | 3.7 — envelope byte-perfect | FrameHeader + TOC byte-identical to `cjxl --lossless_jpeg=1` | ✅ v0.12.0ff (FrameHeader↔TOC contiguity fix + `kSkipAdaptiveLFSmoothing` flag) |
 | 3.7 — section-content bugs found | (a) DC channel wire order [Y, X, B], (b) ACMetadata per-channel dimensions, (c) F16 overflow with `qt[0] < 4` (documented; test fixture updated) | ✅ v0.12.0fh + fi |
-| 3.7 — djxl byte-exact pixel round-trip | `djxl` decodes the bridge bytes to pixels matching `JPEGDecoder.decode(jpgBytes)` | ⏳ djxl still rejects after the above fixes — section content has more divergences. `testJXLEncoder_FromJPEGCoefficients_DjxlAccepts` is XCTSkip-with-diagnostic; set `JXLSWIFT_BRIDGE_DJXL_DIAG=1` to flip to hard fail for debugging. `testDiagnostic_CompareBridgeToCjxlReference` is the side-by-side harness. |
+| 3.7 — single-section bit-stream continuity | libjxl `is_small_image` short-circuit (`num_groups==1 && num_passes==1`) writes LfGlobal + DC + HfGlobal + AC into ONE shared `BitWriter` with no byte-alignment between sub-sections. Our writer was using four separate BitWriters byte-aligned at each boundary. | ✅ v0.12.0fk |
+| 3.7 — djxl decodes the bridge output | `djxl` accepts bridge bytes and produces correct pixels (all-mid-gray 0x80 for the all-zero-coefficient fixture) | ✅ v0.12.0fk — `testJXLEncoder_FromJPEGCoefficients_DjxlAccepts` hard-passes |
+| 3.7 — real-content fixture + JPEGDecoder pixel parity | non-zero DC + AC fixture → `djxl(bridgeBytes)` pixels match `JPEGDecoder.decode(jpgBytes)` pixels | ⏳ next bite — wires the same flow with a non-trivial JPEG and asserts pixel byte-equivalence |
 | 4   | Lift the 4:4:4-only restriction in the adapter (4:2:0 / 4:2:2 chroma subsampling support) | ⏳ |
 | 5   | Pure-Swift Brotli decoder (unblocks `jbrd` + compressed ICC) | ⏳ |
 | 6   | `jbrd` box parser | ⏳ |
 | 7   | Reverse bridge implementation | ⏳ |
 | 8   | `jxl transcode --mode reverse` wiring + tests | ⏳ |
 
-**Next concrete bite when picking this back up:** the residual djxl-rejection investigation. The bridge codestream envelope is byte-perfect against libjxl, and three section-content bugs have been found and fixed (DC channel wire order, ACMetadata per-channel dimensions, the F16 overflow constraint on the test fixture). djxl still rejects the all-zero fixture after these — at least one more diverging field in the section content. Suggested approach:
+**Next concrete bite when picking this back up:** real-content fixture + `JPEGDecoder` pixel parity. The forward bridge works end-to-end for the all-zero-coefficient fixture (djxl decodes to correct mid-gray pixels). The next bite ships a richer fixture — a real `sips`-produced JPEG, decoded to coefficients via `JPEGDecoder.decodeToCoefficients`, then run through `JXLEncoder().encodeFromJPEGCoefficients` and `djxl`. The integration test asserts `djxl(bridgeBytes)` pixels equal `JPEGDecoder.decode(jpgBytes)` pixels byte-for-byte. If they don't, the diff localises any remaining numerical bugs (e.g. CFL slopes, DequantMatrices RAW math, off-by-one in non-zero DC residuals).
 
-1. Build libjxl 0.11.2 with `JXL_BYTEPOS_TRACE` instrumentation (≈10 min + cmake build) in `BitReader::Consume`, `DecodeAcMetadata`, `DecodeVarDCTDC`.
-2. Run the instrumented libjxl on our `/tmp/jxlswift-bridge-debug.jxl` (generate via `JXLSWIFT_BRIDGE_DJXL_DIAG=1 swift test --filter testJXLEncoder_FromJPEGCoefficients_DjxlAccepts`) and capture the bit-position trace.
-3. Compare against our writer's bit positions (instrument `writeBridgeDCGroup` / `writeBridgeHfGlobal` / `writeBridgeACGroup` with `BitWriter.bitCount` prints).
-4. The first diverging position points at the next bug.
-
-Candidate areas to check first: (a) whether the modular DC sub-image needs hshift/vshift handled even for 4:4:4, (b) whether `DecodeGroup(ModularDC)` (called between `DecodeVarDCTDC` and `DecodeAcMetadata`) reads any bits when `full_image.channel` is empty — line 313 of `dec_modular.cc` early-returns but we should verify, (c) whether `num_histograms` formula matches our writer, (d) whether the DequantMatrices envelope for slot 0 RAW emits any field we're missing.
+The diagnostic harness from v0.12.0ff onward (`testDiagnostic_CompareBridgeToCjxlReference`, `testDiagnostic_DecodeOurBridgeBytes`) stays in place for any future regression hunt — they're skipped unless `/tmp/jxlswift-bridge-debug.jxl` and `/tmp/cjxl-reference.codestream` exist, so they don't add to CI noise.
 
 ## 4b. Step 3.6 write — three blocking dependencies (added v0.12.0q)
 

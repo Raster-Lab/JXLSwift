@@ -2974,19 +2974,15 @@ final class JPEGFoundationTests: XCTestCase {
         }
     }
 
-    /// Round-trip via libjxl's `djxl`. Skipped if djxl isn't on the
-    /// standard Homebrew path. **Currently throws `XCTSkip` even
-    /// when djxl is present**: the v0.12.0ee wire-up produces bytes
-    /// that pass our own `JXLDecoder.inspect` (signature + header)
-    /// but `DecompressJxlToPackedPixelFile` rejects the frame body
-    /// — a section-content mismatch with libjxl somewhere in
-    /// LfGlobal / DC group / HfGlobal / AC group is the next debug
-    /// bite. Kept as a skip-with-diagnostic so the asserter stays
-    /// armed for when the bug is found.
+    /// Round-trip via libjxl's `djxl`. **As of v0.12.0fk** this test
+    /// asserts success: djxl decodes the bridge output to an 8×8
+    /// PPM with all-mid-gray (0x80) pixels, matching what an all-
+    /// zero-coefficient JPEG should produce. Closes the rejection
+    /// that existed v0.12.0ee–v0.12.0fi.
     ///
-    /// Diagnostic mode (set `JXLSWIFT_BRIDGE_DJXL_DIAG=1`) flips
-    /// the skip to a hard fail so a developer can iterate on it
-    /// without having to remember to comment-out the skip.
+    /// Skipped only if `djxl` is not installed at the standard
+    /// Homebrew path. `JXLSWIFT_BRIDGE_DJXL_DIAG=1` enables extra
+    /// diagnostic output (still passes when djxl succeeds).
     func testJXLEncoder_FromJPEGCoefficients_DjxlAccepts() throws {
         let djxl = "/opt/homebrew/bin/djxl"
         guard FileManager.default.isExecutableFile(atPath: djxl) else {
@@ -3048,24 +3044,48 @@ final class JPEGFoundationTests: XCTestCase {
         if p.terminationStatus != 0 {
             let errOut = String(data: errPipe.fileHandleForReading
                 .readDataToEndOfFile(), encoding: .utf8) ?? ""
-            if isDiagMode {
-                XCTFail("[diag] djxl rejected bridge bytes "
-                    + "(status \(p.terminationStatus)): \(errOut)")
-                return
-            }
-            throw XCTSkip("djxl rejects v0.12.0ee bridge frame body "
-                + "(status \(p.terminationStatus)): "
-                + errOut.trimmingCharacters(in: .whitespacesAndNewlines)
-                + ". Set JXLSWIFT_BRIDGE_DJXL_DIAG=1 to fail hard "
-                + "for debugging.")
+            XCTFail("djxl rejected bridge bytes "
+                + "(status \(p.terminationStatus)): \(errOut)")
+            return
         }
         let pnm = try Data(contentsOf: URL(fileURLWithPath: pnmPath))
-        XCTAssertGreaterThan(pnm.count, 0)
-        let header = String(data: pnm.prefix(32),
-            encoding: .utf8) ?? ""
+        if isDiagMode {
+            let msg = "[diag] pnm.count=\(pnm.count) jxlPath=\(jxlPath) "
+                + "pnmPath=\(pnmPath)\n"
+            FileHandle.standardError.write(Data(msg.utf8))
+        }
+        XCTAssertGreaterThan(pnm.count, 0,
+            "pnm output should not be empty (djxl exit=0 implies success)")
+        // PPM header: "P6\n<w> <h>\n<maxval>\n<binary pixel data>".
+        // The binary pixel data starts with byte 0x80 for our mid-gray
+        // fixture, which is an invalid UTF-8 start byte; decoding the
+        // raw prefix as UTF-8 produces nil. Extract just the ASCII
+        // header (bytes before the first newline-terminated 4th line).
+        var headerEnd = 0
+        var newlines = 0
+        for (i, b) in pnm.enumerated() {
+            if b == 0x0A {
+                newlines += 1
+                if newlines == 3 {  // P6\n / "w h"\n / "maxval"\n
+                    headerEnd = i
+                    break
+                }
+            }
+        }
+        let header = String(
+            data: pnm.prefix(headerEnd),
+            encoding: .ascii) ?? ""
         XCTAssertTrue(header.contains("8 8"),
             "djxl PNM header should report 8×8 dimensions, got: "
             + header)
+        // Sanity: with an all-zero coefficient JPEG, every pixel
+        // should be mid-gray (0x80 = 128).
+        if headerEnd + 1 < pnm.count {
+            let firstPixel = pnm[headerEnd + 1]
+            XCTAssertEqual(firstPixel, 0x80,
+                "all-zero JPEG → all-mid-gray pixels; first byte was "
+                + String(format: "0x%02X", firstPixel))
+        }
     }
 
     // MARK: - ModularSubImage round-trips (v0.12.0r — bridge dep 1)
@@ -4149,6 +4169,30 @@ final class JPEGFoundationTests: XCTestCase {
 }
 
 extension JPEGFoundationTests {
+    /// Try to decode our own bridge bytes through JXLDecoder.decode
+    /// and surface where parsing fails. Useful for narrowing the
+    /// section-content divergence — `decodeVarDCTPartial` walks
+    /// the section bitstream layer-by-layer and throws a structured
+    /// `notImplemented` naming the first unparseable field, so the
+    /// throw message points at the divergence.
+    func testDiagnostic_DecodeOurBridgeBytes() throws {
+        let oursPath = "/tmp/jxlswift-bridge-debug.jxl"
+        guard FileManager.default.fileExists(atPath: oursPath) else {
+            throw XCTSkip("diagnostic file not present "
+                + "(generate via JXLSWIFT_BRIDGE_DJXL_DIAG=1 "
+                + "swift test --filter "
+                + "testJXLEncoder_FromJPEGCoefficients_DjxlAccepts)")
+        }
+        let ours = try Data(contentsOf: URL(fileURLWithPath: oursPath))
+        do {
+            let frame = try JXLDecoder().decode(ours)
+            print("[DIAG] decode succeeded: \(frame.width)×"
+                + "\(frame.height)×\(frame.channels)")
+        } catch {
+            print("[DIAG] decode failed: \(error)")
+        }
+    }
+
     /// One-off diagnostic that compares our bridge output's metadata
     /// envelope to a reference cjxl JPEG-bridge codestream. Skipped
     /// unless both reference files exist on /tmp (developer task).

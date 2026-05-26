@@ -11,6 +11,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0fk — 🎉 Phase J forward bridge: `djxl` accepts bridge output (step 3.7 CLOSED)
+
+**The JPEG → JXL coefficient bridge forward direction works end-to-end.** `JXLEncoder().encodeFromJPEGCoefficients(jpeg)` produces a JXL byte stream that libjxl's `djxl` decodes to correct pixels (all-mid-gray 0x80 for the all-zero-coefficient fixture, matching what an all-zero JPEG should produce). The `_DjxlAccepts` test no longer needs `XCTSkip`-with-diagnostic — it's a hard pass.
+
+**The single missing fix turned out to be a single-line one**: libjxl's `is_small_image` case (`num_groups == 1 && num_passes == 1` — exactly our 8×8 bridge case) writes ALL four sub-sections (LfGlobal + DC group + HfGlobal + AC group) into a **single shared `BitWriter`** with **no byte alignment between them**. Per `enc_frame.cc::ComputeEncodingData` lines 1264–1278: `is_small_image ? 0 : index` collapses every section to `group_codes[0]`. The bits flow continuously — `ZeroPadToByte()` fires only at the section END (line 1419), not between sub-sections.
+
+Our writer (v0.12.0cc) had used **four separate `BitWriter`s, byte-aligned at each boundary**. That shifted the DC group's `extra_precision` field by up to 7 bits relative to where the reader looked for it, cascading into garbage parses of every subsequent field. The fix in [`JXLBridgeEncoder.write(state:)`](../Sources/JXLSwift/JPEG/JXLBridgeEncoder.swift) is to write all four sub-section writers into a single `combined` `BitWriter`, byte-align only at the very end of the combined section. ~30 lines of diff for the closing-the-loop fix.
+
+How the bug was found:
+- Wired up `testDiagnostic_DecodeOurBridgeBytes` — runs `JXLDecoder().decode(_:)` on our bridge output and surfaces where parsing fails. Our own decoder threw `invalidRCTType(73)` on the DC group's `GroupHeader`, pin-pointing where the bit alignment broke.
+- Cross-referenced libjxl `enc_frame.cc::ComputeEncodingData` (lines 1260–1422) and found the `is_small_image` short-circuit that defines the single-section bit layout.
+
+Tests:
+- `_DjxlAccepts` (was `XCTSkip`) now hard-passes — djxl decodes, all 64 pixels = 0x80 mid-gray (verified inline with `XCTAssertEqual(firstPixel, 0x80, ...)`).
+- New `testDiagnostic_DecodeOurBridgeBytes` (skipped unless `/tmp/jxlswift-bridge-debug.jxl` present) re-runs our own decoder on the bridge output for any future regression hunt.
+- PNM header parser fixed to read the ASCII prefix up to the third newline (the binary pixel data starts with `0x80` which is invalid UTF-8 — old assertion read `pnm.prefix(32)` and got an empty `String?`).
+
+**574 tests passing, 6 skipped, 0 failures.** Skip count down 1 (the djxl test); test count up 1 (the new diagnostic). All on origin/main.
+
+**Phase J forward direction state**: step 3.7 forward closed for all-zero-coefficient bridge fixtures. Real-content fixtures (non-zero DC + AC) build on the same pipeline and should also djxl-decode; the next bite verifies that via a richer fixture + `JPEGDecoder.decode(jpgBytes)` pixel-comparison integration test.
+
 ### v0.12.0fi — Bridge test fixture uses realistic JPEG quant (qt[0]=8)
 
 `DequantMatricesDC` stores `dcQuant × 128` as F16 (max ~65504), capping the encodable `dcQuant` at ~511.75 and therefore the JPEG `qt[0]` at ≥ 4. The previous fixture used `zigZagValues: Array(repeating: 1, count: 64)` — `qt[0]=1` produced `dcQuant = 2040`, overflowing F16 and writing `+inf`. The djxl test fixture now uses `qt[0]=8` (typical real-world quality-90 luma DC factor); other 63 zig-zag entries set to 16 (benign for the all-zero-coefficient body). Bridge still has more section-content bugs that djxl trips on after this — but the fixture is no longer the limiting factor.

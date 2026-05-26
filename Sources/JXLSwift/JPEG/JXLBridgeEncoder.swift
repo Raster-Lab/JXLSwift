@@ -154,30 +154,37 @@ public enum JXLBridgeEncoder {
             throw JXLBridgeEncoderError.notImplemented(
                 "bridge codebook construction: \(error)")
         }
-        // Build each section into its own BitWriter so we can
-        // measure section sizes for the TOC.
-        var lf = BitWriter()
-        var dcg = BitWriter()
-        var hf = BitWriter()
-        var ag = BitWriter()
+        // **Single-section layout** — libjxl's `is_small_image` case
+        // (`num_groups == 1 && num_passes == 1`) writes all four
+        // sub-sections (LfGlobal, DC group, HfGlobal, AC group) into
+        // ONE shared `BitWriter` (per `enc_frame.cc::ComputeEncodingData`
+        // line 1265: `is_small_image ? 0 : index`). The sub-sections
+        // flow as **continuous bits**, no byte alignment between them
+        // — the reader expects bit N+1 of one sub-section to be the
+        // start of the next. Writing them as separate BitWriters
+        // byte-aligned at the boundary would shift the DC group's
+        // `extra_precision` field by up to 7 bits relative to where
+        // the reader looks for it, cascading into garbage parses of
+        // every subsequent field.
+        var combined = BitWriter()
         do {
             try VarDCTBitstreamWriter.writeBridgeLfGlobal(
                 state: state, postHeader: postHeader,
-                postCodebook: postCodebook, to: &lf)
+                postCodebook: postCodebook, to: &combined)
             try VarDCTBitstreamWriter.writeBridgeDCGroup(
                 state: state, postHeader: postHeader,
-                postCodebook: postCodebook, to: &dcg)
+                postCodebook: postCodebook, to: &combined)
             try VarDCTBitstreamWriter.writeBridgeHfGlobal(
                 state: state,
                 rawSlotOverrides: [0: state.rawQuantPayload],
                 acHeader: acHeader, acCodebook: acCodebook,
                 acContexts: acContexts,
-                numGroups: 1, to: &hf)
+                numGroups: 1, to: &combined)
             try VarDCTBitstreamWriter.writeBridgeACGroup(
                 state: state, groupIndex: 0,
                 bctx: bctx,
                 acHeader: acHeader, acCodebook: acCodebook,
-                to: &ag)
+                to: &combined)
         } catch let e as VarDCTBitstreamWriter.WriterError {
             throw JXLBridgeEncoderError.notImplemented(
                 "bridge section writer: \(e)")
@@ -185,19 +192,8 @@ public enum JXLBridgeEncoder {
             throw JXLBridgeEncoderError.notImplemented(
                 "bridge section writer: \(error)")
         }
-        // For a single-section frame layout (matches the
-        // pixel-pipeline encoder's numGroups == 1 path), the
-        // four sub-sections are concatenated into one section
-        // body. Single TOC entry of that combined size.
-        var combined = BitWriter()
-        lf.alignToByte()
-        combined.appendBytes(lf.finishToData())
-        dcg.alignToByte()
-        combined.appendBytes(dcg.finishToData())
-        hf.alignToByte()
-        combined.appendBytes(hf.finishToData())
-        ag.alignToByte()
-        combined.appendBytes(ag.finishToData())
+        // Byte-align at the END of the section (libjxl
+        // `enc_frame.cc:1419` `ZeroPadToByte() // end of group.`).
         combined.alignToByte()
         let sectionBytes = combined.finishToData()
         // FrameHeader + TOC into ONE BitWriter so the bitstream

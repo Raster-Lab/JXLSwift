@@ -92,10 +92,10 @@ See [ROADMAP.md](ROADMAP.md) for the spec-section status grid.
 
 ```bash
 swift build -c release
-swift test  -c release           # 573 tests — foundation, headers, entropy,
+swift test  -c release           # 574 tests — foundation, headers, entropy,
                                  # Modular + VarDCT decode/encode, JPEG decode,
-                                 # JPEG→JXL bridge (in-progress), byte-exact
-                                 # cjxl/djxl cross-validation
+                                 # JPEG → JXL coefficient-bridge forward,
+                                 # byte-exact cjxl/djxl cross-validation
 .build/release/jxl-tool --version
 .build/release/jxl-tool info path/to/file.jxl
 .build/release/jxl-tool encode -i in.ppm -o out.jxl       # lossy VarDCT
@@ -285,7 +285,7 @@ let lossless = try JXLEncoder(
 
 `encode(_:)` routes 8-bit RGB/RGBA through the VarDCT lossy codec for lossy modes (falling back to lossless Modular for inputs VarDCT cannot take); `.lossless` always uses Modular. Every codestream JXLSwift emits is decodable by `djxl 0.11.2`.
 
-**Not yet pixel-equivalent:** JPEG ↔ JXL coefficient-bridge transcoding (Phase J — `JXLEncoder.encodeFromJPEGCoefficients(_:)`). The wire-up is in place from v0.12.0ee and the codestream envelope is byte-perfect against `cjxl --lossless_jpeg=1` (v0.12.0ff), but `djxl` rejects the section content — at least one more diverging field. The diagnostic harness is built in (`JXLSWIFT_BRIDGE_DJXL_DIAG=1`) for the next debug session. The pixel-fallback transcode (`encode(JPEGDecoder.decode(jpegBytes))`) works end-to-end today. Also pending: four niche AC strategies (DCT128 / DCT256 / DCT32×8 / DCT8×32) the **decoder** doesn't yet reconstruct.
+**Forward bridge works** (v0.12.0fk): `JXLEncoder().encodeFromJPEGCoefficients(jpeg)` produces bytes that `djxl` decodes correctly (verified end-to-end against libjxl 0.11.2 on the all-zero-coefficient bridge fixture). The next bite expands the test corpus to real-content JPEG fixtures with `JPEGDecoder.decode(jpgBytes)` pixel-parity verification. The reverse direction (JXL → JPEG bit-exact) is gated on a pure-Swift Brotli decoder for the `jbrd` box. **Pending decoder features**: four niche AC strategies (DCT128 / DCT256 / DCT32×8 / DCT8×32) — the JXL decoder doesn't yet reconstruct frames using these.
 
 ## Why pure Swift
 
@@ -315,9 +315,9 @@ Sources/JXLSwift/Codec/       JXLEncoder / JXLDecoder (working codec),
                               VarDCTEncoder / VarDCTBitstreamWriter,
                               ImageFrame, EncodingOptions
 Sources/JXLTool/              jxl-tool CLI (info / encode / decode / …)
-Tests/JXLSwiftTests/          573 tests across foundation, headers, entropy,
+Tests/JXLSwiftTests/          574 tests across foundation, headers, entropy,
                               Modular + VarDCT decode/encode, JPEG decode,
-                              JPEG → JXL coefficient bridge (in progress)
+                              JPEG → JXL coefficient-bridge forward
 ```
 
 JXLSwift is **not DICOM-aware** — DICOM file format / metadata / transfer-syntax handling lives in DICOMkit, not here. JXLSwift accepts and emits raw pixel buffers (`ImageFrame`) at the bit depths medical imaging needs (8/10/12/16-bit, grayscale or RGB).
