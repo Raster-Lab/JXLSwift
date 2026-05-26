@@ -2916,6 +2916,8 @@ final class JPEGFoundationTests: XCTestCase {
     func testJXLEncoder_FromJPEGCoefficients_RealJPEG_DjxlAccepts() throws {
         let cjpeg = "/opt/homebrew/bin/cjpeg"
         let djxl = "/opt/homebrew/bin/djxl"
+        let isDiagMode = ProcessInfo.processInfo
+            .environment["JXLSWIFT_BRIDGE_DJXL_DIAG"] == "1"
         guard FileManager.default.isExecutableFile(atPath: cjpeg),
               FileManager.default.isExecutableFile(atPath: djxl) else {
             throw XCTSkip("cjpeg + djxl required for this test")
@@ -2962,6 +2964,12 @@ final class JPEGFoundationTests: XCTestCase {
             .encodeFromJPEGCoefficients(coeffs)
         XCTAssertGreaterThan(result.data.count, 0)
         try result.data.write(to: URL(fileURLWithPath: jxlPath))
+        if isDiagMode {
+            try? result.data.write(to: URL(
+                fileURLWithPath: "/tmp/bridge-real-debug.jxl"))
+            try? jpgData.write(to: URL(
+                fileURLWithPath: "/tmp/bridge-real-debug.jpg"))
+        }
         // 5. djxl the bridge output.
         let p2 = Process()
         p2.launchPath = djxl
@@ -3766,25 +3774,29 @@ final class JPEGFoundationTests: XCTestCase {
         //   JXL X-slot = Cb (chroma) → 255*8/11 = 185.45...
         //   JXL Y-slot = Y  (luma)   → 255*8/16 = 127.5
         //   JXL B-slot = Cr (chroma) → 255*8/11 = 185.45...
+        // **v0.12.0fo**: `DequantMatricesDC(jpegBridgeScales:)` now
+        // **inverts** the input (matching libjxl's `SetDCQuant`
+        // internal `dc_quant_[c] = 1 / dc[c]`). So our `dcQuant.c`
+        // is `qt[0] / (255*8)`, not the un-inverted scale.
         let dc = DequantMatricesDC(
             jpegBridgeScales: payload.dcQuantization)
-        XCTAssertEqual(dc.dcQuant.0, 255.0 * 8 / 11.0,
-                       accuracy: 1e-4)
-        XCTAssertEqual(dc.dcQuant.1, 255.0 * 8 / 16.0,
-                       accuracy: 1e-4)
-        XCTAssertEqual(dc.dcQuant.2, 255.0 * 8 / 11.0,
-                       accuracy: 1e-4)
+        XCTAssertEqual(dc.dcQuant.0, 11.0 / (255.0 * 8),
+                       accuracy: 1e-6)
+        XCTAssertEqual(dc.dcQuant.1, 16.0 / (255.0 * 8),
+                       accuracy: 1e-6)
+        XCTAssertEqual(dc.dcQuant.2, 11.0 / (255.0 * 8),
+                       accuracy: 1e-6)
         // Round-trip via the new write method.
         var w = BitWriter()
         dc.write(to: &w)
         var r = BitReader(w.finishToData())
         let decoded = try DequantMatricesDC.read(from: &r)
         XCTAssertEqual(decoded.dcQuant.0, dc.dcQuant.0,
-                       accuracy: 0.1)  // F16 lossy at large values
+                       accuracy: 1e-4)  // F16 precision at small values
         XCTAssertEqual(decoded.dcQuant.1, dc.dcQuant.1,
-                       accuracy: 0.1)
+                       accuracy: 1e-4)
         XCTAssertEqual(decoded.dcQuant.2, dc.dcQuant.2,
-                       accuracy: 0.1)
+                       accuracy: 1e-4)
     }
 
     // MARK: - histogram-derived bridge codebooks (v0.12.0dd)

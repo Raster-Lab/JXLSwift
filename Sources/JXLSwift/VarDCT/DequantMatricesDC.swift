@@ -37,16 +37,33 @@ public struct DequantMatricesDC: Sendable {
     /// inverse of the JPEG DC quant factor in the same
     /// `(255 × 8)` scale the existing decoder formula expects.
     ///
-    /// **Status (v0.12.0x).** Foundation helper for the in-
-    /// progress bridge LfGlobal writer; today's `write(to:)`
-    /// emits the values as F16-encoded scales.
+    /// **Status (v0.12.0x → v0.12.0fo).** Foundation helper for
+    /// the bridge LfGlobal writer.
+    ///
+    /// **v0.12.0fo fix**: libjxl `quant_weights.h::SetDCQuant`
+    /// **inverts** the input `dcquantization` value before storing
+    /// in `dc_quant_[c]`:
+    ///
+    /// ```cpp
+    /// dc_quant_[c] = 1.0f / dc[c];        // dc[c] = 255 * 8 / qt[0]
+    /// inv_dc_quant_[c] = dc[c];
+    /// ```
+    ///
+    /// The `DequantMatricesDC` struct's `dcQuant.c` field models
+    /// libjxl's internal `dc_quant_[c]` (the field that gets
+    /// F16-encoded as `dc_quant_[c] * 128`). So `jpegBridgeScales:`
+    /// applies the same inversion: stores `1 / dcQuantization[c]`,
+    /// not the value as-is. Without the inversion the F16 storage
+    /// is ~58 000× too large for typical `qt[0]` values, sending
+    /// the DC dequant cascade into saturation (every decoded
+    /// pixel becomes 0xFF saturated white for any non-zero DC).
     public init(jpegBridgeScales dcQuantization: [Float]) {
         precondition(dcQuantization.count == 3,
             "DequantMatricesDC(jpegBridgeScales:): need 3 entries")
         self.dcQuant = (
-            dcQuantization[0],
-            dcQuantization[1],
-            dcQuantization[2])
+            1.0 / dcQuantization[0],
+            1.0 / dcQuantization[1],
+            1.0 / dcQuantization[2])
     }
 
     public static func read(from r: inout BitReader) throws -> DequantMatricesDC {
