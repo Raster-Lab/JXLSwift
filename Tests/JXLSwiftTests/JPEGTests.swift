@@ -86,14 +86,14 @@ final class JPEGFoundationTests: XCTestCase {
         d.append(contentsOf: [0x00, 0x01, 0x00, 0x01]) // Xdensity, Ydensity
         d.append(contentsOf: [0x00, 0x00])  // thumbnail w, h
         // DQT length 67 (=2+65), table 0, all-zero 64-byte 8-bit quant
-        var dqtLen = 67
+        let dqtLen = 67
         d.append(contentsOf: [0xFF, 0xDB,
                               UInt8(dqtLen >> 8),
                               UInt8(dqtLen & 0xFF)])
         d.append(0x00)  // 8-bit precision, table id 0
         d.append(Data(repeating: 1, count: 64))
         // DHT length 20 (=2+18): 1 class+id + 16 BITS + 1 symbol.
-        var dhtLen = 20
+        let dhtLen = 20
         d.append(contentsOf: [0xFF, 0xC4,
                               UInt8(dhtLen >> 8),
                               UInt8(dhtLen & 0xFF)])

@@ -1801,7 +1801,7 @@ final class FoundationTests: XCTestCase {
             // Build a complex prefix code containing only this cll
             // value at one specific position. Round-trip via the
             // public encode/decode entry points.
-            var lengths = [UInt8](repeating: 0, count: 18)
+            let lengths = [UInt8](repeating: 0, count: 18)
             // Symbol 2 is at order[1]; that's where our encoder will
             // place lengths[2]'s cll. We construct an alphabet whose
             // canonical Huffman has lengths[2] = cllValue, others 0.
@@ -2851,7 +2851,7 @@ final class FoundationTests: XCTestCase {
         let freqs = try ANSDistributionFormat.normaliseToTabSize([80, 20])
         // Pad the alphabet to 4 symbols so we have headroom.
         let alphabetSize = 4
-        var fullFreqs = freqs + [UInt32](repeating: 0, count: alphabetSize - freqs.count)
+        let fullFreqs = freqs + [UInt32](repeating: 0, count: alphabetSize - freqs.count)
         // Re-normalise: padding mustn't change sum (we appended zeros).
         XCTAssertEqual(fullFreqs.reduce(UInt32(0), &+), ANSConstants.tabSize)
 
@@ -11502,7 +11502,7 @@ extension FoundationTests {
         XCTAssertEqual(p.terminationStatus, 0, "cjxl failed to produce fixture")
         let bytes = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
         // Sanity: the fixture is recognised as a VarDCT frame.
-        let inspection = try JXLDecoder().inspectFrameStructure(bytes)
+        let inspection = JXLDecoder().inspectFrameStructure(bytes)
         XCTAssertEqual(inspection.encoding, FrameEncoding.varDCT,
             "cjxl -d 1 should produce a VarDCT frame")
         // **v0.5.0**: the cjxl-d=1 8×8 fixture now decodes

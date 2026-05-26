@@ -299,11 +299,9 @@ public struct JXLEncoder: Sendable {
                 // 16-bit: unpack pairs of bytes per channel.
                 let totalCh = colorChans + (hasAlpha ? 1 : 0)
                 for c in 0..<totalCh {
-                    var arr = unpackUInt16(
+                    let arr = unpackUInt16(
                         from: f, channelCount: totalCh, channel: c)
                     chans.append(arr.map { Int32($0) })
-                    _ = arr // silence unused warning if compiler
-                            // optimises the cast away
                 }
             }
             framesChannels.append(chans)
