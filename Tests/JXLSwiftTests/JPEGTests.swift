@@ -4579,6 +4579,22 @@ final class JPEGFoundationTests: XCTestCase {
 }
 
 extension JPEGFoundationTests {
+    /// Dump our 4:2:0 bridge bytes for the saved test fixture. Skipped
+    /// unless `/tmp/test-fixture-420.jpg` exists (developer task).
+    func testDiagnostic_Dump420BridgeBytes() throws {
+        let jpgPath = "/tmp/test-fixture-420.jpg"
+        guard FileManager.default.fileExists(atPath: jpgPath) else {
+            throw XCTSkip("4:2:0 diagnostic fixture not present")
+        }
+        let jpg = try Data(contentsOf: URL(fileURLWithPath: jpgPath))
+        let coef = try JPEGDecoder.decodeToCoefficients(jpg)
+        let result = try JXLEncoder()
+            .encodeFromJPEGCoefficients(coef)
+        try result.data.write(to: URL(
+            fileURLWithPath: "/tmp/our-bridge-420.jxl"))
+        print("wrote \(result.data.count) bytes to /tmp/our-bridge-420.jxl")
+    }
+
     /// Try to decode our own bridge bytes through JXLDecoder.decode
     /// and surface where parsing fails. Useful for narrowing the
     /// section-content divergence — `decodeVarDCTPartial` walks

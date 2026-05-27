@@ -11,6 +11,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0ft — Phase J step 4 (structural): bridge accepts 4:2:0 / 4:2:2 JPEGs
+
+**Lifts the 4:4:4-only restriction.** The adapter and bridge writers now handle any baseline-DCT JPEG with Y sampling factors in `{H1V1, H2V1, H1V2, H2V2}` and chroma at `H1V1`. The 4:4:4 path is unchanged (still pixel-equivalent at `max=2`); the 4:2:0 path produces structurally valid bytes that `djxl` decodes to pixels with `max=31, mean=18.5` byte-diff against the reference — decodable but not yet pixel-equivalent. The residual is the next bite.
+
+Data-layer changes:
+- `JXLCoefficientPlanes` gains a `blocksPerChannel: [(blocksX, blocksY)]` field. Backwards-compatible — the init defaults it to all-same when not supplied (the 4:4:4 path).
+- `JPEGCoefficientImage.toJXLCoefficientPlanes()` replaces the "uniform sampling factors" gate with per-component validation: accepts Y at the four standard sampling shapes, rejects asymmetric chroma. Per-component block dims propagate through.
+- `remappedForJXLBridge` and `applyJPEGBridgeDC` preserve per-channel block dims through the channel remap.
+- `buildJXLBridgeFrameHeaderParams` computes `chroma_subsampling` from the JPEG `(H, V)` sampling factors per libjxl `YCbCrChromaSubsampling::Set(hsample, vsample)`.
+
+Writer changes:
+- `writeBridgeDCGroup` and `buildBridgePostCodebook` iterate each channel at its own block grid.
+- New `generateBridgeACTokens` — bridge-specific AC token generator that walks the FULL Y-resolution grid and only emits chroma tokens at positions aligned with chroma's `HShift/VShift`, per libjxl `enc_entropy_coder.cc:196-198`. Replaces the pixel-pipeline's `generateACTokens` for the bridge path (the pixel pipeline assumes uniform block grids).
+
+Test rotation (the 4:4:4-rejection tests retargeted):
+- `…_RejectsNonUniformSampling` → `…_Accepts420Subsampling` (positive test) + `…_RejectsAsymmetricChromaSampling` (still rejects shapes outside standard 4).
+- `…_RealSIPSEmits420ChromaSubsampling`: asserts per-channel block dims of the parsed planes.
+- `…_PrepareFromJPEG_PropagatesSubsamplingError` → `…_PrepareFromJPEG_Accepts420Subsampling` (checks `chroma_subsampling` FrameHeader values for the 4:2:0 case).
+- `…_RejectsChromaSubsampledJPEG` → `…_Accepts420Subsampling` (sips default → bridge → bytes).
+- New `…_RealJPEG420_DjxlAccepts`: end-to-end 4:2:0 round-trip with per-channel pixel-diff breakdown. Loose pin-down (`max <= 64`) characterising current state.
+
+**577 tests passing, 6 skipped, 0 failures.**
+
 ### 🎉 v0.12.0fr — Bridge is pixel-equivalent: `base_correlation_b = 0` fix closes the loop
 
 **The JPEG → JXL forward bridge is now pixel-equivalent to `JPEGDecoder.decode`.** `djxl(bridge(jpgBytes))` produces pixels matching `JPEGDecoder.decode(jpgBytes)` byte-for-byte within ±2 JPEG-decode rounding tolerance — the same tolerance `cjxl --lossless_jpeg=1 + djxl` exhibits versus `djpeg`.
