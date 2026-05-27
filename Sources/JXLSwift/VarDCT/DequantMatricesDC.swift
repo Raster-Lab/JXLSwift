@@ -187,7 +187,8 @@ public enum DequantMatricesAC {
         from r: inout BitReader,
         globalTree: ModularTree? = nil,
         globalPostHeader: EntropySectionHeader? = nil,
-        globalPostCodebook: MultiClusterCodebook? = nil
+        globalPostCodebook: MultiClusterCodebook? = nil,
+        numDcGroups: Int = 0
     ) throws -> (allDefault: Bool, encodings: [QuantEncoding]) {
         let allDefault: Bool
         do { allDefault = try r.readBit() }
@@ -219,7 +220,9 @@ public enum DequantMatricesAC {
                     requiredSizeY: yBlocks * 8,
                     globalTree: globalTree,
                     globalPostHeader: globalPostHeader,
-                    globalPostCodebook: globalPostCodebook)
+                    globalPostCodebook: globalPostCodebook,
+                    slotIndex: i,
+                    numDcGroups: numDcGroups)
                 encodings.append(enc)
             } catch let e as QuantEncodingError {
                 throw DequantMatricesACError.perSlotRead(

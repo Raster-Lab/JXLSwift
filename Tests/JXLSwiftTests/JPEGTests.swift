@@ -6735,29 +6735,19 @@ final class JXLToJPEGAdapterTests: XCTestCase {
             "cjxl --lossless_jpeg=1 should accept the JPEG")
         let jxlData = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
 
-        // The key invariant: regardless of downstream success, the
-        // decoder must NOT throw a TokenStreamReader LZ77 distance
-        // error. A different `notImplemented`/decode error is OK
-        // (those are tracked separately) — just not LZ77.
-        do {
-            _ = try JXLDecoder().decodeToCoefficients(jxlData)
-            // Success path: decoder ran to completion.
-            print("[cjxl reverse] decodeToCoefficients succeeded")
-        } catch let e as TokenStreamReaderError {
-            switch e {
-            case .lz77InvalidDistance(let d, let hs):
-                XCTFail("SpecialDistance regression — got "
-                    + "lz77InvalidDistance(\(d), history=\(hs))")
-            default:
-                // Other entropy-stream errors are unrelated to this fix.
-                print("[cjxl reverse] unrelated TokenStreamReader "
-                    + "error (not LZ77-distance): \(e)")
-            }
-        } catch {
-            // Other decoder errors are acceptable here — they
-            // surface separate decoder-completeness work, not
-            // the SpecialDistance bug this test pins down.
-            print("[cjxl reverse] later-stage decode error: \(error)")
-        }
+        // After v0.12.0gv (SpecialDistance LZ77 remap) +
+        // v0.12.0gw (correct ModularStreamId for QuantTable), the
+        // cjxl reverse decode succeeds end-to-end through the
+        // DequantMatrices section. Assert success directly — the
+        // returned planes should have non-zero block dimensions for
+        // a 16×16 4:4:4 fixture.
+        let planes = try JXLDecoder().decodeToCoefficients(jxlData)
+        XCTAssertEqual(planes.channelCount, 3,
+            "expected 3-channel YCbCr planes")
+        XCTAssertGreaterThan(planes.blocksX, 0)
+        XCTAssertGreaterThan(planes.blocksY, 0)
+        print("[cjxl reverse] decodeToCoefficients succeeded — "
+            + "blocks=\(planes.blocksX)×\(planes.blocksY) "
+            + "channels=\(planes.channelCount)")
     }
 }

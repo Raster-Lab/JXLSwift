@@ -940,7 +940,8 @@ extension JXLDecoder {
                 from: &r,
                 globalTree: globalTree,
                 globalPostHeader: globalPostHeader,
-                globalPostCodebook: globalPostCodebook)
+                globalPostCodebook: globalPostCodebook,
+                numDcGroups: numDcGroups)
         } catch DequantMatricesACError.perSlotRead(let slot, let e) {
             throw DecoderError.notImplemented(
                 "VarDCT decode: DequantMatrices slot \(slot) "

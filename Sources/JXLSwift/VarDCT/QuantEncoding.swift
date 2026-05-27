@@ -159,7 +159,9 @@ extension QuantEncoding {
         requiredSizeX: Int, requiredSizeY: Int,
         globalTree: ModularTree? = nil,
         globalPostHeader: EntropySectionHeader? = nil,
-        globalPostCodebook: MultiClusterCodebook? = nil
+        globalPostCodebook: MultiClusterCodebook? = nil,
+        slotIndex: Int = 0,
+        numDcGroups: Int = 0
     ) throws -> QuantEncoding {
         let modeRaw: UInt32
         do { modeRaw = try r.read(bits: kLog2NumQuantModes) }
@@ -426,14 +428,17 @@ extension QuantEncoding {
                 header: postHeader, codebook: postCodebook,
                 distanceMultiplier: requiredSizeX
             )
-            // libjxl's stream id for QuantTable(idx) is
-            // `1 + numDcGroups + numPasses * numGroups + idx` — for
-            // single-group single-pass frames that's `2 + idx`.
-            // We pass a placeholder; the production decoder will
-            // need the real frame-dim-derived ID, but for
-            // single-group fixtures the tree's prop-1 branches are
-            // typically zero-valued in this region anyway.
-            let groupId: Int32 = 0
+            // libjxl `ModularStreamId::QuantTable(idx).ID(frame_dim)`
+            // returns `1 + 3 * num_dc_groups + idx` (see
+            // `lib/jxl/dec_modular.h`). The modular tree's static
+            // property 1 (= stream_id) is exposed to per-node split
+            // tests; cjxl's quant-table tree typically branches on
+            // `prop1 > 2` / `> 3` to route channel/slot-specific
+            // contexts. Passing the wrong value sends every token
+            // through one tree leaf — desyncing the ANS state and
+            // exhausting the bitstream long before the 192-token
+            // 8×8×3 sub-image is decoded.
+            let groupId: Int32 = Int32(1 + 3 * numDcGroups + slotIndex)
             do {
                 _ = try decodeAllChannels(
                     channels: channels, groupId: groupId,

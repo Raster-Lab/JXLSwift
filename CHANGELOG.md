@@ -11,6 +11,83 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0gw — 🎉 ModularStreamId for QuantTable: cjxl reverse decodes end-to-end
+
+**The cjxl-emitted `--lossless_jpeg=1` reverse pipeline now decodes
+end-to-end through `JXLDecoder.decodeToCoefficients`.** The fix is a
+two-integer correction in how we identify the modular sub-image's
+stream-id when reading the DequantMatrices RAW slot.
+
+**Root cause.** libjxl's modular tree exposes two "static
+properties" to every node split test:
+
+- `static_props[0] = channel index` (0..2 for our 3-channel quant
+  matrix), and
+- `static_props[1] = stream_id` — `ModularStreamId::QuantTable(idx)
+  .ID(frame_dim) == 1 + 3 * num_dc_groups + idx`
+  (`lib/jxl/dec_modular.h:59-61`).
+
+cjxl's quant-table tree for a 16×16 4:4:4 frame is:
+
+```
+tree[0] SPLIT prop=1 val=2 leftIfGT=1 rightIfLE=2
+tree[1] SPLIT prop=1 val=3 leftIfGT=3 rightIfLE=4
+tree[2] LEAF id=0  predictor=6
+tree[3] SPLIT prop=9 val=49 leftIfGT=5 rightIfLE=6
+tree[4] LEAF id=1  predictor=0
+tree[5] LEAF id=2  predictor=5
+tree[6] LEAF id=3  predictor=5
+```
+
+The root and one inner node branch on **stream_id**. For
+QuantTable(0) with num_dc_groups=1, the correct id is `4`, sending
+the walk through leaves 1/2/3 (with predictor 0 or 5 depending on
+prop 9). Our previous code hard-coded `groupId = 0` ("placeholder —
+single-group fixtures the tree's prop-1 branches are typically
+zero-valued"), routing every token through leaf 0 (predictor 6).
+Wrong leaf → wrong cluster routing → wrong ANS histogram → state
+desync → "8 bits per token in, 32 bits per token consumed" cascade.
+After ≈150 of 192 tokens the bitstream ran out, surfacing as
+`outOfBounds(needed: 16, remaining: 2)` from the rANS renorm read.
+
+**Fix.**
+- `QuantEncoding.read` gains `slotIndex: Int = 0` and
+  `numDcGroups: Int = 0` parameters; the RAW path computes
+  `groupId = 1 + 3 * numDcGroups + slotIndex` and passes it to
+  `decodeAllChannels`. Matches `ModularStreamId::QuantTable.ID()`.
+- `DequantMatricesAC.read` gains `numDcGroups: Int = 0`; the
+  17-slot loop passes `slotIndex: i, numDcGroups: numDcGroups` into
+  each `QuantEncoding.read`.
+- `JXLDecoder.decodeVarDCTPartial` threads its already-computed
+  `numDcGroups` into the call.
+
+**Regression test tightened.**
+`testEndToEnd_CjxlReverseDecode_NoLZ77DistanceError` now asserts
+**direct success** — the test exercises
+`cjpeg → cjxl --lossless_jpeg=1 → JXLDecoder.decodeToCoefficients`
+and requires `channelCount == 3`, `blocksX > 0`, `blocksY > 0`. The
+prior "tolerate later-stage errors" branch is gone: the failure
+mode is now fully unblocked for the 16×16 4:4:4 case.
+
+**Test output:**
+
+```
+[cjxl reverse] decodeToCoefficients succeeded —
+  blocks=2×2 channels=3
+```
+
+**Tests.** 642 tests / 7 skipped / 0 failures.
+
+**What's now wired.** The autonomous (no `--source`) CLI path can
+extract JXL coefficients from a cjxl reference file. The next
+bites for full byte-identical JPEG re-emission via this path are:
+- bit-for-bit comparison of recovered coefficients vs. the
+  original JPEG's quantised DCT (currently we just assert
+  geometry, not values),
+- AC strategy plane overflow for 4:2:0 (separate known limitation,
+  affects subsampled fixtures only),
+- progressive scan / SOF2 support (deferred).
+
 ### v0.12.0gv — SpecialDistance LZ77 remap for modular sub-images
 
 **Bug fix in `TokenStreamReader`'s LZ77 distance handling that
