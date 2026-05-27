@@ -11,6 +11,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### 🎉 v0.12.0fr — Bridge is pixel-equivalent: `base_correlation_b = 0` fix closes the loop
+
+**The JPEG → JXL forward bridge is now pixel-equivalent to `JPEGDecoder.decode`.** `djxl(bridge(jpgBytes))` produces pixels matching `JPEGDecoder.decode(jpgBytes)` byte-for-byte within ±2 JPEG-decode rounding tolerance — the same tolerance `cjxl --lossless_jpeg=1 + djxl` exhibits versus `djpeg`.
+
+Real-content fixture pixel-diff trajectory across the closing session:
+- v0.12.0fo (DC inversion): `max=209/mean=114 → max=139/mean=34`
+- v0.12.0fq (AC transpose): `max=139/mean=34 → max=82/mean=16`
+- **v0.12.0fr (CFL base fix): `max=82/mean=16 → max=2/mean=0.53`** ✅
+
+**The bug**: libjxl's `ColorCorrelation` initialises `base_correlation_b_ = jxl::cms::kYToBRatio = 1.0` (NOT zero). When the decoder reads `all_default = 1` for ColorCorrelation DC, it keeps this non-zero default. The DC dequant formula then computes `dec_row_b = y_dc × cfl_factor_b + b_dc = y_dc × 1.0 + b_dc` — mixing Y into the B (=Cr) channel.
+
+libjxl's encoder explicitly zeroes `base_correlation_b_` for non-XYB frames (`chroma_from_luma.cc:54`); `ColorCorrelationEncodeDC` (`enc_chroma_from_luma.cc:392`) takes the `all_default = 1` shortcut **only** when `base_correlation_b == kYToBRatio`. With our 0, the shortcut doesn't fire — libjxl emits the full non-default block.
+
+Our v0.12.0y bridge writer was taking the shortcut unconditionally (`w.writeBit(true)`), making the decoder use the wrong default.
+
+The diagnostic that found it: per-channel pixel-diff breakdown showed `R diff max=82/mean=32, G diff max=47/mean=17, B diff max=2/mean=0.6`. Since R = Y + 1.402×Cr, G = Y - 0.344×Cb - 0.714×Cr, B = Y + 1.772×Cb — B being correct meant Y and Cb were fine; R wrong with Y correct meant **Cr** was wrong. Looking for what affects only the B-storage-slot (= Cr in YCbCr) pinned the bug to `base_correlation_b`.
+
+Fix in `VarDCTBitstreamWriter.writeBridgeLfGlobal`: emit explicit non-default ColorCorrelation DC block with `base_correlation_b = 0` (and `color_factor = 84`, `base_correlation_x = 0`, `ytox_dc = 0`, `ytob_dc = 0`).
+
+Tests updated:
+- `testBridgeLfGlobal_StructureParsesBack`: expects ColorCorrelation DC non-default + parses the 56 extra bits.
+- `testJXLEncoder_FromJPEGCoefficients_RealJPEG_DjxlAccepts`: pixel-parity assertion tightened to `maxDiff <= 5` (within JPEG rounding tolerance).
+
+**Phase J forward direction**: bytes `bridge(jpgBytes)` decode (via `djxl`) to pixels matching `JPEGDecoder.decode(jpgBytes)`. ✅ The remaining Phase J work is the reverse direction (JXL → JPEG bit-exact via pure-Swift Brotli decoder + `jbrd` box) and lifting the 4:4:4-only restriction.
+
+**575 tests passing, 6 skipped, 0 failures.**
+
+### v0.12.0fq — AC coefficient transpose at adapter — pixel diff max 139→82, mean 34→16
+
+libjxl `enc_frame.cc:969` transposes JPEG block coefficients into JXL's natural-order layout: `block[y*8 + x] = inputjpeg[base + x*8 + y]`. The companion qtable in `buildJXLBridgeRAWQuantPayload` has been transposed-to-match since v0.12.0m, but the AC coefficients were still being copied through the adapter in JPEG natural order. Every coefficient was landing at the wrong frequency in the dequant + IDCT pipeline.
+
+Fix in `JPEGCoefficientImage.toJXLCoefficientPlanes()`: apply the same transpose to AC. `testJPEGToJXLAdapter_GrayscaleRoundTrip` updated to assert the transposed semantics.
+
+The previous v0.12.0fl session attempt at this same fix was reverted because the test expectations weren't updated. This commit pairs the fix with the test update.
+
 ### v0.12.0fo — Bridge DC scale inversion fix — pixels no longer saturate
 
 libjxl `quant_weights.h::SetDCQuant` stores the **inverse** of the input `dcquantization` value in `dc_quant_[c]`:

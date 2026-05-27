@@ -285,7 +285,7 @@ let lossless = try JXLEncoder(
 
 `encode(_:)` routes 8-bit RGB/RGBA through the VarDCT lossy codec for lossy modes (falling back to lossless Modular for inputs VarDCT cannot take); `.lossless` always uses Modular. Every codestream JXLSwift emits is decodable by `djxl 0.11.2`.
 
-**Forward bridge works** (v0.12.0fk): `JXLEncoder().encodeFromJPEGCoefficients(jpeg)` produces bytes that `djxl` decodes correctly (verified end-to-end against libjxl 0.11.2 on the all-zero-coefficient bridge fixture). The next bite expands the test corpus to real-content JPEG fixtures with `JPEGDecoder.decode(jpgBytes)` pixel-parity verification. The reverse direction (JXL → JPEG bit-exact) is gated on a pure-Swift Brotli decoder for the `jbrd` box. **Pending decoder features**: four niche AC strategies (DCT128 / DCT256 / DCT32×8 / DCT8×32) — the JXL decoder doesn't yet reconstruct frames using these.
+**🎉 Forward bridge is pixel-equivalent** (v0.12.0fr): `JXLEncoder().encodeFromJPEGCoefficients(jpeg)` produces bytes that `djxl` decodes to pixels matching `JPEGDecoder.decode(jpgBytes)` byte-for-byte within ±2 JPEG-decode rounding tolerance — the same tolerance `cjxl --lossless_jpeg=1 + djxl` exhibits vs `djpeg`. Verified end-to-end against libjxl 0.11.2 on a real cjpeg-generated 4:4:4 quality-75 JPEG. Supports any 4:4:4 / 8-bit / 1-or-3-component / baseline-DCT JPEG. The reverse direction (JXL → JPEG bit-exact) is gated on a pure-Swift Brotli decoder for the `jbrd` box. 4:2:0 / 4:2:2 chroma subsampling lift is the next forward-direction bite. **Pending decoder features**: four niche AC strategies (DCT128 / DCT256 / DCT32×8 / DCT8×32) — the JXL decoder doesn't yet reconstruct frames using these.
 
 ## Why pure Swift
 
