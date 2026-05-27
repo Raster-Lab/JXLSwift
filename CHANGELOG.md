@@ -11,6 +11,73 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### 🎉 v0.12.0g5 — Phase J **reverse direction** capstone: end-to-end forward+reverse round-trip ships
+
+The reverse bridge (JXL coefficient planes → JPEG file) now works
+end-to-end at the **coefficient-identicality** level: a real JPEG
+goes through forward bridge → JXL planes → reverse bridge → rebuilt
+JPEG, and decoding the rebuilt JPEG yields the same per-component,
+per-block coefficient values as the source.
+
+Byte-identical reconstruction (jbrd-driven) still requires a Brotli
+decoder and a `JBRDBoxReader` Bundle walk, both scaffolded in this
+session and ready for incremental fill-in.
+
+Components shipped this session (v0.12.0fz → v0.12.0g5):
+
+- **v0.12.0fz** — Brotli scaffold: `Sources/JXLSwift/Brotli/`
+  - `BrotliErrors.swift` — error taxonomy
+  - `BrotliBitReader.swift` — read helpers (MNIBBLES decode)
+  - `BrotliPrefixCode.swift` — RFC 7932 §3 canonical Huffman code
+    reader with simple + complex format
+  - `BrotliMetaBlock.swift` — RFC 7932 §9 stream header + meta-block
+    header (WBITS verified against `brotli --lgwin=N` empirical data)
+  - 14 unit tests
+- **v0.12.0g0** — JBRDBox struct + reverse-adapter scaffold
+  - `JPEG/JBRDBox.swift` — `JBRDBox` + `JBRDQuantTable` + `JBRDHuffmanCode`
+    + `JBRDComponent` + `JBRDScanInfo` + `JBRDError` taxonomy
+  - `JPEG/JXLToJPEGAdapter.swift` — entry-point scaffold +
+    `inverseJXLBridgeRemap` + `inverseJPEGBridgeDC` (5/5 invertibility
+    tests passing)
+- **v0.12.0g1** — `JXLCoefficientPlanes.toJPEGCoefficientImage(...)`:
+  inverts the 8×8 AC transpose, copies DC. End-to-end round-trip test
+  on a real JPEG: forward chain → reverse adapter → identical
+  coefficients.
+- **v0.12.0g2** — JPEG bitstream emitter:
+  - `JPEG/JPEGBitWriter.swift` — MSB-first bit writer with 0xFF
+    byte-stuffing + `appendRawMarker` for RST emission
+  - `JPEG/JPEGBlockEncoder.swift` — single-block encoder (inverse
+    of `JPEGBlockDecoder`)
+  - `JPEGHuffmanEncodeTable.build(counts:values:)` — canonical
+    Huffman code-table builder
+  - 8 round-trip tests (DC-only, sparse AC, dense AC, ZRL, etc.)
+- **v0.12.0g3** — `JPEG/JPEGScanEncoder.swift` — MCU walker that
+  drives `JPEGBlockEncoder` over a whole scan with restart-interval
+  support. Real-JPEG scan round-trip test passes.
+- **v0.12.0g4** — `JPEG/JPEGContainerWriter.swift` — assembles a
+  complete baseline JPEG file from coefficient planes + Huffman +
+  quant tables. Real-JPEG container reassembly test passes; the
+  rebuilt JPEG is accepted by `djpeg`.
+- **v0.12.0g5** — `JXLToJPEGAdapter.reconstructMinimal(...)` ties
+  all four reverse steps together. End-to-end forward + reverse
+  bridge test passes:
+  > `cjpeg → JPEGDecoder.decodeToCoefficients → toJXLCoefficientPlanes`
+  > `→ JXLToJPEGAdapter.reconstructMinimal → JPEGDecoder.decodeToCoefficients`
+  produces byte-identical coefficient values.
+
+What's still gated on Brotli + JBRDBoxReader:
+- Byte-identical (not just coefficient-identical) JPEG reconstruction
+  driven by the `jbrd` box. The `JXLToJPEGAdapter.reconstruct(...)`
+  entry point with jbrd input still throws `notImplemented`.
+
+Brotli decoder layers still pending (~4-8 sessions of work):
+- Literal / insert-and-copy / distance alphabets (RFC 7932 §7)
+- Context modeling
+- Static dictionary (~120KB embedded data + transforms, §8)
+- LZ77 reconstruction loop
+
+168 + tests passing across all relevant suites.
+
 ### 🎉 v0.12.0fx — Multi-block AC bug fixed: bridge is pixel-equivalent for 4:4:4 multi-block (and 4:2:0 close behind)
 
 **The multi-block residual identified in v0.12.0fw is closed.** The bug was a `[0, 127]` clamp range passed to the gradient predictor in `writeBridgeDCGroup` and `buildBridgePostCodebook`. JPEG DC values frequently exceed 127 in bright regions — the clamp truncated those predictions, so the encoder wrote `residual = actual - 127` while the decoder (running libjxl's `ClampedGradient`, which bit-depth-doesn't-clamp) reconstructed with `pred = actual` and decoded `actual + (actual - 127)`. Errors compounded through gradient prediction: block `(1, 1)` saw `actual + 2 × (actual - 127)` ≈ 100-byte diff. The 8×8 test trivially skipped this because single-block has no W/N/NW → pred=0 regardless of clamp.
