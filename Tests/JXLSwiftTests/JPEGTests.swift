@@ -4839,3 +4839,131 @@ extension JPEGFoundationTests {
         dumpFH(label: "REF", ref)
     }
 }
+
+// MARK: - JXLToJPEGAdapter — reverse-bridge invertibility (v0.12.0g0)
+
+final class JXLToJPEGAdapterTests: XCTestCase {
+
+    /// Helper to build a 3-channel `JXLCoefficientPlanes` from
+    /// scratch with known DC values for round-trip testing.
+    private func makePlanes(
+        dcY: [Int32], dcCb: [Int32], dcCr: [Int32]
+    ) -> JXLCoefficientPlanes {
+        let n = dcY.count
+        let zero64: [Int32] = Array(repeating: 0, count: 64)
+        let acY = Array(repeating: zero64, count: n)
+        let acCb = Array(repeating: zero64, count: dcCb.count)
+        let acCr = Array(repeating: zero64, count: dcCr.count)
+        // Treat n=1 as 1×1 blocks; n=4 as 2×2.
+        let dim = Int(sqrt(Double(n)))
+        return JXLCoefficientPlanes(
+            blocksX: dim, blocksY: dim, channelCount: 3,
+            dcPerChannel: [dcY, dcCb, dcCr],
+            acPerChannel: [acY, acCb, acCr],
+            blocksPerChannel: [
+                (blocksX: dim, blocksY: dim),
+                (blocksX: dim, blocksY: dim),
+                (blocksX: dim, blocksY: dim),
+            ])
+    }
+
+    func testInverseJXLBridgeRemap_kYCbCr_RoundTrips() throws {
+        // Source planes in JPEG order [Y, Cb, Cr] with distinctive
+        // DC values per channel so we can verify the mapping.
+        let jpegOrder = makePlanes(
+            dcY: [100, 101, 102, 103],     // Y
+            dcCb: [200, 201, 202, 203],    // Cb
+            dcCr: [50, 51, 52, 53])        // Cr
+        // Forward remap: JPEG → JXL channel order (X=Cb, Y, B=Cr)
+        let jxlOrder = jpegOrder.remappedForJXLBridge(
+            colorTransform: .ycbcr)
+        // Reverse: should match original.
+        let backToJPEG = jxlOrder.inverseJXLBridgeRemap(
+            colorTransform: .ycbcr)
+        XCTAssertEqual(backToJPEG.dcPerChannel[0],
+                       jpegOrder.dcPerChannel[0],
+                       "Y plane should round-trip")
+        XCTAssertEqual(backToJPEG.dcPerChannel[1],
+                       jpegOrder.dcPerChannel[1],
+                       "Cb plane should round-trip")
+        XCTAssertEqual(backToJPEG.dcPerChannel[2],
+                       jpegOrder.dcPerChannel[2],
+                       "Cr plane should round-trip")
+    }
+
+    func testInverseJXLBridgeRemap_kNone_IsIdentity() throws {
+        // For .none color transform, JpegOrder = (0, 1, 2) — identity.
+        // Both forward and inverse should be no-ops.
+        let p = makePlanes(
+            dcY: [10, 11, 12, 13],
+            dcCb: [20, 21, 22, 23],
+            dcCr: [30, 31, 32, 33])
+        let forward = p.remappedForJXLBridge(colorTransform: .none)
+        let back = forward.inverseJXLBridgeRemap(
+            colorTransform: .none)
+        XCTAssertEqual(back.dcPerChannel[0], p.dcPerChannel[0])
+        XCTAssertEqual(back.dcPerChannel[1], p.dcPerChannel[1])
+        XCTAssertEqual(back.dcPerChannel[2], p.dcPerChannel[2])
+    }
+
+    func testInverseJPEGBridgeDC_kNone_RoundTrips() throws {
+        let p = makePlanes(
+            dcY: [100, 101, 102, 103],
+            dcCb: [200, 201, 202, 203],
+            dcCr: [50, 51, 52, 53])
+        let quantDC: [UInt16] = [16, 17, 18]
+        let forward = p.applyJPEGBridgeDC(
+            colorTransform: .none,
+            quantDCPerChannel: quantDC)
+        // Forward added `1024 / qt[DC]` per channel.
+        XCTAssertEqual(forward.dcPerChannel[0][0],
+                       p.dcPerChannel[0][0] &+ Int32(1024 / 16))
+        let back = forward.inverseJPEGBridgeDC(
+            colorTransform: .none, quantDCPerChannel: quantDC)
+        XCTAssertEqual(back.dcPerChannel[0],
+                       p.dcPerChannel[0],
+                       "DC should round-trip after invert")
+        XCTAssertEqual(back.dcPerChannel[1], p.dcPerChannel[1])
+        XCTAssertEqual(back.dcPerChannel[2], p.dcPerChannel[2])
+    }
+
+    func testInverseJPEGBridgeDC_kYCbCr_IsNoOp() throws {
+        // For YCbCr (DCzero=true), forward DC pass is a no-op,
+        // so reverse should also be a no-op.
+        let p = makePlanes(
+            dcY: [100, 101, 102, 103],
+            dcCb: [200, 201, 202, 203],
+            dcCr: [50, 51, 52, 53])
+        let forward = p.applyJPEGBridgeDC(
+            colorTransform: .ycbcr,
+            quantDCPerChannel: [16, 17, 18])
+        XCTAssertEqual(forward.dcPerChannel[0],
+                       p.dcPerChannel[0],
+                       "kYCbCr forward should not modify DC")
+        let back = forward.inverseJPEGBridgeDC(
+            colorTransform: .ycbcr,
+            quantDCPerChannel: [16, 17, 18])
+        XCTAssertEqual(back.dcPerChannel[0], p.dcPerChannel[0])
+    }
+
+    func testFullRoundTrip_kNone_RemapPlusDC() throws {
+        // Both forward operations applied, then both reversed.
+        let p = makePlanes(
+            dcY: [100, 101, 102, 103],
+            dcCb: [200, 201, 202, 203],
+            dcCr: [50, 51, 52, 53])
+        let quantDC: [UInt16] = [16, 17, 18]
+        // Forward: remap → DC offset
+        let f1 = p.remappedForJXLBridge(colorTransform: .none)
+        // For .none, quantDC ordering follows JpegOrder (identity).
+        let f2 = f1.applyJPEGBridgeDC(
+            colorTransform: .none, quantDCPerChannel: quantDC)
+        // Reverse: undo DC offset → undo remap
+        let r1 = f2.inverseJPEGBridgeDC(
+            colorTransform: .none, quantDCPerChannel: quantDC)
+        let r2 = r1.inverseJXLBridgeRemap(colorTransform: .none)
+        XCTAssertEqual(r2.dcPerChannel[0], p.dcPerChannel[0])
+        XCTAssertEqual(r2.dcPerChannel[1], p.dcPerChannel[1])
+        XCTAssertEqual(r2.dcPerChannel[2], p.dcPerChannel[2])
+    }
+}
