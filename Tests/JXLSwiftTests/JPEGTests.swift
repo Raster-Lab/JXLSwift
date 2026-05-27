@@ -5785,6 +5785,152 @@ final class JXLToJPEGAdapterTests: XCTestCase {
         }
     }
 
+    /// 🎉 **End-to-end byte-identical reconstruction via jbrd.**
+    ///
+    /// 1. Load the original JPEG that produced the cjxl reference.
+    /// 2. Parse jbrd Bundle + decode trailing Brotli + distribute
+    ///    APP/COM/inter-marker/tail payloads.
+    /// 3. Populate `jbrd.quant[i].values` from the original JPEG's
+    ///    quant tables (the Bundle doesn't carry these — they live
+    ///    in the JXL frame's HfGlobal in real workflows).
+    /// 4. Populate `jbrd.components[i]` h/v sampling factors from
+    ///    the original SOF.
+    /// 5. Forward-bridge the original JPEG to JXL planes (mock for
+    ///    the coefficient input — in production this comes from
+    ///    decoding the actual JXL frame).
+    /// 6. Call `JXLToJPEGAdapter.reconstruct(...)` and compare the
+    ///    output to the original JPEG bytes.
+    ///
+    /// Skipped unless the cjxl-emitted jbrd payload and the original
+    /// JPEG are both present on /tmp.
+    func testEndToEnd_ByteIdenticalReconstruct_RealCjxlPayload()
+        throws
+    {
+        let jpgPath = "/tmp/test-fixture-420.jpg"
+        let jbrdPath = "/tmp/cjxl-ref-420.jbrd"
+        guard FileManager.default.fileExists(atPath: jpgPath),
+              FileManager.default.fileExists(atPath: jbrdPath)
+        else {
+            throw XCTSkip(
+                "fixtures not present (jpg/jbrd at /tmp/)")
+        }
+        let originalJPG = try Data(
+            contentsOf: URL(fileURLWithPath: jpgPath))
+        let jbrdPayload = try Data(
+            contentsOf: URL(fileURLWithPath: jbrdPath))
+
+        // Steps 2–4: Parse + populate jbrd.
+        var r = BitReader(jbrdPayload)
+        var box = try JBRDBoxReader.read(from: &r)
+        let bitsConsumed = r.position
+        let bytesConsumed = (bitsConsumed + 7) / 8
+        let brotliBytes = jbrdPayload.suffix(from: bytesConsumed)
+        let decoded = try BrotliDecoder.decode(Data(brotliBytes))
+        try box.distributeBrotliPayload(decoded)
+
+        // Get the original JPEG's quant tables + frame components
+        // and splice them into the jbrd (these are not in the
+        // Bundle).
+        let originalCoeffs = try JPEGDecoder.decodeToCoefficients(
+            originalJPG)
+        for i in 0..<box.quant.count {
+            if i < originalCoeffs.quantTables.count {
+                box.quant[i].values =
+                    originalCoeffs.quantTables[i]
+                    .zigZagValues.map { Int32($0) }
+            }
+        }
+        for i in 0..<box.components.count {
+            if i < originalCoeffs.frameComponents.count {
+                box.components[i].hSampFactor =
+                    originalCoeffs.frameComponents[i]
+                    .hSamplingFactor
+                box.components[i].vSampFactor =
+                    originalCoeffs.frameComponents[i]
+                    .vSamplingFactor
+            }
+        }
+
+        // Step 5: Forward-bridge to JXL planes (mocks decoding the
+        // JXL frame for the test — in production these come from
+        // the JXL frame's coefficient state).
+        let planes = try originalCoeffs.toJXLCoefficientPlanes()
+        let jxlPlanes = planes.remappedForJXLBridge(
+            colorTransform: .ycbcr)
+
+        // Step 6: Reconstruct and compare.
+        let rebuilt = try JXLToJPEGAdapter.reconstruct(
+            coefficients: jxlPlanes,
+            jbrd: box,
+            colorTransform: .ycbcr)
+        // Diagnostic comparison.
+        print("[byte-identical] original.count=\(originalJPG.count)"
+            + " rebuilt.count=\(rebuilt.count)")
+        print("[byte-identical] markerOrder: "
+            + box.markerOrder.map {
+                String(format: "%02x", $0)
+            }.joined(separator: " "))
+        for (i, hc) in box.huffmanCode.enumerated() {
+            let cls = (hc.slotId & 0x10) != 0 ? "AC" : "DC"
+            let slot = hc.slotId & 0x0F
+            print("  huff[\(i)] \(cls) slot=\(slot) "
+                + "isLast=\(hc.isLast) symbols="
+                + "\(hc.values.count - 1) "
+                + "bits=\(Array(hc.counts[1...16]))")
+        }
+        if rebuilt != originalJPG {
+            // Find first byte difference for diagnostics.
+            let cmpLen = min(rebuilt.count, originalJPG.count)
+            var firstDiff = -1
+            for i in 0..<cmpLen {
+                if rebuilt[rebuilt.startIndex + i]
+                    != originalJPG[originalJPG.startIndex + i]
+                {
+                    firstDiff = i; break
+                }
+            }
+            print("[byte-identical] first diff byte: \(firstDiff)")
+            if firstDiff >= 0 {
+                let start = max(0, firstDiff - 4)
+                let end = min(cmpLen, firstDiff + 12)
+                let oSlice = Array(originalJPG[
+                    (originalJPG.startIndex + start)..<(originalJPG.startIndex + end)])
+                let rSlice = Array(rebuilt[
+                    (rebuilt.startIndex + start)..<(rebuilt.startIndex + end)])
+                print("[byte-identical] orig @\(start)..\(end): "
+                    + oSlice.map { String(format: "%02x", $0) }
+                        .joined(separator: " "))
+                print("[byte-identical] rebd @\(start)..\(end): "
+                    + rSlice.map { String(format: "%02x", $0) }
+                        .joined(separator: " "))
+            }
+        }
+        // 🎉 **Byte-identical assertion.** The rebuilt JPEG must
+        // match the source byte-for-byte for the simple-JPEG case
+        // (small APP0, no large EXIF/XMP/ICC, no DRI).
+        XCTAssertEqual(rebuilt, originalJPG,
+            "rebuilt JPEG must match source byte-for-byte")
+        let rebuiltCoeffs = try JPEGDecoder.decodeToCoefficients(
+            rebuilt)
+        XCTAssertEqual(rebuiltCoeffs.width, originalCoeffs.width)
+        XCTAssertEqual(rebuiltCoeffs.height, originalCoeffs.height)
+        for c in 0..<originalCoeffs.quantisedComponents.count {
+            let o = originalCoeffs.quantisedComponents[c]
+            let rc = rebuiltCoeffs.quantisedComponents[c]
+            XCTAssertEqual(rc.blocks.count, o.blocks.count,
+                "comp \(c) block count mismatch")
+            for bi in 0..<o.blocks.count {
+                XCTAssertEqual(
+                    rc.blocks[bi].coefficients,
+                    o.blocks[bi].coefficients,
+                    "comp \(c) block \(bi) coefficient mismatch")
+            }
+        }
+        print("[byte-identical] coefficient match across all "
+            + "\(originalCoeffs.quantisedComponents.count) "
+            + "components ✓")
+    }
+
     /// **End-to-end forward + reverse via coefficient bridge.**
     ///
     /// 1. JPEG → JPEGDecoder.decodeToCoefficients → JPEGCoefficientImage
