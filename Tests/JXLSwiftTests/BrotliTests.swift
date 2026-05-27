@@ -319,6 +319,53 @@ final class BrotliCompressedMetaBlockHeaderTests: XCTestCase {
     }
 }
 
+/// Brotli distance LUT + ring-buffer behavior.
+final class BrotliDistanceTests: XCTestCase {
+
+    func testDistanceLut_DefaultNPostfix0NDirect0() {
+        // alphabet_size = 16 + 0 + (24 << 1) = 64
+        let lut = BrotliDistance.buildLut(
+            npostfix: 0, ndirectShifted: 0,
+            alphabetSizeLimit: 64)
+        // Entries 0..15 unused; entries 16+ are regular distance codes.
+        // For NPOSTFIX=0 and NDIRECT=0:
+        //   code 16: bits=1, offset = 0 + ((2+0)<<1 - 4)<<0 + 1 = 1
+        //   code 17: bits=1, offset = 0 + ((2+0)<<1 - 4)<<0 + 1 = ... wait
+        // Per the algorithm: postfix=1. Each "group" has `postfix=1` entries.
+        // Bits start at 1, half cycles 0→1→0→1→...
+        // Group 0: bits=1, half=0, base = 0 + ((2+0)<<1 - 4)<<0 + 1 = 0+1=1
+        //   code 16: (bits=1, offset=1+0=1) → dist = 1 + (extra<<0)
+        //     so extra=0 → distance=1, extra=1 → distance=2
+        XCTAssertEqual(lut.extraBits[16], 1)
+        XCTAssertEqual(lut.offsets[16], 1)
+    }
+
+    func testResolveShortCode_LastDistance() {
+        // Set up ring buffer with 4 known distances.
+        var rb = [10, 20, 30, 40]
+        var idx = 3   // last-written is rb[3]=40
+        // Code 0 = "use most recent distance" = rb[idx] = 40.
+        let d = BrotliDistance.resolveShortCode(
+            code: 0, ringBuffer: &rb, ringBufferIdx: &idx)
+        // Per libjxl logic: code=0, offset=code-3=-3, distance =
+        //   rb[(idx - offset) & 3] = rb[(3 - (-3)) & 3] = rb[6 & 3] = rb[2] = 30
+        // Wait — that's not the most recent. Let me recompute.
+        // Actually the formula: context = 1 >> code = 1.
+        // distance = rb[(idx - offset) & 3]. With code=0, offset=-3,
+        // rb[(idx + 3) & 3] = rb[(3+3) & 3] = rb[2] = 30.
+        // Hmm so code=0 → rb[2], not the most recent.
+        // The ring buffer convention is: dist_rb_idx points to NEXT
+        // slot to write, so the most-recently-written is at
+        // rb[(idx-1) & 3]. After setting up rb=[10,20,30,40] and
+        // idx=3, the most recent was written at index 2 (which is 30).
+        // No wait — the "idx=3" means next write to rb[3]; most recent
+        // written was rb[2]. So this matches what's expected.
+        XCTAssertEqual(d, 30,
+            "code=0 should return the most recently written "
+            + "distance (rb[(idx-1) & 3])")
+    }
+}
+
 /// Brotli IC alphabet command LUT — verify the table builds with
 /// the expected structure.
 final class BrotliInsertCopyLutTests: XCTestCase {
