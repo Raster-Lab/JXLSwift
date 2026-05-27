@@ -3271,6 +3271,30 @@ final class JPEGFoundationTests: XCTestCase {
             rMax, Double(rSum)/256.0,
             gMax, Double(gSum)/256.0,
             bMax, Double(bSum)/256.0))
+        let djxlFirst = Array(djxlPixels.prefix(12))
+        let refFirst = Array(refPixels.prefix(12))
+        print("[djxl 4:2:0 first 12]: "
+            + djxlFirst.map { String(format: "%02X", $0) }.joined(separator: " "))
+        print("[ref  4:2:0 first 12]: "
+            + refFirst.map { String(format: "%02X", $0) }.joined(separator: " "))
+        // Find worst-diff pixel.
+        var worstIdx = 0
+        var worstD = 0
+        for i in 0..<expectedPixelBytes {
+            let d = abs(Int(djxlPixels[djxlPixels.startIndex + i])
+                - Int(refPixels[i]))
+            if d > worstD { worstD = d; worstIdx = i }
+        }
+        let worstPx = worstIdx / 3
+        let worstChan = ["R", "G", "B"][worstIdx % 3]
+        let worstY = worstPx / 16
+        let worstX = worstPx % 16
+        print(String(format:
+            "[worst 4:2:0 pixel] at (%d,%d) channel %@: "
+            + "djxl=0x%02X ref=0x%02X diff=%d",
+            worstX, worstY, worstChan,
+            djxlPixels[djxlPixels.startIndex + worstIdx],
+            refPixels[worstIdx], worstD))
         // **v0.12.0ft**: structural 4:2:0 path lands with `max=~30`
         // (down from "saturated / decoder rejection" pre-fix). The
         // residual ±30 byte diff is the next bite — likely in the
