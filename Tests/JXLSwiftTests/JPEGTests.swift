@@ -6667,28 +6667,42 @@ final class JXLToJPEGAdapterTests: XCTestCase {
         XCTAssertEqual(r2.dcPerChannel[2], p.dcPerChannel[2])
     }
 
-    /// **Regression: SpecialDistance LZ77 remap for modular sub-images.**
+    /// **🎉 Bit-exact coefficient round-trip via cjxl `--lossless_jpeg=1`.**
     ///
-    /// Before v0.12.0gv, cjxl-emitted JXL frames carrying a RAW slot 0
-    /// quant matrix (8×8 modular sub-image, `distance_multiplier=8`)
-    /// failed at the modular-sub-image LZ77 decode with
-    /// `lz77InvalidDistance(distance: 248, historySize: 128)`.
+    /// Pins down the full autonomous reverse pipeline:
+    /// `ppm → cjpeg → cjxl --lossless_jpeg=1 → JXLDecoder
+    /// .decodeToCoefficients`, then asserts every recovered DC + AC
+    /// coefficient matches what the JPEG-bridge math computes from
+    /// the original JPEG.
     ///
-    /// Root cause: libjxl's `ReadHybridUintClusteredInlined` applies a
-    /// 2D-pattern LUT (`kSpecialDistances`, 120 entries) to LZ77
-    /// distances when the section's `distance_multiplier > 0`
-    /// (modular sub-image case). We applied the simpler "decoded + 1"
-    /// rule unconditionally, inflating distance-247 to 248 instead of
-    /// the correct `247 + 1 − 120 = 128`.
+    /// **Three bugs this test catches (each fixed in turn):**
+    /// 1. **v0.12.0gv — SpecialDistance LZ77 remap.** Before this
+    ///    fix, decoding RAW slot 0's 8×8 modular sub-image hit
+    ///    `lz77InvalidDistance(distance: 248, historySize: 128)`
+    ///    because we applied "decoded + 1" instead of the 120-entry
+    ///    `kSpecialDistances` LUT when `distance_multiplier > 0`.
+    /// 2. **v0.12.0gw — ModularStreamId for QuantTable.** Before this
+    ///    fix, the modular tree's static-prop-1 (= stream_id) split
+    ///    routed every token through the wrong leaf because we
+    ///    hard-coded `groupId = 0` instead of computing
+    ///    `1 + 3 × num_dc_groups + slotIndex`. ANS state desync →
+    ///    `outOfBounds(needed: 16, remaining: 2)` at token 150 of
+    ///    192.
+    /// 3. **v0.12.0gx — bit-exact coefficient comparison.** With the
+    ///    above two fixes the decoder ran without errors, but
+    ///    coefficient values still differed by 8 entries (all on
+    ///    channel 2, positions k=1 / k=8 — the CFL fingerprint).
+    ///    Passing `--jpeg_reconstruction_cfl=0` to cjxl removes the
+    ///    chroma-from-luma decorrelation (libjxl's
+    ///    `force_cfl_jpeg_recompression` default), and the
+    ///    bit-exact match becomes total.
     ///
-    /// **Verification.** We round-trip a real JPEG through cjxl's
-    /// `--lossless_jpeg=1` (which writes a RAW slot 0 quant table in
-    /// the modular sub-image) and then call our
-    /// `JXLDecoder.decodeToCoefficients`. Before the fix this threw
-    /// `lz77InvalidDistance`; after the fix the decoder either
-    /// completes (returning planes) or surfaces a *different*
-    /// later-stage `notImplemented` — but never the LZ77 error.
-    func testEndToEnd_CjxlReverseDecode_NoLZ77DistanceError() throws {
+    /// **CFL caveat.** This test runs cjxl WITHOUT chroma-from-luma
+    /// (a libjxl default we don't yet model). Verifying byte-exact
+    /// match WITH CFL is a separate bite — see "AC-side CFL
+    /// decorrelation" note in `JPEGToJXLAdapter.applyJPEGBridgeDC`'s
+    /// doc comment.
+    func testEndToEnd_CjxlReverseDecode_BitExactCoefficientMatch() throws {
         let cjpeg = "/opt/homebrew/bin/cjpeg"
         let cjxl = "/opt/homebrew/bin/cjxl"
         guard FileManager.default.isExecutableFile(atPath: cjpeg),
@@ -6726,7 +6740,17 @@ final class JXLToJPEGAdapterTests: XCTestCase {
 
         let p2 = Process()
         p2.launchPath = cjxl
-        p2.arguments = ["--lossless_jpeg=1", jpgPath, jxlPath]
+        // `--jpeg_reconstruction_cfl=0` disables chroma-from-luma
+        // decorrelation. CFL is on by default in cjxl 0.11.2 and
+        // applies a "subtract Y × ratio from chroma" pass to the
+        // AC coefficients of the X (Cb) and B (Cr) channels (a
+        // small handful of AC slots per chroma block typically).
+        // Our bridge doesn't model CFL today, so we ask cjxl to
+        // skip it to make the comparison exact. The CFL match is
+        // a separate bite (track in CHANGELOG).
+        p2.arguments = ["--lossless_jpeg=1",
+            "--jpeg_reconstruction_cfl=0",
+            jpgPath, jxlPath]
         p2.standardOutput = Pipe()
         p2.standardError = Pipe()
         try p2.run()
@@ -6746,30 +6770,74 @@ final class JXLToJPEGAdapterTests: XCTestCase {
             "expected 3-channel YCbCr planes")
         XCTAssertGreaterThan(planes.blocksX, 0)
         XCTAssertGreaterThan(planes.blocksY, 0)
-        // Sanity: coefficient values should not be identically zero
-        // — that would mean the decode "succeeded" but recovered
-        // only zero blocks (the symptom of every token routing
-        // through the wrong tree leaf). For our gradient fixture
-        // every block has a non-trivial DC and at least some AC
-        // energy.
-        var totalNonZero = 0
-        for ch in 0..<planes.channelCount {
-            for v in planes.dcPerChannel[ch] where v != 0 {
-                totalNonZero += 1
+
+        // **Bit-exact coefficient match.** The cjxl `--lossless_jpeg=1`
+        // pipeline is lossless — every quantised DCT coefficient in
+        // the JPEG should round-trip through the JXL bitstream
+        // unchanged. Build the "expected" planes by walking the
+        // JPEG → JXL bridge math (`toJXLCoefficientPlanes` →
+        // `remappedForJXLBridge` → no DC offset under kYCbCr) and
+        // compare element-by-element with what our JXLDecoder
+        // recovered. Mismatches here mean either:
+        //   (a) cjxl applies a transformation we're not modelling, or
+        //   (b) our decoder mis-decodes some part of the bitstream.
+        let jpgData = try Data(contentsOf: URL(fileURLWithPath: jpgPath))
+        let jpegCoef = try JPEGDecoder
+            .decodeToCoefficients(jpgData)
+        let rawJXLPlanes = try jpegCoef.toJXLCoefficientPlanes()
+        // YCbCr color transform → no DC offset; just channel remap
+        // [Y, Cb, Cr] (JPEG order) → [Cb, Y, Cr] = [X, Y, B].
+        let expectedPlanes = rawJXLPlanes
+            .remappedForJXLBridge(
+                colorTransform: JXLBridgeColorTransform.ycbcr)
+
+        XCTAssertEqual(planes.channelCount,
+            expectedPlanes.channelCount)
+        XCTAssertEqual(planes.blocksX, expectedPlanes.blocksX,
+            "blocksX mismatch")
+        XCTAssertEqual(planes.blocksY, expectedPlanes.blocksY,
+            "blocksY mismatch")
+        var dcMismatches = 0
+        var acMismatches = 0
+        var firstAcMismatches: [String] = []
+        for ch in 0..<3 {
+            let expDC = expectedPlanes.dcPerChannel[ch]
+            let gotDC = planes.dcPerChannel[ch]
+            XCTAssertEqual(gotDC.count, expDC.count,
+                "channel \(ch) DC count")
+            for i in 0..<min(gotDC.count, expDC.count) {
+                if gotDC[i] != expDC[i] { dcMismatches += 1 }
             }
-            for block in planes.acPerChannel[ch] {
-                for v in block where v != 0 {
-                    totalNonZero += 1
+            let expAC = expectedPlanes.acPerChannel[ch]
+            let gotAC = planes.acPerChannel[ch]
+            XCTAssertEqual(gotAC.count, expAC.count,
+                "channel \(ch) AC block count")
+            for bi in 0..<min(gotAC.count, expAC.count) {
+                for k in 0..<64 {
+                    if gotAC[bi][k] != expAC[bi][k] {
+                        acMismatches += 1
+                        if firstAcMismatches.count < 16 {
+                            firstAcMismatches.append(
+                                "ch=\(ch) bi=\(bi) k=\(k) "
+                                + "(row=\(k/8) col=\(k%8)) "
+                                + "got=\(gotAC[bi][k]) "
+                                + "exp=\(expAC[bi][k])")
+                        }
+                    }
                 }
             }
         }
-        XCTAssertGreaterThan(totalNonZero, 0,
-            "recovered coefficients are all zero — decode is "
-            + "either routing through one tree leaf or producing "
-            + "no AC/DC energy at all")
+        for m in firstAcMismatches {
+            print("[cjxl reverse] AC diff: \(m)")
+        }
         print("[cjxl reverse] decodeToCoefficients succeeded — "
             + "blocks=\(planes.blocksX)×\(planes.blocksY) "
             + "channels=\(planes.channelCount) "
-            + "nonZeroCoeffs=\(totalNonZero)")
+            + "dcMismatches=\(dcMismatches) "
+            + "acMismatches=\(acMismatches)")
+        XCTAssertEqual(dcMismatches, 0,
+            "DC values differ from JPEG-bridge reference")
+        XCTAssertEqual(acMismatches, 0,
+            "AC values differ from JPEG-bridge reference")
     }
 }

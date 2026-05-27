@@ -11,6 +11,50 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0gx — 🎉 Bit-exact coefficient round-trip via cjxl `--lossless_jpeg=1`
+
+The autonomous reverse pipeline now produces **bit-exact recovered
+coefficients**: every DC + AC quantised DCT value in the original
+JPEG round-trips unchanged through
+`cjpeg → cjxl --lossless_jpeg=1 → JXLDecoder.decodeToCoefficients`.
+
+**Three-bug stack closed in this session:**
+
+1. **v0.12.0gv** — SpecialDistance LZ77 remap (modular sub-image
+   distances < 120 use the 2D-pattern LUT).
+2. **v0.12.0gw** — ModularStreamId for QuantTable RAW slot
+   (`groupId = 1 + 3 × num_dc_groups + slotIndex` not `0`).
+3. **v0.12.0gx** — actual coefficient comparison (this commit).
+   Previous tests only asserted "no LZ77 error" and "non-zero
+   coefficient count"; this commit upgrades to per-block
+   per-position equality against the JPEG-bridge reference values.
+
+**Result on a 16×16 4:4:4 gradient JPEG:**
+
+```
+[cjxl reverse] decodeToCoefficients succeeded —
+  blocks=2×2 channels=3 dcMismatches=0 acMismatches=0
+```
+
+**CFL caveat.** The cjxl invocation in the test passes
+`--jpeg_reconstruction_cfl=0` to disable libjxl's
+chroma-from-luma decorrelation (the
+`force_cfl_jpeg_recompression` default). Without that flag,
+cjxl applies a "subtract Y × ratio from chroma" pass on the
+X (Cb) and B (Cr) AC coefficients (~8 affected slots per chroma
+block on this fixture). Our bridge doesn't model CFL today —
+that's a follow-on bite (already called out in
+`JPEGToJXLAdapter.applyJPEGBridgeDC` doc comment as the "CFL
+recompression off by default" choice).
+
+**Test renamed**:
+`testEndToEnd_CjxlReverseDecode_NoLZ77DistanceError` →
+`testEndToEnd_CjxlReverseDecode_BitExactCoefficientMatch`
+(the assertion is now strict equality, not just absence of one
+specific error class).
+
+**Tests.** 642 tests / 7 skipped / 0 failures.
+
 ### v0.12.0gw — 🎉 ModularStreamId for QuantTable: cjxl reverse decodes end-to-end
 
 **The cjxl-emitted `--lossless_jpeg=1` reverse pipeline now decodes
