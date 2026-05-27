@@ -11,6 +11,72 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0gy — 🎉 CFL inverse for JPEG-bridge RAW slot: bit-exact decode with libjxl default CFL enabled
+
+**The autonomous reverse pipeline now succeeds bit-exactly with
+libjxl's default `force_cfl_jpeg_recompression=true` enabled** —
+no need to pass `--jpeg_reconstruction_cfl=0` to cjxl any more.
+
+**What CFL does** (libjxl `enc_frame.cc:973-991`): when encoding
+a 4:4:4 JPEG losslessly, libjxl decorrelates the AC coefficients
+of channels X (Cb) and B (Cr) from Y using a per-color-tile
+scaling derived from the JPEG quant tables and the cmap. Forward
+transform:
+
+```
+scale         = RatioJPEG(cmap[tx, ty])              // = cmap × 2048 / 84
+coeff_scale   = (qt × scale + 1024) >> 11
+cfl_factor    = (Y × coeff_scale + 1024) >> 11
+stored_chroma = original_chroma − cfl_factor
+```
+
+where `qt = (1<<11) × qtableY[i] / qtableC[i]` is the per-position
+luma-to-chroma quant ratio, and `Y` is the Y-channel AC coefficient
+at the same transposed position. Our previous decoder returned
+`stored_chroma`; the test had to disable CFL on the encoder side
+to make the comparison work.
+
+**The fix.** Two-piece:
+
+1. **Capture the qtable in the RAW decode**
+   ([QuantEncoding.swift](Sources/JXLSwift/VarDCT/QuantEncoding.swift)).
+   New `rawQtable: [Int32]?` + `rawQtableDen: Float?` fields on
+   `QuantEncoding`. The RAW path now stores the 3×64 integer
+   quant-table values (channel-major in JXL transposed order) and
+   the F16 denominator alongside the encoding mode. Other modes
+   leave both `nil`. Added a public memberwise init with defaults
+   so existing non-RAW call sites stay unchanged.
+
+2. **Apply CFL inverse at the coefficient-capture hook**
+   ([JXLDecoder.swift](Sources/JXLSwift/Codec/JXLDecoder.swift)).
+   When the captured planes correspond to a JPEG-compatible RAW
+   slot 0 (`abs(qtable_den - 1/(8·255)) < 1e-8`, the libjxl
+   fingerprint from `dec_group.cc:223-227`) and the frame is
+   4:4:4 YCbCr, we walk each X / B AC block and add `cfl_factor`
+   back. The cmap entries come from the existing `ytoxMapFull` /
+   `ytobMapFull` arrays decoded in ACMeta; the qtable from the
+   newly-retained `acDequantInfo.encodings[0].rawQtable`. Indexing
+   mirrors libjxl's `(i % 8) * 8 + (i / 8)` transpose for the
+   scaled qtable, and the 11-bit fixed-point arithmetic uses
+   the exact `(a * b + (1 << 10)) >> 11` rounding libjxl emits.
+
+**Regression test.**
+`testEndToEnd_CjxlReverseDecode_CFLEnabled_BitExactMatch` runs
+`cjpeg → cjxl --lossless_jpeg=1` (no `--jpeg_reconstruction_cfl=0`)
+and asserts every DC + AC coefficient round-trips identically
+to the original JPEG. Result on the 16×16 4:4:4 gradient:
+
+```
+[cjxl CFL on] decodeToCoefficients succeeded —
+  blocks=2×2 dcMismatches=0 acMismatches=0
+```
+
+The previous CFL-disabled test
+(`testEndToEnd_CjxlReverseDecode_BitExactCoefficientMatch`) still
+passes — kept as the pin-down for the "no CFL" path.
+
+**Tests.** 643 / 7 skipped / 0 failures.
+
 ### v0.12.0gx — 🎉 Bit-exact coefficient round-trip via cjxl `--lossless_jpeg=1`
 
 The autonomous reverse pipeline now produces **bit-exact recovered

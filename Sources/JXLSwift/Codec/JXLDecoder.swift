@@ -1544,6 +1544,116 @@ extension JXLDecoder {
                     acInXYBOrder[c].append(acBlocks[blkIdx][c])
                 }
             }
+
+            // **CFL inverse for JPEG-bridge frames.** libjxl's
+            // `--lossless_jpeg=1` encoder applies chroma-from-luma
+            // (CFL) decorrelation on the X (Cb) and B (Cr) AC
+            // coefficients when `force_cfl_jpeg_recompression` is
+            // true (default). The forward transform (libjxl
+            // `enc_frame.cc:973-991`) is:
+            //
+            //   scale       = RatioJPEG(cmap[tx, ty])
+            //                = cmap * 2048 / 84
+            //   coeff_scale = (qt × scale + 1024) >> 11
+            //   cfl_factor  = (Y_coef × coeff_scale + 1024) >> 11
+            //   stored_chroma = original_chroma − cfl_factor
+            //
+            // where `qt = (1<<11) × qtable_Y[i] / qtable_C[i]` is
+            // the per-position luma-to-chroma quant ratio, and
+            // `Y_coef` is the Y-channel AC coefficient at the same
+            // transposed position. The decoder mirrors this
+            // (`dec_group.cc:386-400`) to recover the original
+            // chroma. We do the same below at the
+            // `decodeToCoefficients` boundary: if slot 0 of the
+            // DequantMatrices is a JPEG-compatible RAW table
+            // (`abs(qtable_den - 1/(8·255)) < 1e-8` —
+            // `dec_group.cc:223-227`) and the frame is 4:4:4 YCbCr,
+            // add `cfl_factor` back to each X / B AC coefficient.
+            let kCFLFixedPointPrecision = 11
+            let kDefaultColorFactor: Int32 = 84
+            let halfRound: Int32 = 1 << (kCFLFixedPointPrecision - 1)
+            let isJPEGCompatibleRAW: Bool = {
+                guard !acDequantInfo.allDefault,
+                      !acDequantInfo.encodings.isEmpty else {
+                    return false
+                }
+                let enc = acDequantInfo.encodings[0]
+                guard enc.mode == .raw,
+                      let qden = enc.rawQtableDen,
+                      let qtab = enc.rawQtable,
+                      qtab.count == 3 * 64
+                else { return false }
+                // libjxl `dec_group.cc:223-227` JPEG fingerprint.
+                return abs(qden - Float(1.0 / (8.0 * 255.0))) < 1e-8
+            }()
+            let isYCbCr444 = (fh.colorTransform == .yCbCr)
+                && maxhs == 0 && maxvs == 0
+            if isJPEGCompatibleRAW && isYCbCr444,
+               let qtab = acDequantInfo.encodings[0].rawQtable {
+                // Precompute `scaled_qtable[c*64 + (x*8 + y)] =
+                // (1<<11) × qtable_Y[i_jpeg] / qtable_C[i_jpeg]`
+                // — libjxl `dec_group.cc:234-243`. The RAW path
+                // already stores the qtable in JXL-transposed
+                // order, so we read at `(i%8)*8 + (i/8)` to
+                // recover JPEG-natural before forming the ratio,
+                // then store back transposed. Equivalent to
+                // libjxl's `int n = qtable[64 + i]; int d =
+                // qtable[64*c + i]; scaled_qtable[64*c +
+                // (i%8)*8 + (i/8)] = (1<<11)*n/d`.
+                var scaledQtable = [Int32](repeating: 0, count: 3 * 64)
+                for c in 0..<3 {
+                    for i in 0..<64 {
+                        let nVal = qtab[64 + i]       // Y channel
+                        let dVal = qtab[64 * c + i]   // C channel
+                        guard nVal > 0, dVal > 0 else { continue }
+                        let dst = (i % 8) * 8 + (i / 8)
+                        scaledQtable[64 * c + dst] =
+                            Int32(1 << kCFLFixedPointPrecision)
+                            * nVal / dVal
+                    }
+                }
+                // Look up the cmap entry for each block's color
+                // tile (one tile = 8 blocks per side). For chroma
+                // X (JXL channel 0) we use `ytoxMapFull`; for B
+                // (JXL channel 2) we use `ytobMapFull`. Layout:
+                // row-major over `acCmapWidth × acCmapHeight`.
+                let kColorTileDimInBlocks = 8
+                for c in [0, 2] {
+                    let mapArr = (c == 0) ? ytoxMapFull : ytobMapFull
+                    for by in 0..<totalBlocksY {
+                        for bx in 0..<totalBlocksX {
+                            let tx = bx / kColorTileDimInBlocks
+                            let ty = by / kColorTileDimInBlocks
+                            let tIdx = ty * acCmapWidth + tx
+                            guard tIdx < mapArr.count else { continue }
+                            let cmapEntry = mapArr[tIdx]
+                            // libjxl `chroma_from_luma.h:68-70`:
+                            //   RatioJPEG(f) = f * (1<<11) /
+                            //                  kDefaultColorFactor
+                            let scale = cmapEntry
+                                * Int32(1 << kCFLFixedPointPrecision)
+                                / kDefaultColorFactor
+                            let blkIdx = by * totalBlocksX + bx
+                            // Loop the 64 transposed positions
+                            // 0..63 — same indexing as the C
+                            // channel's slot in scaledQtable.
+                            for i in 0..<64 {
+                                let qt = scaledQtable[64 * c + i]
+                                // coeff_scale = (qt·scale + round) >> 11
+                                let coeffScale = (qt &* scale &+ halfRound)
+                                    >> kCFLFixedPointPrecision
+                                let yCoef = acInXYBOrder[1][blkIdx][i]
+                                // cfl_factor =
+                                //   (Y·coeff_scale + round) >> 11
+                                let cflFactor = (yCoef &* coeffScale
+                                    &+ halfRound)
+                                    >> kCFLFixedPointPrecision
+                                acInXYBOrder[c][blkIdx][i] &+= cflFactor
+                            }
+                        }
+                    }
+                }
+            }
             // For chroma-subsampled frames the chroma planes have
             // fewer blocks than the Y plane. Our existing decoder
             // unfortunately allocates `dcValues[c]` and the

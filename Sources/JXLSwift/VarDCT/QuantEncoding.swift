@@ -127,6 +127,49 @@ public struct QuantEncoding: Sendable {
     /// AFV mode: a second set of distance bands for the inner
     /// 4×4 sub-block.
     public let dctParamsAfv4x4: DctParams?
+    /// RAW mode: the raw integer quant-table values, laid out
+    /// channel-major in JXL transposed coordinates — `qtable[c * 64
+    /// + (x * 8 + y)]` reads the value for channel `c` at position
+    /// (x, y). Captured by the RAW decode so downstream CFL inverse
+    /// math can recover the per-position scaling. Non-RAW modes
+    /// leave this `nil`.
+    public let rawQtable: [Int32]?
+    /// RAW mode: the F16-decoded `qtable_den` denominator. libjxl's
+    /// JPEG-transcode RAW slot uses `1 / (8 × 255) ≈ 0.000490`;
+    /// other RAW slots may use different denominators. We retain
+    /// it so a JPEG-bridge consumer can pin-down "this is the
+    /// JPEG-compatible RAW slot" via the value comparison libjxl
+    /// uses (`abs(qtable_den - 1 / (8 × 255)) < 1e-8`). Non-RAW
+    /// modes leave this `nil`.
+    public let rawQtableDen: Float?
+
+    /// Memberwise init that defaults the RAW-only fields to `nil`,
+    /// so non-RAW call sites don't need to spell them out.
+    public init(
+        mode: QuantMode,
+        predefined: UInt32?,
+        idWeights: [[Float]]?,
+        dct2Weights: [[Float]]?,
+        dct4Multipliers: [[Float]]?,
+        dct4x8Multipliers: [Float]?,
+        afvWeights: [[Float]]?,
+        dctParams: DctParams?,
+        dctParamsAfv4x4: DctParams?,
+        rawQtable: [Int32]? = nil,
+        rawQtableDen: Float? = nil
+    ) {
+        self.mode = mode
+        self.predefined = predefined
+        self.idWeights = idWeights
+        self.dct2Weights = dct2Weights
+        self.dct4Multipliers = dct4Multipliers
+        self.dct4x8Multipliers = dct4x8Multipliers
+        self.afvWeights = afvWeights
+        self.dctParams = dctParams
+        self.dctParamsAfv4x4 = dctParamsAfv4x4
+        self.rawQtable = rawQtable
+        self.rawQtableDen = rawQtableDen
+    }
 }
 
 public enum QuantEncodingError: Error, Sendable {
@@ -439,8 +482,9 @@ extension QuantEncoding {
             // exhausting the bitstream long before the 192-token
             // 8×8×3 sub-image is decoded.
             let groupId: Int32 = Int32(1 + 3 * numDcGroups + slotIndex)
+            let perChannel: [[Int32]]
             do {
-                _ = try decodeAllChannels(
+                perChannel = try decodeAllChannels(
                     channels: channels, groupId: groupId,
                     tree: tree, stream: &stream, from: &r,
                     wpHeader: gh.wpHeader
@@ -450,12 +494,31 @@ extension QuantEncoding {
                     "decodeAllChannels: \(error)"
                 )
             }
+            // Flatten the 3 channels' row-major buffers into a
+            // single channel-major Int32 array `[c * 64 + i]`.
+            // libjxl `dec_modular.cc::DecodeQuantTable` uses the
+            // same channel-major layout when copying into the
+            // `qtable` vector. Indexing is "raw" — natural JXL
+            // (already-transposed-vs-JPEG) order within each
+            // 8×8. The CFL-inverse consumer below indexes via
+            // `c * 64 + (x * 8 + y)`.
+            var rawQtable = [Int32](
+                repeating: 0,
+                count: 3 * requiredSizeX * requiredSizeY)
+            for c in 0..<3 {
+                let count = requiredSizeX * requiredSizeY
+                for i in 0..<count {
+                    rawQtable[c * count + i] = perChannel[c][i]
+                }
+            }
             return QuantEncoding(
                 mode: .raw, predefined: nil,
                 idWeights: nil, dct2Weights: nil,
                 dct4Multipliers: nil, dct4x8Multipliers: nil,
                 afvWeights: nil,
-                dctParams: nil, dctParamsAfv4x4: nil
+                dctParams: nil, dctParamsAfv4x4: nil,
+                rawQtable: rawQtable,
+                rawQtableDen: qtableDen
             )
         }
     }

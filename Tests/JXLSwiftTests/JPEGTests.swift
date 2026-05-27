@@ -6840,4 +6840,114 @@ final class JXLToJPEGAdapterTests: XCTestCase {
         XCTAssertEqual(acMismatches, 0,
             "AC values differ from JPEG-bridge reference")
     }
+
+    /// **🎉 Bit-exact coefficient round-trip via cjxl with CFL enabled.**
+    ///
+    /// Same as `testEndToEnd_CjxlReverseDecode_BitExactCoefficientMatch`
+    /// but without passing `--jpeg_reconstruction_cfl=0` to cjxl,
+    /// so libjxl's default chroma-from-luma decorrelation
+    /// (`force_cfl_jpeg_recompression=true`) is applied. Our
+    /// decoder's `decodeToCoefficients` now mirrors the libjxl
+    /// `dec_group.cc:386-400` CFL inverse so the recovered DC + AC
+    /// coefficients still match the original JPEG bit-for-bit.
+    ///
+    /// **The CFL forward transform** (libjxl `enc_frame.cc:973-991`):
+    ///
+    /// ```cpp
+    /// scale        = RatioJPEG(cmap[tx, ty])  // = cmap*2048/84
+    /// coeff_scale  = (qt × scale + 1024) >> 11
+    /// cfl_factor   = (Y × coeff_scale + 1024) >> 11
+    /// stored_chroma = original_chroma − cfl_factor
+    /// ```
+    ///
+    /// where `qt = (1<<11) × qtableY[i] / qtableC[i]` is the
+    /// per-position luma-to-chroma quant ratio. Our decoder reads
+    /// the qtable from the RAW slot 0 modular sub-image and the
+    /// cmap from ACMeta, then adds `cfl_factor` back to recover
+    /// the original chroma.
+    func testEndToEnd_CjxlReverseDecode_CFLEnabled_BitExactMatch()
+        throws
+    {
+        let cjpeg = "/opt/homebrew/bin/cjpeg"
+        let cjxl = "/opt/homebrew/bin/cjxl"
+        guard FileManager.default.isExecutableFile(atPath: cjpeg),
+              FileManager.default.isExecutableFile(atPath: cjxl)
+        else { throw XCTSkip("cjpeg + cjxl required") }
+        let tmp = NSTemporaryDirectory()
+        let ppmPath = tmp + "cfl-\(UUID().uuidString).ppm"
+        let jpgPath = tmp + "cfl-\(UUID().uuidString).jpg"
+        let jxlPath = tmp + "cfl-\(UUID().uuidString).jxl"
+        defer {
+            try? FileManager.default.removeItem(atPath: ppmPath)
+            try? FileManager.default.removeItem(atPath: jpgPath)
+            try? FileManager.default.removeItem(atPath: jxlPath)
+        }
+        var ppm = Data("P6\n16 16\n255\n".utf8)
+        for y in 0..<16 {
+            for x in 0..<16 {
+                ppm.append(UInt8(50 + x * 10))
+                ppm.append(UInt8(80 + y * 8))
+                ppm.append(UInt8(min(255, 100 + (x + y) * 5)))
+            }
+        }
+        try ppm.write(to: URL(fileURLWithPath: ppmPath))
+        let p1 = Process()
+        p1.launchPath = cjpeg
+        p1.arguments = ["-outfile", jpgPath, "-quality", "75",
+            "-baseline", "-sample", "1x1,1x1,1x1", ppmPath]
+        p1.standardOutput = Pipe()
+        p1.standardError = Pipe()
+        try p1.run()
+        p1.waitUntilExit()
+        XCTAssertEqual(p1.terminationStatus, 0)
+
+        let p2 = Process()
+        p2.launchPath = cjxl
+        // **CFL ON** — the libjxl default. Test pins down our CFL
+        // inverse against libjxl's exact `dec_group.cc` math.
+        p2.arguments = ["--lossless_jpeg=1", jpgPath, jxlPath]
+        p2.standardOutput = Pipe()
+        p2.standardError = Pipe()
+        try p2.run()
+        p2.waitUntilExit()
+        XCTAssertEqual(p2.terminationStatus, 0)
+        let jxlData = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
+
+        let planes = try JXLDecoder().decodeToCoefficients(jxlData)
+        let jpgData = try Data(contentsOf: URL(fileURLWithPath: jpgPath))
+        let jpegCoef = try JPEGDecoder.decodeToCoefficients(jpgData)
+        let rawJXLPlanes = try jpegCoef.toJXLCoefficientPlanes()
+        let expectedPlanes = rawJXLPlanes
+            .remappedForJXLBridge(
+                colorTransform: JXLBridgeColorTransform.ycbcr)
+
+        var dcMismatches = 0
+        var acMismatches = 0
+        for ch in 0..<3 {
+            let expDC = expectedPlanes.dcPerChannel[ch]
+            let gotDC = planes.dcPerChannel[ch]
+            for i in 0..<min(gotDC.count, expDC.count) {
+                if gotDC[i] != expDC[i] { dcMismatches += 1 }
+            }
+            let expAC = expectedPlanes.acPerChannel[ch]
+            let gotAC = planes.acPerChannel[ch]
+            for bi in 0..<min(gotAC.count, expAC.count) {
+                for k in 0..<64 {
+                    if gotAC[bi][k] != expAC[bi][k] {
+                        acMismatches += 1
+                    }
+                }
+            }
+        }
+        print("[cjxl CFL on] decodeToCoefficients succeeded — "
+            + "blocks=\(planes.blocksX)×\(planes.blocksY) "
+            + "dcMismatches=\(dcMismatches) "
+            + "acMismatches=\(acMismatches)")
+        XCTAssertEqual(dcMismatches, 0,
+            "DC values differ from JPEG reference (CFL on)")
+        XCTAssertEqual(acMismatches, 0,
+            "AC values differ from JPEG reference (CFL on) — "
+            + "the CFL inverse in JXLDecoder.decodeToCoefficients "
+            + "should mirror libjxl's `dec_group.cc:386-400` math.")
+    }
 }
