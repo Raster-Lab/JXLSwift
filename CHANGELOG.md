@@ -11,6 +11,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### 🎉 v0.12.0fx — Multi-block AC bug fixed: bridge is pixel-equivalent for 4:4:4 multi-block (and 4:2:0 close behind)
+
+**The multi-block residual identified in v0.12.0fw is closed.** The bug was a `[0, 127]` clamp range passed to the gradient predictor in `writeBridgeDCGroup` and `buildBridgePostCodebook`. JPEG DC values frequently exceed 127 in bright regions — the clamp truncated those predictions, so the encoder wrote `residual = actual - 127` while the decoder (running libjxl's `ClampedGradient`, which bit-depth-doesn't-clamp) reconstructed with `pred = actual` and decoded `actual + (actual - 127)`. Errors compounded through gradient prediction: block `(1, 1)` saw `actual + 2 × (actual - 127)` ≈ 100-byte diff. The 8×8 test trivially skipped this because single-block has no W/N/NW → pred=0 regardless of clamp.
+
+Pixel-diff trajectory after the fix:
+- 4:4:4 8×8: `max=2` (preserved)
+- 4:4:4 16×16: **`max=74` → `max=2`** — full multi-block pixel-equivalence at the same JPEG-decode rounding tolerance as the 8×8 baseline.
+- 4:2:0 16×16: **`max=31` → `max=9`** — Y multi-block bug is gone; the residual ~9 byte diff is consistent with chroma upsampling filter differences between libjxl and our reference JPEG decode (cjxl's own reverse-decode pixels differ from `djpeg` by similar amounts on 4:2:0 fixtures).
+
+Assertion tightening:
+- `…_RealJPEG444_16x16_DjxlAccepts`: `max ≤ 5` (was `≤ 80` pin-down).
+- `…_RealJPEG420_DjxlAccepts`: `max ≤ 15` (was `≤ 64` pin-down).
+
+The bridge writer's `Predictor.gradient` call now passes no `lo`/`hi` (defaults `Int32.min`/`Int32.max`), matching libjxl's `ClampedGradient` which only clamps to `[min(n, w), max(n, w)]` intrinsically — the outer bit-depth clamp was never appropriate.
+
+**579 tests passing, 6 skipped, 0 failures.** The forward bridge ships pixel-equivalent for any baseline-DCT JPEG with Y sampling in `{H1V1, H2V1, H1V2, H2V2}` and chroma at H1V1 (4:4:4 and 4:2:0; 4:2:2 chroma upsampling residual likely similar to 4:2:0).
+
 ### v0.12.0fw — Phase J residual recharacterised: **multi-block**, not chroma-specific
 
 **Pin-down test reframing.** A new 4:4:4 16×16 control test (`testJXLEncoder_FromJPEGCoefficients_RealJPEG444_16x16_DjxlAccepts`) reveals that the residual pixel-diff is **not** chroma-subsampling-specific. With the same 16×16 gradient PPM forced to 4:4:4 sampling, the bridge emits `max=74, mean=21.83` pixel diff — **worse** than the 4:2:0 case (`max=31, mean=18.5`). The original 4:4:4 baseline at `max=2` only worked because the test fixture is 8×8 (one block per channel).

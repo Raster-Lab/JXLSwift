@@ -1022,8 +1022,9 @@ public enum VarDCTBitstreamWriter {
         let blocksY = state.planes.blocksY
         let blockCount = blocksX * blocksY
         let predictor: Predictor = .gradient
-        // 8-bit precision; matches writeBridgeDCGroup.
-        let sampleHi: Int32 = 127
+        // **v0.12.0fx**: full Int32 range (no `lo`/`hi` clamp) —
+        // matches `writeBridgeDCGroup`'s fixed clamp range. See the
+        // comment block there for the multi-block-bug rationale.
         // DC channels — gradient predict + pack + tokenise. **v0.12.0ft**:
         // each channel walks its own block grid (`blocksPerChannel`)
         // for chroma-subsampled inputs.
@@ -1035,8 +1036,7 @@ public enum VarDCTBitstreamWriter {
                 for bx in 0..<cbx {
                     let nbh = Neighbourhood(
                         at: bx, by, in: plane, width: cbx)
-                    let pred = predictor.apply(
-                        to: nbh, lo: 0, hi: sampleHi)
+                    let pred = predictor.apply(to: nbh)
                     let residual = plane[by * cbx + bx]
                         &- pred
                     let packed = ZigZag.pack(residual)
@@ -1192,9 +1192,23 @@ public enum VarDCTBitstreamWriter {
         let blocksX = state.planes.blocksX
         let blocksY = state.planes.blocksY
         let predictor: Predictor = .gradient
-        // 8-bit precision; DC plane values are small JPEG DC
-        // integers (typically ±100 after the DCzero adjustment).
-        let sampleHi: Int32 = 127
+        // **v0.12.0fx — DC predictor clamp range fix.** Earlier this
+        // file passed `lo: 0, hi: 127` to `predictor.apply(...)`, on
+        // the assumption that "DC plane values are small JPEG DC
+        // integers (typically ±100)". That assumption breaks for any
+        // image with DC values outside `[0, 127]` — e.g. bright pixels
+        // give Y DC of 200-500, which the clamp truncates to 127. The
+        // encoder then writes a residual of `actual - 127`, but the
+        // decoder reconstructs with libjxl's `ClampedGradient` (which
+        // does NOT bit-depth-clamp) giving `actual` and decoded =
+        // `actual + (actual - 127)`. Result: blocks beyond `(0, 0)`
+        // decode with cumulative DC offsets (pre-fix: block (1,1) max
+        // diff ≈100 because gradient compounds W and N errors). The 8×8
+        // test trivially skipped this because single-block has no W/N/NW
+        // → pred=0 regardless of clamp. Fix: use the full `Int32` range
+        // so encoder and decoder predictions agree byte-for-byte.
+        // (libjxl `ClampedGradient` clamps to `[min(n, w), max(n, w)]`
+        // intrinsically — the wide outer range never fires.)
         // **Channel order in the DC modular sub-image is [Y, X, B]**
         // (libjxl `AddVarDCTDC`'s XOR remap: `image.channel[c < 2 ?
         // c^1 : c]`). Our `state.planes.dcPerChannel` is in JpegOrder
@@ -1220,8 +1234,7 @@ public enum VarDCTBitstreamWriter {
                 for bx in 0..<cbx {
                     let nbh = Neighbourhood(
                         at: bx, by, in: plane, width: cbx)
-                    let pred = predictor.apply(
-                        to: nbh, lo: 0, hi: sampleHi)
+                    let pred = predictor.apply(to: nbh)
                     let residual = plane[by * cbx + bx]
                         &- pred
                     let packed = ZigZag.pack(residual)

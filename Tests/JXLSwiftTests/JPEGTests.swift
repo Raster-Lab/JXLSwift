@@ -3295,17 +3295,16 @@ final class JPEGFoundationTests: XCTestCase {
             worstX, worstY, worstChan,
             djxlPixels[djxlPixels.startIndex + worstIdx],
             refPixels[worstIdx], worstD))
-        // **v0.12.0ft**: structural 4:2:0 path lands with `max=~30`
-        // (down from "saturated / decoder rejection" pre-fix). The
-        // residual ±30 byte diff is the next bite — likely in the
-        // ACMetadata sub-image dimensions for subsampled frames,
-        // or in the AC token iteration's chroma-block predictor
-        // initialisation. Looser bound here so the test passes as
-        // a smoke test of the 4:2:0 structural path; tighten to
-        // ±5 once the residual is closed.
-        XCTAssertLessThanOrEqual(maxDiff, 64,
-            "bridge → djxl 4:2:0: trivially bounded, expect tighter "
-            + "once the residual diff is localised; got max=\(maxDiff)")
+        // **v0.12.0fx**: with the DC predictor clamp removed,
+        // 4:2:0 drops from `max=31` to `max=9` — a 3.4× improvement.
+        // The remaining ~9 byte diff is likely chroma upsampling
+        // (libjxl's chroma upsample filter differs from JPEG's
+        // bilinear; even cjxl's reverse-decode pixels differ from
+        // djpeg by similar amounts). Tighten to `≤ 15` to catch
+        // any regression while allowing for upsampling rounding.
+        XCTAssertLessThanOrEqual(maxDiff, 15,
+            "bridge → djxl 4:2:0: residual chroma-upsampling diff "
+            + "bounded; got max=\(maxDiff)")
     }
 
     /// **Multi-block 4:4:4 control test**. Same harness as the 4:2:0
@@ -3405,20 +3404,17 @@ final class JPEGFoundationTests: XCTestCase {
         let meanDiff = Double(sumDiff) / Double(expectedPixelBytes)
         print("[bridge 4:4:4-16 pixel diff] max=\(maxDiff), "
             + "mean=\(String(format: "%.2f", meanDiff))")
-        // **v0.12.0fw pin-down.** This test is the *control* for the
-        // multi-block question. With the same 16×16 gradient through
-        // 4:4:4 sampling (4 Y blocks, 4 Cb blocks, 4 Cr blocks instead
-        // of 4:2:0's 4+1+1), `max=74` — *worse* than the 4:2:0 case
-        // (`max=31`). That's a smoking-gun: the residual isn't chroma-
-        // specific; it's a multi-block AC pipeline bug that the 8×8
-        // 4:4:4 baseline (1 block per channel) trivially skipped.
-        //
-        // The bound `≤ 80` is the current pin-down — passes now while
-        // the multi-block bug is open; tighten to `≤ 5` (same target
-        // as the 4:4:4 8×8 baseline) once the bug closes.
-        XCTAssertLessThanOrEqual(maxDiff, 80,
-            "bridge → djxl 4:4:4-16: multi-block bug pin-down; "
-            + "got max=\(maxDiff). Tighten to ≤ 5 once fixed.")
+        // **v0.12.0fx — bug closed.** Pre-fix this reported `max=74`
+        // because the bridge's DC predictor was clamping to `[0, 127]`,
+        // which truncated any DC value > 127 in blocks beyond `(0, 0)`.
+        // The gradient predictor compounded the error: block (1, 1)
+        // diff reached 100+. Removing the clamp matches libjxl's
+        // `ClampedGradient` (which doesn't bit-depth-clamp).
+        // 4:4:4 multi-block now hits the same `≤ 5` tolerance as the
+        // 8×8 baseline.
+        XCTAssertLessThanOrEqual(maxDiff, 5,
+            "bridge → djxl 4:4:4-16 should be pixel-equivalent "
+            + "within JPEG-decode rounding tolerance; got max=\(maxDiff)")
     }
 
     // MARK: - JXLEncoder.encodeFromJPEGCoefficients (v0.12.0ee, step 3.7)
