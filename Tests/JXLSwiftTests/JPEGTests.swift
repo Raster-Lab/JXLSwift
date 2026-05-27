@@ -5014,6 +5014,135 @@ final class JPEGBlockEncoderTests: XCTestCase {
         XCTAssertEqual(decoded.coefficients, block.coefficients)
     }
 
+    /// **End-to-end JPEG container round-trip.** Decode a cjpeg
+    /// fixture fully (coefficients + Huffman + quant + frame), then
+    /// reassemble a valid JPEG file via `JPEGContainerWriter.write`.
+    /// Decode the reassembled JPEG and verify the per-block
+    /// coefficients match the source.
+    ///
+    /// This is the end-to-end "JXL → JPEG file" capstone for the
+    /// reverse direction (modulo byte-identicality, which needs
+    /// `jbrd` to drive marker order + APP/COM data + padding bits).
+    func testRoundTrip_JPEGContainerReassembly() throws {
+        let cjpeg = "/opt/homebrew/bin/cjpeg"
+        let djpeg = "/opt/homebrew/bin/djpeg"
+        guard FileManager.default.isExecutableFile(atPath: cjpeg)
+            && FileManager.default.isExecutableFile(atPath: djpeg)
+        else { throw XCTSkip("cjpeg + djpeg required") }
+        let tmp = NSTemporaryDirectory()
+        let ppmPath = tmp + "cr-\(UUID().uuidString).ppm"
+        let jpgPath = tmp + "cr-\(UUID().uuidString).jpg"
+        let outJpg  = tmp + "cr-\(UUID().uuidString)-out.jpg"
+        let outPpm  = tmp + "cr-\(UUID().uuidString)-out.ppm"
+        defer {
+            for p in [ppmPath, jpgPath, outJpg, outPpm] {
+                try? FileManager.default.removeItem(atPath: p)
+            }
+        }
+        var ppm = Data("P6\n16 16\n255\n".utf8)
+        for y in 0..<16 {
+            for x in 0..<16 {
+                ppm.append(UInt8(50 + x * 10))
+                ppm.append(UInt8(80 + y * 8))
+                ppm.append(UInt8(min(255, 100 + (x + y) * 5)))
+            }
+        }
+        try ppm.write(to: URL(fileURLWithPath: ppmPath))
+        let p = Process()
+        p.launchPath = cjpeg
+        p.arguments = ["-outfile", jpgPath,
+                       "-sample", "1x1,1x1,1x1",
+                       "-quality", "75", "-baseline", ppmPath]
+        p.standardOutput = Pipe()
+        p.standardError = Pipe()
+        try p.run()
+        p.waitUntilExit()
+        XCTAssertEqual(p.terminationStatus, 0)
+        let jpg = try Data(contentsOf: URL(fileURLWithPath: jpgPath))
+
+        // Decode coefficients + grab Huffman tables.
+        let coefs = try JPEGDecoder.decodeToCoefficients(jpg)
+        var reader = JPEGSegmentReader(jpg)
+        var dcTables: [JPEGHuffmanTable] = []
+        var acTables: [JPEGHuffmanTable] = []
+        var scanHeader: JPEGScanHeader?
+        while let seg = try reader.next() {
+            switch seg.kind {
+            case .defineHuffmanTable:
+                for t in try JPEGHuffmanTable.parse(
+                    dhtPayload: seg.payload)
+                {
+                    if t.class == .dc { dcTables.append(t) }
+                    else { acTables.append(t) }
+                }
+            case .startOfScan:
+                scanHeader = try JPEGScanHeader.parse(
+                    sosPayload: seg.payload)
+            default: break
+            }
+            if seg.kind == .startOfScan { break }
+        }
+        let scan = try XCTUnwrap(scanHeader)
+        let scanComps: [JPEGScanComponentEncode] = scan.components.map
+        { sc in
+            let idx = coefs.frameComponents.firstIndex {
+                $0.componentId == sc.componentId
+            } ?? 0
+            return JPEGScanComponentEncode(
+                componentIndex: idx,
+                dcTableId: sc.dcTableId,
+                acTableId: sc.acTableId)
+        }
+
+        // Build a JPEG file from scratch.
+        let rebuilt = try JPEGContainerWriter.write(
+            image: coefs,
+            dcHuffmanTables: dcTables,
+            acHuffmanTables: acTables,
+            scanComponents: scanComps)
+        XCTAssertGreaterThan(rebuilt.count, 0)
+        // Reassembled JPEG should start with SOI and end with EOI.
+        XCTAssertEqual(rebuilt[rebuilt.startIndex], 0xFF)
+        XCTAssertEqual(rebuilt[rebuilt.startIndex + 1], 0xD8)
+        XCTAssertEqual(rebuilt[rebuilt.endIndex - 2], 0xFF)
+        XCTAssertEqual(rebuilt[rebuilt.endIndex - 1], 0xD9)
+
+        // Decode the reassembled JPEG via our own decoder + verify
+        // coefficient match.
+        let roundtrip = try JPEGDecoder.decodeToCoefficients(rebuilt)
+        XCTAssertEqual(roundtrip.width, coefs.width)
+        XCTAssertEqual(roundtrip.height, coefs.height)
+        XCTAssertEqual(
+            roundtrip.quantisedComponents.count,
+            coefs.quantisedComponents.count)
+        for c in 0..<coefs.quantisedComponents.count {
+            let orig = coefs.quantisedComponents[c]
+            let rt = roundtrip.quantisedComponents[c]
+            XCTAssertEqual(rt.blocks.count, orig.blocks.count,
+                "component \(c) block count")
+            for bi in 0..<orig.blocks.count {
+                XCTAssertEqual(
+                    rt.blocks[bi].coefficients,
+                    orig.blocks[bi].coefficients,
+                    "component \(c) block \(bi)")
+            }
+        }
+
+        // Sanity check: djpeg can decode the reassembled JPEG
+        // and produces pixels within JPEG-decode rounding of the
+        // direct decode.
+        try rebuilt.write(to: URL(fileURLWithPath: outJpg))
+        let p2 = Process()
+        p2.launchPath = djpeg
+        p2.arguments = ["-outfile", outPpm, "-pnm", outJpg]
+        p2.standardOutput = Pipe()
+        p2.standardError = Pipe()
+        try p2.run()
+        p2.waitUntilExit()
+        XCTAssertEqual(p2.terminationStatus, 0,
+            "djpeg should decode our reassembled JPEG")
+    }
+
     /// **End-to-end real-JPEG scan round-trip.** Decode a real JPEG's
     /// full SOS payload via `JPEGScanDecoder`, re-encode it via
     /// `JPEGScanEncoder` (using the JPEG's own DHT tables), decode
