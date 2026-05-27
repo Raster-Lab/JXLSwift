@@ -268,24 +268,194 @@ public struct JBRDBox: Sendable {
 /// The Brotli-compressed payload that follows the Bundle is read
 /// separately by `JBRDBox.readBrotliPayload(:)` once the Brotli
 /// decoder ships (phase J step 5g).
-///
-/// **Status (v0.12.0g0 scaffold)**. The reader signature is in
-/// place; the implementation is the next bite.
 public enum JBRDBoxReader {
 
     /// Read a jbrd Bundle. Stops at the byte boundary after the
     /// Bundle's `padding_bits` field; the caller continues with
     /// `BrotliDecoder.decode(...)` over the remaining bytes.
     ///
-    /// **Status (v0.12.0g0 scaffold)**. Throws `notImplemented` —
-    /// the full Field-by-Field walk lands in the next bite.
+    /// **Status (v0.12.0g7 — partial).** Implements the first portion
+    /// of `JPEGData::VisitFields`: is_gray, marker_order walk,
+    /// app_data / com_data / scan_info sizing, app marker types,
+    /// app/com marker lengths, quant table count + metadata,
+    /// component type + ids + quant_idx. The Huffman-code,
+    /// scan-info, restart-interval, intermarker, tail, padding-bits,
+    /// and final cross-check sections are the next bite.
     public static func read(
         from r: inout BitReader
     ) throws -> JBRDBox {
-        throw JBRDError.notImplemented(
-            "JBRDBoxReader.read — full Bundle walk pending; see "
-            + "libjxl/jpeg/jpeg_data.cc::JPEGData::VisitFields")
+        var box = JBRDBox()
+        do {
+            // 1. is_gray
+            let isGray = try r.readBit()
+            // 2. marker_order walk (6-bit code + 0xc0 offset).
+            //    Terminates at 0xd9 (EOI).
+            var markers: [UInt8] = []
+            var info = JPEGInfo()
+            while true {
+                let raw = try r.read(bits: 6)
+                let marker = UInt8(raw + 0xC0)
+                markers.append(marker)
+                if marker & 0xF0 == 0xE0 { info.numAppMarkers += 1 }
+                if marker == 0xFE { info.numComMarkers += 1 }
+                if marker == 0xDA { info.numScans += 1 }
+                if marker == 0xFF { info.numInterMarker += 1 }
+                if marker == 0xDD { info.hasDRI = true }
+                if markers.count > 16384 {
+                    throw JBRDError.tooManyMarkers(markers.count)
+                }
+                if marker == 0xD9 { break }  // EOI terminator
+            }
+            box.markerOrder = markers
+
+            // Size the per-section vectors from marker counts.
+            box.appData = Array(repeating: Data(),
+                count: info.numAppMarkers)
+            box.appMarkerType = Array(
+                repeating: .unknown, count: info.numAppMarkers)
+            box.comData = Array(repeating: Data(),
+                count: info.numComMarkers)
+            box.scanInfo = Array(
+                repeating: JBRDScanInfo(),
+                count: info.numScans)
+
+            // Set up component count from is_gray (will be refined
+            // by the component_type field below).
+            if isGray {
+                box.components = [JBRDComponent()]
+            } else {
+                box.components = [
+                    JBRDComponent(), JBRDComponent(),
+                    JBRDComponent(),
+                ]
+            }
+
+            // 3. Per app marker: marker_type (Enum 4-way) + 16-bit
+            //    length.
+            for i in 0..<info.numAppMarkers {
+                // libjxl `U32(Val(0), Val(1), BitsOffset(1, 2),
+                // BitsOffset(2, 4), 0, ...)`. Encodes 4 distinct
+                // marker-type cases.
+                let t = try r.readU32((
+                    .literal(0),                  // kUnknown
+                    .literal(1),                  // kICC
+                    .offset(constant: 2, extraBits: 1),
+                                                   // kExif (2..3)
+                    .offset(constant: 4, extraBits: 2)
+                                                   // kXMP (4..7)
+                ))
+                guard let mt = JBRDAppMarkerType(rawValue: t)
+                else {
+                    throw JBRDError.notImplemented(
+                        "app_marker_type \(t) outside known enum")
+                }
+                box.appMarkerType[i] = mt
+                let len = try r.read(bits: 16)
+                // Allocate the marker storage at the recorded
+                // length + 1 (length-field convention: stored
+                // value is total bytes - 1).
+                box.appData[i] = Data(
+                    count: Int(len) + 1)
+            }
+            // 4. Per com marker: 16-bit length.
+            for i in 0..<info.numComMarkers {
+                let len = try r.read(bits: 16)
+                box.comData[i] = Data(count: Int(len) + 1)
+            }
+            // 5. num_quant_tables — U32(Val(1), Val(2), Val(3),
+            //    Val(4), default=2).
+            let nQuant = try r.readU32((
+                .literal(1), .literal(2),
+                .literal(3), .literal(4)))
+            if nQuant == 4 {
+                throw JBRDError.invalidQuantTableCount
+            }
+            box.quant = Array(
+                repeating: JBRDQuantTable(),
+                count: Int(nQuant))
+            for i in 0..<Int(nQuant) {
+                let precision = try r.read(bits: 1)
+                if precision > 1 {
+                    throw JBRDError.invalidQuantPrecision
+                }
+                let index = try r.read(bits: 2)
+                let isLast = try r.readBit()
+                box.quant[i] = JBRDQuantTable(
+                    precision: precision, index: index,
+                    isLast: isLast)
+            }
+            // 6. component_type — Bits(2, default=kYCbCr=1).
+            //    Values: 0=kGray, 1=kYCbCr, 2=kRGB, 3=kCustom.
+            let compType = try r.read(bits: 2)
+            var numComponents: UInt32
+            switch compType {
+            case 0:  // kGray
+                numComponents = 1
+            case 1, 2:  // kYCbCr or kRGB
+                numComponents = 3
+            case 3:  // kCustom — read num_components
+                numComponents = try r.readU32((
+                    .literal(1), .literal(2),
+                    .literal(3), .literal(4)))
+                if numComponents != 1 && numComponents != 3 {
+                    throw JBRDError.invalidComponentCount(
+                        numComponents)
+                }
+            default:
+                throw JBRDError.invalidComponentCount(compType)
+            }
+            // Resize components and assign canonical ids.
+            if box.components.count != Int(numComponents) {
+                box.components = Array(
+                    repeating: JBRDComponent(),
+                    count: Int(numComponents))
+            }
+            switch compType {
+            case 0:
+                box.components[0].id = 1
+            case 1:  // YCbCr
+                box.components[0].id = 1
+                box.components[1].id = 2
+                box.components[2].id = 3
+            case 2:  // RGB
+                box.components[0].id = UInt32(UInt8(ascii: "R"))
+                box.components[1].id = UInt32(UInt8(ascii: "G"))
+                box.components[2].id = UInt32(UInt8(ascii: "B"))
+            case 3:  // Custom — read ids
+                for i in 0..<Int(numComponents) {
+                    box.components[i].id = try r.read(bits: 8)
+                }
+            default:
+                break
+            }
+            // Per-component quant_idx (2 bits each).
+            for i in 0..<Int(numComponents) {
+                let qIdx = try r.read(bits: 2)
+                if qIdx >= UInt32(box.quant.count) {
+                    throw JBRDError.invalidQuantIndex(
+                        comp: i, idx: qIdx)
+                }
+                box.components[i].quantIdx = qIdx
+            }
+
+            // Remaining fields (Huffman tables, scan info, restart
+            // interval, intermarker/tail data sizes, padding bits)
+            // are the next bite — surface what we have so far.
+        } catch let e as BitstreamError {
+            throw JBRDError.bitstream(e)
+        }
+        return box
     }
+}
+
+/// Internal — running counts derived from the marker_order walk.
+/// Mirrors libjxl's anonymous `JPEGInfo` struct in jpeg_data.cc.
+private struct JPEGInfo {
+    var numAppMarkers: Int = 0
+    var numComMarkers: Int = 0
+    var numScans: Int = 0
+    var numInterMarker: Int = 0
+    var hasDRI: Bool = false
 }
 
 /// Bundle writer for the `jbrd` box payload. Inverse of

@@ -4840,6 +4840,47 @@ extension JPEGFoundationTests {
     }
 }
 
+// MARK: - JBRDBoxReader — partial Bundle parse (v0.12.0g7)
+
+final class JBRDBoxReaderTests: XCTestCase {
+
+    /// Smoke test: feed the reader a real `jbrd` payload extracted
+    /// from a cjxl-emitted JPEG-bridge JXL container and confirm
+    /// the marker_order walk + sizing produces a non-empty struct
+    /// without throwing on the partial-implementation surface.
+    /// Skipped unless `/tmp/cjxl-ref-420.jbrd` is present.
+    func testJBRDReader_RealCjxlPayload_PartialFieldsParsed()
+        throws
+    {
+        let path = "/tmp/cjxl-ref-420.jbrd"
+        guard FileManager.default.fileExists(atPath: path) else {
+            throw XCTSkip(
+                "jbrd payload not present at \(path) — extract from "
+                + "a cjxl-encoded JXL file's `jbrd` box first")
+        }
+        let payload = try Data(
+            contentsOf: URL(fileURLWithPath: path))
+        var r = BitReader(payload)
+        let box = try JBRDBoxReader.read(from: &r)
+        // Sanity: marker_order should end with EOI (0xD9).
+        XCTAssertGreaterThan(box.markerOrder.count, 0)
+        XCTAssertEqual(box.markerOrder.last, 0xD9,
+            "marker_order should terminate at EOI (0xD9)")
+        // Should have at least one quant table.
+        XCTAssertGreaterThan(box.quant.count, 0,
+            "expected at least one quant table")
+        // YCbCr JPEG → 3 components.
+        XCTAssertEqual(box.components.count, 3,
+            "expected 3 components for YCbCr JPEG")
+        print("[JBRD smoke] markers=\(box.markerOrder.count) "
+            + "appMarkers=\(box.appData.count) "
+            + "comMarkers=\(box.comData.count) "
+            + "quantTables=\(box.quant.count) "
+            + "components=\(box.components.count) "
+            + "scans=\(box.scanInfo.count)")
+    }
+}
+
 // MARK: - JPEGBlockEncoder — round-trip vs JPEGBlockDecoder (v0.12.0g2)
 
 final class JPEGBlockEncoderTests: XCTestCase {
