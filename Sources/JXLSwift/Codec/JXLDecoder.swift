@@ -898,20 +898,24 @@ public struct JXLDecoder: Sendable {
         //         DecodeHistograms(...)       // AC histograms
         let _ = DequantMatricesAC.self
         let acGStart = r.position
-        do { _ = try DequantMatricesAC.readDefaultOrThrow(from: &r) }
-        catch DequantMatricesACError.notDefault {
+        let acDequantInfo: (allDefault: Bool, encodings: [QuantEncoding])
+        do {
+            acDequantInfo = try DequantMatricesAC.read(
+                from: &r,
+                globalTree: globalTree,
+                globalPostHeader: globalPostHeader,
+                globalPostCodebook: globalPostCodebook)
+        } catch DequantMatricesACError.perSlotRead(let slot, let e) {
             throw DecoderError.notImplemented(
-                "VarDCT decode: ProcessACGlobal — DequantMatrices.Decode "
-                + "non-default (per-table QuantEncoding reads) not yet "
-                + "wired up. The 17-strategy parser exists in QuantEncoding.swift "
-                + "but isn't reachable until the for-loop driver lands."
-            )
+                "VarDCT decode: DequantMatrices slot \(slot) "
+                + "QuantEncoding read failed: \(e)")
         } catch let e as DequantMatricesACError {
             throw DecoderError.notImplemented(
                 "VarDCT decode: DequantMatrices.Decode read failed: \(e)"
             )
         }
-        traceLayer("DequantMatricesAC.allDefault",
+        _ = acDequantInfo
+        traceLayer("DequantMatricesAC.\(acDequantInfo.allDefault ? "allDefault" : "perSlot(\(acDequantInfo.encodings.count))")",
                    before: acGStart, after: r.position)
 
         // num_histograms = 1 + ReadBits(CeilLog2Nonzero(num_groups))

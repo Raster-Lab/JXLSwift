@@ -139,9 +139,24 @@ public enum DequantMatricesDCError: Error, Sendable {
 /// piece of section-0 bitstream complexity.
 ///
 /// **Status**: all-default reader + `notDefault` throw for the
-/// long-form path. Per-strategy `QuantEncoding` parsing lives at
-/// the next session-sized bite.
+/// long-form path, plus a full reader (v0.12.0gs) that loops over
+/// 17 quant tables and reads per-slot `QuantEncoding` entries when
+/// the `all_default` bit is 0.
 public enum DequantMatricesAC {
+
+    /// Number of quant tables in the JXL spec (DCT, ID, DCT2x2, …,
+    /// DCT128X256 = 17). libjxl `quant_weights.h`:
+    /// `kNumQuantTables == 17`.
+    public static let kNumQuantTables: Int = 17
+
+    /// Per-slot required size in BLOCKS (libjxl `quant_weights.h:
+    /// required_size_x`). Multiply by 8 to get pixel dimensions.
+    public static let requiredSizeXBlocks: [Int] = [
+        1, 1, 1, 1, 2, 4, 1, 1, 2, 1, 1, 8, 4, 16, 8, 32, 16,
+    ]
+    public static let requiredSizeYBlocks: [Int] = [
+        1, 1, 1, 1, 2, 4, 2, 4, 4, 1, 1, 8, 8, 16, 16, 32, 32,
+    ]
 
     /// Read the 1-bit `all_default` flag. Returns `true` if every
     /// AC strategy uses its library default; throws `notDefault`
@@ -157,9 +172,66 @@ public enum DequantMatricesAC {
         if allDefault { return true }
         throw DequantMatricesACError.notDefault
     }
+
+    /// Read the full DequantMatrices section: 1-bit `all_default`
+    /// flag, then 17 per-slot `QuantEncoding` entries when the
+    /// flag is 0. Returns `(allDefault, encodings)` where
+    /// `encodings.count == 17` either way (defaults to library
+    /// when `allDefault == true`).
+    ///
+    /// `globalTree`/`globalPostHeader`/`globalPostCodebook` are
+    /// the LfGlobal modular state, needed for slot entries that
+    /// use `kQuantModeRAW` (their quant matrix lives in a modular
+    /// sub-image).
+    public static func read(
+        from r: inout BitReader,
+        globalTree: ModularTree? = nil,
+        globalPostHeader: EntropySectionHeader? = nil,
+        globalPostCodebook: MultiClusterCodebook? = nil
+    ) throws -> (allDefault: Bool, encodings: [QuantEncoding]) {
+        let allDefault: Bool
+        do { allDefault = try r.readBit() }
+        catch let e as BitstreamError {
+            throw DequantMatricesACError.bitstream(e)
+        }
+        if allDefault {
+            // Library defaults everywhere — caller derives the
+            // dequant matrices from the spec's library tables.
+            let libDefault = QuantEncoding(
+                mode: .library, predefined: 0,
+                idWeights: nil, dct2Weights: nil,
+                dct4Multipliers: nil, dct4x8Multipliers: nil,
+                afvWeights: nil,
+                dctParams: nil, dctParamsAfv4x4: nil)
+            return (true, Array(
+                repeating: libDefault, count: kNumQuantTables))
+        }
+        // Non-default — loop 17 times reading per-slot encodings.
+        var encodings: [QuantEncoding] = []
+        encodings.reserveCapacity(kNumQuantTables)
+        for i in 0..<kNumQuantTables {
+            let xBlocks = requiredSizeXBlocks[i]
+            let yBlocks = requiredSizeYBlocks[i]
+            do {
+                let enc = try QuantEncoding.read(
+                    from: &r,
+                    requiredSizeX: xBlocks * 8,
+                    requiredSizeY: yBlocks * 8,
+                    globalTree: globalTree,
+                    globalPostHeader: globalPostHeader,
+                    globalPostCodebook: globalPostCodebook)
+                encodings.append(enc)
+            } catch let e as QuantEncodingError {
+                throw DequantMatricesACError.perSlotRead(
+                    slot: i, error: e)
+            }
+        }
+        return (false, encodings)
+    }
 }
 
 public enum DequantMatricesACError: Error, Sendable {
     case bitstream(BitstreamError)
     case notDefault
+    case perSlotRead(slot: Int, error: QuantEncodingError)
 }
