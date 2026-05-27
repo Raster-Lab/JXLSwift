@@ -4913,6 +4913,53 @@ final class JBRDBoxReaderTests: XCTestCase {
             + "paddingBits=\(box.paddingBits.count)")
     }
 
+    /// **Diagnostic**: parse the Bundle from a real cjxl jbrd
+    /// payload, then attempt to decode the trailing Brotli stream
+    /// with our (uncompressed-only) Brotli decoder. Prints what the
+    /// payload uses so we know whether tiny jbrd payloads need the
+    /// full compressed-Brotli decoder or can be handled by the
+    /// uncompressed-only path.
+    func testJBRDReader_RealCjxlPayload_TrailingBrotliShape() throws {
+        let path = "/tmp/cjxl-ref-420.jbrd"
+        guard FileManager.default.fileExists(atPath: path) else {
+            throw XCTSkip("jbrd payload not present at \(path)")
+        }
+        let payload = try Data(
+            contentsOf: URL(fileURLWithPath: path))
+        var r = BitReader(payload)
+        _ = try JBRDBoxReader.read(from: &r)
+        // Bundle is bit-aligned at this point. The Brotli payload
+        // (per libjxl) is BYTE-aligned — `dec_jpeg_data.cc:25`
+        // calls `br.JumpToByteBoundary()` after the Bundle read.
+        // Pad up to the next byte.
+        let bitsConsumed = r.position
+        let bytesConsumed = (bitsConsumed + 7) / 8
+        let brotliStart = bytesConsumed
+        let brotliBytes = payload.suffix(from: brotliStart)
+        print("[JBRD trailing] bundle consumed \(bytesConsumed)B "
+            + "(\(bitsConsumed) bits); brotli payload "
+            + "\(brotliBytes.count)B starting at byte \(brotliStart)")
+        if brotliBytes.count >= 1 {
+            // Peek the first 16 bytes to identify structure.
+            let firstBytes = brotliBytes.prefix(min(16,
+                brotliBytes.count))
+            let hex = firstBytes.map {
+                String(format: "%02x", $0)
+            }.joined(separator: " ")
+            print("[JBRD trailing] first bytes: \(hex)")
+        }
+        // Try to decode through the partial Brotli decoder.
+        do {
+            let decoded = try BrotliDecoder.decode(Data(brotliBytes))
+            print("[JBRD trailing] decoded \(decoded.count) bytes "
+                + "(uncompressed Brotli path)")
+        } catch BrotliError.notImplemented(let msg) {
+            print("[JBRD trailing] needs compressed Brotli: \(msg)")
+        } catch {
+            print("[JBRD trailing] error: \(error)")
+        }
+    }
+
     /// **JBRD reader+writer round-trip on real payload.**
     /// Parse a real cjxl-emitted jbrd payload, write it back via
     /// `JBRDBoxWriter`, re-parse the result, and confirm the two
