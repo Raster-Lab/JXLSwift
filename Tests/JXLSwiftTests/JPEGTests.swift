@@ -6746,8 +6746,30 @@ final class JXLToJPEGAdapterTests: XCTestCase {
             "expected 3-channel YCbCr planes")
         XCTAssertGreaterThan(planes.blocksX, 0)
         XCTAssertGreaterThan(planes.blocksY, 0)
+        // Sanity: coefficient values should not be identically zero
+        // — that would mean the decode "succeeded" but recovered
+        // only zero blocks (the symptom of every token routing
+        // through the wrong tree leaf). For our gradient fixture
+        // every block has a non-trivial DC and at least some AC
+        // energy.
+        var totalNonZero = 0
+        for ch in 0..<planes.channelCount {
+            for v in planes.dcPerChannel[ch] where v != 0 {
+                totalNonZero += 1
+            }
+            for block in planes.acPerChannel[ch] {
+                for v in block where v != 0 {
+                    totalNonZero += 1
+                }
+            }
+        }
+        XCTAssertGreaterThan(totalNonZero, 0,
+            "recovered coefficients are all zero — decode is "
+            + "either routing through one tree leaf or producing "
+            + "no AC/DC energy at all")
         print("[cjxl reverse] decodeToCoefficients succeeded — "
             + "blocks=\(planes.blocksX)×\(planes.blocksY) "
-            + "channels=\(planes.channelCount)")
+            + "channels=\(planes.channelCount) "
+            + "nonZeroCoeffs=\(totalNonZero)")
     }
 }
