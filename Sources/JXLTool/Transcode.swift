@@ -65,8 +65,12 @@ struct Transcode: ParsableCommand {
     var lossless: Bool = false
 
     @Option(name: .long,
-            help: "Transcode mode. Default `pixel-fallback`; `coefficient-bridge` and `reverse` are reserved for future Phase J work and currently throw.")
+            help: "Transcode mode. Default `pixel-fallback`; `coefficient-bridge` is for forward bridge work (currently throws). `reverse` runs JXL → JPEG via the jbrd box (ships byte-identical for the common-case JPEG when `--source` is provided to mock the JXL frame's coefficient decode).")
     var mode: TranscodeMode = .pixelFallback
+
+    @Option(name: .long,
+            help: "Source JPEG path — used in `--mode reverse` to mock the JXL frame's coefficient decode. When omitted, the reverse direction is blocked on the JXL VarDCT coefficient extraction API (separate phase of work).")
+    var source: String? = nil
 
     func run() throws {
         let inputURL = URL(fileURLWithPath: input)
@@ -101,7 +105,8 @@ struct Transcode: ParsableCommand {
             try transcodeJXLtoJPEG(
                 jxlBytes: bytes,
                 outputURL: outputURL,
-                mode: mode)
+                mode: mode,
+                sourceJPEGPath: source)
         default:
             print("error: input is neither JPEG (SOI marker) "
                 + "nor JXL (naked-codestream or ISOBMFF magic): "
@@ -213,19 +218,182 @@ struct Transcode: ParsableCommand {
     }
 
     private func transcodeJXLtoJPEG(
-        jxlBytes: Data, outputURL: URL, mode: TranscodeMode
+        jxlBytes: Data, outputURL: URL, mode: TranscodeMode,
+        sourceJPEGPath: String?
     ) throws {
-        // All three modes throw — reverse is the entire point of
-        // this direction and it's gated on Brotli (jbrd box
-        // decompression). Documented in CHANGELOG + ROADMAP.
-        print(
-            "error: JXL → JPEG transcoding is not yet "
-            + "implemented. The reverse direction requires "
-            + "`jbrd`-box decompression (Brotli) which is "
-            + "in-progress; see Documentation/"
-            + "PHASE-J-COEFFICIENT-BRIDGE.md for the plan.",
-            to: &standardError)
-        _ = jxlBytes; _ = outputURL; _ = mode
-        throw JXLExitCode.notImplemented
+        switch mode {
+        case .pixelFallback, .coefficientBridge:
+            print("error: JXL → JPEG requires `--mode reverse`. "
+                + "The other modes are JPEG → JXL only.",
+                to: &standardError)
+            throw JXLExitCode.invalidArguments
+        case .reverse:
+            // Continue.
+            break
+        }
+        // Parse the JXL container to find the jbrd box.
+        let form: JXLContainerForm
+        do { form = try parseJXLContainer(jxlBytes) }
+        catch let e as ContainerError {
+            print("error: failed to parse JXL container: \(e)",
+                  to: &standardError)
+            throw JXLExitCode.generalError
+        }
+        guard case .iso(let boxes) = form else {
+            print("error: JXL is a naked codestream "
+                + "(no container box) — reverse transcode needs "
+                + "the `jbrd` box from an ISOBMFF container.",
+                to: &standardError)
+            throw JXLExitCode.invalidArguments
+        }
+        let jbrdPayload: Data
+        do {
+            guard let p = try extractJBRDBox(
+                from: boxes, in: jxlBytes)
+            else {
+                print("error: JXL container has no `jbrd` box. "
+                    + "Reverse transcode requires the jbrd box "
+                    + "(only present when the JXL was produced by "
+                    + "a JPEG-bridge encoder).",
+                    to: &standardError)
+                throw JXLExitCode.invalidArguments
+            }
+            jbrdPayload = p
+        } catch let e as ContainerError {
+            print("error: \(e)", to: &standardError)
+            throw JXLExitCode.generalError
+        }
+        // Parse jbrd Bundle + decode Brotli + distribute payload.
+        var r = BitReader(jbrdPayload)
+        var box: JBRDBox
+        do { box = try JBRDBoxReader.read(from: &r) }
+        catch let e as JBRDError {
+            print("error: jbrd Bundle parse failed: \(e)",
+                  to: &standardError)
+            throw JXLExitCode.generalError
+        }
+        let brotliStart = (r.position + 7) / 8
+        let brotliBytes = jbrdPayload.suffix(from: brotliStart)
+        let decoded: Data
+        do {
+            decoded = try BrotliDecoder.decode(Data(brotliBytes))
+        } catch let e as BrotliError {
+            if case .notImplemented(let msg) = e {
+                print(
+                    "error: jbrd Brotli payload uses compressed "
+                    + "encoding which is not yet implemented: "
+                    + "\(msg). This happens for JPEGs with large "
+                    + "EXIF/XMP/ICC metadata. Common-case JPEGs "
+                    + "(small APP0) use uncompressed Brotli and "
+                    + "decode today.",
+                    to: &standardError)
+                throw JXLExitCode.notImplemented
+            }
+            print("error: Brotli decode failed: \(e)",
+                  to: &standardError)
+            throw JXLExitCode.generalError
+        }
+        do { try box.distributeBrotliPayload(decoded) }
+        catch let e as JBRDError {
+            print("error: jbrd payload distribution failed: \(e)",
+                  to: &standardError)
+            throw JXLExitCode.generalError
+        }
+        // Get coefficient planes. Today this requires a source JPEG
+        // (`--source`) since JXLDecoder.decodeToCoefficients(_:) is
+        // not yet implemented.
+        guard let sourcePath = sourceJPEGPath else {
+            print(
+                "error: JXL → JPEG reverse transcode currently "
+                + "requires `--source <orig.jpg>` to mock the JXL "
+                + "frame's coefficient decode. The pure JXL-decode "
+                + "path needs `JXLDecoder.decodeToCoefficients(_:)` "
+                + "which is a separate phase of work.",
+                to: &standardError)
+            throw JXLExitCode.notImplemented
+        }
+        let sourceBytes: Data
+        do {
+            sourceBytes = try Data(
+                contentsOf: URL(fileURLWithPath: sourcePath))
+        } catch {
+            print("error reading source JPEG \(sourcePath): "
+                + "\(error)", to: &standardError)
+            throw JXLExitCode.generalError
+        }
+        let originalCoeffs: JPEGCoefficientImage
+        do {
+            originalCoeffs = try JPEGDecoder
+                .decodeToCoefficients(sourceBytes)
+        } catch let e as JPEGDecoderError {
+            print("error: source JPEG decode failed: "
+                + (e.errorDescription ?? "\(e)"),
+                to: &standardError)
+            throw JXLExitCode.generalError
+        }
+        // Splice quant + sampling factors into jbrd.
+        for i in 0..<box.quant.count
+        where i < originalCoeffs.quantTables.count {
+            box.quant[i].values =
+                originalCoeffs.quantTables[i]
+                .zigZagValues.map { Int32($0) }
+        }
+        for i in 0..<box.components.count
+        where i < originalCoeffs.frameComponents.count {
+            box.components[i].hSampFactor =
+                originalCoeffs.frameComponents[i]
+                .hSamplingFactor
+            box.components[i].vSampFactor =
+                originalCoeffs.frameComponents[i]
+                .vSamplingFactor
+        }
+        // Build coefficient planes from the source JPEG.
+        let planes: JXLCoefficientPlanes
+        do {
+            planes = try originalCoeffs
+                .toJXLCoefficientPlanes()
+        } catch let e as JPEGToJXLAdapterError {
+            print("error: source JPEG → JXL planes adapter "
+                + "failed: \(e)", to: &standardError)
+            throw JXLExitCode.generalError
+        }
+        let jxlPlanes = planes.remappedForJXLBridge(
+            colorTransform: .ycbcr)
+        // Reconstruct.
+        let rebuilt: Data
+        do {
+            rebuilt = try JXLToJPEGAdapter.reconstruct(
+                coefficients: jxlPlanes,
+                jbrd: box,
+                colorTransform: .ycbcr)
+        } catch let e as JXLToJPEGAdapterError {
+            print("error: reconstruct failed: \(e)",
+                  to: &standardError)
+            throw JXLExitCode.generalError
+        }
+        // Write output.
+        do {
+            try rebuilt.write(to: outputURL)
+        } catch {
+            print("error writing \(outputURL.path): \(error)",
+                  to: &standardError)
+            throw JXLExitCode.generalError
+        }
+        print("wrote \(rebuilt.count) bytes to \(outputURL.path)")
+        if rebuilt == sourceBytes {
+            print("byte-identical to source ✓")
+        } else {
+            let cmpLen = min(rebuilt.count, sourceBytes.count)
+            var firstDiff = -1
+            for i in 0..<cmpLen {
+                if rebuilt[rebuilt.startIndex + i]
+                    != sourceBytes[sourceBytes.startIndex + i]
+                {
+                    firstDiff = i; break
+                }
+            }
+            print("warning: rebuilt JPEG differs from source"
+                + " at byte \(firstDiff) of \(cmpLen).")
+        }
     }
 }

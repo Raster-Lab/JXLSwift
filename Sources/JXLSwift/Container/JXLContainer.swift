@@ -183,6 +183,30 @@ public func extractCodestream(from boxes: [JXLBox], in data: Data) throws -> Dat
     return combined
 }
 
+/// Extract the `jbrd` (JPEG Bitstream Reconstruction Data) box
+/// payload from an ISOBMFF JXL container.
+///
+/// The `jbrd` box is optional — it only appears when the JXL was
+/// produced by a JPEG-bridge encoder that wanted to preserve enough
+/// metadata for byte-identical reverse transcoding to JPEG.
+///
+/// - Returns: the payload bytes of the `jbrd` box, or `nil` when
+///   the container has no such box.
+/// - Throws: `ContainerError.malformedBox` if multiple `jbrd` boxes
+///   are present (the format allows at most one).
+public func extractJBRDBox(from boxes: [JXLBox], in data: Data)
+    throws -> Data?
+{
+    let jbrdBoxes = boxes.filter { $0.type == "jbrd" }
+    guard let jbrd = jbrdBoxes.first else { return nil }
+    if jbrdBoxes.count > 1 {
+        throw ContainerError.malformedBox(
+            "container has \(jbrdBoxes.count) jbrd boxes "
+            + "(at most one allowed)")
+    }
+    return data.subdata(in: jbrd.payloadRange)
+}
+
 /// Build an ISOBMFF container around a single codestream payload.
 /// Emits: signature box → `ftyp` box → `jxlc` box. Suitable for files
 /// that don't need split partials, EXIF, JPEG-reconstruct, etc.

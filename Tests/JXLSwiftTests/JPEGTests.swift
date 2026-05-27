@@ -5785,6 +5785,91 @@ final class JXLToJPEGAdapterTests: XCTestCase {
         }
     }
 
+    /// 🎉🎉 **Full container-driven byte-identical reconstruction.**
+    ///
+    /// Demonstrates the user-facing flow:
+    /// 1. Read a JXL container file (cjxl-encoded).
+    /// 2. Parse the container to find the `jbrd` box.
+    /// 3. Parse the jbrd Bundle + decode Brotli + distribute payload.
+    /// 4. Read the source JPEG (mocking the JXL frame coefficient
+    ///    decode — that part still requires a
+    ///    `JXLDecoder.decodeToCoefficients(_:)` API to land).
+    /// 5. Splice quant values + sampling factors into the jbrd from
+    ///    the source coefficients.
+    /// 6. Reconstruct via `JXLToJPEGAdapter.reconstruct(...)`.
+    /// 7. Compare to the source JPEG — must be byte-identical.
+    ///
+    /// Skipped unless both fixtures present.
+    func testEndToEnd_ContainerDrivenReconstruct_RealCjxl() throws {
+        let jxlPath = "/tmp/cjxl-ref-420.jxl"
+        let jpgPath = "/tmp/test-fixture-420.jpg"
+        guard FileManager.default.fileExists(atPath: jxlPath),
+              FileManager.default.fileExists(atPath: jpgPath)
+        else {
+            throw XCTSkip("JXL container + source JPEG required")
+        }
+        // 1+2. Parse container, find jbrd box.
+        let jxlBytes = try Data(
+            contentsOf: URL(fileURLWithPath: jxlPath))
+        let form = try parseJXLContainer(jxlBytes)
+        guard case .iso(let boxes) = form else {
+            XCTFail("expected ISO BMFF container; got \(form)")
+            return
+        }
+        let jbrdPayload = try extractJBRDBox(
+            from: boxes, in: jxlBytes)
+        guard let jbrdPayload = jbrdPayload else {
+            XCTFail("container has no jbrd box")
+            return
+        }
+
+        // 3. Parse jbrd Bundle + Brotli + distribute.
+        var r = BitReader(jbrdPayload)
+        var box = try JBRDBoxReader.read(from: &r)
+        let bitsConsumed = r.position
+        let bytesConsumed = (bitsConsumed + 7) / 8
+        let brotliBytes = jbrdPayload.suffix(from: bytesConsumed)
+        let decoded = try BrotliDecoder.decode(Data(brotliBytes))
+        try box.distributeBrotliPayload(decoded)
+
+        // 4. Mock JXL frame coefficient decode by reading the
+        //    source JPEG. (When `JXLDecoder.decodeToCoefficients`
+        //    lands, swap this for the real decode.)
+        let originalJPG = try Data(
+            contentsOf: URL(fileURLWithPath: jpgPath))
+        let originalCoeffs = try JPEGDecoder.decodeToCoefficients(
+            originalJPG)
+        // 5. Splice quant values + sampling factors.
+        for i in 0..<box.quant.count
+        where i < originalCoeffs.quantTables.count {
+            box.quant[i].values =
+                originalCoeffs.quantTables[i]
+                .zigZagValues.map { Int32($0) }
+        }
+        for i in 0..<box.components.count
+        where i < originalCoeffs.frameComponents.count {
+            box.components[i].hSampFactor =
+                originalCoeffs.frameComponents[i].hSamplingFactor
+            box.components[i].vSampFactor =
+                originalCoeffs.frameComponents[i].vSamplingFactor
+        }
+        let planes = try originalCoeffs.toJXLCoefficientPlanes()
+        let jxlPlanes = planes.remappedForJXLBridge(
+            colorTransform: .ycbcr)
+
+        // 6+7. Reconstruct and compare.
+        let rebuilt = try JXLToJPEGAdapter.reconstruct(
+            coefficients: jxlPlanes,
+            jbrd: box,
+            colorTransform: .ycbcr)
+        XCTAssertEqual(rebuilt, originalJPG,
+            "container-driven reconstruct must produce "
+            + "byte-identical JPEG")
+        print("[container reconstruct] rebuilt "
+            + "\(rebuilt.count) bytes == source \(originalJPG.count)"
+            + " bytes ✓")
+    }
+
     /// 🎉 **End-to-end byte-identical reconstruction via jbrd.**
     ///
     /// 1. Load the original JPEG that produced the cjxl reference.
