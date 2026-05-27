@@ -767,6 +767,36 @@ private struct JPEGInfo {
 
 extension JBRDBox {
 
+    /// External metadata payloads (Exif/xml/jumb/ICC) carried in
+    /// the JXL container, used to fill `kExif`/`kXMP`/`kICC` app
+    /// markers during `distributeBrotliPayload`.
+    ///
+    /// libjxl convention:
+    /// - `exif` carries the EXIF box payload, which is
+    ///   `tiff_header_offset (4 bytes)` + TIFF data. For canonical
+    ///   marker reconstruction the 4-byte offset is dropped and the
+    ///   TIFF data is spliced at marker offset 9 (right after the
+    ///   "Exif\0\0" tag).
+    /// - `xmp` carries the XMP XML, spliced at marker offset 32
+    ///   (right after the namespace URL).
+    /// - `icc` carries the full ICC profile, which is **split**
+    ///   across multiple `kICC` markers in the order they appear in
+    ///   the source JPEG. Each marker has a 1-indexed sequence
+    ///   number at byte 15 (set by the canonical template) and a
+    ///   total count at byte 16 (set after all kICC markers are
+    ///   sized). The ICC payload fragment at each marker fills bytes
+    ///   17 onwards.
+    public struct ExternalMetadata: Sendable {
+        public var exif: Data?
+        public var xmp: Data?
+        public var icc: Data?
+        public init(
+            exif: Data? = nil, xmp: Data? = nil, icc: Data? = nil
+        ) {
+            self.exif = exif; self.xmp = xmp; self.icc = icc
+        }
+    }
+
     /// Distribute the Brotli-decompressed payload bytes into the
     /// `app_data`, `com_data`, `inter_marker_data`, and `tail_data`
     /// slots of `self`.
@@ -785,30 +815,54 @@ extension JBRDBox {
     ///   4. For each `inter_marker_data[i]`: read full payload.
     ///   5. Tail data: read `tail_data.count` bytes from Brotli.
     ///
-    /// **Status (v0.12.0gd partial).** Implements the simple cases:
-    /// `kUnknown` app markers (the common JFIF/COM-style), com_data,
-    /// inter_marker_data, tail_data. Does NOT yet reconstruct the
-    /// canonical APP markers (ICC/Exif/XMP) — those need extra
-    /// templating logic that libjxl uses for byte-identicality of
-    /// well-known marker payloads.
+    /// **Status (v0.12.0gj).** Implements:
+    /// - `kUnknown` app markers (the common JFIF/COM-style) — full
+    ///   payload from Brotli.
+    /// - `kExif` / `kXMP` / `kICC` app markers — canonical marker
+    ///   template fill (marker byte, length field, tag). Bodies are
+    ///   spliced from the optional `external` parameter (caller
+    ///   supplies the EXIF/XMP/ICC bytes from the JXL container's
+    ///   metadata boxes).
+    /// - `com_data`, `inter_marker_data`, `tail_data` — full payload
+    ///   from Brotli.
     public mutating func distributeBrotliPayload(
-        _ decoded: Data
+        _ decoded: Data,
+        external: ExternalMetadata = ExternalMetadata()
     ) throws {
+        // Constants from libjxl `lib/jxl/jpeg/jpeg_data.h:35-37`.
+        let kIccProfileTag: [UInt8] = [
+            0x49, 0x43, 0x43, 0x5F, 0x50, 0x52, 0x4F, 0x46,
+            0x49, 0x4C, 0x45, 0x00,   // "ICC_PROFILE\0" — 12 bytes
+        ]
+        let kExifTag: [UInt8] = [
+            0x45, 0x78, 0x69, 0x66, 0x00, 0x00,   // "Exif\0\0" — 6 bytes
+        ]
+        let kXMPTag: [UInt8] = [
+            0x68, 0x74, 0x74, 0x70, 0x3A, 0x2F, 0x2F, 0x6E,
+            0x73, 0x2E, 0x61, 0x64, 0x6F, 0x62, 0x65, 0x2E,
+            0x63, 0x6F, 0x6D, 0x2F, 0x78, 0x61, 0x70, 0x2F,
+            0x31, 0x2E, 0x30, 0x2F, 0x00,
+            // "http://ns.adobe.com/xap/1.0/\0" — 29 bytes
+        ]
+
         var cursor = decoded.startIndex
-        // 1+2. App markers.
+        // First pass: kUnknown markers read from Brotli; kICC sets
+        // its prefix (marker byte + length + tag + seq number);
+        // kExif/kXMP do nothing here (their prefixes are set in
+        // the second pass, libjxl convention).
+        var numICC: UInt8 = 0
         for i in 0..<appData.count {
             let needed = appData[i].count
             switch appMarkerType[i] {
             case .unknown:
-                // Read full payload from Brotli.
                 guard cursor + needed <= decoded.endIndex else {
                     throw JBRDError.truncated
                 }
                 appData[i] = Data(decoded[cursor..<(cursor + needed)])
                 cursor += needed
-                // Length-field self-consistency check.
                 if appData[i].count >= 3 {
-                    let lenField = (Int(appData[i][appData[i].startIndex + 1]) << 8)
+                    let lenField =
+                        (Int(appData[i][appData[i].startIndex + 1]) << 8)
                         | Int(appData[i][appData[i].startIndex + 2])
                     if lenField + 1 != appData[i].count {
                         throw JBRDError.notImplemented(
@@ -817,15 +871,115 @@ extension JBRDBox {
                             + "size \(appData[i].count - 1)")
                     }
                 }
-            case .icc, .exif, .xmp:
-                // Reconstruct canonical marker template — defer to
-                // the next bite. For now, fail clearly.
-                throw JBRDError.notImplemented(
-                    "app_data[\(i)] type \(appMarkerType[i]) "
-                    + "needs canonical-template reconstruction "
-                    + "(libjxl dec_jpeg_data.cc:74-80)")
+            case .icc:
+                guard appData[i].count >= 17 else {
+                    throw JBRDError.notImplemented(
+                        "kICC marker[\(i)] too small "
+                        + "(\(appData[i].count) bytes < 17 needed)")
+                }
+                // Length field, marker byte, ICC tag, sequence #.
+                numICC += 1
+                var marker = appData[i]
+                let sizeMinus1 = marker.count - 1
+                marker[marker.startIndex + 0] = 0xE2     // APP2
+                marker[marker.startIndex + 1] = UInt8(
+                    (sizeMinus1 >> 8) & 0xFF)
+                marker[marker.startIndex + 2] = UInt8(
+                    sizeMinus1 & 0xFF)
+                for k in 0..<12 {
+                    marker[marker.startIndex + 3 + k] =
+                        kIccProfileTag[k]
+                }
+                marker[marker.startIndex + 15] = numICC
+                // marker[16] = total count, set in second pass.
+                appData[i] = marker
+            case .exif, .xmp:
+                // Length-field set here (libjxl jpeg_data.cc:69-73).
+                // marker byte + tag come in the second pass below.
+                var marker = appData[i]
+                let sizeMinus1 = marker.count - 1
+                marker[marker.startIndex + 1] = UInt8(
+                    (sizeMinus1 >> 8) & 0xFF)
+                marker[marker.startIndex + 2] = UInt8(
+                    sizeMinus1 & 0xFF)
+                appData[i] = marker
             }
         }
+        // Second pass: kICC sets total count; kExif/kXMP set marker
+        // byte + tag (length field already done above). Bodies are
+        // filled from `external` if supplied (after the canonical
+        // prefix bytes).
+        var iccCursor = 0
+        for i in 0..<appData.count {
+            switch appMarkerType[i] {
+            case .icc:
+                var marker = appData[i]
+                marker[marker.startIndex + 16] = numICC
+                // Fill ICC payload fragment for this marker (bytes 17+).
+                if let icc = external.icc {
+                    let chunkLen = marker.count - 17
+                    let start = iccCursor
+                    let end = min(start + chunkLen, icc.count)
+                    if start < icc.count {
+                        let chunk = icc[
+                            (icc.startIndex + start)
+                                ..< (icc.startIndex + end)]
+                        for (k, b) in chunk.enumerated() {
+                            marker[marker.startIndex + 17 + k] = b
+                        }
+                    }
+                    iccCursor += chunkLen
+                }
+                appData[i] = marker
+            case .exif:
+                var marker = appData[i]
+                guard marker.count >= 3 + kExifTag.count else {
+                    throw JBRDError.notImplemented(
+                        "kExif marker[\(i)] too small")
+                }
+                marker[marker.startIndex + 0] = 0xE1   // APP1
+                for k in 0..<kExifTag.count {
+                    marker[marker.startIndex + 3 + k] = kExifTag[k]
+                }
+                // Fill body from external.exif (after dropping the
+                // 4-byte tiff_header_offset in the Exif box).
+                if let exif = external.exif, exif.count >= 4 {
+                    let tiffData = exif.suffix(
+                        from: exif.startIndex + 4)
+                    let bodyOffset = 3 + kExifTag.count
+                    let bodyCapacity = marker.count - bodyOffset
+                    let copyCount = min(tiffData.count, bodyCapacity)
+                    for k in 0..<copyCount {
+                        marker[marker.startIndex + bodyOffset + k] =
+                            tiffData[tiffData.startIndex + k]
+                    }
+                }
+                appData[i] = marker
+            case .xmp:
+                var marker = appData[i]
+                guard marker.count >= 3 + kXMPTag.count else {
+                    throw JBRDError.notImplemented(
+                        "kXMP marker[\(i)] too small")
+                }
+                marker[marker.startIndex + 0] = 0xE1   // APP1
+                for k in 0..<kXMPTag.count {
+                    marker[marker.startIndex + 3 + k] = kXMPTag[k]
+                }
+                if let xmp = external.xmp {
+                    let bodyOffset = 3 + kXMPTag.count
+                    let bodyCapacity = marker.count - bodyOffset
+                    let copyCount = min(xmp.count, bodyCapacity)
+                    for k in 0..<copyCount {
+                        marker[marker.startIndex + bodyOffset + k] =
+                            xmp[xmp.startIndex + k]
+                    }
+                }
+                appData[i] = marker
+            case .unknown:
+                break
+            }
+        }
+
         // 3. Com markers — full Brotli read.
         for i in 0..<comData.count {
             let needed = comData[i].count

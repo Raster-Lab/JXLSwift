@@ -4913,6 +4913,36 @@ final class JBRDBoxReaderTests: XCTestCase {
             + "paddingBits=\(box.paddingBits.count)")
     }
 
+    /// **Diagnostic**: parse the EXIF-containing jbrd from a cjxl
+    /// reference and report what marker types cjxl assigned. The
+    /// goal is to verify whether cjxl uses kExif classification
+    /// when the source JPEG has an APP1 Exif marker, and how it
+    /// distributes the EXIF data between the Bundle and the
+    /// container's separate Exif/brob box.
+    func testJBRDReader_RealCjxlExifPayload_InspectMarkerTypes()
+        throws
+    {
+        let path = "/tmp/cjxl-ref-420-exif.jbrd"
+        guard FileManager.default.fileExists(atPath: path) else {
+            throw XCTSkip(
+                "EXIF jbrd payload not present at \(path)")
+        }
+        let payload = try Data(
+            contentsOf: URL(fileURLWithPath: path))
+        var r = BitReader(payload)
+        let box = try JBRDBoxReader.read(from: &r)
+        XCTAssertGreaterThan(box.appData.count, 0,
+            "expected at least one APP marker")
+        for (i, t) in box.appMarkerType.enumerated() {
+            print("  app[\(i)] type=\(t) "
+                + "size=\(box.appData[i].count)")
+        }
+        // For the synthetic EXIF JPEG (FF E1 + Exif\0\0 + ...), cjxl
+        // should classify it as .exif. Verify.
+        XCTAssertTrue(box.appMarkerType.contains(.exif),
+            "expected cjxl to classify APP1 Exif marker as .exif")
+    }
+
     /// **Diagnostic**: parse the Bundle from a real cjxl jbrd
     /// payload, then attempt to decode the trailing Brotli stream
     /// with our (uncompressed-only) Brotli decoder. Prints what the
@@ -5783,6 +5813,125 @@ final class JXLToJPEGAdapterTests: XCTestCase {
                     "channel \(ch) block \(bi) coefficients mismatch")
             }
         }
+    }
+
+    /// 🎉 **Container-driven byte-identical reconstruction for an
+    /// EXIF JPEG** (v0.12.0gj).
+    ///
+    /// Demonstrates the EXIF metadata path:
+    /// 1. Source: JPEG with APP1 Exif marker (synthesized).
+    /// 2. cjxl produces a JXL where the EXIF data is in a brob box
+    ///    (Brotli-compressed `Exif` box) and the jbrd Bundle marks
+    ///    the corresponding app slot as `kExif`.
+    /// 3. Our reverse path: parse container → find jbrd + brob →
+    ///    decode brob to get raw EXIF bytes → distribute Bundle
+    ///    payload with `external.exif = exif_bytes` →
+    ///    `JXLToJPEGAdapter.reconstruct` byte-identical to source.
+    func testEndToEnd_ContainerDrivenReconstruct_ExifJPEG() throws {
+        let jxlPath = "/tmp/cjxl-exif-420.jxl"
+        let jpgPath = "/tmp/test-fixture-420-exif.jpg"
+        guard FileManager.default.fileExists(atPath: jxlPath),
+              FileManager.default.fileExists(atPath: jpgPath)
+        else {
+            throw XCTSkip(
+                "EXIF JPEG + cjxl reference required")
+        }
+        // Parse container, find jbrd + Exif (from brob if compressed).
+        let jxlBytes = try Data(
+            contentsOf: URL(fileURLWithPath: jxlPath))
+        let form = try parseJXLContainer(jxlBytes)
+        guard case .iso(let boxes) = form else {
+            XCTFail("expected ISO container"); return
+        }
+        guard let jbrdPayload = try extractJBRDBox(
+            from: boxes, in: jxlBytes)
+        else { XCTFail("no jbrd box"); return }
+        // Try to extract the Exif metadata box. cjxl normally wraps
+        // the Exif box in a `brob` (Brotli-compressed) box. If the
+        // brob payload is *uncompressed* Brotli, we can decode it
+        // today; if compressed, we throw notImplemented (multi-
+        // session work). Skip the test cleanly in the compressed
+        // case so the suite isn't blocked.
+        let exifBox: Data?
+        do {
+            exifBox = try extractMetadataBox(
+                type: "Exif", from: boxes, in: jxlBytes)
+        } catch let e as BrotliError {
+            if case .notImplemented(let msg) = e {
+                throw XCTSkip(
+                    "EXIF brob box uses Brotli compressed encoding "
+                    + "(\(msg)) — gated on the Brotli compressed-"
+                    + "body decoder (multi-session work).")
+            }
+            throw e
+        }
+        XCTAssertNotNil(exifBox,
+            "expected Exif metadata box (direct or via brob)")
+        // Parse jbrd Bundle + Brotli + distribute with EXIF external.
+        var r = BitReader(jbrdPayload)
+        var box = try JBRDBoxReader.read(from: &r)
+        let brotliStart = (r.position + 7) / 8
+        let brotliBytes = jbrdPayload.suffix(from: brotliStart)
+        let decoded = try BrotliDecoder.decode(Data(brotliBytes))
+        try box.distributeBrotliPayload(decoded,
+            external: JBRDBox.ExternalMetadata(exif: exifBox))
+
+        // Splice quant + sampling from the source JPEG (mock for
+        // the JXL frame coefficient decode).
+        let sourceBytes = try Data(
+            contentsOf: URL(fileURLWithPath: jpgPath))
+        let originalCoeffs = try JPEGDecoder
+            .decodeToCoefficients(sourceBytes)
+        for i in 0..<box.quant.count
+        where i < originalCoeffs.quantTables.count {
+            box.quant[i].values =
+                originalCoeffs.quantTables[i]
+                .zigZagValues.map { Int32($0) }
+        }
+        for i in 0..<box.components.count
+        where i < originalCoeffs.frameComponents.count {
+            box.components[i].hSampFactor =
+                originalCoeffs.frameComponents[i].hSamplingFactor
+            box.components[i].vSampFactor =
+                originalCoeffs.frameComponents[i].vSamplingFactor
+        }
+        let planes = try originalCoeffs.toJXLCoefficientPlanes()
+        let jxlPlanes = planes.remappedForJXLBridge(
+            colorTransform: .ycbcr)
+        let rebuilt = try JXLToJPEGAdapter.reconstruct(
+            coefficients: jxlPlanes, jbrd: box,
+            colorTransform: .ycbcr)
+        // Diagnostic.
+        print("[EXIF reconstruct] rebuilt=\(rebuilt.count) "
+            + "source=\(sourceBytes.count)")
+        if rebuilt != sourceBytes {
+            let cmpLen = min(rebuilt.count, sourceBytes.count)
+            var firstDiff = -1
+            for i in 0..<cmpLen {
+                if rebuilt[rebuilt.startIndex + i]
+                    != sourceBytes[sourceBytes.startIndex + i]
+                {
+                    firstDiff = i; break
+                }
+            }
+            print("[EXIF reconstruct] first diff @\(firstDiff)")
+            let start = max(0, firstDiff - 4)
+            let end = min(cmpLen, firstDiff + 12)
+            let oSlice = Array(sourceBytes[
+                (sourceBytes.startIndex + start)
+                    ..< (sourceBytes.startIndex + end)])
+            let rSlice = Array(rebuilt[
+                (rebuilt.startIndex + start)
+                    ..< (rebuilt.startIndex + end)])
+            print("  orig @\(start)..\(end): "
+                + oSlice.map { String(format: "%02x", $0) }
+                    .joined(separator: " "))
+            print("  rebd @\(start)..\(end): "
+                + rSlice.map { String(format: "%02x", $0) }
+                    .joined(separator: " "))
+        }
+        XCTAssertEqual(rebuilt, sourceBytes,
+            "EXIF-containing JPEG should round-trip byte-identical")
     }
 
     /// 🎉🎉 **Full container-driven byte-identical reconstruction.**

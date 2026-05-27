@@ -183,6 +183,54 @@ public func extractCodestream(from boxes: [JXLBox], in data: Data) throws -> Dat
     return combined
 }
 
+/// Find an ISOBMFF metadata box of the given 4-character type
+/// (`Exif`, `xml `, `jumb`, etc.) in a parsed JXL container,
+/// transparently unwrapping `brob` (Brotli-compressed box) wrappers
+/// when the box is stored compressed.
+///
+/// `brob` payload layout (libjxl `BrotliBoxes`):
+/// ```
+///   4 bytes:    original box type (e.g. "Exif")
+///   N bytes:    Brotli-compressed contents of the original box's
+///               payload
+/// ```
+///
+/// Returns the decompressed payload bytes when found, or `nil` if
+/// no box of that type (either direct or inside a brob wrapper)
+/// exists in the container.
+///
+/// **Status (v0.12.0gj).** Handles direct boxes + brob-wrapped boxes
+/// for the uncompressed-Brotli case. Compressed-Brotli brob payloads
+/// throw `notImplemented` (consistent with `BrotliDecoder`).
+public func extractMetadataBox(
+    type wantedType: String,
+    from boxes: [JXLBox], in data: Data
+) throws -> Data? {
+    // Direct box match.
+    if let box = boxes.first(where: { $0.type == wantedType }) {
+        return data.subdata(in: box.payloadRange)
+    }
+    // brob-wrapped box match.
+    let brobBoxes = boxes.filter { $0.type == "brob" }
+    for brob in brobBoxes {
+        guard brob.payloadRange.count >= 4 else { continue }
+        let typeBytes = data.subdata(
+            in: brob.payloadRange.lowerBound
+                ..< (brob.payloadRange.lowerBound + 4))
+        guard let innerType = String(
+            data: typeBytes, encoding: .ascii)
+        else { continue }
+        if innerType == wantedType {
+            let brotliPayload = data.subdata(
+                in: (brob.payloadRange.lowerBound + 4)
+                    ..< brob.payloadRange.upperBound)
+            // Decompress.
+            return try BrotliDecoder.decode(brotliPayload)
+        }
+    }
+    return nil
+}
+
 /// Extract the `jbrd` (JPEG Bitstream Reconstruction Data) box
 /// payload from an ISOBMFF JXL container.
 ///
