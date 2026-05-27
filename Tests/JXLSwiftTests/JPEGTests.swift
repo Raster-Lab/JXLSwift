@@ -4840,6 +4840,225 @@ extension JPEGFoundationTests {
     }
 }
 
+// MARK: - JPEGBlockEncoder — round-trip vs JPEGBlockDecoder (v0.12.0g2)
+
+final class JPEGBlockEncoderTests: XCTestCase {
+
+    /// Build an `encodeTable` directly from a `JPEGHuffmanTable`'s
+    /// 16-element `bits` array (translating into the 17-element
+    /// form `JPEGHuffmanEncodeTable.build` expects).
+    private func encodeTable(
+        from t: JPEGHuffmanTable
+    ) -> [JPEGHuffmanEncodeEntry] {
+        var counts = [UInt32](repeating: 0, count: 17)
+        for i in 0..<16 {
+            counts[i + 1] = UInt32(t.bits[i])
+        }
+        let values = t.huffvals.map { UInt32($0) }
+        return JPEGHuffmanEncodeTable.build(
+            counts: counts, values: values)
+    }
+
+    /// Standard JPEG luminance DC Huffman table from ITU-T T.81
+    /// Annex K Table K.3 (the "typical" DC table for luminance).
+    /// Used by most JPEG encoders by default.
+    private var standardLumaDCTable: JPEGHuffmanTable {
+        // bits: 0,1,5,1,1,1,1,1,1,0,0,0,0,0,0,0
+        // values: 0..11 (12 magnitude categories)
+        let bits: [UInt8] = [
+            0, 1, 5, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0,
+        ]
+        let huffvals: [UInt8] = [
+            0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
+        ]
+        return JPEGHuffmanTable(
+            class: .dc, tableId: 0,
+            bits: bits, huffvals: huffvals)
+    }
+
+    /// Standard JPEG luminance AC Huffman table from ITU-T T.81
+    /// Annex K Table K.5.
+    private var standardLumaACTable: JPEGHuffmanTable {
+        let bits: [UInt8] = [
+            0, 2, 1, 3, 3, 2, 4, 3, 5, 5, 4, 4, 0, 0, 1, 0x7D,
+        ]
+        let huffvals: [UInt8] = [
+            0x01, 0x02, 0x03, 0x00, 0x04, 0x11, 0x05, 0x12,
+            0x21, 0x31, 0x41, 0x06, 0x13, 0x51, 0x61, 0x07,
+            0x22, 0x71, 0x14, 0x32, 0x81, 0x91, 0xA1, 0x08,
+            0x23, 0x42, 0xB1, 0xC1, 0x15, 0x52, 0xD1, 0xF0,
+            0x24, 0x33, 0x62, 0x72, 0x82, 0x09, 0x0A, 0x16,
+            0x17, 0x18, 0x19, 0x1A, 0x25, 0x26, 0x27, 0x28,
+            0x29, 0x2A, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39,
+            0x3A, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49,
+            0x4A, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59,
+            0x5A, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69,
+            0x6A, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79,
+            0x7A, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89,
+            0x8A, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98,
+            0x99, 0x9A, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7,
+            0xA8, 0xA9, 0xAA, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6,
+            0xB7, 0xB8, 0xB9, 0xBA, 0xC2, 0xC3, 0xC4, 0xC5,
+            0xC6, 0xC7, 0xC8, 0xC9, 0xCA, 0xD2, 0xD3, 0xD4,
+            0xD5, 0xD6, 0xD7, 0xD8, 0xD9, 0xDA, 0xE1, 0xE2,
+            0xE3, 0xE4, 0xE5, 0xE6, 0xE7, 0xE8, 0xE9, 0xEA,
+            0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8,
+            0xF9, 0xFA,
+        ]
+        return JPEGHuffmanTable(
+            class: .ac, tableId: 0,
+            bits: bits, huffvals: huffvals)
+    }
+
+    /// Round-trip helper: encode a block, decode it back, expect
+    /// the same coefficients + final DC predictor value.
+    private func roundTrip(
+        _ block: JPEGCoefficientBlock,
+        dcStart: Int32 = 0
+    ) throws -> JPEGCoefficientBlock {
+        let dcTable = standardLumaDCTable
+        let acTable = standardLumaACTable
+        let dcEnc = encodeTable(from: dcTable)
+        let acEnc = encodeTable(from: acTable)
+        var dcPredictor = JPEGDCPredictor()
+        dcPredictor.value = dcStart
+        var writer = JPEGBitWriter()
+        try JPEGBlockEncoder.encode(
+            block,
+            dcCodeTable: dcEnc, acCodeTable: acEnc,
+            dcPredictor: &dcPredictor,
+            to: &writer)
+        writer.flushPaddingOnes()
+        let encoded = writer.data
+
+        // Build the canonical-Huffman decode tables.
+        let dcCB = try dcTable.buildCodebook()
+        let acCB = try acTable.buildCodebook()
+        var rPredictor = JPEGDCPredictor()
+        rPredictor.value = dcStart
+        var reader = JPEGBitReader(encoded)
+        let decoded = try JPEGBlockDecoder.decode(
+            from: &reader,
+            dcCodebook: dcCB,
+            dcHuffvals: dcTable.huffvals,
+            acCodebook: acCB,
+            acHuffvals: dcTable.huffvals.isEmpty ? [] : acTable.huffvals,
+            dcPredictor: &rPredictor)
+        XCTAssertEqual(rPredictor.value, block.coefficients[0],
+            "DC predictor after decode should equal block's DC")
+        return decoded
+    }
+
+    func testRoundTrip_AllZeros() throws {
+        let block = JPEGCoefficientBlock()
+        let decoded = try roundTrip(block)
+        XCTAssertEqual(decoded.coefficients, block.coefficients)
+    }
+
+    func testRoundTrip_DCOnly() throws {
+        var c = [Int32](repeating: 0, count: 64)
+        c[0] = 42  // DC of 42
+        let block = JPEGCoefficientBlock(c)
+        let decoded = try roundTrip(block)
+        XCTAssertEqual(decoded.coefficients, block.coefficients)
+    }
+
+    func testRoundTrip_DCNegative() throws {
+        var c = [Int32](repeating: 0, count: 64)
+        c[0] = -100
+        let block = JPEGCoefficientBlock(c)
+        let decoded = try roundTrip(block)
+        XCTAssertEqual(decoded.coefficients, block.coefficients)
+    }
+
+    func testRoundTrip_SparseAC() throws {
+        var c = [Int32](repeating: 0, count: 64)
+        c[0] = 7        // DC
+        c[1] = 3        // AC at zig-zag position 1 (natural pos 1)
+        c[8] = -2       // natural pos 8 (zig-zag pos 2)
+        c[16] = 1       // natural pos 16 (zig-zag pos 3)
+        let block = JPEGCoefficientBlock(c)
+        let decoded = try roundTrip(block)
+        XCTAssertEqual(decoded.coefficients, block.coefficients)
+    }
+
+    func testRoundTrip_DenseAC() throws {
+        var c = [Int32](repeating: 0, count: 64)
+        c[0] = 50
+        // Fill in zig-zag order with descending values.
+        for k in 1..<32 {
+            c[JPEGZigZag.order[k]] = Int32(33 - k)  // 32 down to 2
+        }
+        let block = JPEGCoefficientBlock(c)
+        let decoded = try roundTrip(block)
+        XCTAssertEqual(decoded.coefficients, block.coefficients)
+    }
+
+    func testRoundTrip_LongZeroRun_ZRL() throws {
+        var c = [Int32](repeating: 0, count: 64)
+        c[0] = 5
+        // Place a nonzero at zig-zag position 17 (16 zeros first
+        // → exactly one ZRL emission then a (0, size) symbol).
+        c[JPEGZigZag.order[17]] = 1
+        let block = JPEGCoefficientBlock(c)
+        let decoded = try roundTrip(block)
+        XCTAssertEqual(decoded.coefficients, block.coefficients)
+    }
+
+    func testRoundTrip_FullBlock_LastPositionNonZero() throws {
+        var c = [Int32](repeating: 0, count: 64)
+        c[0] = 12
+        c[63] = -3   // last position in natural order
+        let block = JPEGCoefficientBlock(c)
+        let decoded = try roundTrip(block)
+        XCTAssertEqual(decoded.coefficients, block.coefficients)
+    }
+
+    /// **End-to-end real-JPEG block check.** Decode a real JPEG
+    /// block via `JPEGBlockDecoder`, re-encode it with our encoder
+    /// + the standard Huffman tables, then decode the re-encoded
+    /// bytes back. The coefficient values must match exactly.
+    func testRoundTrip_RealJPEGBlockCoefficients() throws {
+        let cjpeg = "/opt/homebrew/bin/cjpeg"
+        guard FileManager.default.isExecutableFile(atPath: cjpeg)
+        else { throw XCTSkip("cjpeg not present") }
+        let tmp = NSTemporaryDirectory()
+        let ppmPath = tmp + "be-\(UUID().uuidString).ppm"
+        let jpgPath = tmp + "be-\(UUID().uuidString).jpg"
+        defer {
+            try? FileManager.default.removeItem(atPath: ppmPath)
+            try? FileManager.default.removeItem(atPath: jpgPath)
+        }
+        var ppm = Data("P6\n8 8\n255\n".utf8)
+        for y in 0..<8 {
+            for x in 0..<8 {
+                ppm.append(UInt8(50 + x * 20))
+                ppm.append(UInt8(80 + y * 15))
+                ppm.append(UInt8(min(255, 100 + (x + y) * 10)))
+            }
+        }
+        try ppm.write(to: URL(fileURLWithPath: ppmPath))
+        let p = Process()
+        p.launchPath = cjpeg
+        p.arguments = ["-outfile", jpgPath,
+                       "-sample", "1x1,1x1,1x1",
+                       "-quality", "75", "-baseline", ppmPath]
+        p.standardOutput = Pipe()
+        p.standardError = Pipe()
+        try p.run()
+        p.waitUntilExit()
+        XCTAssertEqual(p.terminationStatus, 0)
+        let jpg = try Data(contentsOf: URL(fileURLWithPath: jpgPath))
+        let coefs = try JPEGDecoder.decodeToCoefficients(jpg)
+        // Take Y component block (0, 0) and round-trip it via our
+        // encoder+standard Huffman tables.
+        let yBlock = coefs.quantisedComponents[0].blocks[0]
+        let decoded = try roundTrip(yBlock)
+        XCTAssertEqual(decoded.coefficients, yBlock.coefficients,
+            "real-JPEG Y block must round-trip via encoder+decoder")
+    }
+}
+
 // MARK: - JXLToJPEGAdapter — reverse-bridge invertibility (v0.12.0g0)
 
 final class JXLToJPEGAdapterTests: XCTestCase {
