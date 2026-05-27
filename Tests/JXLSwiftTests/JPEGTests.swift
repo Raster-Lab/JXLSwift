@@ -2185,11 +2185,25 @@ final class JPEGFoundationTests: XCTestCase {
         XCTAssertEqual(planes.blocksY, 2)
         XCTAssertEqual(planes.dcPerChannel[0],
                        [10, 11, 12, 13])
+        // **v0.12.0fq**: adapter now transposes AC indexing (libjxl
+        // `enc_frame.cc:969`: `block[y*8 + x] = inputjpeg[x*8 + y]`).
+        // So JPEG coefficient at index k = (row=y, col=x) lands in
+        // JXL at `8*x + y`, i.e., the row/col swap.
+        //   coefs[1]  (JPEG y=0, x=1) → JXL `8*1 + 0` = **index 8**
+        //   coefs[63] (JPEG y=7, x=7) → JXL `8*7 + 7` = **index 63**
+        //                                  (diagonal — fixed point)
         for bi in 0..<4 {
             // AC position 0 zeroed (DC carried separately).
             XCTAssertEqual(planes.acPerChannel[0][bi][0], 0)
-            XCTAssertEqual(planes.acPerChannel[0][bi][1],
-                           Int32(-3 + bi))
+            // Old `coefs[1]` value now lives at index 8 after transpose.
+            XCTAssertEqual(planes.acPerChannel[0][bi][8],
+                           Int32(-3 + bi),
+                           "AC after transpose at idx 8 (was JPEG idx 1)")
+            // Index 1 in the transposed layout reads from JPEG idx 8,
+            // which is 0 in the test fixture.
+            XCTAssertEqual(planes.acPerChannel[0][bi][1], 0,
+                           "AC after transpose at idx 1 (was JPEG idx 8)")
+            // Diagonal position survives the swap unchanged.
             XCTAssertEqual(planes.acPerChannel[0][bi][63],
                            Int32(7 - bi))
         }

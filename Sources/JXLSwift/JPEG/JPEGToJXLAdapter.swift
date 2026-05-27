@@ -473,12 +473,39 @@ extension JPEGCoefficientImage {
             for bi in 0..<totalBlocks {
                 let block = quantisedComponents[ch].blocks[bi]
                 dc[bi] = block.coefficients[0]
-                for k in 1..<64 {
-                    ac[bi][k] = block.coefficients[k]
+                // **Transpose** JPEG natural order (row=y, col=x at
+                // index `8y + x`) → JXL natural order. libjxl's
+                // VarDCT block layout swaps rows and columns
+                // relative to JPEG's 8×8 DCT:
+                //
+                //   `enc_frame.cc:969:
+                //    block[y*8 + x] = inputjpeg[base + x*8 + y];`
+                //
+                // The companion qtable in
+                // `buildJXLBridgeRAWQuantPayload` is already
+                // transposed to match (`qt[c*64 + 8*x + y] =
+                // naturalQuant[8*y + x]` — see v0.12.0m). The AC
+                // coefficients must follow the same transpose for
+                // the dequant formula `coeff × weight × ...` to
+                // recover the JPEG-domain coefficient values at
+                // each frequency position. Without this, every
+                // coefficient lands at the wrong frequency, and
+                // the IDCT-then-YCbCr cascade produces scrambled
+                // colours (max diff 139 on the real-JPEG bridge
+                // test pre-fix).
+                //
+                // Position 0 (DC) is excluded from the loop and
+                // stays 0 in `ac[bi]` — libjxl's VarDCT bitstream
+                // stores LLF (the lowest frequency = DC) separately
+                // via the DC sub-image, not as part of the AC.
+                // (Applied v0.12.0fq.)
+                for y in 0..<8 {
+                    for x in 0..<8 {
+                        let k = y * 8 + x
+                        if k == 0 { continue }
+                        ac[bi][k] = block.coefficients[x * 8 + y]
+                    }
                 }
-                // Position 0 of ac[bi] is intentionally 0 —
-                // libjxl's VarDCT bitstream stores LLF
-                // separately and zeros position 0 in the AC array.
             }
             dcPlanes.append(dc)
             acPlanes.append(ac)
