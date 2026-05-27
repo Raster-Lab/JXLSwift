@@ -257,6 +257,68 @@ final class BrotliVarLenU8Tests: XCTestCase {
     }
 }
 
+/// Brotli compressed-body meta-block header tests using a real
+/// cjxl brob-box payload as the test vector.
+final class BrotliCompressedMetaBlockHeaderTests: XCTestCase {
+
+    /// The 16-byte Brotli stream from the cjxl `brob` box wrapping
+    /// the Exif metadata of `/tmp/cjxl-exif-420.jxl`. Decodes to
+    /// 18 bytes per `brotli --decompress`.
+    private let cjxlExifBrotliBody: [UInt8] = [
+        0x1b, 0x11, 0x00, 0x00, 0xa4, 0x01, 0x92, 0x54,
+        0x10, 0x96, 0x0d, 0x89, 0x04, 0x12, 0x75, 0x03,
+    ]
+
+    func testCompressedMetaBlockHeader_RealCjxlBrob() throws {
+        var r = BitReader(Data(cjxlExifBrotliBody))
+        // Skip WBITS + meta-block header (matches what
+        // BrotliDecoder.decode does up to the "compressed body
+        // dispatch").
+        let sh = try BrotliMetaBlockReader.readStreamHeader(from: &r)
+        XCTAssertEqual(sh.windowBits, 22,
+            "expected WBITS=22 (cjxl default)")
+        let mh = try BrotliMetaBlockReader.readMetaBlockHeader(
+            from: &r)
+        XCTAssertTrue(mh.isLast)
+        XCTAssertFalse(mh.isLastEmpty)
+        XCTAssertFalse(mh.isUncompressed,
+            "expected compressed meta-block")
+        XCTAssertEqual(mh.payloadSize, 18,
+            "expected 18-byte payload (matches brotli -d output)")
+
+        // Now read the compressed-body header.
+        let body = try BrotliCompressedMetaBlockHeader.read(
+            from: &r)
+        // For a small uniform-ish payload, cjxl should choose:
+        //   NBLTYPESL/I/D = 1 (single block type each)
+        //   NPOSTFIX = 0, NDIRECT = 0
+        //   1 context mode (for the 1 literal block type)
+        //   NTREESL = NTREESD = 1 (no context map needed)
+        XCTAssertEqual(body.literal.nbltypes, 1,
+            "NBLTYPESL")
+        XCTAssertEqual(body.insertCopy.nbltypes, 1,
+            "NBLTYPESI")
+        XCTAssertEqual(body.distance.nbltypes, 1,
+            "NBLTYPESD")
+        XCTAssertEqual(body.npostfix, 0, "NPOSTFIX")
+        XCTAssertEqual(body.ndirect, 0, "NDIRECT")
+        XCTAssertEqual(body.contextModes.count, 1,
+            "1 context mode for 1 literal block type")
+        XCTAssertGreaterThanOrEqual(body.ntreesl, 1, "NTREESL")
+        XCTAssertGreaterThanOrEqual(body.ntreesd, 1, "NTREESD")
+        print("[brob header] WBITS=\(sh.windowBits) "
+            + "MLEN+1=\(mh.payloadSize) "
+            + "NBLTYPESL=\(body.literal.nbltypes) "
+            + "NBLTYPESI=\(body.insertCopy.nbltypes) "
+            + "NBLTYPESD=\(body.distance.nbltypes) "
+            + "NPOSTFIX=\(body.npostfix) "
+            + "NDIRECT=\(body.ndirect) "
+            + "contextMode[0]=\(body.contextModes[0]) "
+            + "NTREESL=\(body.ntreesl) "
+            + "NTREESD=\(body.ntreesd)")
+    }
+}
+
 /// End-to-end BrotliDecoder tests using crafted streams.
 final class BrotliDecoderTests: XCTestCase {
 
