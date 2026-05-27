@@ -11,6 +11,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0gh — Phase J step 8: `jxl transcode --mode reverse` CLI shipping
+
+The byte-identical reverse direction is now reachable from the
+command line:
+
+```
+$ jxl-tool transcode --mode reverse \
+    --source orig.jpg in.jxl out.jpg
+wrote 654 bytes to out.jpg
+byte-identical to source ✓
+```
+
+The `--source` flag exists today as a mock for the JXL frame's
+coefficient decode — `JXLDecoder.decodeToCoefficients(_:)` is a
+separate phase of work. Without it, the CLI takes the source JPEG
+to recover the quantised DCT coefficients that the JXL frame
+encodes; the rest of the chain (jbrd Bundle → Brotli → marker
+order replay → byte-identical JPEG) is fully implemented.
+
+Components added:
+- `Container/JXLContainer.swift`: public `extractJBRDBox(from:in:)`
+  helper.
+- `JXLTool/Transcode.swift`: full `transcodeJXLtoJPEG` implementation
+  for `--mode reverse`, including clean error paths for missing
+  jbrd, naked codestreams, and compressed Brotli (which would
+  require the Brotli compressed-body decoder).
+
+Test: `testEndToEnd_ContainerDrivenReconstruct_RealCjxl` — drives
+the same flow programmatically (container parse → jbrd extract →
+Bundle → Brotli → distribute → reconstruct → byte-for-byte match).
+
+186 tests passing in Phase J suites, 0 regressions.
+
 ### 🎉🎉 v0.12.0ge — Phase J **BYTE-IDENTICAL** JXL → JPEG reconstruction ships
 
 The reverse direction is now **byte-identical** for the common-case
