@@ -1024,16 +1024,20 @@ public enum VarDCTBitstreamWriter {
         let predictor: Predictor = .gradient
         // 8-bit precision; matches writeBridgeDCGroup.
         let sampleHi: Int32 = 127
-        // DC channels — gradient predict + pack + tokenise.
+        // DC channels — gradient predict + pack + tokenise. **v0.12.0ft**:
+        // each channel walks its own block grid (`blocksPerChannel`)
+        // for chroma-subsampled inputs.
         for ch in 0..<state.planes.channelCount {
             let plane = state.planes.dcPerChannel[ch]
-            for by in 0..<blocksY {
-                for bx in 0..<blocksX {
+            let cbx = state.planes.blocksPerChannel[ch].blocksX
+            let cby = state.planes.blocksPerChannel[ch].blocksY
+            for by in 0..<cby {
+                for bx in 0..<cbx {
                     let nbh = Neighbourhood(
-                        at: bx, by, in: plane, width: blocksX)
+                        at: bx, by, in: plane, width: cbx)
                     let pred = predictor.apply(
                         to: nbh, lo: 0, hi: sampleHi)
-                    let residual = plane[by * blocksX + bx]
+                    let residual = plane[by * cbx + bx]
                         &- pred
                     let packed = ZigZag.pack(residual)
                     let t = Int(cfg.encode(packed).token)
@@ -1100,11 +1104,11 @@ public enum VarDCTBitstreamWriter {
         bctx: BlockCtxMap = BlockCtxMap()
     ) throws -> (EntropySectionHeader, MultiClusterCodebook, Int) {
         let cfg = HybridUintConfig.raw4
-        let q = buildBridgeQuantized(state: state)
-        let (perGroup, _, _) = generateACTokens(
-            q: q, bctx: bctx,
-            numGroupsX: numGroupsX,
-            numGroupsY: numGroupsY,
+        // **v0.12.0ft**: use the bridge-specific token generator
+        // (handles per-channel block grids for chroma subsampling).
+        let perGroup = generateBridgeACTokens(
+            state: state, bctx: bctx,
+            numGroupsX: numGroupsX, numGroupsY: numGroupsY,
             blocksPerGroup: blocksPerGroup)
         var histo = [Int](repeating: 0, count: cfg.maxToken + 1)
         var maxTok = 0
@@ -1205,15 +1209,20 @@ public enum VarDCTBitstreamWriter {
         } else {
             dcChannelOrder = Array(0..<state.planes.channelCount)
         }
+        // **v0.12.0ft**: each channel walks its own block grid
+        // (`blocksPerChannel[ch]`) — chroma planes are smaller than
+        // luma under 4:2:0 / 4:2:2 subsampling.
         for ch in dcChannelOrder {
             let plane = state.planes.dcPerChannel[ch]
-            for by in 0..<blocksY {
-                for bx in 0..<blocksX {
+            let cbx = state.planes.blocksPerChannel[ch].blocksX
+            let cby = state.planes.blocksPerChannel[ch].blocksY
+            for by in 0..<cby {
+                for bx in 0..<cbx {
                     let nbh = Neighbourhood(
-                        at: bx, by, in: plane, width: blocksX)
+                        at: bx, by, in: plane, width: cbx)
                     let pred = predictor.apply(
                         to: nbh, lo: 0, hi: sampleHi)
-                    let residual = plane[by * blocksX + bx]
+                    let residual = plane[by * cbx + bx]
                         &- pred
                     let packed = ZigZag.pack(residual)
                     try dcWriter.writeToken(
@@ -1408,9 +1417,10 @@ public enum VarDCTBitstreamWriter {
         acCodebook: MultiClusterCodebook,
         to w: inout BitWriter
     ) throws {
-        let q = buildBridgeQuantized(state: state)
-        let (perGroup, _, _) = generateACTokens(
-            q: q, bctx: bctx,
+        // **v0.12.0ft**: use the bridge-specific token generator
+        // (handles per-channel block grids for chroma subsampling).
+        let perGroup = generateBridgeACTokens(
+            state: state, bctx: bctx,
             numGroupsX: numGroupsX,
             numGroupsY: numGroupsY,
             blocksPerGroup: blocksPerGroup)
@@ -1426,6 +1436,136 @@ public enum VarDCTBitstreamWriter {
                 context: tok.context, value: tok.value, to: &w)
         }
         // No alpha for the bridge.
+    }
+
+    /// **Bridge-specific AC token generator** with per-channel block
+    /// grid support — handles 4:2:0 / 4:2:2 / 4:4:4 chroma subsampling.
+    /// Mirrors libjxl `enc_entropy_coder.cc::TokenizeCoefficients`
+    /// lines 165-237: walks the FULL (Y-resolution) block grid in
+    /// row-major; for each `(bx, by)` iterates channels in libjxl
+    /// storage order `{Y, X, B}` = indices `{1, 0, 2}`; for each
+    /// channel `c`, only emits a token block when `(bx, by)` is
+    /// the top-left of a chroma block (i.e., aligned with the
+    /// channel's hshift/vshift).
+    ///
+    /// This is the bridge's parallel to the pixel-pipeline's
+    /// `generateACTokens` — but simpler because the bridge always
+    /// uses DCT8×8 (no multi-block transforms, no CFL, uniform
+    /// QF=1). Doesn't reuse `generateACTokens` because that one
+    /// hard-codes a single uniform block grid across all channels.
+    ///
+    /// **Status (v0.12.0ft).** Closing piece of the 4:2:0 / 4:2:2
+    /// subsampling lift.
+    static func generateBridgeACTokens(
+        state: JXLBridgeEncoderState,
+        bctx: BlockCtxMap,
+        numGroupsX: Int, numGroupsY: Int, blocksPerGroup bpg: Int
+    ) -> [[(context: Int, value: UInt32)]] {
+        let order = naturalCoeffOrderDCT8
+        let iterToXYB = [1, 0, 2]                 // {Y, X, B}
+        // Compute per-channel HShift / VShift from the per-channel
+        // block grids. For 4:2:0 chroma the chroma plane has half
+        // the Y dims in each direction → shift = 1.
+        let bX = state.planes.blocksX
+        let bY = state.planes.blocksY
+        let bpc = state.planes.blocksPerChannel
+        var hshift = [Int](repeating: 0, count: 3)
+        var vshift = [Int](repeating: 0, count: 3)
+        for c in 0..<min(3, bpc.count) {
+            // Channel grid is bpc[c]; Y (= max) grid is (bX, bY).
+            // shift = log2(bX / bpc[c].blocksX).
+            hshift[c] = bX == bpc[c].blocksX ? 0
+                : (bX == bpc[c].blocksX * 2 ? 1 : 0)
+            vshift[c] = bY == bpc[c].blocksY ? 0
+                : (bY == bpc[c].blocksY * 2 ? 1 : 0)
+        }
+        var result: [[(context: Int, value: UInt32)]] = []
+        for gy in 0..<numGroupsY {
+            for gx in 0..<numGroupsX {
+                let bx0 = gx * bpg, by0 = gy * bpg
+                let gW = min(bpg, bX - bx0)
+                let gH = min(bpg, bY - by0)
+                // Per-channel nnz prediction planes, sized to each
+                // channel's grid within the group rect (chroma is
+                // smaller for subsampled inputs).
+                var nzPlanes: [[Int32]] = []
+                var planeWidths: [Int] = []
+                var planeHeights: [Int] = []
+                for c in 0..<3 {
+                    let cGW = (gW + (1 << hshift[c]) - 1)
+                        >> hshift[c]
+                    let cGH = (gH + (1 << vshift[c]) - 1)
+                        >> vshift[c]
+                    nzPlanes.append(
+                        [Int32](repeating: 0, count: cGW * cGH))
+                    planeWidths.append(cGW)
+                    planeHeights.append(cGH)
+                }
+                var tokens: [(context: Int, value: UInt32)] = []
+                for ly in 0..<gH {
+                    for lx in 0..<gW {
+                        for iterIdx in 0..<3 {
+                            let c = iterToXYB[iterIdx]
+                            if c >= state.planes.channelCount {
+                                continue
+                            }
+                            // Skip channels whose block grid skips
+                            // this `(bx, by)`. Chroma at (HShift=1)
+                            // emits only on even `bx`.
+                            let sbx = lx >> hshift[c]
+                            let sby = ly >> vshift[c]
+                            if (sbx << hshift[c]) != lx { continue }
+                            if (sby << vshift[c]) != ly { continue }
+                            // Per-channel block index into the
+                            // chroma plane. `bpc[c].blocksX` is the
+                            // channel's full-frame block width.
+                            let chBlocksX = bpc[c].blocksX
+                            let chBy0 = by0 >> vshift[c]
+                            let chBx0 = bx0 >> hshift[c]
+                            let chBlk = (chBy0 + sby) * chBlocksX
+                                + (chBx0 + sbx)
+                            let ac = state.planes.acPerChannel[c][chBlk]
+                            let cW = planeWidths[c]
+                            let plane = nzPlanes[c]
+                            let predNnz: UInt32
+                            if sby == 0 {
+                                predNnz = UInt32(
+                                    sbx == 0 ? 32 : plane[sbx - 1])
+                            } else if sbx == 0 {
+                                predNnz = UInt32(
+                                    plane[(sby - 1) * cW])
+                            } else {
+                                predNnz = UInt32(
+                                    (plane[(sby - 1) * cW + sbx]
+                                     + plane[sby * cW + sbx - 1]
+                                     + 1) >> 1)
+                            }
+                            // BlockCtxMap context: dcIdx=0 (default
+                            // BlockCtxMap has no DC ctx), qf=1
+                            // (uniform), ord=0 (DCT8 strategy
+                            // bucket), channel c.
+                            let blockCtx = bctx.context(
+                                dcIdx: 0, qf: 1, ord: 0, c: c)
+                            // Tokenise this DCT8x8 block.
+                            let (blockTokens, nnz) =
+                                ACEncoder.tokenize(
+                                    block: ac, order: order,
+                                    coveredBlocks: 1,
+                                    log2CoveredBlocks: 0,
+                                    blockCtx: blockCtx,
+                                    predictedNnz: predNnz,
+                                    ctxOffset: 0, ctxMap: bctx,
+                                    shift: 0)
+                            tokens.append(contentsOf: blockTokens)
+                            nzPlanes[c][sby * cW + sbx] =
+                                Int32(nnz)
+                        }
+                    }
+                }
+                result.append(tokens)
+            }
+        }
+        return result
     }
 
     static func writeBridgePrelude(

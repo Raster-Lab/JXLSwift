@@ -35,23 +35,37 @@ import Foundation
 /// Per-channel quantised DC + AC coefficient planes in the shape
 /// the JXL VarDCT bitstream writer consumes.
 ///
-/// - `dcPerChannel[channel][by * blocksX + bx]`: integer DC value.
+/// - `dcPerChannel[channel][by * blocksPerChannel[channel].x + bx]`:
+///   integer DC value at channel's own block grid.
 /// - `acPerChannel[channel][firstBlockIdx][position 0..63]`:
 ///   integer AC value at natural-order position (position 0 is
 ///   left zero since DC is carried in `dcPerChannel`).
-/// - `blocksX`, `blocksY`: shared block grid (4:4:4 only).
+/// - `blocksPerChannel[channel]`: per-channel `(blocksX, blocksY)`.
+///   For 4:4:4 frames all entries are equal; for chroma-subsampled
+///   frames the chroma channels have smaller grids.
+/// - `blocksX`, `blocksY`: **maximum** (Y-channel = full-resolution)
+///   block grid — useful as a canonical reference for AC group
+///   iteration. Equals `blocksPerChannel` of the Y slot (channel 1
+///   in libjxl color order under `kYCbCr`).
 /// - `channelCount`: 1 for grayscale, 3 for 3-component (Y / Cb /
 ///   Cr; bridge encoder maps to JXL X / Y / B).
 public struct JXLCoefficientPlanes: Sendable {
     public let blocksX: Int
     public let blocksY: Int
     public let channelCount: Int
+    /// Per-channel block grid dimensions. `blocksPerChannel[ch] =
+    /// (cx, cy)` is the number of blocks for channel `ch`. For
+    /// 4:4:4 each entry equals `(blocksX, blocksY)`. For 4:2:0
+    /// (kYCbCr remap = [Cb, Y, Cr]): `[(cx/2, cy/2), (cx, cy),
+    /// (cx/2, cy/2)]`.
+    public let blocksPerChannel: [(blocksX: Int, blocksY: Int)]
     public let dcPerChannel: [[Int32]]
     public let acPerChannel: [[[Int32]]]
 
     public init(
         blocksX: Int, blocksY: Int, channelCount: Int,
-        dcPerChannel: [[Int32]], acPerChannel: [[[Int32]]]
+        dcPerChannel: [[Int32]], acPerChannel: [[[Int32]]],
+        blocksPerChannel: [(blocksX: Int, blocksY: Int)]? = nil
     ) {
         precondition(channelCount == 1 || channelCount == 3,
             "JXLCoefficientPlanes: channelCount must be 1 or 3")
@@ -61,18 +75,35 @@ public struct JXLCoefficientPlanes: Sendable {
         precondition(acPerChannel.count == channelCount,
             "JXLCoefficientPlanes: acPerChannel must have "
             + "\(channelCount) entries")
-        let totalBlocks = blocksX * blocksY
+        // Default per-channel dims to (blocksX, blocksY) for all
+        // channels (the 4:4:4 fast path). The adapter sets explicit
+        // values for subsampled inputs.
+        let resolved: [(blocksX: Int, blocksY: Int)]
+        if let bpc = blocksPerChannel {
+            precondition(bpc.count == channelCount,
+                "JXLCoefficientPlanes: blocksPerChannel must have "
+                + "\(channelCount) entries")
+            resolved = bpc
+        } else {
+            resolved = Array(
+                repeating: (blocksX, blocksY),
+                count: channelCount)
+        }
         for ch in 0..<channelCount {
-            precondition(dcPerChannel[ch].count == totalBlocks,
-                "JXLCoefficientPlanes: dcPerChannel[\(ch)] "
-                + "count must equal blocksX × blocksY")
-            precondition(acPerChannel[ch].count == totalBlocks,
-                "JXLCoefficientPlanes: acPerChannel[\(ch)] "
-                + "count must equal blocksX × blocksY")
+            let total = resolved[ch].blocksX * resolved[ch].blocksY
+            precondition(dcPerChannel[ch].count == total,
+                "JXLCoefficientPlanes: dcPerChannel[\(ch)] count "
+                + "\(dcPerChannel[ch].count) ≠ "
+                + "\(resolved[ch].blocksX) × \(resolved[ch].blocksY)")
+            precondition(acPerChannel[ch].count == total,
+                "JXLCoefficientPlanes: acPerChannel[\(ch)] count "
+                + "\(acPerChannel[ch].count) ≠ "
+                + "\(resolved[ch].blocksX) × \(resolved[ch].blocksY)")
         }
         self.blocksX = blocksX
         self.blocksY = blocksY
         self.channelCount = channelCount
+        self.blocksPerChannel = resolved
         self.dcPerChannel = dcPerChannel
         self.acPerChannel = acPerChannel
     }
@@ -199,7 +230,8 @@ extension JXLCoefficientPlanes {
             blocksX: blocksX, blocksY: blocksY,
             channelCount: channelCount,
             dcPerChannel: newDC,
-            acPerChannel: acPerChannel)
+            acPerChannel: acPerChannel,
+            blocksPerChannel: blocksPerChannel)
     }
 
     /// Reorder per-channel planes by the JPEG → JXL channel map
@@ -224,11 +256,14 @@ extension JXLCoefficientPlanes {
         let mapping = [order.0, order.1, order.2]
         let newDC = mapping.map { dcPerChannel[$0] }
         let newAC = mapping.map { acPerChannel[$0] }
+        // Per-channel block dims follow the same remap.
+        let newBpc = mapping.map { blocksPerChannel[$0] }
         return JXLCoefficientPlanes(
             blocksX: blocksX, blocksY: blocksY,
             channelCount: 3,
             dcPerChannel: newDC,
-            acPerChannel: newAC)
+            acPerChannel: newAC,
+            blocksPerChannel: newBpc)
     }
 }
 
@@ -296,11 +331,10 @@ public struct JXLBridgeFrameHeaderParams: Sendable, Equatable {
 extension JPEGCoefficientImage {
 
     /// Build the JXL frame-header parameters the bridge encoder
-    /// needs to set (step 3.5). Today supports 4:4:4 only
-    /// (matching the v0.12.0i adapter envelope); the
-    /// `chroma_subsampling` field is zero for now. When
-    /// `chroma_subsampling` support lands the helper will compute
-    /// per-channel mode from the JPEG `(H, V)` sampling factors.
+    /// needs to set (step 3.5). **v0.12.0ft**: computes
+    /// `chroma_subsampling` from the JPEG `(H, V)` sampling
+    /// factors, supporting 4:4:4 / 4:2:0 / 4:2:2 (horizontal or
+    /// vertical).
     public func buildJXLBridgeFrameHeaderParams(
         colorTransform: JXLBridgeColorTransform
     ) -> JXLBridgeFrameHeaderParams {
@@ -309,10 +343,50 @@ extension JPEGCoefficientImage {
         case .ycbcr: jxlCT = .yCbCr
         case .none:  jxlCT = .none
         }
-        // 4:4:4 — every channel mode = 0. Subsampled inputs are
-        // gated upstream in `toJXLCoefficientPlanes()`, so the
-        // caller never reaches here with non-uniform sampling.
-        let css = YCbCrChromaSubsampling(y: 0, cb: 0, cr: 0)
+        // libjxl `YCbCrChromaSubsampling::Set(hsample, vsample)`
+        // walks JPEG-order sampling factors and picks the mode for
+        // each libjxl channel `c` (`c < 2 ? c ^ 1 : c`):
+        //   mode i where `(1 << kHShift[i]) == hsample[cjpeg]` and
+        //                `(1 << kVShift[i]) == vsample[cjpeg]`.
+        //   kHShift = {0, 1, 1, 0}, kVShift = {0, 1, 0, 1}.
+        // We mirror that lookup here. Grayscale → all zeros.
+        let css: YCbCrChromaSubsampling
+        if frameComponents.count == 1 {
+            css = YCbCrChromaSubsampling()
+        } else {
+            let kH: [UInt32] = [0, 1, 1, 0]
+            let kV: [UInt32] = [0, 1, 0, 1]
+            func modeFor(_ h: UInt32, _ v: UInt32) -> UInt32 {
+                let want_h: UInt32 = h == 2 ? 1 : 0
+                let want_v: UInt32 = v == 2 ? 1 : 0
+                for i in 0..<4 {
+                    if kH[i] == want_h && kV[i] == want_v {
+                        return UInt32(i)
+                    }
+                }
+                return 0  // fallback; should never reach here
+            }
+            // JPEG order: [Y=comp 0, Cb=comp 1, Cr=comp 2].
+            // libjxl channel order: [X=Cb, Y, B=Cr] = JPEG [1, 0, 2].
+            let yH = UInt32(frameComponents[0].hSamplingFactor)
+            let yV = UInt32(frameComponents[0].vSamplingFactor)
+            let cbH = UInt32(frameComponents[1].hSamplingFactor)
+            let cbV = UInt32(frameComponents[1].vSamplingFactor)
+            let crH = UInt32(frameComponents[2].hSamplingFactor)
+            let crV = UInt32(frameComponents[2].vSamplingFactor)
+            // YCbCrChromaSubsampling.write writes (channelModes.0,
+            // channelModes.1, channelModes.2) = (Cb, Y, Cr) order.
+            // Our struct's init labels them (y:, cb:, cr:) but
+            // stores them at positions 0/1/2 as (y, cb, cr).
+            // libjxl reads them at index c. So channelModes[c]:
+            //   c=0 (libjxl X=Cb): mode of Cb
+            //   c=1 (libjxl Y):    mode of Y
+            //   c=2 (libjxl B=Cr): mode of Cr
+            css = YCbCrChromaSubsampling(
+                y: modeFor(cbH, cbV),   // channelModes.0 = Cb
+                cb: modeFor(yH, yV),    // channelModes.1 = Y
+                cr: modeFor(crH, crV))  // channelModes.2 = Cr
+        }
         // JPEG decoding doesn't apply Gaborish/EPF, so disable
         // both. The non-default-LoopFilter writer in
         // `LoopFilter.write` supports `gab = false, epfIters = 0`
@@ -407,13 +481,18 @@ extension JPEGCoefficientImage {
 
     /// Convert this JPEG coefficient image into per-channel
     /// quantised DC + AC planes ready for the JXL VarDCT bridge
-    /// encoder. **4:4:4 only** in this v0.12.0i bite — throws
-    /// `.nonUniformSampling` for chroma-subsampled inputs.
+    /// encoder.
     ///
-    /// Channel order is preserved (component[0] → plane[0], etc.);
-    /// the bridge encoder decides how to map these to XYB indices
-    /// (typically JPEG Y → JXL Y = index 1, JPEG Cb → JXL X =
-    /// index 0, JPEG Cr → JXL B = index 2).
+    /// **v0.12.0ft**: Supports 4:4:4 and 4:2:0 / 4:2:2 chroma-
+    /// subsampled inputs. The output `JXLCoefficientPlanes` carries
+    /// per-channel block dimensions in `blocksPerChannel`. Any
+    /// other sampling shape (asymmetric per-channel factors that
+    /// don't fit one of `H1V1` / `H2V2` / `H2V1` / `H1V2`) throws
+    /// `.nonUniformSampling`.
+    ///
+    /// Channel order is preserved (JPEG component `i` → JXL plane
+    /// `i`); the bridge encoder applies the JpegOrder remap
+    /// downstream to land Y at the JXL Y slot (index 1) etc.
     public func toJXLCoefficientPlanes(
     ) throws -> JXLCoefficientPlanes {
         let nch = frameComponents.count
@@ -422,42 +501,50 @@ extension JPEGCoefficientImage {
                 .unsupportedComponentCount(nch)
         }
 
-        // 4:4:4 invariant: all components must share (H, V).
-        // Detect by comparing every component to the first.
-        let h0 = frameComponents[0].hSamplingFactor
-        let v0 = frameComponents[0].vSamplingFactor
-        for fc in frameComponents.dropFirst() {
-            if fc.hSamplingFactor != h0
-               || fc.vSamplingFactor != v0 {
+        // Per-component sampling factors. For grayscale (nch=1)
+        // there's only the Y component and the H/V are degenerate.
+        // For 3-component, libjxl supports the four hsample/vsample
+        // shapes that map to JXL chroma_subsampling modes:
+        //   Y=H2V2, Cb=H1V1, Cr=H1V1  → 4:2:0
+        //   Y=H2V1, Cb=H1V1, Cr=H1V1  → 4:2:2 (horizontal subsample)
+        //   Y=H1V2, Cb=H1V1, Cr=H1V1  → 4:2:2 (vertical subsample)
+        //   Y=H1V1, Cb=H1V1, Cr=H1V1  → 4:4:4
+        // The Y component (index 0 in JPEG order) must have the
+        // largest sampling factors; chroma must be H1V1.
+        if nch == 3 {
+            let yH = frameComponents[0].hSamplingFactor
+            let yV = frameComponents[0].vSamplingFactor
+            // Chroma components must be H1V1.
+            for c in 1..<nch {
+                let fc = frameComponents[c]
+                guard fc.hSamplingFactor == 1
+                    && fc.vSamplingFactor == 1 else {
+                    throw JPEGToJXLAdapterError.nonUniformSampling(
+                        "component \(c) sampling H\(fc.hSamplingFactor)V"
+                        + "\(fc.vSamplingFactor) — bridge supports "
+                        + "only chroma at H1V1 (chroma upsampling "
+                        + "from JXL chroma_subsampling field)")
+                }
+            }
+            // Y must be one of H1V1 / H2V1 / H1V2 / H2V2.
+            guard (yH == 1 || yH == 2) && (yV == 1 || yV == 2) else {
                 throw JPEGToJXLAdapterError.nonUniformSampling(
-                    "components have different (H, V) sampling "
-                    + "factors: this is chroma-subsampled JPEG "
-                    + "(e.g. 4:2:0 or 4:2:2); the v0.12.0i "
-                    + "bridge adapter handles 4:4:4 only — "
-                    + "subsampled chroma is a follow-on bite.")
+                    "Y component sampling H\(yH)V\(yV) outside "
+                    + "supported set {H1V1, H2V1, H1V2, H2V2}")
             }
         }
 
-        // 4:4:4 — every component has the same block grid.
-        // Pick component 0's grid as canonical.
-        let blocksX = quantisedComponents[0].blocksWide
-        let blocksY = quantisedComponents[0].blocksHigh
-        let totalBlocks = blocksX * blocksY
-
-        // Sanity: every component's grid must agree under 4:4:4.
-        for ch in 1..<nch {
-            let cb = quantisedComponents[ch]
-            guard cb.blocksWide == blocksX,
-                  cb.blocksHigh == blocksY else {
-                throw JPEGToJXLAdapterError.nonUniformSampling(
-                    "component \(ch) has "
-                    + "\(cb.blocksWide)×\(cb.blocksHigh) "
-                    + "blocks vs canonical "
-                    + "\(blocksX)×\(blocksY); 4:4:4 invariant "
-                    + "violated even though sampling factors "
-                    + "matched (this would be a structural bug)")
-            }
+        // Per-component block dims. JPEG component 0 (Y) is the
+        // FULL-resolution grid; chroma blocks are scaled down.
+        var blocksXPerComp = [Int](repeating: 0, count: nch)
+        var blocksYPerComp = [Int](repeating: 0, count: nch)
+        for c in 0..<nch {
+            blocksXPerComp[c] = quantisedComponents[c].blocksWide
+            blocksYPerComp[c] = quantisedComponents[c].blocksHigh
         }
+        // Canonical (max = Y) block dim.
+        let blocksX = blocksXPerComp[0]
+        let blocksY = blocksYPerComp[0]
 
         // Walk per channel: split each block into DC (position 0)
         // and AC (positions 1..63 with position 0 left zero).
@@ -466,6 +553,9 @@ extension JPEGCoefficientImage {
         dcPlanes.reserveCapacity(nch)
         acPlanes.reserveCapacity(nch)
         for ch in 0..<nch {
+            let bX = blocksXPerComp[ch]
+            let bY = blocksYPerComp[ch]
+            let totalBlocks = bX * bY
             var dc = [Int32](repeating: 0, count: totalBlocks)
             var ac = [[Int32]](
                 repeating: [Int32](repeating: 0, count: 64),
@@ -511,10 +601,17 @@ extension JPEGCoefficientImage {
             acPlanes.append(ac)
         }
 
+        // Build per-channel block dims. For grayscale all-same;
+        // for 3-component pass the per-component dims through.
+        let bpc: [(blocksX: Int, blocksY: Int)] = (0..<nch).map {
+            (blocksX: blocksXPerComp[$0],
+             blocksY: blocksYPerComp[$0])
+        }
         return JXLCoefficientPlanes(
             blocksX: blocksX, blocksY: blocksY,
             channelCount: nch,
             dcPerChannel: dcPlanes,
-            acPerChannel: acPlanes)
+            acPerChannel: acPlanes,
+            blocksPerChannel: bpc)
     }
 }
