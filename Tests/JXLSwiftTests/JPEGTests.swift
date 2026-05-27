@@ -4960,6 +4960,54 @@ final class JBRDBoxReaderTests: XCTestCase {
         }
     }
 
+    /// **End-to-end JBRD round-trip on real payload**: Parse the
+    /// Bundle, decode the trailing Brotli, distribute into app/com/
+    /// inter/tail slots, verify the APP0 marker matches the JFIF
+    /// template that cjpeg emits.
+    func testJBRDReader_RealCjxlPayload_DistributeBrotliPayload()
+        throws
+    {
+        let path = "/tmp/cjxl-ref-420.jbrd"
+        guard FileManager.default.fileExists(atPath: path) else {
+            throw XCTSkip("jbrd payload not present at \(path)")
+        }
+        let payload = try Data(
+            contentsOf: URL(fileURLWithPath: path))
+        var r = BitReader(payload)
+        var box = try JBRDBoxReader.read(from: &r)
+        // Byte-align then decode Brotli.
+        let bitsConsumed = r.position
+        let bytesConsumed = (bitsConsumed + 7) / 8
+        let brotliBytes = payload.suffix(from: bytesConsumed)
+        let decoded = try BrotliDecoder.decode(Data(brotliBytes))
+        // Distribute payload into the sized slots.
+        // For a 4:2:0 cjpeg fixture: 1 APP0 (kUnknown), 0 COM, 0
+        // inter-marker, 0 tail. After distribution app_data[0]
+        // should be the JFIF APP0 payload.
+        try box.distributeBrotliPayload(decoded)
+
+        XCTAssertEqual(box.appData.count, 1)
+        let app0 = box.appData[0]
+        // APP0 marker payload for JFIF starts with the length (2
+        // bytes) then "JFIF\0" (5 bytes). The first byte of the
+        // marker payload is "marker_byte - 0xE0" (libjxl convention)
+        // but for kUnknown apps, the leading byte holds the marker
+        // byte itself (or part of the length field — we accept
+        // both per libjxl's flexible templating).
+        // The reliable byte-level signature is the JFIF magic at
+        // offset 3 (after 1-byte placeholder + 2-byte length).
+        XCTAssertGreaterThanOrEqual(app0.count, 8)
+        let jfifMagic = Array(app0[(app0.startIndex + 3)..<(app0.startIndex + 8)])
+        let magicHex = jfifMagic.map {
+            String(format: "%02x", $0)
+        }
+        XCTAssertEqual(jfifMagic,
+            [0x4A, 0x46, 0x49, 0x46, 0x00],
+            "expected JFIF magic at offset 3..8; got \(magicHex)")
+        print("[JBRD distribute] app0.count=\(app0.count) "
+            + "JFIF magic at offset 3 ✓")
+    }
+
     /// **JBRD reader+writer round-trip on real payload.**
     /// Parse a real cjxl-emitted jbrd payload, write it back via
     /// `JBRDBoxWriter`, re-parse the result, and confirm the two

@@ -765,6 +765,104 @@ private struct JPEGInfo {
     var hasDRI: Bool = false
 }
 
+extension JBRDBox {
+
+    /// Distribute the Brotli-decompressed payload bytes into the
+    /// `app_data`, `com_data`, `inter_marker_data`, and `tail_data`
+    /// slots of `self`.
+    ///
+    /// libjxl `dec_jpeg_data.cc:65-117` walks these in a specific
+    /// order:
+    ///   1. For each `app_data[i]` with `app_marker_type[i] !=
+    ///      kUnknown`: rather than reading from Brotli, the bytes
+    ///      are reconstructed from canonical templates (JFIF/Exif/
+    ///      XMP/ICC headers) — only the length field is set from
+    ///      the Bundle.
+    ///   2. For each `app_data[i]` with `app_marker_type[i] ==
+    ///      kUnknown`: read the full marker payload from Brotli
+    ///      and assert the length-field matches.
+    ///   3. For each `com_data[i]`: read full payload from Brotli.
+    ///   4. For each `inter_marker_data[i]`: read full payload.
+    ///   5. Tail data: read `tail_data.count` bytes from Brotli.
+    ///
+    /// **Status (v0.12.0gd partial).** Implements the simple cases:
+    /// `kUnknown` app markers (the common JFIF/COM-style), com_data,
+    /// inter_marker_data, tail_data. Does NOT yet reconstruct the
+    /// canonical APP markers (ICC/Exif/XMP) — those need extra
+    /// templating logic that libjxl uses for byte-identicality of
+    /// well-known marker payloads.
+    public mutating func distributeBrotliPayload(
+        _ decoded: Data
+    ) throws {
+        var cursor = decoded.startIndex
+        // 1+2. App markers.
+        for i in 0..<appData.count {
+            let needed = appData[i].count
+            switch appMarkerType[i] {
+            case .unknown:
+                // Read full payload from Brotli.
+                guard cursor + needed <= decoded.endIndex else {
+                    throw JBRDError.truncated
+                }
+                appData[i] = Data(decoded[cursor..<(cursor + needed)])
+                cursor += needed
+                // Length-field self-consistency check.
+                if appData[i].count >= 3 {
+                    let lenField = (Int(appData[i][appData[i].startIndex + 1]) << 8)
+                        | Int(appData[i][appData[i].startIndex + 2])
+                    if lenField + 1 != appData[i].count {
+                        throw JBRDError.notImplemented(
+                            "app_data[\(i)] length field "
+                            + "\(lenField) doesn't match "
+                            + "size \(appData[i].count - 1)")
+                    }
+                }
+            case .icc, .exif, .xmp:
+                // Reconstruct canonical marker template — defer to
+                // the next bite. For now, fail clearly.
+                throw JBRDError.notImplemented(
+                    "app_data[\(i)] type \(appMarkerType[i]) "
+                    + "needs canonical-template reconstruction "
+                    + "(libjxl dec_jpeg_data.cc:74-80)")
+            }
+        }
+        // 3. Com markers — full Brotli read.
+        for i in 0..<comData.count {
+            let needed = comData[i].count
+            guard cursor + needed <= decoded.endIndex else {
+                throw JBRDError.truncated
+            }
+            comData[i] = Data(decoded[cursor..<(cursor + needed)])
+            cursor += needed
+        }
+        // 4. Inter-marker data.
+        for i in 0..<interMarkerData.count {
+            let needed = interMarkerData[i].count
+            guard cursor + needed <= decoded.endIndex else {
+                throw JBRDError.truncated
+            }
+            interMarkerData[i] = Data(
+                decoded[cursor..<(cursor + needed)])
+            cursor += needed
+        }
+        // 5. Tail data.
+        let tailNeeded = tailData.count
+        guard cursor + tailNeeded <= decoded.endIndex else {
+            throw JBRDError.truncated
+        }
+        tailData = Data(decoded[cursor..<(cursor + tailNeeded)])
+        cursor += tailNeeded
+
+        if cursor != decoded.endIndex {
+            // libjxl is strict about this — extra Brotli bytes
+            // indicate a malformed jbrd.
+            throw JBRDError.notImplemented(
+                "Brotli payload had \(decoded.endIndex - cursor) "
+                + "trailing bytes after distribution")
+        }
+    }
+}
+
 /// Bundle writer for the `jbrd` box payload. Inverse of
 /// `JBRDBoxReader.read`. Each field uses the same U32 distribution
 /// the reader expects.
