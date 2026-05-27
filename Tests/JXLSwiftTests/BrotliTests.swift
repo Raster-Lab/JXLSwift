@@ -458,37 +458,55 @@ final class BrotliDecoderTests: XCTestCase {
         XCTAssertEqual(out, Data([0x61, 0x62, 0x63]))
     }
 
-    func testDecode_CompressedStream_ThrowsNotImplemented() {
-        // `echo -n hello | brotli --quality=11` produces a compressed
-        // (entropy-coded) stream we don't yet decode. Confirm we
-        // surface `notImplemented` cleanly rather than misdecoding.
-        // From earlier brotli-test fixture: 0f028068656c6c6f03 with
-        // WBITS=24. But that's also uncompressed actually — at q=11
-        // brotli still emits uncompressed for tiny inputs.
-        // Use a longer input that genuinely needs compression.
-        // For now, test the explicit not-implemented path with a
-        // hand-crafted compressed meta-block start.
-        // Stream: WBITS=16, ISLAST=1, ISLAST_EMPTY=0, MNIBBLES=4,
-        // MLEN=X, ... — but ISLAST=1 means ISUNCOMPRESSED is NOT
-        // read, so the body is always compressed.
-        //   bit 0 = 0  (WBITS=16)
-        //   bit 1 = 1  (ISLAST)
-        //   bit 2 = 0  (NOT empty)
-        //   bits 3..4 = 00 (MNIBBLES=4)
-        //   bits 5..20 = MLEN — let's say MLEN=0 (1-byte payload)
-        // Byte 0: bit pattern 0,1,0,0,0,0,0,0 (LSB) = 0b00000010 = 0x02
-        // Bytes 1-2: MLEN = 0 (16 bits all 0)
-        // Then compressed body starts → we throw notImplemented.
+    /// 🎉 **Real cjxl brob payload decodes through the compressed
+    /// Brotli path.** Validates the meta-block header + IC alphabet
+    /// + distance alphabet + LZ77 loop end-to-end on a real
+    /// production Brotli stream.
+    func testDecode_RealCjxlBrobPayload_18Bytes() throws {
+        // The 16-byte Brotli stream wrapped inside the cjxl
+        // `brob` box for `/tmp/test-fixture-420-exif.jpg`.
+        let compressed = Data([
+            0x1b, 0x11, 0x00, 0x00, 0xa4, 0x01, 0x92, 0x54,
+            0x10, 0x96, 0x0d, 0x89, 0x04, 0x12, 0x75, 0x03,
+        ])
+        // Expected output from `brotli -d`:
+        //   00 00 00 00 49 49 2a 00 08 00 00 00 00 00 00 00 00 00
+        let expected = Data([
+            0x00, 0x00, 0x00, 0x00, 0x49, 0x49, 0x2a, 0x00,
+            0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00,
+        ])
+        let decoded = try BrotliDecoder.decode(compressed)
+        let decHex = decoded.map { String(format: "%02x", $0) }
+            .joined(separator: " ")
+        let expHex = expected.map { String(format: "%02x", $0) }
+            .joined(separator: " ")
+        print("[brob decode] decoded: \(decHex)")
+        print("[brob decode] expectd: \(expHex)")
+        XCTAssertEqual(decoded, expected,
+            "real cjxl brob payload should decode byte-for-byte")
+    }
+
+    /// Confirm that the compressed-body decoder surfaces a clean
+    /// error (instead of misdecoding silently) when fed a stream
+    /// with insufficient input — guards against the previous
+    /// `notImplemented` fallback regressing into a silent miss.
+    func testDecode_TruncatedCompressedStream_ThrowsBitstream() {
+        // bit 0 = 0 (WBITS=16), bit 1 = 1 (ISLAST), bit 2 = 0 (NOT
+        // empty), bits 3..4 = 00 (MNIBBLES=4), MLEN follows...
+        // The byte 0x02 encodes this prefix; padding zeros leave the
+        // compressed body too short to decode.
         let input = Data([0x02, 0x00, 0x00, 0x00])
         XCTAssertThrowsError(try BrotliDecoder.decode(input))
         { error in
-            guard case BrotliError.notImplemented(let msg) = error
-            else {
-                XCTFail("expected notImplemented; got \(error)")
-                return
+            // Either a bitstream EOF or a malformed-prefix-code is
+            // acceptable — the point is "no silent miss".
+            switch error {
+            case BrotliError.bitstream, BrotliError.malformedPrefixCode:
+                break  // expected
+            default:
+                XCTFail("expected bitstream/malformed; got \(error)")
             }
-            XCTAssertTrue(msg.contains("compressed meta-block"),
-                "expected message to mention compressed meta-block")
         }
     }
 }

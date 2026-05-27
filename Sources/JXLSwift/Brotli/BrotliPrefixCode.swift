@@ -259,33 +259,38 @@ public enum BrotliPrefixCodeReader {
             }
             symbols.append(s)
         }
-        // Check distinct + ascending — for nsym ≥ 2 only; nsym=1 is
-        // always trivially "ascending".
+        // Per the brotli reference (`ReadSimpleHuffmanSymbols`),
+        // only DISTINCT is required for NSYM ≥ 1, NOT strict ascending.
         if nsym >= 2 {
-            for i in 1..<symbols.count {
-                if symbols[i] <= symbols[i - 1] {
-                    throw BrotliError.malformedPrefixCode(
-                        "simple-code symbols not strictly "
-                        + "ascending: \(symbols)")
+            for i in 0..<symbols.count {
+                for j in (i + 1)..<symbols.count {
+                    if symbols[i] == symbols[j] {
+                        throw BrotliError.malformedPrefixCode(
+                            "simple-code duplicate symbol "
+                            + "\(symbols[i]): \(symbols)")
+                    }
                 }
             }
         }
-        // Tree-select for 4-symbol case.
+        // Length assignment — exact port of brotli reference
+        // `BrotliBuildSimpleHuffmanTable`. Source-order matters for
+        // NSYM=3 + treeSelect=1 (val[0] gets length 1, val[1] gets
+        // length 2; only val[2..3] are sorted).
         var lengths = [UInt8](repeating: 0, count: alphabetSize)
         switch nsym {
         case 1:
-            // Single symbol — zero-bit code, always selects symbols[0].
-            // Mark as length-1 here so the init's "nonZeroCount == 1"
-            // fast path engages and the symbol is recorded; the
-            // 0-bit walk in `decodeSymbol` uses `singleSymbol`.
+            // Single symbol — 0-bit code (singleSymbol fast path).
             lengths[Int(symbols[0])] = 1
         case 2:
+            // 2 symbols, both length 1.
             lengths[Int(symbols[0])] = 1
             lengths[Int(symbols[1])] = 1
         case 3:
-            lengths[Int(symbols[0])] = 1
-            lengths[Int(symbols[1])] = 2
-            lengths[Int(symbols[2])] = 2
+            // 3 symbols, lengths 1, 2, 2 — sorted by value.
+            let sorted = symbols.sorted()
+            lengths[Int(sorted[0])] = 1
+            lengths[Int(sorted[1])] = 2
+            lengths[Int(sorted[2])] = 2
         case 4:
             let treeSelect: UInt32
             do { treeSelect = try r.read(bits: 1) }
@@ -293,14 +298,19 @@ public enum BrotliPrefixCodeReader {
                 throw BrotliError.bitstream(e)
             }
             if treeSelect == 0 {
-                // 2,2,2,2.
+                // 2,2,2,2 — sort all 4 (brotli reference sorts but
+                // the lengths are identical so result is the same).
                 for s in symbols { lengths[Int(s)] = 2 }
             } else {
-                // 1,2,3,3.
+                // 1,2,3,3 — val[0] length 1 (source order),
+                // val[1] length 2 (source order), val[2..3] sorted
+                // among themselves with length 3 each.
                 lengths[Int(symbols[0])] = 1
                 lengths[Int(symbols[1])] = 2
-                lengths[Int(symbols[2])] = 3
-                lengths[Int(symbols[3])] = 3
+                // Sort symbols[2..3] between themselves.
+                let last2 = [symbols[2], symbols[3]].sorted()
+                lengths[Int(last2[0])] = 3
+                lengths[Int(last2[1])] = 3
             }
         default:
             // Unreachable per `nsym = nsymRaw + 1`, nsymRaw ∈ 0..3.

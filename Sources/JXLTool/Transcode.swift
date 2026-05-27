@@ -293,7 +293,36 @@ struct Transcode: ParsableCommand {
                   to: &standardError)
             throw JXLExitCode.generalError
         }
-        do { try box.distributeBrotliPayload(decoded) }
+        // Extract optional metadata boxes (Exif/xml/jumb — direct
+        // or wrapped in `brob`). Splice into appData/comData when
+        // distributing the Brotli payload so kICC/kExif/kXMP
+        // markers reconstruct byte-identically.
+        let exifBox: Data?
+        let xmpBox: Data?
+        do {
+            exifBox = try extractMetadataBox(
+                type: "Exif", from: boxes, in: jxlBytes)
+            xmpBox = try extractMetadataBox(
+                type: "xml ", from: boxes, in: jxlBytes)
+        } catch let e as BrotliError {
+            if case .notImplemented(let msg) = e {
+                print(
+                    "error: metadata box (Exif/xml) uses Brotli "
+                    + "compressed encoding which is not supported "
+                    + "yet for arbitrary streams: \(msg)",
+                    to: &standardError)
+                throw JXLExitCode.notImplemented
+            }
+            print("error: metadata box extract failed: \(e)",
+                  to: &standardError)
+            throw JXLExitCode.generalError
+        }
+        let external = JBRDBox.ExternalMetadata(
+            exif: exifBox, xmp: xmpBox, icc: nil)
+        do {
+            try box.distributeBrotliPayload(
+                decoded, external: external)
+        }
         catch let e as JBRDError {
             print("error: jbrd payload distribution failed: \(e)",
                   to: &standardError)

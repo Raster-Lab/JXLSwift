@@ -89,15 +89,147 @@ public enum BrotliDecoder {
                 if mh.isLast { break }
             } else {
                 // Compressed meta-block.
-                throw BrotliError.notImplemented(
-                    "compressed meta-block body — NBLTYPES + "
-                    + "NPOSTFIX + NDIRECT + context maps + L/I/D "
-                    + "alphabets + LZ77 (RFC 7932 §9.2 / §7 / §8) "
-                    + "is the next bite")
+                try decodeCompressedBody(
+                    targetSize: mh.payloadSize,
+                    from: &r, to: &output)
+                if mh.isLast { break }
             }
             isFirst = false
         }
         return output
+    }
+
+    /// Decode one compressed meta-block body. Reads the body header
+    /// (NBLTYPES/NPOSTFIX/NDIRECT/context-modes/NTREES), three prefix
+    /// codes (literal/IC/distance), and runs the LZ77 reconstruction
+    /// loop until `payloadSize` bytes have been emitted.
+    ///
+    /// **Restrictions (v0.12.0gn).**
+    /// - NBLTYPESL/I/D = 1 (single block type per stream).
+    /// - NTREESL = NTREESD = 1 (no context map; same prefix code used
+    ///   for every literal / distance regardless of context).
+    /// - Static dictionary references (distance > output position +
+    ///   max-distance) are not supported — they throw `notImplemented`.
+    /// - Multi-block-type streams (NBLTYPES > 1) throw `notImplemented`
+    ///   because the block-length walker is not yet integrated.
+    private static func decodeCompressedBody(
+        targetSize: Int,
+        from r: inout BitReader,
+        to output: inout Data
+    ) throws {
+        // 1. Body header.
+        let body = try BrotliCompressedMetaBlockHeader.read(
+            from: &r)
+        if body.literal.nbltypes > 1
+            || body.insertCopy.nbltypes > 1
+            || body.distance.nbltypes > 1
+        {
+            throw BrotliError.notImplemented(
+                "multi-block-type streams (NBLTYPES > 1) — "
+                + "block-length walker pending")
+        }
+        if body.ntreesl > 1 || body.ntreesd > 1 {
+            throw BrotliError.notImplemented(
+                "multi-tree streams (NTREES > 1) — context map "
+                + "decoder pending")
+        }
+        // 2. Three prefix codes (literal alphabet 256, IC alphabet
+        //    704, distance alphabet derived from NPOSTFIX + NDIRECT).
+        let ndirectShifted = body.ndirect << body.npostfix
+        let distanceAlphabet = BrotliDistance.alphabetSize(
+            npostfix: body.npostfix,
+            ndirectShifted: ndirectShifted)
+        let literalTree = try BrotliPrefixCodeReader.read(
+            from: &r, alphabetSize: 256)
+        let icTree = try BrotliPrefixCodeReader.read(
+            from: &r, alphabetSize: BrotliInsertCopy.alphabetSize)
+        let distanceTree = try BrotliPrefixCodeReader.read(
+            from: &r, alphabetSize: distanceAlphabet)
+        let distanceLut = BrotliDistance.buildLut(
+            npostfix: body.npostfix,
+            ndirectShifted: ndirectShifted,
+            alphabetSizeLimit: distanceAlphabet)
+        // 3. LZ77 loop. Track the position within this meta-block's
+        //    output so we know when to stop.
+        let bodyStart = output.count
+        var rb = [16, 15, 11, 4]   // Brotli default distance ring buffer
+        var rbIdx = 0
+        let trace = ProcessInfo.processInfo.environment[
+            "BROTLI_TRACE"] != nil
+        while output.count - bodyStart < targetSize {
+            // 3a. Read IC command.
+            let cmd = try BrotliInsertCopy.decodeCommand(
+                from: &r, prefixCode: icTree)
+            if trace {
+                let line = "TRACE IC ins=\(cmd.insertLength)"
+                    + " cpy=\(cmd.copyLength)"
+                    + " distFlag=\(cmd.distanceFlag)"
+                    + " pos=\(output.count - bodyStart)\n"
+                FileHandle.standardError.write(Data(line.utf8))
+            }
+            // 3b. Insert `cmd.insertLength` literals.
+            for _ in 0..<cmd.insertLength {
+                if output.count - bodyStart >= targetSize { break }
+                let lit = try literalTree.decodeSymbol(from: &r)
+                if trace {
+                    FileHandle.standardError.write(Data(
+                        "TRACE LIT 0x\(String(lit, radix: 16))\n"
+                        .utf8))
+                }
+                output.append(UInt8(lit & 0xFF))
+            }
+            // 3c. If we've filled the body, stop (the IC command's
+            //     copy phase is sometimes skipped at end of stream).
+            if output.count - bodyStart >= targetSize { break }
+            // 3d. Read or recall the distance.
+            let distance: Int
+            if cmd.distanceFlag == 0 {
+                // Use most recent distance from the ring buffer
+                // (code = 0 short code).
+                var rbCopy = rb
+                var rbIdxCopy = rbIdx
+                distance = BrotliDistance.resolveShortCode(
+                    code: 0,
+                    ringBuffer: &rbCopy,
+                    ringBufferIdx: &rbIdxCopy)
+                rb = rbCopy; rbIdx = rbIdxCopy
+            } else {
+                distance = try BrotliDistance.readDistance(
+                    from: &r, prefixCode: distanceTree,
+                    lut: distanceLut,
+                    ringBuffer: &rb, ringBufferIdx: &rbIdx)
+            }
+            // 3e. Ring buffer update — only for "real" distances
+            //     (not when reusing the most-recent via code 0).
+            //     The ring buffer is updated whenever a fresh
+            //     distance is consumed.
+            if cmd.distanceFlag != 0 {
+                rb[rbIdx & 3] = distance
+                rbIdx += 1
+            }
+            // 3f. Copy `cmd.copyLength` bytes from `output[count -
+            //     distance]` onward.
+            let absPos = output.count
+            if distance <= 0 {
+                throw BrotliError.invalidBackReference(
+                    distance: distance, outputSize: absPos)
+            }
+            if distance > absPos {
+                // Static-dictionary reference — not yet implemented.
+                throw BrotliError.notImplemented(
+                    "static-dictionary back-reference "
+                    + "(distance \(distance) > output size "
+                    + "\(absPos)) — RFC 7932 §8 dictionary pending")
+            }
+            // Naive byte-by-byte copy handles overlapping
+            // back-references correctly (LZ77 self-reference).
+            for _ in 0..<cmd.copyLength {
+                if output.count - bodyStart >= targetSize { break }
+                let srcIdx = output.count - distance
+                let b = output[output.startIndex + srcIdx]
+                output.append(b)
+            }
+        }
     }
 
     /// Heuristic: the MNIBBLES=3 (binary 11) branch in the header
