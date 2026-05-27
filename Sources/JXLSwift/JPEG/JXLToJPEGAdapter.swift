@@ -59,18 +59,94 @@ public enum JXLToJPEGAdapter {
     /// Reconstruct the source JPEG bytes from a JXL frame + jbrd
     /// metadata.
     ///
-    /// **Status (v0.12.0g0 scaffold)**. The implementation is split
-    /// across several bites (see file header). At this stage we
-    /// surface `notImplemented` so callers see a clean throw rather
-    /// than wrong output.
+    /// **Status (v0.12.0g5 — partial)**. Byte-identical reconstruction
+    /// is still gated on Brotli (for jbrd's app/com/inter-marker/tail
+    /// payloads) and a `JBRDBoxReader` (for marker order replay) —
+    /// both in flight. Until those land, this entry point throws
+    /// `notImplemented`.
+    ///
+    /// In the meantime callers wanting a **structurally valid but
+    /// not byte-identical** JPEG can use `reconstructMinimal(...)`
+    /// — that path doesn't need Brotli or jbrd, just JXL coefficient
+    /// planes plus DC/AC Huffman tables (which can be the standard
+    /// ITU-T T.81 Annex K tables for any baseline JPEG).
     public static func reconstruct(
         coefficients: JXLCoefficientPlanes,
         jbrd: JBRDBox,
         colorTransform: JXLBridgeColorTransform
     ) throws -> Data {
         throw JXLToJPEGAdapterError.notImplemented(
-            "JXLToJPEGAdapter.reconstruct — assembly pending; "
-            + "see file header for the four-step plan")
+            "JXLToJPEGAdapter.reconstruct — byte-identical "
+            + "assembly pending Brotli decoder + JBRDBoxReader; "
+            + "use reconstructMinimal(...) for structurally valid "
+            + "non-byte-identical output")
+    }
+
+    /// **Minimal-JPEG reconstruction.** Produces a structurally valid
+    /// JPEG file (SOI..EOI) from JXL coefficient planes plus
+    /// supplied Huffman + quant tables. Doesn't require Brotli or
+    /// jbrd. The output won't match the source byte-for-byte but
+    /// will:
+    ///   - Decode to the same coefficient values via any JPEG decoder.
+    ///   - Decode to the same pixels (modulo decoder rounding).
+    ///
+    /// Caller-supplied parameters:
+    ///   - `coefficients`: JXL planes in JXL channel order (X=Cb,
+    ///     Y, B=Cr for `.ycbcr`). This function applies the inverse
+    ///     remap + (if needed) the inverse DC offset internally.
+    ///   - `width` / `height`: pixel dimensions (typically from the
+    ///     SOFn that produced the JXL frame).
+    ///   - `frameComponents`: SOFn component definitions in JPEG
+    ///     order (Y first, then Cb, then Cr for 3-component YCbCr;
+    ///     or just Y for grayscale).
+    ///   - `quantTables`: per-table quant matrices in zig-zag order.
+    ///   - `dcHuffmanTables` / `acHuffmanTables`: Huffman tables to
+    ///     emit. Typically the ITU-T Annex K standard luma + chroma
+    ///     tables when we don't have a `jbrd` to draw on.
+    ///   - `scanComponents`: per-scan binding info (component index,
+    ///     DC/AC table ids).
+    ///   - `colorTransform`: the JXL color transform that was used
+    ///     by the forward bridge (controls whether DC inversion is
+    ///     applied).
+    ///   - `quantDCPerChannel`: DC quant factors per component in
+    ///     JXL channel order; used only when `colorTransform == .none`
+    ///     to invert the `1024/qt[DC]` offset.
+    public static func reconstructMinimal(
+        coefficients: JXLCoefficientPlanes,
+        width: Int, height: Int,
+        frameComponents: [JPEGFrameComponent],
+        quantTables: [JPEGQuantTable],
+        dcHuffmanTables: [JPEGHuffmanTable],
+        acHuffmanTables: [JPEGHuffmanTable],
+        scanComponents: [JPEGScanComponentEncode],
+        colorTransform: JXLBridgeColorTransform,
+        quantDCPerChannel: [UInt16] = []
+    ) throws -> Data {
+        // 1. Undo the JXL bridge's channel remap so planes are in
+        //    JPEG component order (Y, Cb, Cr).
+        let unremapped = coefficients.inverseJXLBridgeRemap(
+            colorTransform: colorTransform)
+        // 2. Undo the DC offset if needed.
+        let unoffset: JXLCoefficientPlanes
+        if colorTransform == .none && !quantDCPerChannel.isEmpty {
+            unoffset = unremapped.inverseJPEGBridgeDC(
+                colorTransform: colorTransform,
+                quantDCPerChannel: quantDCPerChannel)
+        } else {
+            unoffset = unremapped
+        }
+        // 3. Transpose AC back and build a JPEGCoefficientImage.
+        let image = try unoffset.toJPEGCoefficientImage(
+            width: width, height: height,
+            precision: 8, frameKind: .baselineDCT,
+            frameComponents: frameComponents,
+            quantTables: quantTables)
+        // 4. Assemble the JPEG container.
+        return try JPEGContainerWriter.write(
+            image: image,
+            dcHuffmanTables: dcHuffmanTables,
+            acHuffmanTables: acHuffmanTables,
+            scanComponents: scanComponents)
     }
 }
 

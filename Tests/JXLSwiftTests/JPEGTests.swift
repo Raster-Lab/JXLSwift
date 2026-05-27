@@ -5534,6 +5534,141 @@ final class JXLToJPEGAdapterTests: XCTestCase {
         }
     }
 
+    /// **End-to-end forward + reverse via coefficient bridge.**
+    ///
+    /// 1. JPEG → JPEGDecoder.decodeToCoefficients → JPEGCoefficientImage
+    /// 2. → toJXLCoefficientPlanes + remappedForJXLBridge → JXL planes
+    /// 3. → inverseJXLBridgeRemap + toJPEGCoefficientImage
+    /// 4. → JXLToJPEGAdapter.reconstructMinimal → JPEG bytes
+    /// 5. Decode result → coefficients match the source
+    ///
+    /// This is the capstone end-to-end test for the reverse direction
+    /// **modulo byte-identicality** (jbrd-driven byte-perfect is a
+    /// separate path that needs Brotli + JBRDBoxReader).
+    func testEndToEnd_ForwardThenReverseBridge_CoefficientsMatch()
+        throws
+    {
+        let cjpeg = "/opt/homebrew/bin/cjpeg"
+        let djpeg = "/opt/homebrew/bin/djpeg"
+        guard FileManager.default.isExecutableFile(atPath: cjpeg)
+            && FileManager.default.isExecutableFile(atPath: djpeg)
+        else { throw XCTSkip("cjpeg + djpeg required") }
+        let tmp = NSTemporaryDirectory()
+        let ppm  = tmp + "e2e-\(UUID().uuidString).ppm"
+        let jpg  = tmp + "e2e-\(UUID().uuidString).jpg"
+        let outJpg = tmp + "e2e-\(UUID().uuidString)-out.jpg"
+        defer {
+            for f in [ppm, jpg, outJpg] {
+                try? FileManager.default.removeItem(atPath: f)
+            }
+        }
+        var ppmData = Data("P6\n16 16\n255\n".utf8)
+        for y in 0..<16 {
+            for x in 0..<16 {
+                ppmData.append(UInt8(50 + x * 10))
+                ppmData.append(UInt8(80 + y * 8))
+                ppmData.append(UInt8(min(255, 100 + (x + y) * 5)))
+            }
+        }
+        try ppmData.write(to: URL(fileURLWithPath: ppm))
+        let p = Process()
+        p.launchPath = cjpeg
+        p.arguments = ["-outfile", jpg,
+                       "-sample", "1x1,1x1,1x1",
+                       "-quality", "75", "-baseline", ppm]
+        p.standardOutput = Pipe()
+        p.standardError = Pipe()
+        try p.run()
+        p.waitUntilExit()
+        XCTAssertEqual(p.terminationStatus, 0)
+        let jpgData = try Data(contentsOf: URL(fileURLWithPath: jpg))
+
+        // 1. Decode JPEG to coefficient image.
+        let original = try JPEGDecoder.decodeToCoefficients(jpgData)
+
+        // Extract Huffman tables — we use the JPEG's own DHT for
+        // re-encode (could use Annex K standard tables instead).
+        var reader = JPEGSegmentReader(jpgData)
+        var dcTables: [JPEGHuffmanTable] = []
+        var acTables: [JPEGHuffmanTable] = []
+        var scanHeader: JPEGScanHeader?
+        while let seg = try reader.next() {
+            if seg.kind == .defineHuffmanTable {
+                for t in try JPEGHuffmanTable.parse(
+                    dhtPayload: seg.payload)
+                {
+                    if t.class == .dc { dcTables.append(t) }
+                    else { acTables.append(t) }
+                }
+            }
+            if seg.kind == .startOfScan {
+                scanHeader = try JPEGScanHeader.parse(
+                    sosPayload: seg.payload)
+                break
+            }
+        }
+        let scan = try XCTUnwrap(scanHeader)
+        let scanComps: [JPEGScanComponentEncode] = scan.components.map
+        { sc in
+            let idx = original.frameComponents.firstIndex {
+                $0.componentId == sc.componentId
+            } ?? 0
+            return JPEGScanComponentEncode(
+                componentIndex: idx,
+                dcTableId: sc.dcTableId,
+                acTableId: sc.acTableId)
+        }
+
+        // 2. Forward bridge to JXL planes (in JXL channel order).
+        let planes = try original.toJXLCoefficientPlanes()
+        let jxlPlanes = planes.remappedForJXLBridge(
+            colorTransform: .ycbcr)
+
+        // 3+4. Reverse: undo remap + DC + transpose + assemble JPEG.
+        let rebuilt = try JXLToJPEGAdapter.reconstructMinimal(
+            coefficients: jxlPlanes,
+            width: original.width, height: original.height,
+            frameComponents: original.frameComponents,
+            quantTables: original.quantTables,
+            dcHuffmanTables: dcTables,
+            acHuffmanTables: acTables,
+            scanComponents: scanComps,
+            colorTransform: .ycbcr)
+
+        // 5. Decode rebuilt JPEG → coefficients must match the source.
+        let rebuiltCoefs = try JPEGDecoder.decodeToCoefficients(
+            rebuilt)
+        XCTAssertEqual(rebuiltCoefs.width, original.width)
+        XCTAssertEqual(rebuiltCoefs.height, original.height)
+        XCTAssertEqual(
+            rebuiltCoefs.quantisedComponents.count,
+            original.quantisedComponents.count)
+        for c in 0..<original.quantisedComponents.count {
+            let o = original.quantisedComponents[c]
+            let r = rebuiltCoefs.quantisedComponents[c]
+            XCTAssertEqual(r.blocks.count, o.blocks.count,
+                "comp \(c) block count")
+            for bi in 0..<o.blocks.count {
+                XCTAssertEqual(
+                    r.blocks[bi].coefficients,
+                    o.blocks[bi].coefficients,
+                    "comp \(c) block \(bi) coefficient mismatch")
+            }
+        }
+        // djpeg should also decode our rebuilt JPEG cleanly.
+        try rebuilt.write(to: URL(fileURLWithPath: outJpg))
+        let p2 = Process()
+        p2.launchPath = djpeg
+        p2.arguments = ["-outfile", "/dev/null",
+                        "-pnm", outJpg]
+        p2.standardOutput = Pipe()
+        p2.standardError = Pipe()
+        try p2.run()
+        p2.waitUntilExit()
+        XCTAssertEqual(p2.terminationStatus, 0,
+            "djpeg should accept the rebuilt JPEG")
+    }
+
     func testFullRoundTrip_kNone_RemapPlusDC() throws {
         // Both forward operations applied, then both reversed.
         let p = makePlanes(
