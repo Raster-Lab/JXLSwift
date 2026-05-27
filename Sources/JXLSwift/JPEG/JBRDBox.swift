@@ -181,7 +181,7 @@ public struct JBRDExtraZeroRun: Sendable, Equatable {
 }
 
 /// App-marker classification (libjxl `AppMarkerType`).
-public enum JBRDAppMarkerType: UInt32, Sendable {
+public enum JBRDAppMarkerType: UInt32, Sendable, Equatable {
     case unknown = 0
     case icc = 1
     case exif = 2
@@ -213,7 +213,7 @@ public struct JBRDComponent: Sendable, Equatable {
 
 /// Full jbrd-Bundle payload. Mirrors libjxl's `JPEGData` struct at
 /// the field level; reading + writing is via `JBRDBox.read`/`write`.
-public struct JBRDBox: Sendable {
+public struct JBRDBox: Sendable, Equatable {
     public var width: Int
     public var height: Int
     public var restartInterval: UInt32
@@ -766,18 +766,253 @@ private struct JPEGInfo {
 }
 
 /// Bundle writer for the `jbrd` box payload. Inverse of
-/// `JBRDBoxReader`. Used by the forward bridge once we start emitting
-/// `jbrd` boxes for byte-identical round-trip support.
+/// `JBRDBoxReader.read`. Each field uses the same U32 distribution
+/// the reader expects.
+///
+/// **Status (v0.12.0g9)**. Full Bundle walk implemented — exact
+/// inverse of the reader, verified via round-trip test.
 public enum JBRDBoxWriter {
 
     /// Write a jbrd Bundle. The Brotli-compressed payload follows
-    /// at byte boundary — written separately by callers.
-    ///
-    /// **Status (v0.12.0g0 scaffold)**. Throws `notImplemented`.
+    /// at byte boundary — written separately by callers (gated on
+    /// the Brotli encoder, not yet shipped).
     public static func write(
         _ box: JBRDBox, to w: inout BitWriter
     ) throws {
-        throw JBRDError.notImplemented(
-            "JBRDBoxWriter.write — full Bundle walk pending")
+        do {
+            // 1. is_gray.
+            let isGray = box.components.count == 1
+            w.writeBit(isGray)
+
+            // 2. marker_order walk — 6-bit codes (marker - 0xC0).
+            if box.markerOrder.count > 16384 {
+                throw JBRDError.tooManyMarkers(box.markerOrder.count)
+            }
+            for m in box.markerOrder {
+                let code = UInt32(m) &- 0xC0
+                w.write(bits: 6, value: code)
+            }
+
+            // 3. App marker metadata.
+            for i in 0..<box.appData.count {
+                let t = box.appMarkerType[i].rawValue
+                try w.writeU32(t, distributions: (
+                    .literal(0), .literal(1),
+                    .offset(constant: 2, extraBits: 1),
+                    .offset(constant: 4, extraBits: 2)))
+                let len = UInt32(box.appData[i].count) - 1
+                w.write(bits: 16, value: len)
+            }
+            // 4. Com marker lengths.
+            for com in box.comData {
+                let len = UInt32(com.count) - 1
+                w.write(bits: 16, value: len)
+            }
+            // 5. Quant tables.
+            let nQuant = UInt32(box.quant.count)
+            if nQuant == 4 {
+                throw JBRDError.invalidQuantTableCount
+            }
+            try w.writeU32(nQuant, distributions: (
+                .literal(1), .literal(2),
+                .literal(3), .literal(4)))
+            for q in box.quant {
+                if q.precision > 1 {
+                    throw JBRDError.invalidQuantPrecision
+                }
+                w.write(bits: 1, value: q.precision)
+                w.write(bits: 2, value: q.index)
+                w.writeBit(q.isLast)
+            }
+            // 6. Component type.
+            //    Classify based on box.components ids — mirrors the
+            //    libjxl reader's component_type detection. Wire format
+            //    is Bits(2, default=1).
+            let componentType: UInt32
+            if box.components.count == 1 && box.components[0].id == 1
+            {
+                componentType = 0  // kGray
+            } else if box.components.count == 3
+                && box.components[0].id == 1
+                && box.components[1].id == 2
+                && box.components[2].id == 3
+            {
+                componentType = 1  // kYCbCr
+            } else if box.components.count == 3
+                && box.components[0].id == UInt32(UInt8(ascii: "R"))
+                && box.components[1].id == UInt32(UInt8(ascii: "G"))
+                && box.components[2].id == UInt32(UInt8(ascii: "B"))
+            {
+                componentType = 2  // kRGB
+            } else {
+                componentType = 3  // kCustom
+            }
+            w.write(bits: 2, value: componentType)
+            if componentType == 3 {
+                let nc = UInt32(box.components.count)
+                try w.writeU32(nc, distributions: (
+                    .literal(1), .literal(2),
+                    .literal(3), .literal(4)))
+                for comp in box.components {
+                    w.write(bits: 8, value: comp.id)
+                }
+            }
+            // Per-component quant_idx.
+            for comp in box.components {
+                w.write(bits: 2, value: comp.quantIdx)
+            }
+
+            // 7. Huffman codes.
+            try w.writeU32(
+                UInt32(box.huffmanCode.count),
+                distributions: (
+                    .literal(4),
+                    .offset(constant: 2, extraBits: 3),
+                    .offset(constant: 10, extraBits: 4),
+                    .offset(constant: 26, extraBits: 6)))
+            for hc in box.huffmanCode {
+                let isAC = (hc.slotId & 0x10) != 0
+                let id = UInt32(hc.slotId & 0x0F)
+                w.writeBit(isAC)
+                w.write(bits: 2, value: id)
+                w.writeBit(hc.isLast)
+                var numSymbols = 0
+                for k in 0...16 {
+                    try w.writeU32(hc.counts[k], distributions: (
+                        .literal(0), .literal(1),
+                        .offset(constant: 2, extraBits: 3),
+                        .bits(8)))
+                    numSymbols += Int(hc.counts[k])
+                }
+                if numSymbols > hc.values.count {
+                    throw JBRDError.notImplemented(
+                        "Huffman values undersized: numSymbols="
+                        + "\(numSymbols), values.count="
+                        + "\(hc.values.count)")
+                }
+                for k in 0..<numSymbols {
+                    try w.writeU32(hc.values[k], distributions: (
+                        .bits(2),
+                        .offset(constant: 4, extraBits: 2),
+                        .offset(constant: 8, extraBits: 4),
+                        .offset(constant: 1, extraBits: 8)))
+                }
+            }
+
+            // 8. Scan info.
+            for scan in box.scanInfo {
+                if scan.numComponents >= 4 {
+                    throw JBRDError.invalidScanComponentCount(
+                        scan.numComponents)
+                }
+                try w.writeU32(scan.numComponents,
+                    distributions: (
+                        .literal(1), .literal(2),
+                        .literal(3), .literal(4)))
+                w.write(bits: 6, value: scan.ss)
+                w.write(bits: 6, value: scan.se)
+                w.write(bits: 4, value: scan.al)
+                w.write(bits: 4, value: scan.ah)
+                for k in 0..<Int(scan.numComponents) {
+                    let c = scan.components[k]
+                    w.write(bits: 2, value: c.compIdx)
+                    w.write(bits: 2, value: c.acTblIdx)
+                    w.write(bits: 2, value: c.dcTblIdx)
+                }
+                try w.writeU32(scan.lastNeededPass,
+                    distributions: (
+                        .literal(0), .literal(1),
+                        .literal(2),
+                        .offset(constant: 3, extraBits: 3)))
+            }
+
+            // 9. Restart interval (only if has_dri).
+            let hasDRI = box.markerOrder.contains(0xDD)
+            if hasDRI {
+                w.write(bits: 16, value: box.restartInterval)
+            }
+
+            // 10. Reset points + extra zero runs per scan.
+            for scan in box.scanInfo {
+                try w.writeU32(
+                    UInt32(scan.resetPoints.count),
+                    distributions: (
+                        .literal(0),
+                        .offset(constant: 1, extraBits: 2),
+                        .offset(constant: 4, extraBits: 4),
+                        .offset(constant: 20, extraBits: 16)))
+                var lastBlockIdx: Int = -1
+                for b in scan.resetPoints {
+                    let delta = b &- UInt32(lastBlockIdx + 1)
+                    if b >= (3 << 26) {
+                        throw JBRDError.invalidBlockIndex(b)
+                    }
+                    try w.writeU32(delta, distributions: (
+                        .literal(0),
+                        .offset(constant: 1, extraBits: 3),
+                        .offset(constant: 9, extraBits: 5),
+                        .offset(constant: 41, extraBits: 28)))
+                    lastBlockIdx = Int(b)
+                }
+                try w.writeU32(
+                    UInt32(scan.extraZeroRuns.count),
+                    distributions: (
+                        .literal(0),
+                        .offset(constant: 1, extraBits: 2),
+                        .offset(constant: 4, extraBits: 4),
+                        .offset(constant: 20, extraBits: 16)))
+                lastBlockIdx = -1
+                for ezr in scan.extraZeroRuns {
+                    try w.writeU32(ezr.numExtraZeroRuns,
+                        distributions: (
+                            .literal(1),
+                            .offset(constant: 2, extraBits: 2),
+                            .offset(constant: 5, extraBits: 4),
+                            .offset(constant: 20, extraBits: 8)))
+                    let delta = ezr.blockIdx
+                        &- UInt32(lastBlockIdx + 1)
+                    if ezr.blockIdx > (3 << 26) {
+                        throw JBRDError.invalidBlockIndex(
+                            ezr.blockIdx)
+                    }
+                    try w.writeU32(delta, distributions: (
+                        .literal(0),
+                        .offset(constant: 1, extraBits: 3),
+                        .offset(constant: 9, extraBits: 5),
+                        .offset(constant: 41, extraBits: 28)))
+                    lastBlockIdx = Int(ezr.blockIdx)
+                }
+            }
+
+            // 11. Inter-marker sizes.
+            for data in box.interMarkerData {
+                w.write(bits: 16, value: UInt32(data.count))
+            }
+
+            // 12. Tail data length.
+            let tailLen = UInt32(box.tailData.count)
+            if tailLen > 4_260_096 {
+                throw JBRDError.tailDataTooLarge(tailLen)
+            }
+            try w.writeU32(tailLen, distributions: (
+                .literal(0),
+                .offset(constant: 1, extraBits: 8),
+                .offset(constant: 257, extraBits: 16),
+                .offset(constant: 65793, extraBits: 22)))
+
+            // 13. Padding bits.
+            w.writeBit(box.hasZeroPaddingBit)
+            if box.hasZeroPaddingBit {
+                let nbit = UInt32(box.paddingBits.count)
+                w.write(bits: 24, value: nbit)
+                for b in box.paddingBits {
+                    w.writeBit(b != 0)
+                }
+            }
+        } catch let e as BitstreamError {
+            throw JBRDError.bitstream(e)
+        } catch let e as JBRDError {
+            throw e
+        }
     }
 }

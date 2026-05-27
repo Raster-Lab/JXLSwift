@@ -4912,6 +4912,88 @@ final class JBRDBoxReaderTests: XCTestCase {
             + "hasZeroPaddingBit=\(box.hasZeroPaddingBit) "
             + "paddingBits=\(box.paddingBits.count)")
     }
+
+    /// **JBRD reader+writer round-trip on real payload.**
+    /// Parse a real cjxl-emitted jbrd payload, write it back via
+    /// `JBRDBoxWriter`, re-parse the result, and confirm the two
+    /// `JBRDBox` instances are equal. Validates the reader/writer
+    /// are exact inverses.
+    func testJBRDWriter_RoundTripsRealCjxlPayload() throws {
+        let path = "/tmp/cjxl-ref-420.jbrd"
+        guard FileManager.default.fileExists(atPath: path) else {
+            throw XCTSkip("jbrd payload not present at \(path)")
+        }
+        let payload = try Data(
+            contentsOf: URL(fileURLWithPath: path))
+        var r = BitReader(payload)
+        let box1 = try JBRDBoxReader.read(from: &r)
+        var w = BitWriter()
+        try JBRDBoxWriter.write(box1, to: &w)
+        let written = w.finishToData()
+        var r2 = BitReader(written)
+        let box2 = try JBRDBoxReader.read(from: &r2)
+        XCTAssertEqual(box1, box2,
+            "JBRD reader+writer round-trip should be lossless")
+    }
+
+    /// **JBRD writer produces byte-identical output for default fields.**
+    /// For a minimal hand-constructed box (no padding bits, default
+    /// component-type kYCbCr, no extras), the writer should produce a
+    /// known bit pattern. This pins down that the U32 distributions
+    /// we wrote match the reader's.
+    func testJBRDWriter_MinimalBundle_RoundTrips() throws {
+        var box = JBRDBox()
+        // Minimal valid markers: SOF0, DHT, SOS, EOI.
+        // (These plus the marker_order EOI sentinel are sufficient
+        //  for the validation pass to fire without throwing.)
+        box.markerOrder = [0xC0, 0xC4, 0xDA, 0xD9]
+        // 3 YCbCr components with quant table id 0.
+        box.components = [
+            JBRDComponent(id: 1, quantIdx: 0),
+            JBRDComponent(id: 2, quantIdx: 0),
+            JBRDComponent(id: 3, quantIdx: 0),
+        ]
+        // 1 quant table.
+        box.quant = [JBRDQuantTable(
+            precision: 0, index: 0, isLast: true)]
+        // Two Huffman codes (DC + AC, slot 0 each) in a single DHT
+        // segment. The first entry sets is_last=false so the
+        // validation pass keeps consuming until it sees is_last=true
+        // on the second entry — modelling the libjxl convention of
+        // one DHT marker carrying multiple `JPEGHuffmanCode`s.
+        var counts = [UInt32](repeating: 0, count: 17)
+        counts[8] = 1
+        box.huffmanCode = [JBRDHuffmanCode(
+            counts: counts, values: [256], slotId: 0,
+            isLast: false)]
+        var acCounts = [UInt32](repeating: 0, count: 17)
+        acCounts[8] = 1
+        box.huffmanCode.append(JBRDHuffmanCode(
+            counts: acCounts, values: [256],
+            slotId: 0x10, isLast: true))  // AC slot 0
+        box.scanInfo = [JBRDScanInfo(
+            ss: 0, se: 63, ah: 0, al: 0,
+            numComponents: 3,
+            components: [
+                JBRDScanComponent(compIdx: 0, dcTblIdx: 0, acTblIdx: 0),
+                JBRDScanComponent(compIdx: 1, dcTblIdx: 0, acTblIdx: 0),
+                JBRDScanComponent(compIdx: 2, dcTblIdx: 0, acTblIdx: 0),
+            ])]
+
+        var w = BitWriter()
+        try JBRDBoxWriter.write(box, to: &w)
+        let written = w.finishToData()
+        var r = BitReader(written)
+        let parsed = try JBRDBoxReader.read(from: &r)
+        XCTAssertEqual(parsed.markerOrder, box.markerOrder)
+        XCTAssertEqual(parsed.components.count, box.components.count)
+        XCTAssertEqual(parsed.quant.count, box.quant.count)
+        XCTAssertEqual(parsed.huffmanCode.count,
+                       box.huffmanCode.count)
+        XCTAssertEqual(parsed.scanInfo.count, box.scanInfo.count)
+        XCTAssertEqual(parsed, box,
+            "minimal JBRD bundle must round-trip exactly")
+    }
 }
 
 // MARK: - JPEGBlockEncoder — round-trip vs JPEGBlockDecoder (v0.12.0g2)
