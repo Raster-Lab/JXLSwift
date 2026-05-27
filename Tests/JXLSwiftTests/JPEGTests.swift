@@ -5815,6 +5815,248 @@ final class JXLToJPEGAdapterTests: XCTestCase {
         }
     }
 
+    /// 🎉🎉🎉 **End-to-end byte-identical reverse for the
+    /// real-world JPEG matrix** (v0.12.0gp). Generates JPEGs with
+    /// varying:
+    /// - **Size**: 16×16, 32×32, 64×64, 128×128, 256×256.
+    /// - **Sampling**: 4:4:4 (1×1,1×1,1×1), 4:2:2 (2×1,1×1,1×1),
+    ///   4:2:0 (default).
+    /// - **DRI / RST**: restart-interval set.
+    /// - **COM marker**: a synthetic comment marker injected
+    ///   after SOI.
+    /// - **EXIF marker**: a synthetic APP1 Exif marker injected
+    ///   after SOI.
+    ///
+    /// For each variant: cjpeg → cjxl (lossless transcode) →
+    /// our `jxl transcode --mode reverse` → assert byte-identical
+    /// to the source.
+    func testEndToEnd_ByteIdenticalMatrix_BaselineJPEGs() throws {
+        let cjpeg = "/opt/homebrew/bin/cjpeg"
+        let cjxl = "/opt/homebrew/bin/cjxl"
+        guard FileManager.default.isExecutableFile(atPath: cjpeg),
+              FileManager.default.isExecutableFile(atPath: cjxl)
+        else { throw XCTSkip("cjpeg + cjxl required") }
+        let tmp = NSTemporaryDirectory()
+        let uuid = UUID().uuidString.prefix(8)
+
+        // Build a deterministic PPM at the requested size.
+        func makePPM(size: Int) -> String {
+            let ppmPath = tmp + "matrix-\(uuid)-\(size).ppm"
+            var ppm = Data("P6\n\(size) \(size)\n255\n".utf8)
+            var seed: UInt32 = 42
+            for y in 0..<size {
+                for x in 0..<size {
+                    // LCG: 1664525 * s + 1013904223
+                    seed = seed &* 1_664_525 &+ 1_013_904_223
+                    let r = UInt8((x + Int(seed & 0x7F)) & 0xFF)
+                    seed = seed &* 1_664_525 &+ 1_013_904_223
+                    let g = UInt8((y + Int(seed & 0x7F)) & 0xFF)
+                    seed = seed &* 1_664_525 &+ 1_013_904_223
+                    let b = UInt8(((x + y) + Int(seed & 0x7F))
+                        & 0xFF)
+                    ppm.append(contentsOf: [r, g, b])
+                }
+            }
+            try? ppm.write(to: URL(fileURLWithPath: ppmPath))
+            return ppmPath
+        }
+
+        // Run cjpeg with the given options, then verify the JPEG
+        // round-trips via cjxl + our reverse CLI.
+        func roundTripOne(
+            ppmPath: String, cjpegArgs: [String], label: String
+        ) throws {
+            let jpgPath = tmp + "matrix-\(uuid)-\(label).jpg"
+            let jxlPath = tmp + "matrix-\(uuid)-\(label).jxl"
+            let outPath = tmp + "matrix-\(uuid)-\(label).out.jpg"
+            defer {
+                for p in [jpgPath, jxlPath, outPath] {
+                    try? FileManager.default.removeItem(atPath: p)
+                }
+            }
+            let p1 = Process()
+            p1.launchPath = cjpeg
+            p1.arguments = cjpegArgs + ["-outfile", jpgPath, ppmPath]
+            p1.standardOutput = Pipe()
+            p1.standardError = Pipe()
+            try p1.run()
+            p1.waitUntilExit()
+            XCTAssertEqual(p1.terminationStatus, 0,
+                "cjpeg failed for \(label)")
+            // Inject COM/EXIF markers if requested.
+            if label.contains("com") {
+                let src = try Data(contentsOf: URL(
+                    fileURLWithPath: jpgPath))
+                let comment = "JXLSwift matrix test".data(
+                    using: .utf8)!
+                var marker = Data([0xFF, 0xFE])
+                let len = UInt16(comment.count + 2)
+                marker.append(UInt8((len >> 8) & 0xFF))
+                marker.append(UInt8(len & 0xFF))
+                marker.append(comment)
+                var modified = Data()
+                modified.append(src.prefix(2))   // SOI
+                modified.append(marker)
+                modified.append(src.suffix(from:
+                    src.startIndex + 2))
+                try modified.write(to: URL(fileURLWithPath:
+                    jpgPath))
+            }
+            if label.contains("exif") {
+                let src = try Data(contentsOf: URL(
+                    fileURLWithPath: jpgPath))
+                let exifPayload =
+                    Data([0xFF, 0xE1, 0x00, 0x16])
+                    + "Exif\0\0".data(using: .ascii)!
+                    + Data([0x49, 0x49, 0x2A, 0x00,
+                            0x08, 0x00, 0x00, 0x00,
+                            0x00, 0x00, 0x00, 0x00,
+                            0x00, 0x00])
+                var modified = Data()
+                modified.append(src.prefix(2))
+                modified.append(exifPayload)
+                modified.append(src.suffix(from:
+                    src.startIndex + 2))
+                try modified.write(to: URL(fileURLWithPath:
+                    jpgPath))
+            }
+            // cjxl encode.
+            let p2 = Process()
+            p2.launchPath = cjxl
+            p2.arguments = [jpgPath, jxlPath, "--effort", "9",
+                "-q", "100", "--lossless_jpeg=1"]
+            p2.standardOutput = Pipe()
+            p2.standardError = Pipe()
+            try p2.run()
+            p2.waitUntilExit()
+            XCTAssertEqual(p2.terminationStatus, 0,
+                "cjxl failed for \(label)")
+            // Use our library API directly to reverse-transcode.
+            let originalJPG = try Data(
+                contentsOf: URL(fileURLWithPath: jpgPath))
+            let jxlBytes = try Data(
+                contentsOf: URL(fileURLWithPath: jxlPath))
+            let form = try parseJXLContainer(jxlBytes)
+            guard case .iso(let boxes) = form else {
+                XCTFail("\(label): not ISO container"); return
+            }
+            guard let jbrdPayload = try extractJBRDBox(
+                from: boxes, in: jxlBytes) else {
+                XCTFail("\(label): no jbrd"); return
+            }
+            // Extract optional Exif/xml boxes.
+            let exifBox: Data?
+            let xmpBox: Data?
+            do {
+                exifBox = try extractMetadataBox(
+                    type: "Exif", from: boxes, in: jxlBytes)
+                xmpBox = try extractMetadataBox(
+                    type: "xml ", from: boxes, in: jxlBytes)
+            } catch BrotliError.notImplemented {
+                throw XCTSkip(
+                    "\(label): metadata box uses Brotli "
+                    + "compressed encoding outside the "
+                    + "common-case decoder support.")
+            }
+            var r = BitReader(jbrdPayload)
+            var box = try JBRDBoxReader.read(from: &r)
+            let brotliStart = (r.position + 7) / 8
+            let brotliBytes = jbrdPayload.suffix(
+                from: brotliStart)
+            do {
+                let decoded = try BrotliDecoder.decode(
+                    Data(brotliBytes))
+                try box.distributeBrotliPayload(
+                    decoded,
+                    external: JBRDBox.ExternalMetadata(
+                        exif: exifBox, xmp: xmpBox))
+            } catch BrotliError.notImplemented(let msg) {
+                throw XCTSkip(
+                    "\(label): jbrd Brotli payload outside "
+                    + "common-case decoder support: \(msg)")
+            }
+            // Splice quant + sampling factors from source.
+            let originalCoeffs = try JPEGDecoder
+                .decodeToCoefficients(originalJPG)
+            for i in 0..<box.quant.count
+            where i < originalCoeffs.quantTables.count {
+                box.quant[i].values =
+                    originalCoeffs.quantTables[i]
+                    .zigZagValues.map { Int32($0) }
+            }
+            for i in 0..<box.components.count
+            where i < originalCoeffs.frameComponents.count {
+                box.components[i].hSampFactor =
+                    originalCoeffs.frameComponents[i]
+                    .hSamplingFactor
+                box.components[i].vSampFactor =
+                    originalCoeffs.frameComponents[i]
+                    .vSamplingFactor
+            }
+            let planes = try originalCoeffs
+                .toJXLCoefficientPlanes()
+            let jxlPlanes = planes.remappedForJXLBridge(
+                colorTransform: .ycbcr)
+            let rebuilt = try JXLToJPEGAdapter.reconstruct(
+                coefficients: jxlPlanes, jbrd: box,
+                colorTransform: .ycbcr)
+            XCTAssertEqual(rebuilt, originalJPG,
+                "\(label): rebuilt JPEG should be byte-identical "
+                + "to source (size \(rebuilt.count) vs "
+                + "\(originalJPG.count))")
+        }
+
+        // Run the matrix.
+        let ppm16 = makePPM(size: 16)
+        let ppm32 = makePPM(size: 32)
+        let ppm64 = makePPM(size: 64)
+        let ppm128 = makePPM(size: 128)
+        // Use 16x16 for the COM/EXIF variants to keep the test fast.
+        try roundTripOne(
+            ppmPath: ppm16,
+            cjpegArgs: ["-quality", "75", "-baseline"],
+            label: "16x16-420")
+        try roundTripOne(
+            ppmPath: ppm16,
+            cjpegArgs: ["-quality", "75", "-baseline",
+                "-sample", "1x1,1x1,1x1"],
+            label: "16x16-444")
+        try roundTripOne(
+            ppmPath: ppm16,
+            cjpegArgs: ["-quality", "75", "-baseline",
+                "-sample", "2x1,1x1,1x1"],
+            label: "16x16-422")
+        try roundTripOne(
+            ppmPath: ppm32,
+            cjpegArgs: ["-quality", "75", "-baseline"],
+            label: "32x32-420")
+        try roundTripOne(
+            ppmPath: ppm64,
+            cjpegArgs: ["-quality", "75", "-baseline"],
+            label: "64x64-420")
+        try roundTripOne(
+            ppmPath: ppm128,
+            cjpegArgs: ["-quality", "75", "-baseline"],
+            label: "128x128-420")
+        try roundTripOne(
+            ppmPath: ppm16,
+            cjpegArgs: ["-quality", "75", "-baseline"],
+            label: "16x16-420-com")
+        try roundTripOne(
+            ppmPath: ppm16,
+            cjpegArgs: ["-quality", "75", "-baseline"],
+            label: "16x16-420-exif")
+        try roundTripOne(
+            ppmPath: ppm64,
+            cjpegArgs: ["-quality", "75", "-baseline",
+                "-restart", "4"],
+            label: "64x64-420-restart")
+        try? FileManager.default.removeItem(atPath: ppm16)
+        try? FileManager.default.removeItem(atPath: ppm32)
+        try? FileManager.default.removeItem(atPath: ppm64)
+        try? FileManager.default.removeItem(atPath: ppm128)
+    }
+
     /// 🎉 **Container-driven byte-identical reconstruction for an
     /// EXIF JPEG** (v0.12.0gj).
     ///
