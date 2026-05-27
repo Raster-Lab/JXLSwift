@@ -166,14 +166,49 @@ public struct JXLDecoder: Sendable {
     public func decodeToCoefficients(
         _ data: Data
     ) throws -> JXLCoefficientPlanes {
+        // Use a sentinel-error escape hatch: run the full
+        // `decodeVarDCTPartial` but signal capture-and-stop right
+        // after the AC group loop completes (i.e. when dcValues +
+        // acBlocks are fully populated). The sentinel throws an
+        // `EarlyCoefficientCapture` carrying the packaged planes;
+        // we catch it here and return.
+        //
+        // **Status (v0.12.0gu)** — depends on the early-capture
+        // hook being added inside `decodeVarDCTPartial` at the
+        // post-AC-decode point. Until that lands, the inner
+        // function runs to completion (producing pixels) and we
+        // never see the sentinel. The fallback re-throws a clear
+        // notImplemented.
+        let inspection = try inspect(data)
+        let frameInspection = inspectFrameStructure(data)
+        guard frameInspection.encoding == FrameEncoding.varDCT else {
+            throw DecoderError.notImplemented(
+                "decodeToCoefficients: frame is not VarDCT-encoded "
+                + "(got \(frameInspection.encoding ?? .modular))")
+        }
+        do {
+            _ = try decodeVarDCTPartial(
+                data: data, inspection: inspection,
+                frame: frameInspection,
+                capturingCoefficients: true)
+        } catch let capture as EarlyCoefficientCapture {
+            return capture.planes
+        }
         throw DecoderError.notImplemented(
-            "JXLDecoder.decodeToCoefficients — VarDCT coefficient "
-            + "extraction. The bitstream walk through DC + AC decode "
-            + "is already implemented in `decodeVarDCTPartial` (lines "
-            + "~570–1320); needs refactoring to factor out a shared "
-            + "inner function that returns coefficient state instead "
-            + "of running IDCT + color conv to pixels.")
+            "decodeToCoefficients: decoder reached pixel output "
+            + "without firing the EarlyCoefficientCapture sentinel. "
+            + "Hook may not be installed in decodeVarDCTPartial.")
     }
+}
+
+/// Sentinel error used by `decodeToCoefficients` to stop the
+/// `decodeVarDCTPartial` walk at the post-AC-decode point and
+/// return the packaged coefficient planes.
+fileprivate struct EarlyCoefficientCapture: Error {
+    let planes: JXLCoefficientPlanes
+}
+
+extension JXLDecoder {
 
     /// Skeleton VarDCT decoder. Parses what's tractable today and
     /// throws a structured `notImplemented` naming the first
@@ -197,7 +232,8 @@ public struct JXLDecoder: Sendable {
     /// is the bitstream parsers + orchestration.
     private func decodeVarDCTPartial(
         data: Data, inspection: JXLInspection,
-        frame: JXLFrameInspection
+        frame: JXLFrameInspection,
+        capturingCoefficients: Bool = false
     ) throws -> ImageFrame {
         guard let codestream = unwrapCodestream(data) else {
             throw DecoderError.notImplemented(
@@ -1458,6 +1494,74 @@ public struct JXLDecoder: Sendable {
         traceLayer("AC \(numGroups) group(s) "
                    + "(\(numBlocksXAC)×\(numBlocksYAC) blocks total)",
                    before: acDecodeStart, after: r.position)
+
+        // v0.12.0gu — early-capture hook for `decodeToCoefficients`.
+        // At this point dcValues + acBlocks are fully populated; we
+        // can package them as `JXLCoefficientPlanes` and throw the
+        // sentinel error to escape the rest of the pixel pipeline.
+        if capturingCoefficients {
+            // Per-channel block dimensions from `fh.chromaSubsampling`.
+            // libjxl HShift(c) = maxhs - kHShift[channel_mode_[c]].
+            let kH: [Int] = [0, 1, 1, 0]
+            let kV: [Int] = [0, 1, 0, 1]
+            let cm = [
+                Int(fh.chromaSubsampling.channelModes.0),
+                Int(fh.chromaSubsampling.channelModes.1),
+                Int(fh.chromaSubsampling.channelModes.2),
+            ]
+            let maxhs = max(kH[cm[0]], kH[cm[1]], kH[cm[2]])
+            let maxvs = max(kV[cm[0]], kV[cm[1]], kV[cm[2]])
+            // Per-channel block dims (in JXL XYB / channel order).
+            // channelModes is stored in libjxl image-channel order
+            // (after the XOR remap): channelModes[0]=Cb, [1]=Y, [2]=Cr.
+            // We want JXL channel order [X=Cb, Y, B=Cr] which matches
+            // — `channelModes[c]` indexed directly by JXL channel.
+            var bpc: [(blocksX: Int, blocksY: Int)] = []
+            for c in 0..<3 {
+                let hs = maxhs - kH[cm[c]]
+                let vs = maxvs - kV[cm[c]]
+                bpc.append((
+                    blocksX: totalBlocksX >> hs,
+                    blocksY: totalBlocksY >> vs))
+            }
+            // dcValues is in storage order [Y, X, B] (per the XOR
+            // remap inside the modular sub-image decode). Convert
+            // to JXL channel order [X=Cb, Y, B=Cr].
+            let dcInXYBOrder: [[Int32]] = [
+                dcValues[1],   // X (Cb)
+                dcValues[0],   // Y
+                dcValues[2],   // B (Cr)
+            ]
+            // acBlocks[blkIdx][c] is indexed by XYB channel c
+            // directly (per the `acIterToXYB = [0, 1, 2]` mapping
+            // documented at line ~1495 of the original decoder).
+            var acInXYBOrder: [[[Int32]]] = [[], [], []]
+            for c in 0..<3 {
+                acInXYBOrder[c].reserveCapacity(
+                    totalBlocksX * totalBlocksY)
+                for blkIdx in 0..<(totalBlocksX * totalBlocksY) {
+                    acInXYBOrder[c].append(acBlocks[blkIdx][c])
+                }
+            }
+            // For chroma-subsampled frames the chroma planes have
+            // fewer blocks than the Y plane. Our existing decoder
+            // unfortunately allocates `dcValues[c]` and the
+            // `acBlocks` indexing uniformly to the Y-resolution grid
+            // (a known limitation noted in v0.12.0gv). For 4:4:4 the
+            // dims match cleanly; for subsampled inputs the chroma
+            // plane carries over-decoded data that the caller will
+            // need to handle as a downstream filtering step. We
+            // surface the JXL-channel-order arrays as-is; the
+            // `blocksPerChannel` carries the *correct* per-channel
+            // dims so callers can slice.
+            let planes = JXLCoefficientPlanes(
+                blocksX: totalBlocksX, blocksY: totalBlocksY,
+                channelCount: 3,
+                dcPerChannel: dcInXYBOrder,
+                acPerChannel: acInXYBOrder,
+                blocksPerChannel: bpc)
+            throw EarlyCoefficientCapture(planes: planes)
+        }
         if trace {
             for (bIdx, blockChannels) in acBlocks.enumerated() {
                 let nzCounts = blockChannels.map {

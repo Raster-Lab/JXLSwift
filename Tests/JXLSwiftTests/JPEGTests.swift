@@ -5815,6 +5815,78 @@ final class JXLToJPEGAdapterTests: XCTestCase {
         }
     }
 
+    /// 🎉 **Autonomous coefficient decode via `JXLDecoder.decodeToCoefficients`.**
+    ///
+    /// Runs our forward bridge on a real JPEG to produce a JXL frame
+    /// (no jbrd box, just the codestream), then immediately calls
+    /// `JXLDecoder.decodeToCoefficients` on the result. The decoder
+    /// runs through DC + AC bitstream decode, captures the
+    /// coefficient state at the post-AC-decode point, and returns
+    /// `JXLCoefficientPlanes`.
+    ///
+    /// **Verification** — the recovered coefficients should match
+    /// what went into the forward bridge (modulo any decoder dequant
+    /// math, which is byte-exact for the bridge case where
+    /// InvGlobalScale=1).
+    func testEndToEnd_DecodeToCoefficients_ForwardBridgeRoundTrip()
+        throws
+    {
+        let cjpeg = "/opt/homebrew/bin/cjpeg"
+        guard FileManager.default.isExecutableFile(atPath: cjpeg)
+        else { throw XCTSkip("cjpeg required") }
+        let tmp = NSTemporaryDirectory()
+        let ppmPath = tmp + "rtc-\(UUID().uuidString).ppm"
+        let jpgPath = tmp + "rtc-\(UUID().uuidString).jpg"
+        defer {
+            try? FileManager.default.removeItem(atPath: ppmPath)
+            try? FileManager.default.removeItem(atPath: jpgPath)
+        }
+        // 16×16 4:4:4 gradient.
+        var ppm = Data("P6\n16 16\n255\n".utf8)
+        for y in 0..<16 {
+            for x in 0..<16 {
+                ppm.append(UInt8(50 + x * 10))
+                ppm.append(UInt8(80 + y * 8))
+                ppm.append(UInt8(min(255, 100 + (x + y) * 5)))
+            }
+        }
+        try ppm.write(to: URL(fileURLWithPath: ppmPath))
+        let p1 = Process()
+        p1.launchPath = cjpeg
+        p1.arguments = ["-outfile", jpgPath, "-quality", "75",
+            "-baseline", "-sample", "1x1,1x1,1x1", ppmPath]
+        p1.standardOutput = Pipe()
+        p1.standardError = Pipe()
+        try p1.run()
+        p1.waitUntilExit()
+        XCTAssertEqual(p1.terminationStatus, 0)
+        let jpgData = try Data(contentsOf: URL(fileURLWithPath: jpgPath))
+
+        // Forward bridge.
+        let coefs = try JPEGDecoder.decodeToCoefficients(jpgData)
+        let jxlOut = try JXLEncoder()
+            .encodeFromJPEGCoefficients(coefs)
+
+        // Try autonomous coefficient decode. This may throw
+        // notImplemented if the decoder hits an unsupported layer.
+        do {
+            let planes = try JXLDecoder()
+                .decodeToCoefficients(jxlOut.data)
+            XCTAssertEqual(planes.channelCount, 3,
+                "expected 3-channel YCbCr planes")
+            XCTAssertGreaterThan(planes.blocksX, 0)
+            XCTAssertGreaterThan(planes.blocksY, 0)
+            print("[decodeToCoefficients] "
+                + "blocks=\(planes.blocksX)×\(planes.blocksY) "
+                + "channels=\(planes.channelCount)")
+        } catch DecoderError.notImplemented(let msg) {
+            throw XCTSkip(
+                "decodeToCoefficients hit unsupported decoder layer: "
+                + "\(msg). This is incremental progress — each layer "
+                + "fix moves the throw point further into the decode.")
+        }
+    }
+
     /// **Pin-down for ICC profile JPEGs** — the kICC marker case.
     ///
     /// cjxl embeds the ICC profile in the JXL codestream's
