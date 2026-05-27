@@ -4946,6 +4946,90 @@ final class JXLToJPEGAdapterTests: XCTestCase {
         XCTAssertEqual(back.dcPerChannel[0], p.dcPerChannel[0])
     }
 
+    /// **End-to-end coefficient round-trip.** Take a real JPEG,
+    /// run the forward coefficient adapter (`toJXLCoefficientPlanes`
+    /// + `remappedForJXLBridge` + `applyJPEGBridgeDC`), then invert
+    /// the chain (`inverseJPEGBridgeDC` + `inverseJXLBridgeRemap`
+    /// + `toJPEGCoefficientImage`) and confirm the resulting per-
+    /// component blocks match the source byte-for-byte.
+    func testFullCoefficientRoundTrip_RealJPEG() throws {
+        let cjpeg = "/opt/homebrew/bin/cjpeg"
+        guard FileManager.default.isExecutableFile(atPath: cjpeg)
+        else { throw XCTSkip("cjpeg not present") }
+        // Build a tiny 16×16 4:4:4 JPEG.
+        let tmp = NSTemporaryDirectory()
+        let ppmPath = tmp + "rt-\(UUID().uuidString).ppm"
+        let jpgPath = tmp + "rt-\(UUID().uuidString).jpg"
+        defer {
+            try? FileManager.default.removeItem(atPath: ppmPath)
+            try? FileManager.default.removeItem(atPath: jpgPath)
+        }
+        var ppm = Data("P6\n16 16\n255\n".utf8)
+        for y in 0..<16 {
+            for x in 0..<16 {
+                ppm.append(UInt8(50 + x * 10))
+                ppm.append(UInt8(80 + y * 8))
+                ppm.append(UInt8(min(255, 100 + (x + y) * 5)))
+            }
+        }
+        try ppm.write(to: URL(fileURLWithPath: ppmPath))
+        let p = Process()
+        p.launchPath = cjpeg
+        p.arguments = ["-outfile", jpgPath,
+                       "-sample", "1x1,1x1,1x1",
+                       "-quality", "75", "-baseline", ppmPath]
+        p.standardOutput = Pipe()
+        p.standardError = Pipe()
+        try p.run()
+        p.waitUntilExit()
+        XCTAssertEqual(p.terminationStatus, 0)
+        let jpg = try Data(contentsOf: URL(fileURLWithPath: jpgPath))
+        let original = try JPEGDecoder.decodeToCoefficients(jpg)
+
+        // Forward: JPEGCoefficientImage → JXLCoefficientPlanes
+        let jxlPlanes = try original.toJXLCoefficientPlanes()
+        // For kYCbCr the forward path doesn't change DC (DCzero=true);
+        // we still apply remappedForJXLBridge to land in JXL channel
+        // order so we exercise the inverse remap.
+        let remapped = jxlPlanes.remappedForJXLBridge(
+            colorTransform: .ycbcr)
+
+        // Reverse: undo remap → undo DC offset (no-op for kYCbCr) →
+        // build JPEGCoefficientImage
+        let inverseRemapped = remapped.inverseJXLBridgeRemap(
+            colorTransform: .ycbcr)
+        let roundTripped = try inverseRemapped.toJPEGCoefficientImage(
+            width: original.width, height: original.height,
+            precision: original.precision,
+            frameKind: original.frameKind,
+            frameComponents: original.frameComponents,
+            quantTables: original.quantTables)
+
+        // Verify per-block coefficients match.
+        XCTAssertEqual(
+            roundTripped.quantisedComponents.count,
+            original.quantisedComponents.count,
+            "component count must match")
+        for ch in 0..<original.quantisedComponents.count {
+            let origC = original.quantisedComponents[ch]
+            let rtC = roundTripped.quantisedComponents[ch]
+            XCTAssertEqual(rtC.componentId, origC.componentId,
+                "channel \(ch) componentId mismatch")
+            XCTAssertEqual(rtC.blocksWide, origC.blocksWide,
+                "channel \(ch) blocksWide mismatch")
+            XCTAssertEqual(rtC.blocksHigh, origC.blocksHigh,
+                "channel \(ch) blocksHigh mismatch")
+            XCTAssertEqual(rtC.blocks.count, origC.blocks.count,
+                "channel \(ch) block count mismatch")
+            for bi in 0..<origC.blocks.count {
+                XCTAssertEqual(
+                    rtC.blocks[bi].coefficients,
+                    origC.blocks[bi].coefficients,
+                    "channel \(ch) block \(bi) coefficients mismatch")
+            }
+        }
+    }
+
     func testFullRoundTrip_kNone_RemapPlusDC() throws {
         // Both forward operations applied, then both reversed.
         let p = makePlanes(

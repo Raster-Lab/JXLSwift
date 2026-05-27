@@ -142,16 +142,84 @@ extension JXLCoefficientPlanes {
     /// inverting both the channel remap and the 8×8 transpose the
     /// forward adapter applied (`ac[k=y*8+x] = jpeg[x*8+y]`).
     ///
-    /// **Status (v0.12.0g0 scaffold)**. Currently throws
-    /// `notImplemented` — the transpose-back loop + JPEG component
-    /// dimension reconstruction is the next bite.
+    /// **Caller contract.** `self` must be in **JPEG component order**
+    /// (i.e. caller has already applied `inverseJXLBridgeRemap` if the
+    /// frame was kYCbCr-remapped) and DC values must be in JPEG raw
+    /// form (caller has applied `inverseJPEGBridgeDC` if the forward
+    /// pass added the `1024/qt[DC]` offset for `.none`).
+    ///
+    /// Inputs needed beyond `self`:
+    ///   - `width`, `height` — SOFn dimensions (from jbrd / source).
+    ///   - `frameComponents` — per-component sampling factors + quant
+    ///     bindings (mirrors what `JPEGScanHeader.parse` produced for
+    ///     the original JPEG; passed in because we don't reconstruct
+    ///     SOFn from JXL alone).
+    ///   - `quantTables` — per-table zig-zag matrices (from `jbrd`).
+    ///   - `precision`, `frameKind` — typically 8 + `.baselineDCT`.
+    ///
+    /// **v0.12.0g1.** Forward path was:
+    ///   `ac[bi][k = y*8+x] = jpeg.coefficients[x*8+y]` (transpose)
+    /// Reverse path is the inverse:
+    ///   `jpeg.coefficients[x*8+y] = ac[bi][y*8+x]`
+    /// DC is just copied straight from `dcPerChannel[c][bi]`.
     public func toJPEGCoefficientImage(
         width: Int, height: Int,
-        colorTransform: JXLBridgeColorTransform,
-        jbrd: JBRDBox
+        precision: Int = 8,
+        frameKind: JPEGStructure.FrameKind = .baselineDCT,
+        frameComponents: [JPEGFrameComponent],
+        quantTables: [JPEGQuantTable]
     ) throws -> JPEGCoefficientImage {
-        throw JXLToJPEGAdapterError.notImplemented(
-            "toJPEGCoefficientImage — transpose-back + per-component "
-            + "block-grid reconstruction pending")
+        guard frameComponents.count == channelCount else {
+            throw JXLToJPEGAdapterError.shapeMismatch(
+                "frameComponents.count \(frameComponents.count) ≠ "
+                + "channelCount \(channelCount)")
+        }
+        var components: [JPEGComponentBlocks] = []
+        components.reserveCapacity(channelCount)
+        for c in 0..<channelCount {
+            let bX = blocksPerChannel[c].blocksX
+            let bY = blocksPerChannel[c].blocksY
+            let total = bX * bY
+            guard dcPerChannel[c].count == total else {
+                throw JXLToJPEGAdapterError.shapeMismatch(
+                    "channel \(c): dcPerChannel.count "
+                    + "\(dcPerChannel[c].count) ≠ "
+                    + "blocksWide × blocksHigh \(total)")
+            }
+            guard acPerChannel[c].count == total else {
+                throw JXLToJPEGAdapterError.shapeMismatch(
+                    "channel \(c): acPerChannel.count "
+                    + "\(acPerChannel[c].count) ≠ "
+                    + "blocksWide × blocksHigh \(total)")
+            }
+            var blocks: [JPEGCoefficientBlock] = []
+            blocks.reserveCapacity(total)
+            for bi in 0..<total {
+                var coeffs = [Int32](repeating: 0, count: 64)
+                // DC at position 0.
+                coeffs[0] = dcPerChannel[c][bi]
+                // AC transpose-back: jpeg[x*8 + y] = ac[y*8 + x].
+                let acBlock = acPerChannel[c][bi]
+                for y in 0..<8 {
+                    for x in 0..<8 {
+                        let jxlIdx = y * 8 + x
+                        if jxlIdx == 0 { continue }
+                        coeffs[x * 8 + y] = acBlock[jxlIdx]
+                    }
+                }
+                blocks.append(JPEGCoefficientBlock(coeffs))
+            }
+            components.append(JPEGComponentBlocks(
+                componentId: frameComponents[c].componentId,
+                blocksWide: bX, blocksHigh: bY,
+                blocks: blocks))
+        }
+        return JPEGCoefficientImage(
+            width: width, height: height,
+            precision: precision,
+            frameKind: frameKind,
+            frameComponents: frameComponents,
+            quantisedComponents: components,
+            quantTables: quantTables)
     }
 }
