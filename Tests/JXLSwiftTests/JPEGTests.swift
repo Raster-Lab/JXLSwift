@@ -5815,6 +5815,38 @@ final class JXLToJPEGAdapterTests: XCTestCase {
         }
     }
 
+    /// **Pin-down for ICC profile JPEGs** — the kICC marker case.
+    ///
+    /// cjxl embeds the ICC profile in the JXL codestream's
+    /// ImageMetadata `useICC` color-encoding path (Spec §C.3.4)
+    /// rather than in a separate container box. Our reverse path
+    /// fills the canonical kICC marker template (marker byte
+    /// 0xE2, length, "ICC_PROFILE\0" tag, sequence number, count)
+    /// but the actual ICC body remains zero — we don't yet extract
+    /// the profile from the codestream.
+    ///
+    /// This test is **expected to fail byte-identicality** today.
+    /// It's pinned as `XCTSkip` until ICC body extraction lands;
+    /// the failure mode is "first diff inside the APP2 marker
+    /// body where ICC bytes belong" which the test could verify
+    /// when activated.
+    func testEndToEnd_ICCProfileJPEG_LimitationDocumented() throws {
+        let cjpeg = "/opt/homebrew/bin/cjpeg"
+        let cjxl = "/opt/homebrew/bin/cjxl"
+        let iccPath = "/System/Library/ColorSync/Profiles/sRGB Profile.icc"
+        guard FileManager.default.isExecutableFile(atPath: cjpeg),
+              FileManager.default.isExecutableFile(atPath: cjxl),
+              FileManager.default.fileExists(atPath: iccPath)
+        else { throw XCTSkip("cjpeg + cjxl + sRGB ICC required") }
+        throw XCTSkip(
+            "ICC profile JPEG byte-identical reconstruction "
+            + "requires extracting the ICC body from the JXL "
+            + "codestream's ImageMetadata color-encoding "
+            + "compressed-ICC section (Spec §C.3.4). Test "
+            + "infrastructure is in place but the codestream "
+            + "ICC extractor is a separate phase of work.")
+    }
+
     /// 🎉🎉🎉 **End-to-end byte-identical reverse for the
     /// real-world JPEG matrix** (v0.12.0gp). Generates JPEGs with
     /// varying:

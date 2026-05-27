@@ -11,6 +11,55 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0gp — 9-variant byte-identical reverse matrix test
+
+Adds a comprehensive integration test
+(`testEndToEnd_ByteIdenticalMatrix_BaselineJPEGs`) that exercises
+the full forward+reverse pipeline against 9 JPEG variants in a
+single 1.3s test:
+
+| Size      | Sampling  | Special marker      |
+|-----------|-----------|---------------------|
+| 16×16     | 4:2:0     | —                   |
+| 16×16     | 4:4:4     | —                   |
+| 16×16     | 4:2:2     | —                   |
+| 32×32     | 4:2:0     | —                   |
+| 64×64     | 4:2:0     | —                   |
+| 128×128   | 4:2:0     | —                   |
+| 16×16     | 4:2:0     | COM marker          |
+| 16×16     | 4:2:0     | APP1 EXIF marker    |
+| 64×64     | 4:2:0     | DRI/RST (restart=4) |
+
+Each variant runs `cjpeg → cjxl --lossless_jpeg=1 → JXLContainer
+→ JBRDBoxReader → BrotliDecoder.decode → JBRDBox.distributeBrotliPayload
+→ JXLToJPEGAdapter.reconstruct` and asserts `rebuilt == source`
+byte-for-byte.
+
+This is the pin-down test for the "common-case JPEG" reverse
+direction. Future bites that extend coverage (ICC profile JPEGs,
+progressive scans, larger streams that hit the Brotli static
+dictionary or NBLTYPES > 1) expand this matrix.
+
+CLI-verified ad-hoc tests today:
+```
+$ jxl-tool transcode --mode reverse --source <orig.jpg> <in.jxl> <out.jpg>
+# byte-identical to source ✓ for 256×256 4:4:4 / 4:2:2 / 4:2:0,
+# with COM markers, EXIF markers, and DRI/RST markers
+```
+
+Known limitations (each is a discrete future bite):
+- **ICC profile JPEGs** — cjxl embeds the ICC in the JXL
+  codestream's `useICC` color-encoding path (Spec §C.3.4); our
+  reverse fills the canonical kICC marker template but the
+  body content is zero. Test
+  `testEndToEnd_ICCProfileJPEG_LimitationDocumented` is pinned.
+- **Progressive JPEGs (SOF2)** — JPEG decoder rejects SOF2 today
+  (baseline DCT only).
+- **Larger metadata streams** — Brotli static dictionary references
+  (RFC 7932 §8) and NBLTYPES > 1 streams not yet supported.
+
+198 tests across Phase J + Foundation suites, 0 failures.
+
 ### 🎉🎉🎉 v0.12.0gn — Brotli compressed-body decoder + EXIF JPEG byte-identical
 
 The Brotli decoder now handles **compressed** meta-blocks end-to-end
