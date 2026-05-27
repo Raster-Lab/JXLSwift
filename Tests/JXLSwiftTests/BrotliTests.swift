@@ -319,6 +319,45 @@ final class BrotliCompressedMetaBlockHeaderTests: XCTestCase {
     }
 }
 
+/// Brotli IC alphabet command LUT — verify the table builds with
+/// the expected structure.
+final class BrotliInsertCopyLutTests: XCTestCase {
+
+    func testCmdLut_HasCorrectSize() {
+        XCTAssertEqual(BrotliInsertCopy.cmdLut.count, 704)
+    }
+
+    func testCmdLut_Symbol0_ZeroInsertCopy2() {
+        // Symbol 0: cell_idx=0, cell_pos=0.
+        //   copy_code  = ((0<<3) & 0x18) | (0 & 0x7) = 0
+        //   insert_code = (0 & 0x18) | ((0>>3) & 0x7) = 0
+        //   copy_len_offset = 2 (the copy_offsets[0] starting value)
+        //   insert_len_offset = 0
+        let e = BrotliInsertCopy.cmdLut[0]
+        XCTAssertEqual(e.insertLenOffset, 0)
+        XCTAssertEqual(e.copyLenOffset, 2)
+        XCTAssertEqual(e.insertLenExtraBits, 0)
+        XCTAssertEqual(e.copyLenExtraBits, 0)
+        XCTAssertEqual(e.distanceCode, 0)
+        XCTAssertEqual(e.context, 0)
+    }
+
+    func testCmdLut_Symbol127_StillInCellIdx1() {
+        // Symbols 64..127 are in cell_idx=1 (kCellPos[1]=1).
+        // distance_code should still be 0 (use cached distance).
+        let e = BrotliInsertCopy.cmdLut[127]
+        XCTAssertEqual(e.distanceCode, 0,
+            "cell_idx=1 → distance_code=0 (cached)")
+    }
+
+    func testCmdLut_Symbol128_FirstReadDistance() {
+        // Symbols 128..191 are in cell_idx=2 → distance_code = -1.
+        let e = BrotliInsertCopy.cmdLut[128]
+        XCTAssertEqual(e.distanceCode, -1,
+            "cell_idx=2 → distance_code=-1 (read fresh)")
+    }
+}
+
 /// End-to-end BrotliDecoder tests using crafted streams.
 final class BrotliDecoderTests: XCTestCase {
 
