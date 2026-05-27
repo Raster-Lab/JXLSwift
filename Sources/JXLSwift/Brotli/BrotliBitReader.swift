@@ -13,29 +13,52 @@ import Foundation
 /// the RFC section that defines the encoding.
 public enum BrotliBitReader {
 
-    /// RFC 7932 §10 — "variable length codes": encode a value `N` as
+    /// RFC 7932 §9.2 — variable-length unsigned integer for fields
+    /// like NBLTYPESL / NBLTYPESI / NBLTYPESD. The encoded value `N`
+    /// is in `[1, 256]`.
     ///
-    ///     value = 1, 0–4 extra bits ⇒ `N = 1 + extra`
-    ///
-    /// followed by `1 << (1 + nbits)` to `(1 << (2 + nbits)) - 1`
-    /// blocks. Used heavily for `NSYM` / `NBLTYPES` / `NTREES` / etc.
-    ///
-    /// The exact decoding table (RFC 7932 §10):
+    /// Encoding:
     /// ```
-    /// prefix  extra  value range
-    /// 0       —      1
-    /// 1 0xx   3      2..9     ⇒ 2 + xxx
-    /// 1 1xx   3      9..16    ⇒ 9 + xxx
+    /// 0           → 1
+    /// 1 nnn xxxxxxx  → where nnn ∈ {0..7}, xxxxxxx ∈ {0..(2^nnn-1)},
+    ///                  value = 2^nnn + 1 + xxxxxxx
     /// ```
-    /// Actually the RFC's encoding is simpler — see
-    /// `readVarLenU8` for the §9.2 MNIBBLES-style 4-symbol case.
     ///
-    /// **Not yet implemented**. Surface as `notImplemented` until
-    /// the meta-block reader needs this.
-    public static func readNSYM(
+    /// Concretely:
+    /// ```
+    /// 1 000        → 2          (no extra bits)
+    /// 1 001 x      → 3..4
+    /// 1 010 xx     → 5..8
+    /// 1 011 xxx    → 9..16
+    /// 1 100 xxxx   → 17..32
+    /// 1 101 xxxxx  → 33..64
+    /// 1 110 xxxxxx → 65..128
+    /// 1 111 xxxxxxx → 129..256
+    /// ```
+    ///
+    /// Returns the decoded value (1..256).
+    public static func readVarLenU8(
         from r: inout BitReader
     ) throws -> UInt32 {
-        throw BrotliError.notImplemented("readNSYM (RFC 7932 §10)")
+        let firstBit: UInt32
+        do { firstBit = try r.read(bits: 1) }
+        catch let e as BitstreamError { throw BrotliError.bitstream(e) }
+        if firstBit == 0 {
+            return 1
+        }
+        let nnn: UInt32
+        do { nnn = try r.read(bits: 3) }
+        catch let e as BitstreamError { throw BrotliError.bitstream(e) }
+        let extra: UInt32
+        if nnn == 0 {
+            extra = 0
+        } else {
+            do { extra = try r.read(bits: Int(nnn)) }
+            catch let e as BitstreamError {
+                throw BrotliError.bitstream(e)
+            }
+        }
+        return (UInt32(1) << nnn) + 1 + extra
     }
 
     /// RFC 7932 §9.2 — `MNIBBLES = 4 + read(2)` except the reserved

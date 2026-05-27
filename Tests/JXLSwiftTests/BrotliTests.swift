@@ -204,6 +204,59 @@ final class BrotliMetaBlockHeaderTests: XCTestCase {
     }
 }
 
+/// Brotli variable-length integer reader (§9.2 NBLTYPES / similar).
+final class BrotliVarLenU8Tests: XCTestCase {
+
+    private func readVarLenU8(_ bits: [Int]) throws -> UInt32 {
+        // Pack the bit list into a Data buffer LSB-first within
+        // each byte (matching Brotli's bit order).
+        var bytes: [UInt8] = []
+        var current: UInt8 = 0
+        var n = 0
+        for b in bits {
+            current |= UInt8(b) << UInt8(n)
+            n += 1
+            if n == 8 { bytes.append(current); current = 0; n = 0 }
+        }
+        if n > 0 { bytes.append(current) }
+        if bytes.isEmpty { bytes.append(0) }
+        // pad
+        bytes.append(0)
+        var r = BitReader(Data(bytes))
+        return try BrotliBitReader.readVarLenU8(from: &r)
+    }
+
+    func testVarLenU8_FirstBitZero_Returns1() throws {
+        XCTAssertEqual(try readVarLenU8([0]), 1)
+    }
+    func testVarLenU8_Nnn0_Returns2() throws {
+        // 1 000 → 2
+        XCTAssertEqual(try readVarLenU8([1, 0, 0, 0]), 2)
+    }
+    func testVarLenU8_Nnn1_Range3To4() throws {
+        // 1 001 0 → 3
+        XCTAssertEqual(try readVarLenU8([1, 1, 0, 0, 0]), 3)
+        // 1 001 1 → 4
+        XCTAssertEqual(try readVarLenU8([1, 1, 0, 0, 1]), 4)
+    }
+    func testVarLenU8_Nnn3_Range9To16() throws {
+        // 1 011 000 → 9
+        XCTAssertEqual(try readVarLenU8(
+            [1, 1, 1, 0, 0, 0, 0]), 9)
+        // 1 011 111 → 16
+        XCTAssertEqual(try readVarLenU8(
+            [1, 1, 1, 0, 1, 1, 1]), 16)
+    }
+    func testVarLenU8_Nnn7_Range129To256() throws {
+        // 1 111 0000000 → 129
+        XCTAssertEqual(try readVarLenU8(
+            [1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0]), 129)
+        // 1 111 1111111 → 256
+        XCTAssertEqual(try readVarLenU8(
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]), 256)
+    }
+}
+
 /// End-to-end BrotliDecoder tests using crafted streams.
 final class BrotliDecoderTests: XCTestCase {
 
