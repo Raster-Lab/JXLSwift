@@ -3058,11 +3058,37 @@ final class JPEGFoundationTests: XCTestCase {
             + djxlFirst.map { String(format: "%02X", $0) }.joined(separator: " "))
         print("[ref  first 12]: "
             + refFirst.map { String(format: "%02X", $0) }.joined(separator: " "))
-        // Pin-down assertion: the diff should be measurably bounded
-        // (not random noise). When the math layer lands, lower this.
-        XCTAssertLessThanOrEqual(maxDiff, 255,
-            "trivially-bounded sanity; expect tighter once "
-            + "the dequant / colour-conversion path is fixed")
+        // Per-channel breakdown: separate R, G, B diff stats.
+        var rMax = 0, gMax = 0, bMax = 0
+        var rSum = 0, gSum = 0, bSum = 0
+        for px in 0..<(8 * 8) {
+            let i = px * 3
+            let dR = abs(Int(djxlPixels[djxlPixels.startIndex + i])
+                - Int(refPixels[i]))
+            let dG = abs(Int(djxlPixels[djxlPixels.startIndex + i + 1])
+                - Int(refPixels[i + 1]))
+            let dB = abs(Int(djxlPixels[djxlPixels.startIndex + i + 2])
+                - Int(refPixels[i + 2]))
+            if dR > rMax { rMax = dR }
+            if dG > gMax { gMax = dG }
+            if dB > bMax { bMax = dB }
+            rSum += dR; gSum += dG; bSum += dB
+        }
+        print(String(format:
+            "[per-channel] R: max=%d mean=%.2f  G: max=%d mean=%.2f  "
+            + "B: max=%d mean=%.2f",
+            rMax, Double(rSum)/64.0,
+            gMax, Double(gSum)/64.0,
+            bMax, Double(bSum)/64.0))
+        // **v0.12.0fr**: bridge is pixel-equivalent to `JPEGDecoder.decode`
+        // within JPEG rounding tolerance (1-2 bytes per channel), which is
+        // also the tolerance `cjxl --lossless_jpeg=1 + djxl` exhibits vs
+        // `djpeg`. Tightened assertion: max diff ≤ 5 across all channels
+        // (gives a bit of headroom for any fixture variation while still
+        // catching any major regression).
+        XCTAssertLessThanOrEqual(maxDiff, 5,
+            "bridge → djxl pixels should be within JPEG-decode rounding "
+            + "tolerance of the reference; got max=\(maxDiff)")
     }
 
     // MARK: - JXLEncoder.encodeFromJPEGCoefficients (v0.12.0ee, step 3.7)
@@ -3933,9 +3959,26 @@ final class JPEGFoundationTests: XCTestCase {
         let blockCtxDefault = try r.readBit()
         XCTAssertTrue(blockCtxDefault,
             "bridge emits BlockCtxMap all_default")
+        // **v0.12.0fr**: bridge now emits ColorCorrelation DC as
+        // **non-default** with explicit `base_correlation_b = 0`
+        // (libjxl's default `kYToBRatio = 1.0` would mix luma into
+        // the Cr channel, breaking JPEG-pixel parity).
         let colorCorrDefault = try r.readBit()
-        XCTAssertTrue(colorCorrDefault,
-            "bridge emits ColorCorrelation DC default")
+        XCTAssertFalse(colorCorrDefault,
+            "bridge emits ColorCorrelation DC NON-default "
+            + "(explicit base_correlation_b = 0)")
+        // Skip the non-default ColorCorrelation DC fields:
+        //   U32 color_factor + 16 bits F16 base_x + 16 bits F16 base_b
+        //   + 8 bits ytox_dc + 8 bits ytob_dc.
+        _ = try r.readU32((
+            .literal(UInt32(kDefaultColorFactor)),
+            .literal(256),
+            .offset(constant: 2, extraBits: 8),
+            .offset(constant: 258, extraBits: 16)))
+        _ = try r.read(bits: 16)  // F16 base_correlation_x
+        _ = try r.read(bits: 16)  // F16 base_correlation_b
+        _ = try r.read(bits: 8)   // ytox_dc + 128
+        _ = try r.read(bits: 8)   // ytob_dc + 128
         let hasTree = try r.readBit()
         XCTAssertTrue(hasTree,
             "bridge emits has_tree = true")

@@ -937,8 +937,51 @@ public enum VarDCTBitstreamWriter {
             globalScale: 65536, quantDC: 1).write(to: &w)
         // 3. BlockCtxMap all_default.
         w.writeBit(true)
-        // 4. ColorCorrelation DC all_default.
-        w.writeBit(true)
+        // 4. ColorCorrelation DC **non-default** with explicit
+        //    `base_correlation_b = 0`.
+        //
+        // libjxl's default `base_correlation_b_ = kYToBRatio = 1.0`
+        // (chroma_from_luma.h:107). The decoder uses this default
+        // when it reads `all_default = 1`. The `DequantDC` formula
+        // (compressed_dc.cc:225) computes the B-channel DC as:
+        //
+        //     dec_row_b = y_dc * cfl_factor_b + b_dc
+        //
+        // where `cfl_factor_b = base_correlation_b + ytob_dc / color_factor`.
+        // For a JPEG-bridge frame we want NO Y → B correction:
+        // dec_row_b should equal `b_dc` (pure Cr DC), no luma mixing.
+        //
+        // libjxl's encoder side `ColorCorrelationMap::Create(XYB=false)`
+        // explicitly zeros `base_correlation_b_` for non-XYB frames
+        // (chroma_from_luma.cc:54), and then
+        // `ColorCorrelationEncodeDC` (enc_chroma_from_luma.cc:392)
+        // takes the `all_default = 1` shortcut ONLY when
+        // `base_correlation_b == kYToBRatio`. With our 0, the shortcut
+        // doesn't fire; the encoder emits the full block (color_factor
+        // U32 + base_correlation_x F16 + base_correlation_b F16 +
+        // ytox_dc u(8) + ytob_dc u(8)).
+        //
+        // Without this fix, the JPEG bridge's Cr channel decodes
+        // with Y leaked in, causing R = Y + 1.402 × Cr to be wrong
+        // (R diff max=82, mean=32 pre-fix). G is also affected via
+        // its Cr term. B is correct (B = Y + 1.772 × Cb, no Cr).
+        // (Fixed v0.12.0fr.)
+        w.writeBit(false)                          // all_default = 0
+        // color_factor: kDefaultColorFactor = 84.
+        try w.writeU32(UInt32(kDefaultColorFactor),
+                       distributions: (
+            .literal(kDefaultColorFactor),
+            .literal(256),
+            .offset(constant: 2, extraBits: 8),
+            .offset(constant: 258, extraBits: 16)))
+        // base_correlation_x = 0 (F16).
+        w.write(bits: 16, value: UInt32(floatToHalf(0.0)))
+        // base_correlation_b = 0 (F16) — the fix.
+        w.write(bits: 16, value: UInt32(floatToHalf(0.0)))
+        // ytox_dc = 0 → encoded as 0 - INT8_MIN = 128.
+        w.write(bits: 8, value: 128)
+        // ytob_dc = 0 → encoded as 128.
+        w.write(bits: 8, value: 128)
         // 5. has_tree = true + tree section + post-tree codebook.
         w.writeBit(true)
         // The post-tree codebook is supplied by the caller — for the
