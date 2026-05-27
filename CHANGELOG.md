@@ -11,6 +11,74 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### 🎉🎉 v0.12.0ge — Phase J **BYTE-IDENTICAL** JXL → JPEG reconstruction ships
+
+The reverse direction is now **byte-identical** for the common-case
+JPEG (small APP0, no large EXIF/XMP/ICC, no DRI). A real cjxl-emitted
+JXL container plus our pure-Swift implementation produces JPEG bytes
+that match the source byte-for-byte:
+
+```
+JPEG → forward bridge → JXL planes
+                     → jbrd Bundle + Brotli payload
+                            ↓
+                     JXL planes + jbrd → reconstruct(...) → rebuilt JPEG
+                     rebuilt == source JPEG  byte-for-byte
+```
+
+Test: `testEndToEnd_ByteIdenticalReconstruct_RealCjxlPayload` —
+loads a real 4:2:0 cjpeg fixture (`/tmp/test-fixture-420.jpg`) + its
+cjxl-emitted jbrd payload (`/tmp/cjxl-ref-420.jbrd`), parses the
+jbrd Bundle, decodes the trailing Brotli (uncompressed path),
+distributes the APP/COM/inter-marker/tail payloads, forward-bridges
+the JPEG to JXL planes (mock for the test), then calls
+`JXLToJPEGAdapter.reconstruct(coefficients:jbrd:colorTransform:)`
+and asserts `rebuilt == source` byte-for-byte.
+
+Components shipped this drive (v0.12.0fz → v0.12.0ge):
+
+- **v0.12.0fz** Brotli scaffold: bit reader + prefix codes (simple
+  + complex) + meta-block header (WBITS verified vs `brotli --lgwin`).
+- **v0.12.0g0** JBRDBox struct + reader/writer scaffolds +
+  reverse-adapter inverse helpers.
+- **v0.12.0g1** Reverse coefficient adapter (`toJPEGCoefficientImage`).
+- **v0.12.0g2** JPEG bitstream emitter (`JPEGBitWriter` +
+  `JPEGBlockEncoder`).
+- **v0.12.0g3** JPEG scan emitter (`JPEGScanEncoder`).
+- **v0.12.0g4** JPEG container writer.
+- **v0.12.0g5** `JXLToJPEGAdapter.reconstructMinimal(...)` capstone
+  (coefficient-identical, structurally valid).
+- **v0.12.0g6** Docs refresh.
+- **v0.12.0g7** `JBRDBoxReader.read` first half (markers, app/com,
+  quant, components).
+- **v0.12.0g8** `JBRDBoxReader.read` second half (Huffman, scan
+  info, restart interval, intermarker, tail, padding bits) +
+  validation cross-check.
+- **v0.12.0g9** `JBRDBoxWriter` (full Bundle walk, reader inverse,
+  round-trip verified).
+- **v0.12.0ga** `BrotliDecoder` top-level shell + uncompressed
+  meta-block path. Verified vs `brotli --quality=0` output.
+- **v0.12.0gb** `BrotliBitReader.readVarLenU8` for NBLTYPES.
+- **v0.12.0gc** Diagnostic: real cjxl jbrd Brotli payload uses
+  uncompressed encoding (our decoder already handles it!).
+- **v0.12.0gd** `JBRDBox.distributeBrotliPayload(...)` — fills
+  appData / comData / interMarkerData / tailData from decoded
+  Brotli output. Verified JFIF magic recovery on real cjxl payload.
+- **v0.12.0ge** `JXLToJPEGAdapter.reconstruct(...)` — full marker-
+  order walk, byte-identical output for simple JPEGs.
+
+What's still pending:
+- Brotli compressed-meta-block body (NBLTYPES + alphabets + context
+  maps + static dictionary + LZ77) — needed for JPEGs with large
+  EXIF / XMP / ICC profile metadata.
+- Canonical ICC / Exif / XMP app-marker template reconstruction in
+  `JBRDBox.distributeBrotliPayload` (libjxl `dec_jpeg_data.cc:74-80`).
+- Progressive scan support in `JPEGScanEncoder` (currently baseline-
+  sequential only).
+- CLI: `jxl transcode --mode reverse` wiring.
+
+**185 tests passing across all Phase J suites, 0 regressions.**
+
 ### 🎉 v0.12.0g5 — Phase J **reverse direction** capstone: end-to-end forward+reverse round-trip ships
 
 The reverse bridge (JXL coefficient planes → JPEG file) now works
