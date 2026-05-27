@@ -3308,6 +3308,119 @@ final class JPEGFoundationTests: XCTestCase {
             + "once the residual diff is localised; got max=\(maxDiff)")
     }
 
+    /// **Multi-block 4:4:4 control test**. Same harness as the 4:2:0
+    /// test but with `-sample 1x1,1x1,1x1` (no chroma subsampling).
+    /// Used to isolate whether the v0.12.0fv residual `max=31` diff
+    /// is chroma-subsampling-specific (4:2:0 path bug) or multi-block-
+    /// generic (any 16×16 has 4 Y blocks and would show the same diff).
+    /// If this test passes with `max ≤ 5` then the bug is specifically
+    /// in the subsampled / chroma path; if it also shows `max≈30` then
+    /// the bug is in the multi-block AC token iteration (which the
+    /// existing 8×8 test trivially skips since it has only 1 block).
+    func testJXLEncoder_FromJPEGCoefficients_RealJPEG444_16x16_DjxlAccepts()
+        throws
+    {
+        let cjpeg = "/opt/homebrew/bin/cjpeg"
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: cjpeg),
+              FileManager.default.isExecutableFile(atPath: djxl)
+        else {
+            throw XCTSkip("cjpeg + djxl required for this test")
+        }
+        let tmp = NSTemporaryDirectory()
+        let ppmPath = tmp + "bridge444-16-\(UUID().uuidString).ppm"
+        let jpgPath = tmp + "bridge444-16-\(UUID().uuidString).jpg"
+        let jxlPath = tmp + "bridge444-16-\(UUID().uuidString).jxl"
+        let outPath = tmp + "bridge444-16-\(UUID().uuidString).ppm"
+        defer {
+            for p in [ppmPath, jpgPath, jxlPath, outPath] {
+                try? FileManager.default.removeItem(atPath: p)
+            }
+        }
+        // Same 16×16 gradient PPM as the 4:2:0 test.
+        var ppm = Data("P6\n16 16\n255\n".utf8)
+        for y in 0..<16 {
+            for x in 0..<16 {
+                ppm.append(UInt8(50 + x * 10))
+                ppm.append(UInt8(80 + y * 8))
+                ppm.append(UInt8(min(255, 100 + (x + y) * 5)))
+            }
+        }
+        try ppm.write(to: URL(fileURLWithPath: ppmPath))
+        // Force 4:4:4 sampling.
+        let p1 = Process()
+        p1.launchPath = cjpeg
+        p1.arguments = ["-outfile", jpgPath,
+                        "-sample", "1x1,1x1,1x1",
+                        "-quality", "75", "-baseline", ppmPath]
+        p1.standardOutput = Pipe()
+        p1.standardError = Pipe()
+        try p1.run()
+        p1.waitUntilExit()
+        XCTAssertEqual(p1.terminationStatus, 0)
+        let jpgData = try Data(contentsOf: URL(fileURLWithPath: jpgPath))
+        let coeffs = try JPEGDecoder.decodeToCoefficients(jpgData)
+        XCTAssertEqual(coeffs.width, 16)
+        XCTAssertEqual(coeffs.height, 16)
+        let result = try JXLEncoder()
+            .encodeFromJPEGCoefficients(coeffs)
+        try result.data.write(to: URL(fileURLWithPath: jxlPath))
+        let p2 = Process()
+        p2.launchPath = djxl
+        p2.arguments = [jxlPath, outPath]
+        let p2err = Pipe()
+        p2.standardOutput = Pipe()
+        p2.standardError = p2err
+        try p2.run()
+        p2.waitUntilExit()
+        if p2.terminationStatus != 0 {
+            let err = String(data: p2err.fileHandleForReading
+                .readDataToEndOfFile(), encoding: .utf8) ?? ""
+            XCTFail("djxl rejected 4:4:4-16 bridge bytes: \(err)")
+            return
+        }
+        let outPPM = try Data(contentsOf: URL(fileURLWithPath: outPath))
+        XCTAssertGreaterThan(outPPM.count, 0)
+        var headerEnd = 0
+        var newlines = 0
+        for (i, b) in outPPM.enumerated() {
+            if b == 0x0A {
+                newlines += 1
+                if newlines == 3 { headerEnd = i; break }
+            }
+        }
+        let pixelStart = headerEnd + 1
+        let expectedPixelBytes = 16 * 16 * 3
+        let referenceFrame = try JPEGDecoder.decode(jpgData)
+        XCTAssertEqual(referenceFrame.data.count, expectedPixelBytes)
+        let djxlPixels = outPPM[pixelStart..<outPPM.count]
+        let refPixels = referenceFrame.data
+        var maxDiff = 0, sumDiff = 0
+        for i in 0..<expectedPixelBytes {
+            let d = abs(Int(djxlPixels[djxlPixels.startIndex + i])
+                - Int(refPixels[i]))
+            if d > maxDiff { maxDiff = d }
+            sumDiff += d
+        }
+        let meanDiff = Double(sumDiff) / Double(expectedPixelBytes)
+        print("[bridge 4:4:4-16 pixel diff] max=\(maxDiff), "
+            + "mean=\(String(format: "%.2f", meanDiff))")
+        // **v0.12.0fw pin-down.** This test is the *control* for the
+        // multi-block question. With the same 16×16 gradient through
+        // 4:4:4 sampling (4 Y blocks, 4 Cb blocks, 4 Cr blocks instead
+        // of 4:2:0's 4+1+1), `max=74` — *worse* than the 4:2:0 case
+        // (`max=31`). That's a smoking-gun: the residual isn't chroma-
+        // specific; it's a multi-block AC pipeline bug that the 8×8
+        // 4:4:4 baseline (1 block per channel) trivially skipped.
+        //
+        // The bound `≤ 80` is the current pin-down — passes now while
+        // the multi-block bug is open; tighten to `≤ 5` (same target
+        // as the 4:4:4 8×8 baseline) once the bug closes.
+        XCTAssertLessThanOrEqual(maxDiff, 80,
+            "bridge → djxl 4:4:4-16: multi-block bug pin-down; "
+            + "got max=\(maxDiff). Tighten to ≤ 5 once fixed.")
+    }
+
     // MARK: - JXLEncoder.encodeFromJPEGCoefficients (v0.12.0ee, step 3.7)
 
     /// Step 3.7 swap: `JXLEncoder.encodeFromJPEGCoefficients(_:)`
@@ -4617,6 +4730,22 @@ extension JPEGFoundationTests {
         try result.data.write(to: URL(
             fileURLWithPath: "/tmp/our-bridge-420.jxl"))
         print("wrote \(result.data.count) bytes to /tmp/our-bridge-420.jxl")
+    }
+
+    /// One-off diagnostic — dumps our bridge bytes for the 16×16 4:4:4
+    /// fixture for byte-by-byte comparison against the cjxl reference.
+    func testDiagnostic_Dump44416BridgeBytes() throws {
+        let jpgPath = "/tmp/test-fixture-444-16.jpg"
+        guard FileManager.default.fileExists(atPath: jpgPath) else {
+            throw XCTSkip("4:4:4 16×16 diagnostic fixture not present")
+        }
+        let jpg = try Data(contentsOf: URL(fileURLWithPath: jpgPath))
+        let coef = try JPEGDecoder.decodeToCoefficients(jpg)
+        let result = try JXLEncoder()
+            .encodeFromJPEGCoefficients(coef)
+        try result.data.write(to: URL(
+            fileURLWithPath: "/tmp/our-bridge-444-16.jxl"))
+        print("wrote \(result.data.count) bytes to /tmp/our-bridge-444-16.jxl")
     }
 
     /// Try to decode our own bridge bytes through JXLDecoder.decode

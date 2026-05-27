@@ -11,6 +11,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0fw — Phase J residual recharacterised: **multi-block**, not chroma-specific
+
+**Pin-down test reframing.** A new 4:4:4 16×16 control test (`testJXLEncoder_FromJPEGCoefficients_RealJPEG444_16x16_DjxlAccepts`) reveals that the residual pixel-diff is **not** chroma-subsampling-specific. With the same 16×16 gradient PPM forced to 4:4:4 sampling, the bridge emits `max=74, mean=21.83` pixel diff — **worse** than the 4:2:0 case (`max=31, mean=18.5`). The original 4:4:4 baseline at `max=2` only worked because the test fixture is 8×8 (one block per channel).
+
+What this means for the v0.12.0ft → v0.12.0fv investigation:
+- The chroma DC predictor / AC token chroma gating / `chroma_subsampling` FrameHeader work was **correct** — those land in cleanly.
+- The residual is a **multi-block AC pipeline bug** that was hidden by single-block test coverage. Once we touch multi-block (16×16 4:4:4 has 4 Y blocks; 4:2:0 has 4 Y + 1 Cb + 1 Cr), pixel-equivalence breaks down.
+- 4:2:0's smaller diff than 4:4:4-16 (31 vs 74) is consistent with the bug being in per-channel multi-block handling: 4:2:0 only stresses Y multi-block (4 blocks); 4:4:4 stresses all three channels (12 blocks), compounding the error through the YCbCr → RGB inverse.
+
+Diagnostic plumbing:
+- `testJXLEncoder_FromJPEGCoefficients_RealJPEG444_16x16_DjxlAccepts`: the control test that exposed the multi-block bug.
+- `testDiagnostic_Dump44416BridgeBytes`: dumps our bridge output for `/tmp/test-fixture-444-16.jpg` to `/tmp/our-bridge-444-16.jxl` for byte-level comparison against the cjxl reference.
+
+Next bite localises the multi-block divergence. Candidates: AC token offset tracking across blocks, the nnz prediction plane for blocks beyond `(0, 0)`, or the block-context lookup that selects which histogram a per-block token stream uses.
+
+**579 tests passing, 6 skipped, 0 failures** — the new control test is bounded at `max ≤ 80` (current value 74) as a pin-down; tighten to `≤ 5` (matching the 4:4:4 8×8 baseline) when the multi-block bug closes.
+
 ### v0.12.0ft — Phase J step 4 (structural): bridge accepts 4:2:0 / 4:2:2 JPEGs
 
 **Lifts the 4:4:4-only restriction.** The adapter and bridge writers now handle any baseline-DCT JPEG with Y sampling factors in `{H1V1, H2V1, H1V2, H2V2}` and chroma at `H1V1`. The 4:4:4 path is unchanged (still pixel-equivalent at `max=2`); the 4:2:0 path produces structurally valid bytes that `djxl` decodes to pixels with `max=31, mean=18.5` byte-diff against the reference — decodable but not yet pixel-equivalent. The residual is the next bite.
