@@ -11,6 +11,50 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### 🎉🎉🎉 v0.12.0gn — Brotli compressed-body decoder + EXIF JPEG byte-identical
+
+The Brotli decoder now handles **compressed** meta-blocks end-to-end
+for the common Brotli stream shape (NBLTYPES=1, NTREES=1, no static
+dictionary). The full reverse path now reconstructs byte-identical
+JPEGs for fixtures with **APP1 EXIF metadata** (cjxl-wrapped in the
+`brob` Brotli-compressed-box wrapper).
+
+```
+$ jxl-tool transcode --mode reverse \
+    --source /tmp/test-fixture-420-exif.jpg \
+    /tmp/cjxl-exif-420.jxl /tmp/cli-exif-reconstructed.jpg
+wrote 678 bytes to /tmp/cli-exif-reconstructed.jpg
+byte-identical to source ✓
+```
+
+The 10 commits driving this milestone:
+- **v0.12.0gj** — canonical kICC/kExif/kXMP marker templates +
+  brob-aware `extractMetadataBox` container helper.
+- **v0.12.0gk** — Brotli compressed meta-block header (NBLTYPES +
+  NPOSTFIX + NDIRECT + context modes + NTREES).
+- **v0.12.0gl** — Brotli insert-and-copy command alphabet decoder
+  (704-entry LUT, RFC 7932 §5).
+- **v0.12.0gm** — Brotli distance decoder (LUT + ring buffer +
+  short codes + extra-bits readers, RFC 7932 §4).
+- **v0.12.0gn** — Brotli LZ77 reconstruction loop + simple-format
+  Huffman length-assignment fix (`val[0]` length 1, `val[1]` length
+  2 by source order for NSYM=3 + treeSelect=1, per
+  `BrotliBuildSimpleHuffmanTable` in `c/dec/huffman.c`). CLI
+  metadata-box extraction.
+
+What's still pending for full coverage of all JPEGs:
+- **Brotli static dictionary** (RFC 7932 §8) — ~120KB embedded
+  table + 121 transforms. Needed when a Brotli stream references
+  the dictionary (typically larger payloads).
+- **NBLTYPES > 1 / NTREES > 1** streams — block-length walker +
+  context map decoder.
+- **Canonical kICC marker template** — the body comes from a
+  `jumb` (or other) container box decompressed through Brotli;
+  marker template is already wired.
+- **Progressive scan support** in `JPEGScanEncoder`.
+
+58 Phase J tests passing, 0 skipped, 0 regressions.
+
 ### v0.12.0gh — Phase J step 8: `jxl transcode --mode reverse` CLI shipping
 
 The byte-identical reverse direction is now reachable from the
