@@ -343,15 +343,12 @@ extension QuantEncoding {
                     "GroupHeader read: \(error)"
                 )
             }
-            // For now we only handle the common case: useGlobalTree
-            // = true + no inline transforms. Other shapes need the
-            // full modular pipeline plumbed through.
-            guard gh.useGlobalTree else {
-                throw QuantEncodingError.rawDecodeFailed(
-                    "RAW GroupHeader.useGlobalTree=false; "
-                    + "per-RAW local tree not yet supported"
-                )
-            }
+            // v0.12.0gt: per-RAW local tree (useGlobalTree=false)
+            // path is exercised below — our forward bridge emits
+            // its JPEG quant matrix this way. The existing
+            // if-else handles both global and local; the previous
+            // defensive guard against local was no longer needed
+            // (the local-tree decode path was already implemented).
             guard gh.transforms.isEmpty else {
                 throw QuantEncodingError.rawDecodeFailed(
                     "RAW GroupHeader carries "
