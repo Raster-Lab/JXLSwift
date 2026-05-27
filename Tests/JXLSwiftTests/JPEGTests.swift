@@ -4844,12 +4844,12 @@ extension JPEGFoundationTests {
 
 final class JBRDBoxReaderTests: XCTestCase {
 
-    /// Smoke test: feed the reader a real `jbrd` payload extracted
-    /// from a cjxl-emitted JPEG-bridge JXL container and confirm
-    /// the marker_order walk + sizing produces a non-empty struct
-    /// without throwing on the partial-implementation surface.
+    /// End-to-end real-payload parse: feed the reader a real `jbrd`
+    /// payload extracted from a cjxl-emitted JPEG-bridge JXL
+    /// container. Verifies the full Bundle walk runs without throwing
+    /// and produces sensible field values.
     /// Skipped unless `/tmp/cjxl-ref-420.jbrd` is present.
-    func testJBRDReader_RealCjxlPayload_PartialFieldsParsed()
+    func testJBRDReader_RealCjxlPayload_FullBundleParsed()
         throws
     {
         let path = "/tmp/cjxl-ref-420.jbrd"
@@ -4862,22 +4862,55 @@ final class JBRDBoxReaderTests: XCTestCase {
             contentsOf: URL(fileURLWithPath: path))
         var r = BitReader(payload)
         let box = try JBRDBoxReader.read(from: &r)
-        // Sanity: marker_order should end with EOI (0xD9).
+        // Marker-order sanity.
         XCTAssertGreaterThan(box.markerOrder.count, 0)
         XCTAssertEqual(box.markerOrder.last, 0xD9,
             "marker_order should terminate at EOI (0xD9)")
-        // Should have at least one quant table.
+        // SOI (0xD8) is NOT recorded in marker_order — libjxl's
+        // JPEG parser consumes it before marker_order tracking starts.
+        // Check the markers we DO expect: SOF (C0/C2), DHT (C4),
+        // SOS (DA). EOI is asserted above via `markerOrder.last`.
+        XCTAssertTrue(box.markerOrder.contains(0xC0)
+            || box.markerOrder.contains(0xC2),
+            "SOF0 or SOF2 missing — got \(box.markerOrder.map { String($0, radix: 16) })")
+        XCTAssertTrue(box.markerOrder.contains(0xC4),
+            "DHT missing — got \(box.markerOrder.map { String($0, radix: 16) })")
+        XCTAssertTrue(box.markerOrder.contains(0xDA),
+            "SOS missing — got \(box.markerOrder.map { String($0, radix: 16) })")
+        // Quant + Huffman tables.
         XCTAssertGreaterThan(box.quant.count, 0,
             "expected at least one quant table")
-        // YCbCr JPEG → 3 components.
+        XCTAssertGreaterThan(box.huffmanCode.count, 0,
+            "expected at least one Huffman code")
+        // 3-component YCbCr → 3 components, 1 scan.
         XCTAssertEqual(box.components.count, 3,
             "expected 3 components for YCbCr JPEG")
-        print("[JBRD smoke] markers=\(box.markerOrder.count) "
+        XCTAssertEqual(box.scanInfo.count, 1,
+            "expected 1 scan for baseline cjpeg fixture")
+        // Standard JPEG SOS: Ss=0, Se=63, Ah=0, Al=0.
+        let scan = box.scanInfo[0]
+        XCTAssertEqual(scan.ss, 0)
+        XCTAssertEqual(scan.se, 63)
+        XCTAssertEqual(scan.ah, 0)
+        XCTAssertEqual(scan.al, 0)
+        XCTAssertEqual(scan.numComponents, 3)
+        // Each Huffman code's last value must be the EOI sentinel (256).
+        for (i, hc) in box.huffmanCode.enumerated() {
+            XCTAssertEqual(hc.values.last, 256,
+                "Huffman code \(i) doesn't end with EOI sentinel 256")
+        }
+        print("[JBRD parsed] markers=\(box.markerOrder.count) "
             + "appMarkers=\(box.appData.count) "
             + "comMarkers=\(box.comData.count) "
             + "quantTables=\(box.quant.count) "
+            + "huffmanCodes=\(box.huffmanCode.count) "
             + "components=\(box.components.count) "
-            + "scans=\(box.scanInfo.count)")
+            + "scans=\(box.scanInfo.count) "
+            + "restartInterval=\(box.restartInterval) "
+            + "interMarkerData=\(box.interMarkerData.count) "
+            + "tailDataLen=\(box.tailData.count) "
+            + "hasZeroPaddingBit=\(box.hasZeroPaddingBit) "
+            + "paddingBits=\(box.paddingBits.count)")
     }
 }
 

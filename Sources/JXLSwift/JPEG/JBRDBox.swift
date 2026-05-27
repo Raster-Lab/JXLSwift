@@ -438,13 +438,320 @@ public enum JBRDBoxReader {
                 box.components[i].quantIdx = qIdx
             }
 
-            // Remaining fields (Huffman tables, scan info, restart
-            // interval, intermarker/tail data sizes, padding bits)
-            // are the next bite — surface what we have so far.
+            // 7. Huffman tables.
+            //    num_huff: U32(Val(4), BitsOffset(3, 2), BitsOffset(4, 10),
+            //                  BitsOffset(6, 26), default=4)
+            let numHuff = try r.readU32((
+                .literal(4),
+                .offset(constant: 2, extraBits: 3),
+                .offset(constant: 10, extraBits: 4),
+                .offset(constant: 26, extraBits: 6)))
+            box.huffmanCode = Array(
+                repeating: JBRDHuffmanCode(),
+                count: Int(numHuff))
+            for i in 0..<Int(numHuff) {
+                let isAC = try r.readBit()
+                let id = try r.read(bits: 2)
+                let isLast = try r.readBit()
+                var counts = [UInt32](repeating: 0, count: 17)
+                var numSymbols = 0
+                for k in 0...16 {
+                    // U32(Val(0), Val(1), BitsOffset(3, 2), Bits(8),
+                    //     default=0)
+                    let v = try r.readU32((
+                        .literal(0), .literal(1),
+                        .offset(constant: 2, extraBits: 3),
+                        .bits(8)))
+                    counts[k] = v
+                    numSymbols += Int(v)
+                }
+                if numSymbols < 1 {
+                    throw JBRDError.notImplemented(
+                        "empty Huffman table at huffman_code[\(i)]")
+                }
+                if numSymbols > 257 {
+                    // kJpegHuffmanAlphabetSize+1 = 257 (256 plus EOI
+                    // sentinel).
+                    throw JBRDError.notImplemented(
+                        "Huffman code too large at huffman_code[\(i)]"
+                        + ": \(numSymbols)")
+                }
+                var values = [UInt32](repeating: 0, count: numSymbols)
+                var valueSlots: [UInt64] = [0, 0, 0, 0, 0]
+                for k in 0..<numSymbols {
+                    // U32(Bits(2), BitsOffset(2, 4), BitsOffset(4, 8),
+                    //     BitsOffset(8, 1), default=0)
+                    let v = try r.readU32((
+                        .bits(2),
+                        .offset(constant: 4, extraBits: 2),
+                        .offset(constant: 8, extraBits: 4),
+                        .offset(constant: 1, extraBits: 8)))
+                    values[k] = v
+                    let slot = Int(v >> 6)
+                    let bit = UInt64(1) << UInt64(v & 0x3F)
+                    valueSlots[slot] |= bit
+                }
+                if values[numSymbols - 1] != 256 {
+                    // libjxl kJpegHuffmanAlphabetSize = 256.
+                    throw JBRDError.missingEOISymbol
+                }
+                // valueSlots[4] should have exactly bit 0 set (for
+                // the EOI sentinel 256 itself).
+                // Duplicate check.
+                var distinctCount = 1   // EOI sentinel
+                for s in 0..<4 {
+                    distinctCount += valueSlots[s].nonzeroBitCount
+                }
+                if distinctCount != numSymbols {
+                    throw JBRDError.duplicateHuffmanSymbols
+                }
+                if !isAC {
+                    // DC range check: kJpegDCAlphabetSize = 12. The
+                    // bits in valueSlots above 12 (in slot 0) and
+                    // any bits in slots 1, 2, 3 indicate out-of-DC-
+                    // range symbols.
+                    let outOfRange = (valueSlots[0] >> 12)
+                        | valueSlots[1]
+                        | valueSlots[2]
+                        | valueSlots[3]
+                    if outOfRange != 0 {
+                        throw JBRDError.dcHuffmanOutOfRange
+                    }
+                }
+                let slotId = (Int(isAC ? 1 : 0) << 4) | Int(id)
+                box.huffmanCode[i] = JBRDHuffmanCode(
+                    counts: counts, values: values,
+                    slotId: slotId, isLast: isLast)
+            }
+
+            // 8. Per-scan info (Ss/Se/Ah/Al + per-component bindings).
+            for i in 0..<box.scanInfo.count {
+                let numComps = try r.readU32((
+                    .literal(1), .literal(2),
+                    .literal(3), .literal(4)))
+                if numComps >= 4 {
+                    throw JBRDError.invalidScanComponentCount(
+                        numComps)
+                }
+                let ss = try r.read(bits: 6)
+                let se = try r.read(bits: 6)
+                let al = try r.read(bits: 4)
+                let ah = try r.read(bits: 4)
+                var comps: [JBRDScanComponent] = []
+                comps.reserveCapacity(Int(numComps))
+                for _ in 0..<Int(numComps) {
+                    let compIdx = try r.read(bits: 2)
+                    let acIdx = try r.read(bits: 2)
+                    let dcIdx = try r.read(bits: 2)
+                    comps.append(JBRDScanComponent(
+                        compIdx: compIdx,
+                        dcTblIdx: dcIdx, acTblIdx: acIdx))
+                }
+                // last_needed_pass — U32(Val(0), Val(1), Val(2),
+                //   BitsOffset(3, 3), default=kMaxNumPasses-1=10)
+                let lastNeededPass = try r.readU32((
+                    .literal(0), .literal(1),
+                    .literal(2),
+                    .offset(constant: 3, extraBits: 3)))
+                box.scanInfo[i] = JBRDScanInfo(
+                    ss: ss, se: se, ah: ah, al: al,
+                    numComponents: numComps,
+                    components: comps,
+                    lastNeededPass: lastNeededPass)
+            }
+
+            // 9. restart_interval (only if any marker was 0xDD).
+            if info.hasDRI {
+                box.restartInterval = try r.read(bits: 16)
+            }
+
+            // 10. Per-scan reset_points + extra_zero_runs (the
+            //     bit-exact reconstruction extras).
+            for i in 0..<box.scanInfo.count {
+                // num_reset_points: U32(Val(0), BitsOffset(2, 1),
+                //   BitsOffset(4, 4), BitsOffset(16, 20), default=0)
+                let numResetPoints = try r.readU32((
+                    .literal(0),
+                    .offset(constant: 1, extraBits: 2),
+                    .offset(constant: 4, extraBits: 4),
+                    .offset(constant: 20, extraBits: 16)))
+                var resetPoints: [UInt32] = []
+                resetPoints.reserveCapacity(Int(numResetPoints))
+                var lastBlockIdx: Int = -1
+                for _ in 0..<Int(numResetPoints) {
+                    // Block index encoded as delta from
+                    // last_block_idx + 1.
+                    let delta = try r.readU32((
+                        .literal(0),
+                        .offset(constant: 1, extraBits: 3),
+                        .offset(constant: 9, extraBits: 5),
+                        .offset(constant: 41, extraBits: 28)))
+                    let blockIdx =
+                        UInt32(lastBlockIdx + 1) &+ delta
+                    if blockIdx >= (3 << 26) {
+                        throw JBRDError.invalidBlockIndex(blockIdx)
+                    }
+                    resetPoints.append(blockIdx)
+                    lastBlockIdx = Int(blockIdx)
+                }
+                box.scanInfo[i].resetPoints = resetPoints
+
+                // num_extra_zero_runs: same distribution as
+                // num_reset_points.
+                let numEZR = try r.readU32((
+                    .literal(0),
+                    .offset(constant: 1, extraBits: 2),
+                    .offset(constant: 4, extraBits: 4),
+                    .offset(constant: 20, extraBits: 16)))
+                var extraZeroRuns: [JBRDExtraZeroRun] = []
+                extraZeroRuns.reserveCapacity(Int(numEZR))
+                lastBlockIdx = -1
+                for _ in 0..<Int(numEZR) {
+                    // num_extra_zero_runs: U32(Val(1),
+                    //   BitsOffset(2, 2), BitsOffset(4, 5),
+                    //   BitsOffset(8, 20), default=1)
+                    let numEZRThis = try r.readU32((
+                        .literal(1),
+                        .offset(constant: 2, extraBits: 2),
+                        .offset(constant: 5, extraBits: 4),
+                        .offset(constant: 20, extraBits: 8)))
+                    // Block-idx delta (same encoding as reset).
+                    let delta = try r.readU32((
+                        .literal(0),
+                        .offset(constant: 1, extraBits: 3),
+                        .offset(constant: 9, extraBits: 5),
+                        .offset(constant: 41, extraBits: 28)))
+                    let blockIdx =
+                        UInt32(lastBlockIdx + 1) &+ delta
+                    if blockIdx > (3 << 26) {
+                        throw JBRDError.invalidBlockIndex(blockIdx)
+                    }
+                    extraZeroRuns.append(JBRDExtraZeroRun(
+                        blockIdx: blockIdx,
+                        numExtraZeroRuns: numEZRThis))
+                    lastBlockIdx = Int(blockIdx)
+                }
+                box.scanInfo[i].extraZeroRuns = extraZeroRuns
+            }
+
+            // 11. Inter-marker data sizes (16 bits each).
+            var interMarkerSizes: [Int] = []
+            for _ in 0..<info.numInterMarker {
+                let s = try r.read(bits: 16)
+                interMarkerSizes.append(Int(s))
+            }
+
+            // 12. tail_data_len — U32(Val(0), BitsOffset(8, 1),
+            //     BitsOffset(16, 257), BitsOffset(22, 65793), default=0)
+            let tailDataLen = try r.readU32((
+                .literal(0),
+                .offset(constant: 1, extraBits: 8),
+                .offset(constant: 257, extraBits: 16),
+                .offset(constant: 65793, extraBits: 22)))
+            if tailDataLen > 4_260_096 {
+                throw JBRDError.tailDataTooLarge(tailDataLen)
+            }
+
+            // 13. has_zero_padding_bit + padding bits.
+            box.hasZeroPaddingBit = try r.readBit()
+            if box.hasZeroPaddingBit {
+                let nbit = try r.read(bits: 24)
+                // Sanity: 1024 is libjxl's reserve cap for the
+                // padding bits vector; the actual encoded count
+                // can be larger but a runaway nbit suggests
+                // corrupted input.
+                if r.bitsRemaining < Int(nbit) {
+                    throw JBRDError.truncated
+                }
+                var padding: [UInt8] = []
+                padding.reserveCapacity(Int(min(nbit, 1024)))
+                for _ in 0..<Int(nbit) {
+                    padding.append(try r.readBit() ? 1 : 0)
+                }
+                box.paddingBits = padding
+            }
+
+            // Apply postponed actions (libjxl `if (visitor->IsReading())`):
+            //   tail_data has its size now, but its actual bytes are
+            //   in the Brotli payload (not the Bundle). We carry the
+            //   size only; the bytes get filled in once the Brotli
+            //   decoder lands.
+            box.tailData = Data(count: Int(tailDataLen))
+            // Same for inter_marker_data — we allocate the sized
+            // empty slots ready to be filled by the Brotli reader.
+            box.interMarkerData = interMarkerSizes.map {
+                Data(count: $0)
+            }
+
+            // 14. Validation cross-checks (libjxl jpeg_data.cc:378-415).
+            //     For each DHT in marker_order, walk the huffman_code
+            //     entries up to is_last; record which DC/AC slot ids
+            //     have been defined. For each SOS, verify the
+            //     referenced DC/AC tables are already defined.
+            try validateMarkerOrderTablesPrecedeSOS(box: box)
         } catch let e as BitstreamError {
             throw JBRDError.bitstream(e)
         }
         return box
+    }
+
+    /// libjxl `jpeg_data.cc:378-415` cross-check: for every SOS marker
+    /// in `marker_order`, the DHT markers that precede it must define
+    /// every DC + AC table the SOS references. Progressive frames
+    /// (SOF2 = 0xC2) relax the DC check for spectral-non-zero scans
+    /// and the AC check for DC-only scans.
+    private static func validateMarkerOrderTablesPrecedeSOS(
+        box: JBRDBox
+    ) throws {
+        var dhtIndex = 0
+        var scanIndex = 0
+        var isProgressive = false
+        // 4 DC + 4 AC table slots.
+        var dcOk = [Bool](repeating: false, count: 4)
+        var acOk = [Bool](repeating: false, count: 4)
+        for marker in box.markerOrder {
+            if marker == 0xC2 {
+                isProgressive = true
+            } else if marker == 0xC4 {
+                // DHT segment — consume Huffman codes until
+                // is_last fires.
+                while dhtIndex < box.huffmanCode.count {
+                    let hc = box.huffmanCode[dhtIndex]
+                    dhtIndex += 1
+                    let isAC = (hc.slotId & 0x10) != 0
+                    let id = hc.slotId & 0x0F
+                    if isAC {
+                        acOk[id] = true
+                    } else {
+                        dcOk[id] = true
+                    }
+                    if hc.isLast { break }
+                }
+            } else if marker == 0xDA {
+                // SOS segment — verify referenced tables.
+                if scanIndex >= box.scanInfo.count { break }
+                let si = box.scanInfo[scanIndex]
+                scanIndex += 1
+                for k in 0..<Int(si.numComponents) {
+                    let csi = si.components[k]
+                    let dcId = Int(csi.dcTblIdx)
+                    let acId = Int(csi.acTblIdx)
+                    let wantDC = !isProgressive || (si.ss == 0)
+                    if wantDC && !dcOk[dcId] {
+                        throw JBRDError.notImplemented(
+                            "DC Huffman table \(dcId) used before "
+                            + "defined (scan \(scanIndex-1))")
+                    }
+                    let wantAC = !isProgressive
+                        || (si.ss != 0) || (si.se != 0)
+                    if wantAC && !acOk[acId] {
+                        throw JBRDError.notImplemented(
+                            "AC Huffman table \(acId) used before "
+                            + "defined (scan \(scanIndex-1))")
+                    }
+                }
+            }
+        }
     }
 }
 
