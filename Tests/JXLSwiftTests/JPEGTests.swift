@@ -6666,4 +6666,98 @@ final class JXLToJPEGAdapterTests: XCTestCase {
         XCTAssertEqual(r2.dcPerChannel[1], p.dcPerChannel[1])
         XCTAssertEqual(r2.dcPerChannel[2], p.dcPerChannel[2])
     }
+
+    /// **Regression: SpecialDistance LZ77 remap for modular sub-images.**
+    ///
+    /// Before v0.12.0gv, cjxl-emitted JXL frames carrying a RAW slot 0
+    /// quant matrix (8×8 modular sub-image, `distance_multiplier=8`)
+    /// failed at the modular-sub-image LZ77 decode with
+    /// `lz77InvalidDistance(distance: 248, historySize: 128)`.
+    ///
+    /// Root cause: libjxl's `ReadHybridUintClusteredInlined` applies a
+    /// 2D-pattern LUT (`kSpecialDistances`, 120 entries) to LZ77
+    /// distances when the section's `distance_multiplier > 0`
+    /// (modular sub-image case). We applied the simpler "decoded + 1"
+    /// rule unconditionally, inflating distance-247 to 248 instead of
+    /// the correct `247 + 1 − 120 = 128`.
+    ///
+    /// **Verification.** We round-trip a real JPEG through cjxl's
+    /// `--lossless_jpeg=1` (which writes a RAW slot 0 quant table in
+    /// the modular sub-image) and then call our
+    /// `JXLDecoder.decodeToCoefficients`. Before the fix this threw
+    /// `lz77InvalidDistance`; after the fix the decoder either
+    /// completes (returning planes) or surfaces a *different*
+    /// later-stage `notImplemented` — but never the LZ77 error.
+    func testEndToEnd_CjxlReverseDecode_NoLZ77DistanceError() throws {
+        let cjpeg = "/opt/homebrew/bin/cjpeg"
+        let cjxl = "/opt/homebrew/bin/cjxl"
+        guard FileManager.default.isExecutableFile(atPath: cjpeg),
+              FileManager.default.isExecutableFile(atPath: cjxl)
+        else { throw XCTSkip("cjpeg + cjxl required") }
+        let tmp = NSTemporaryDirectory()
+        let ppmPath = tmp + "rev-\(UUID().uuidString).ppm"
+        let jpgPath = tmp + "rev-\(UUID().uuidString).jpg"
+        let jxlPath = tmp + "rev-\(UUID().uuidString).jxl"
+        defer {
+            try? FileManager.default.removeItem(atPath: ppmPath)
+            try? FileManager.default.removeItem(atPath: jpgPath)
+            try? FileManager.default.removeItem(atPath: jxlPath)
+        }
+        // 16×16 4:4:4 gradient — small enough to be a single group +
+        // single-pass, large enough to populate quant tables.
+        var ppm = Data("P6\n16 16\n255\n".utf8)
+        for y in 0..<16 {
+            for x in 0..<16 {
+                ppm.append(UInt8(50 + x * 10))
+                ppm.append(UInt8(80 + y * 8))
+                ppm.append(UInt8(min(255, 100 + (x + y) * 5)))
+            }
+        }
+        try ppm.write(to: URL(fileURLWithPath: ppmPath))
+        let p1 = Process()
+        p1.launchPath = cjpeg
+        p1.arguments = ["-outfile", jpgPath, "-quality", "75",
+            "-baseline", "-sample", "1x1,1x1,1x1", ppmPath]
+        p1.standardOutput = Pipe()
+        p1.standardError = Pipe()
+        try p1.run()
+        p1.waitUntilExit()
+        XCTAssertEqual(p1.terminationStatus, 0)
+
+        let p2 = Process()
+        p2.launchPath = cjxl
+        p2.arguments = ["--lossless_jpeg=1", jpgPath, jxlPath]
+        p2.standardOutput = Pipe()
+        p2.standardError = Pipe()
+        try p2.run()
+        p2.waitUntilExit()
+        XCTAssertEqual(p2.terminationStatus, 0,
+            "cjxl --lossless_jpeg=1 should accept the JPEG")
+        let jxlData = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
+
+        // The key invariant: regardless of downstream success, the
+        // decoder must NOT throw a TokenStreamReader LZ77 distance
+        // error. A different `notImplemented`/decode error is OK
+        // (those are tracked separately) — just not LZ77.
+        do {
+            _ = try JXLDecoder().decodeToCoefficients(jxlData)
+            // Success path: decoder ran to completion.
+            print("[cjxl reverse] decodeToCoefficients succeeded")
+        } catch let e as TokenStreamReaderError {
+            switch e {
+            case .lz77InvalidDistance(let d, let hs):
+                XCTFail("SpecialDistance regression — got "
+                    + "lz77InvalidDistance(\(d), history=\(hs))")
+            default:
+                // Other entropy-stream errors are unrelated to this fix.
+                print("[cjxl reverse] unrelated TokenStreamReader "
+                    + "error (not LZ77-distance): \(e)")
+            }
+        } catch {
+            // Other decoder errors are acceptable here — they
+            // surface separate decoder-completeness work, not
+            // the SpecialDistance bug this test pins down.
+            print("[cjxl reverse] later-stage decode error: \(error)")
+        }
+    }
 }

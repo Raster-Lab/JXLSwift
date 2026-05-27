@@ -11,6 +11,68 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0gv — SpecialDistance LZ77 remap for modular sub-images
+
+**Bug fix in `TokenStreamReader`'s LZ77 distance handling that
+unblocks decoding cjxl-emitted JXL frames carrying RAW-mode quant
+matrices.**
+
+Before this fix, decoding any cjxl reverse-direction frame with a
+RAW slot 0 quant table (8×8 modular sub-image) failed at the
+post-tree pixel decode with `lz77InvalidDistance(distance: 248,
+historySize: 128)`.
+
+**Root cause.** libjxl's `ReadHybridUintClusteredInlined`
+(`lib/jxl/dec_ans.h`) applies a 120-entry 2D-pattern lookup table
+(`kSpecialDistances`) to LZ77 distances when the section's
+`distance_multiplier > 0` (modular sub-image case, where the
+multiplier is the widest channel width). Decoded values `< 120`
+index the LUT and produce a "previous row" / "row above" 2D pattern
+scaled by the channel width; decoded values `≥ 120` map to
+`decoded + 1 − 120`. Our reader applied the simpler `decoded + 1`
+rule unconditionally, which over-counts every distance ≥ 120 by
+exactly 120 — for the failing fixture, "decoded 247" became 248
+instead of the correct 128.
+
+**Fix.**
+- `Sources/JXLSwift/Entropy/TokenStreamReader.swift`:
+  - New `kNumSpecialDistances` (120) and `kSpecialDistancesLUT`
+    (the WebP-lossless 2D distance table inherited by libjxl).
+  - New `distanceMultiplier` parameter on the `init` (default `0`
+    — TOC-permutation / context-map streams keep the unchanged
+    decoded-plus-one rule).
+  - `beginLZ77Copy` reads the raw distance value (no eager `+1`),
+    then applies the libjxl `SpecialDistance` remap when
+    `distanceMultiplier > 0`.
+- Thread `distanceMultiplier` into the four modular sub-image
+  call sites: `QuantEncoding.swift` (RAW slot decode — uses the
+  required-size width), `ModularSubImage.swift` (embedded
+  sub-image — uses the supplied `width`), and three places in
+  `JXLDecoder.swift` (LfGlobal single-section pixel stream,
+  multi-section global pixel stream, per-group AC pixel stream —
+  each uses the widest channel width across the channels that
+  reader will service, mirroring libjxl's
+  `DecodeModular::distance_multiplier` computation).
+
+**Regression test.**
+`testEndToEnd_CjxlReverseDecode_NoLZ77DistanceError` in
+`JPEGTests.swift` (`JXLToJPEGAdapterTests`). Round-trips
+`ppm → cjpeg → cjxl --lossless_jpeg=1` and asserts the resulting
+JXL bytes do **not** throw `TokenStreamReaderError.lz77InvalidDistance`
+when fed to `JXLDecoder.decodeToCoefficients`. Later-stage decode
+errors are tolerated (they pin down separate decoder-completeness
+work); only the LZ77 regression fails the test.
+
+**What this unblocks.** Decoding past the DequantMatrices section
+on cjxl-emitted JXL frames. The next failure point moves several
+hundred bits further in: an `outOfBounds` on a 16-bit read at
+position (6,2,2) of the 8×8×3 quant-matrix modular sub-image. That
+is a separate decoder bite (likely truncated section-end accounting
+or a missing alignment step), tracked independently.
+
+**Tests.** 642 tests / 7 skipped / 0 failures — full pass on
+`swift test -c release`, including the new regression test.
+
 ### v0.12.0gp — 9-variant byte-identical reverse matrix test
 
 Adds a comprehensive integration test

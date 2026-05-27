@@ -416,8 +416,15 @@ extension QuantEncoding {
                     width: requiredSizeX, height: requiredSizeY
                 )
             }
+            // libjxl `modular/encoding/encoding.cc::DecodeModular`:
+            // `distance_multiplier` is the **widest** channel width
+            // across all non-empty channels — for the RAW quant
+            // table that's `requiredSizeX` (all 3 channels share the
+            // same width). Threading this through unlocks the libjxl
+            // `SpecialDistance` LUT for short-range LZ77 references.
             var stream = TokenStreamReader(
-                header: postHeader, codebook: postCodebook
+                header: postHeader, codebook: postCodebook,
+                distanceMultiplier: requiredSizeX
             )
             // libjxl's stream id for QuantTable(idx) is
             // `1 + numDcGroups + numPasses * numGroups + idx` — for

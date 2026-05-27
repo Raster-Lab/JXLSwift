@@ -276,8 +276,14 @@ public enum ModularSubImage {
             throw ModularSubImageError.malformed(
                 "post-tree MultiClusterCodebook: \(error)")
         }
+        // libjxl `DecodeModular`: `distance_multiplier` is the widest
+        // channel width across non-empty channels. Embedded sub-images
+        // here share `width` across all `channelCount` channels, so
+        // pass it directly to unlock the `SpecialDistance` LUT for
+        // modular LZ77 references.
         var postReader = TokenStreamReader(
-            header: postHeader, codebook: postCodebook)
+            header: postHeader, codebook: postCodebook,
+            distanceMultiplier: width)
 
         // 4. Per-channel pixel residuals → reconstructed pixels.
         let sampleHi: Int32 = bitsPerSample >= 31

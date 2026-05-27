@@ -21,15 +21,24 @@
 //   • Decodes the run length via `lz77.lengthUintConfig`.
 //   • Reads a "distance token" at an extra cluster (the one beyond
 //     the user contexts — `contextMap.map[numUserContexts]`).
-//   • Decodes the distance via that cluster's `HybridUintConfig` (+1).
+//   • Decodes the distance via that cluster's `HybridUintConfig`.
+//   • Applies the libjxl `SpecialDistance` remap when a non-zero
+//     `distanceMultiplier` is in effect (modular sub-image case):
+//     decoded values `< 120` index a 2D pattern LUT scaled by the
+//     channel width, and decoded values `≥ 120` map to
+//     `decoded + 1 − 120`. When `distanceMultiplier == 0` (the
+//     TOC-permutation / context-map case) the distance is simply
+//     `decoded + 1`.
 //   • Replays `length` previously-emitted values starting `distance`
 //     positions back in the running history buffer.
 // Subsequent `readToken` calls drain that copy queue before reading
-// any new ANS symbols. The "special distance" remap (libjxl
-// `SpecialDistance`) is only applied when a non-zero distance
-// multiplier is in effect — we don't take that branch yet, but
-// distances in TOC-permutation / context-map streams use the simple
-// `decoded + 1` form.
+// any new ANS symbols.
+//
+// libjxl reference: `lib/jxl/dec_ans.h::SpecialDistance`,
+// `ReadHybridUintClusteredInlined`. The LUT below is the WebP-lossless
+// 2D distance table (`kSpecialDistances`, 120 entries) shifted by the
+// channel width — the only way modular streams encode short-range
+// "this row" / "row above" copies efficiently.
 
 import Foundation
 
@@ -44,6 +53,36 @@ public enum TokenStreamReaderError: Error, Sendable {
     case clusterOutOfRange(Int, max: Int)
 }
 
+/// libjxl `kNumSpecialDistances` — the size of the 2D distance LUT
+/// applied to modular sub-image LZ77 references when a non-zero
+/// `distanceMultiplier` is in effect.
+public let kNumSpecialDistances: Int = 120
+
+/// libjxl `kSpecialDistances` (WebP-lossless inheritance) — 120 entries
+/// of `(rowOffset, colOffset)` pairs. The effective distance is
+/// `max(1, rowOffset + multiplier × colOffset)` where the multiplier is
+/// the widest channel in the sub-image. This lets short-range
+/// "previous row" / "row above" copies fit in a single token.
+///
+/// Spec / libjxl: `lib/jxl/dec_ans.h::kSpecialDistances`.
+public let kSpecialDistancesLUT: [(Int8, Int8)] = [
+    (0, 1),  (1, 0),  (1, 1),  (-1, 1), (0, 2),  (2, 0),  (1, 2),  (-1, 2),
+    (2, 1),  (-2, 1), (2, 2),  (-2, 2), (0, 3),  (3, 0),  (1, 3),  (-1, 3),
+    (3, 1),  (-3, 1), (2, 3),  (-2, 3), (3, 2),  (-3, 2), (0, 4),  (4, 0),
+    (1, 4),  (-1, 4), (4, 1),  (-4, 1), (3, 3),  (-3, 3), (2, 4),  (-2, 4),
+    (4, 2),  (-4, 2), (0, 5),  (3, 4),  (-3, 4), (4, 3),  (-4, 3), (5, 0),
+    (1, 5),  (-1, 5), (5, 1),  (-5, 1), (2, 5),  (-2, 5), (5, 2),  (-5, 2),
+    (4, 4),  (-4, 4), (3, 5),  (-3, 5), (5, 3),  (-5, 3), (0, 6),  (6, 0),
+    (1, 6),  (-1, 6), (6, 1),  (-6, 1), (2, 6),  (-2, 6), (6, 2),  (-6, 2),
+    (4, 5),  (-4, 5), (5, 4),  (-5, 4), (3, 6),  (-3, 6), (6, 3),  (-6, 3),
+    (0, 7),  (7, 0),  (1, 7),  (-1, 7), (5, 5),  (-5, 5), (7, 1),  (-7, 1),
+    (4, 6),  (-4, 6), (6, 4),  (-6, 4), (2, 7),  (-2, 7), (7, 2),  (-7, 2),
+    (3, 7),  (-3, 7), (7, 3),  (-7, 3), (5, 6),  (-5, 6), (6, 5),  (-6, 5),
+    (8, 0),  (4, 7),  (-4, 7), (7, 4),  (-7, 4), (8, 1),  (8, 2),  (6, 6),
+    (-6, 6), (8, 3),  (5, 7),  (-5, 7), (7, 5),  (-7, 5), (8, 4),  (6, 7),
+    (-6, 7), (7, 6),  (-7, 6), (8, 5),  (7, 7),  (-7, 7), (8, 6),  (8, 7),
+]
+
 /// Reads HybridUint-decoded integer tokens from an entropy section,
 /// routing each request through the section's context map and the
 /// per-cluster codebook. Mutating across calls — the rANS state lives
@@ -52,6 +91,14 @@ public enum TokenStreamReaderError: Error, Sendable {
 public struct TokenStreamReader: Sendable {
     public let header: EntropySectionHeader
     public let codebook: MultiClusterCodebook
+    /// libjxl's "distance multiplier" — the widest channel width in
+    /// the modular sub-image whose LZ77 references this reader
+    /// services. `0` disables the `SpecialDistance` remap (correct
+    /// for TOC permutation / context-map / tree streams). Modular
+    /// sub-image readers must pass the channel-width max so distances
+    /// `< 120` get the 2D-pattern LUT treatment that libjxl uses to
+    /// encode "previous row" / "row above" patterns.
+    public let distanceMultiplier: Int
     /// Lazily-built rANS decoder for the ANS path. nil for prefix-code
     /// sections.
     private var ansDecoder: ANSStreamDecoder?
@@ -68,10 +115,12 @@ public struct TokenStreamReader: Sendable {
     public init(
         header: EntropySectionHeader,
         codebook: MultiClusterCodebook,
+        distanceMultiplier: Int = 0,
         useAliasTables: Bool = true
     ) {
         self.header = header
         self.codebook = codebook
+        self.distanceMultiplier = distanceMultiplier
         if !header.usePrefixCode {
             if useAliasTables,
                let aliasDecoder = try? ANSStreamDecoder(
@@ -235,9 +284,27 @@ public struct TokenStreamReader: Sendable {
         } else {
             distSymbol = try readANSSymbol(cluster: distCluster, from: &r)
         }
-        let distance = try expand(
+        let rawDist = try expand(
             symbol: distSymbol, cluster: distCluster, from: &r
-        ) &+ 1
+        )
+        // libjxl `ReadHybridUintClusteredInlined`: when the section's
+        // `distanceMultiplier > 0` (modular sub-image case), the
+        // first `kNumSpecialDistances` (120) wire values index a 2D
+        // pattern LUT scaled by the multiplier; the remainder shifts
+        // down by 120. With `distanceMultiplier == 0` (TOC permutation
+        // / context-map streams) the wire value is just `decoded + 1`.
+        let distance: UInt32
+        if distanceMultiplier > 0
+            && rawDist < UInt32(kNumSpecialDistances) {
+            let pair = kSpecialDistancesLUT[Int(rawDist)]
+            let s = Int(pair.0) &+ distanceMultiplier &* Int(pair.1)
+            distance = UInt32(max(1, s))
+        } else {
+            let numSpecial: UInt32 =
+                distanceMultiplier > 0
+                ? UInt32(kNumSpecialDistances) : 0
+            distance = rawDist &+ 1 &- numSpecial
+        }
         // 3. Validate against history.
         if Int(distance) > history.count {
             throw TokenStreamReaderError.lz77InvalidDistance(

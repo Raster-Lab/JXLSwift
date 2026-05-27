@@ -3891,8 +3891,18 @@ extension JXLDecoder {
                     from: &s0, header: usePostHdr
                 )
             }
+            // libjxl `DecodeModular`: `distance_multiplier` is the
+            // widest channel width across all non-empty channels
+            // we'll decode. Threading it through unlocks the
+            // `SpecialDistance` LUT for short-range LZ77 references
+            // (modular sub-image case).
+            let modularDistMult = image.channels
+                .filter { $0.width > 0 && $0.height > 0 }
+                .map { $0.width }
+                .max() ?? 0
             var pixelStream = TokenStreamReader(
-                header: usePostHdr, codebook: usePostCB
+                header: usePostHdr, codebook: usePostCB,
+                distanceMultiplier: modularDistMult
             )
             let geometries = image.channels.map {
                 ModularChannelGeometry(width: $0.width, height: $0.height)
@@ -3915,8 +3925,19 @@ extension JXLDecoder {
             // useGlobalTree=true for section 0 when channels are present).
             if let gt = globalTree, let gh = globalPostHdr,
                let gc = globalPostCB, globalGH.useGlobalTree {
+                // libjxl uses max channel width across the channels
+                // decoded in this reader (those that fit entirely in
+                // one group). Threading it unlocks SpecialDistance.
+                let globalDistMult = image.channels
+                    .filter {
+                        $0.width > 0 && $0.height > 0
+                        && $0.width <= groupDim && $0.height <= groupDim
+                    }
+                    .map { $0.width }
+                    .max() ?? 0
                 var globalPixelStream = TokenStreamReader(
-                    header: gh, codebook: gc
+                    header: gh, codebook: gc,
+                    distanceMultiplier: globalDistMult
                 )
                 for ci in 0..<image.channels.count {
                     let ch = image.channels[ci]
@@ -3978,9 +3999,6 @@ extension JXLDecoder {
                         from: &gr, header: pgPostHdr
                     )
                 }
-                var groupPixelStream = TokenStreamReader(
-                    header: pgPostHdr, codebook: pgPostCB
-                )
                 // libjxl `ModularStreamId::ModularAC(group, pass).ID()`:
                 //   id = 1 + numDcGroups + pass * numGroups + group
                 // Pass=0 here (only single-pass Modular supported).
@@ -4028,6 +4046,20 @@ extension JXLDecoder {
                 // `ModularDecode` line 555: `for (Transform& t : ...) { t.MetaApply(image); }`).
                 try metaApplyTransforms(
                     image: &subImage, transforms: groupGH.transforms
+                )
+                // libjxl `DecodeModular`: distance_multiplier is the
+                // widest channel width across non-empty channels in
+                // the sub-image we'll actually decode. Compute after
+                // meta-apply (transforms may resize / re-layout
+                // channels) so the multiplier matches the channels
+                // the reader services.
+                let groupDistMult = subImage.channels
+                    .filter { $0.width > 0 && $0.height > 0 }
+                    .map { $0.width }
+                    .max() ?? 0
+                var groupPixelStream = TokenStreamReader(
+                    header: pgPostHdr, codebook: pgPostCB,
+                    distanceMultiplier: groupDistMult
                 )
                 // Decode every (post-meta-apply) channel of the
                 // sub-image in order. libjxl's MAANS decode iterates
