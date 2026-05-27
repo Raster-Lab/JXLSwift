@@ -130,3 +130,76 @@ final class BrotliPrefixCodeTests: XCTestCase {
     // stream is wired in — easier to validate against `brotli` CLI
     // output than to hand-construct a complex code by bit.
 }
+
+/// Brotli stream-header WBITS decode, verified against `brotli`
+/// CLI output (`brotli --lgwin=N` for N ∈ {10..24}).
+final class BrotliStreamHeaderTests: XCTestCase {
+
+    private func wbitsFromFirstByte(_ b: UInt8) throws -> Int {
+        var r = BitReader(Data([b, 0, 0, 0]))  // pad so reads don't OOB
+        let h = try BrotliMetaBlockReader.readStreamHeader(from: &r)
+        return h.windowBits
+    }
+
+    func testWBITS_16() throws {
+        XCTAssertEqual(try wbitsFromFirstByte(0x00), 16)
+    }
+
+    func testWBITS_17() throws {
+        XCTAssertEqual(try wbitsFromFirstByte(0x01), 17)
+    }
+
+    func testWBITS_18_to_24() throws {
+        // 0x03, 0x05, 0x07, 0x09, 0x0B, 0x0D, 0x0F → 18..24
+        XCTAssertEqual(try wbitsFromFirstByte(0x03), 18)
+        XCTAssertEqual(try wbitsFromFirstByte(0x05), 19)
+        XCTAssertEqual(try wbitsFromFirstByte(0x07), 20)
+        XCTAssertEqual(try wbitsFromFirstByte(0x09), 21)
+        XCTAssertEqual(try wbitsFromFirstByte(0x0B), 22)
+        XCTAssertEqual(try wbitsFromFirstByte(0x0D), 23)
+        XCTAssertEqual(try wbitsFromFirstByte(0x0F), 24)
+    }
+
+    func testWBITS_10_to_15() throws {
+        // 0x21, 0x31, 0x41, 0x51, 0x61, 0x71 → 10..15
+        XCTAssertEqual(try wbitsFromFirstByte(0x21), 10)
+        XCTAssertEqual(try wbitsFromFirstByte(0x31), 11)
+        XCTAssertEqual(try wbitsFromFirstByte(0x41), 12)
+        XCTAssertEqual(try wbitsFromFirstByte(0x51), 13)
+        XCTAssertEqual(try wbitsFromFirstByte(0x61), 14)
+        XCTAssertEqual(try wbitsFromFirstByte(0x71), 15)
+    }
+
+    func testWBITS_ReservedN1_Throws() {
+        // bit0=1, M=0, N=1 → WBITS=9, reserved.
+        // Byte: bit0=1 (LSB), bits 1..3=000, bits 4..6=100 (N=1).
+        // bit pattern: 1,0,0,0,1,0,0,0 = 0b00010001 = 0x11
+        XCTAssertThrowsError(try wbitsFromFirstByte(0x11)) { error in
+            guard case BrotliError.invalidWindowSize = error else {
+                XCTFail("expected invalidWindowSize; got \(error)")
+                return
+            }
+        }
+    }
+}
+
+/// Brotli meta-block header — simple end-to-end check: parse the
+/// stream header + first meta-block header for an empty stream
+/// (`brotli < /dev/null > out.br`) and confirm the ISLAST + ISLAST_EMPTY
+/// path fires.
+final class BrotliMetaBlockHeaderTests: XCTestCase {
+
+    func testEmptyStream_IsLastEmpty() throws {
+        // From `brotli` CLI on empty stdin: 1 byte = 0x3F.
+        // bits LSB-first: 1,1,1,1,1,1,0,0
+        // Stream header: bit0=1, M=111 (=7) → WBITS=17+7=24.
+        // Meta-block: ISLAST (bit 4)=1, ISLAST_EMPTY (bit 5)=1.
+        var r = BitReader(Data([0x3F, 0x00]))
+        let sh = try BrotliMetaBlockReader.readStreamHeader(from: &r)
+        XCTAssertEqual(sh.windowBits, 24)
+        let mh = try BrotliMetaBlockReader.readMetaBlockHeader(from: &r)
+        XCTAssertTrue(mh.isLast)
+        XCTAssertTrue(mh.isLastEmpty)
+        XCTAssertEqual(mh.payloadSize, 0)
+    }
+}
