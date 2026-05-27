@@ -97,4 +97,19 @@ public struct JPEGBitWriter {
         current = 0
         bitsInCurrent = 0
     }
+
+    /// Append raw bytes to the output **without** byte-stuffing.
+    /// Used to emit RST markers (`0xFF Dn`) at restart-interval
+    /// boundaries — the caller has already flushed the bit
+    /// accumulator (typically via `flushPaddingOnes`) and is
+    /// emitting a real marker that should NOT be stuffed.
+    ///
+    /// Precondition: bit accumulator is byte-aligned (call
+    /// `flushPaddingOnes` or `flushPadding(bits:)` first).
+    public mutating func appendRawMarker(_ bytes: [UInt8]) {
+        precondition(bitsInCurrent == 0,
+            "JPEGBitWriter.appendRawMarker: must be byte-aligned "
+            + "(bitsInCurrent = \(bitsInCurrent))")
+        data.append(contentsOf: bytes)
+    }
 }

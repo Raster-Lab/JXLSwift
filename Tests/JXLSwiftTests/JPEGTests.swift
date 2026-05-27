@@ -5014,6 +5014,162 @@ final class JPEGBlockEncoderTests: XCTestCase {
         XCTAssertEqual(decoded.coefficients, block.coefficients)
     }
 
+    /// **End-to-end real-JPEG scan round-trip.** Decode a real JPEG's
+    /// full SOS payload via `JPEGScanDecoder`, re-encode it via
+    /// `JPEGScanEncoder` (using the JPEG's own DHT tables), decode
+    /// the re-encoded bytes again, and verify every block's
+    /// coefficients match exactly.
+    ///
+    /// This is the central round-trip guarantee the reverse bridge
+    /// needs: given known DHT tables (from a `jbrd` box) and
+    /// coefficient values (from a JXL frame), we can reconstruct
+    /// the SOS payload that the source JPEG had — or at least
+    /// SOS payload that decodes to the same coefficient values.
+    /// (Bit-identical reconstruction also needs the source's
+    /// padding bits, which `jbrd` records in `paddingBits`.)
+    func testRoundTrip_RealJPEGScan() throws {
+        let cjpeg = "/opt/homebrew/bin/cjpeg"
+        guard FileManager.default.isExecutableFile(atPath: cjpeg)
+        else { throw XCTSkip("cjpeg not present") }
+        let tmp = NSTemporaryDirectory()
+        let ppmPath = tmp + "scan-\(UUID().uuidString).ppm"
+        let jpgPath = tmp + "scan-\(UUID().uuidString).jpg"
+        defer {
+            try? FileManager.default.removeItem(atPath: ppmPath)
+            try? FileManager.default.removeItem(atPath: jpgPath)
+        }
+        // 16×16 gradient PPM, 4:4:4.
+        var ppm = Data("P6\n16 16\n255\n".utf8)
+        for y in 0..<16 {
+            for x in 0..<16 {
+                ppm.append(UInt8(50 + x * 10))
+                ppm.append(UInt8(80 + y * 8))
+                ppm.append(UInt8(min(255, 100 + (x + y) * 5)))
+            }
+        }
+        try ppm.write(to: URL(fileURLWithPath: ppmPath))
+        let p = Process()
+        p.launchPath = cjpeg
+        p.arguments = ["-outfile", jpgPath,
+                       "-sample", "1x1,1x1,1x1",
+                       "-quality", "75", "-baseline", ppmPath]
+        p.standardOutput = Pipe()
+        p.standardError = Pipe()
+        try p.run()
+        p.waitUntilExit()
+        XCTAssertEqual(p.terminationStatus, 0)
+        let jpg = try Data(contentsOf: URL(fileURLWithPath: jpgPath))
+
+        // Parse the JPEG fully — we need the original DHT tables
+        // (cjpeg's own optimised tables) for byte-identical re-encode.
+        var reader = JPEGSegmentReader(jpg)
+        var dcMap = JPEGHuffmanCodebookMap()
+        var acMap = JPEGHuffmanCodebookMap()
+        var dcTablesRaw: [JPEGHuffmanTable?] = [nil, nil, nil, nil]
+        var acTablesRaw: [JPEGHuffmanTable?] = [nil, nil, nil, nil]
+        var frameComponents: [JPEGFrameComponent] = []
+        var scanHeader: JPEGScanHeader?
+        var entropyStart = 0
+        var width = 0, height = 0
+        while let seg = try reader.next() {
+            switch seg.kind {
+            case .startOfFrame:
+                width = (Int(seg.payload[3]) << 8)
+                    | Int(seg.payload[4])
+                height = (Int(seg.payload[1]) << 8)
+                    | Int(seg.payload[2])
+                frameComponents = try JPEGFrameComponent
+                    .parseSOFComponents(sofPayload: seg.payload)
+            case .defineHuffmanTable:
+                for t in try JPEGHuffmanTable.parse(
+                    dhtPayload: seg.payload)
+                {
+                    let book = try t.buildCodebook()
+                    switch t.class {
+                    case .dc:
+                        dcMap[t.tableId] = (book, t.huffvals)
+                        dcTablesRaw[t.tableId] = t
+                    case .ac:
+                        acMap[t.tableId] = (book, t.huffvals)
+                        acTablesRaw[t.tableId] = t
+                    }
+                }
+            case .startOfScan:
+                scanHeader = try JPEGScanHeader.parse(
+                    sosPayload: seg.payload)
+                entropyStart = reader.byteOffset
+            default: break
+            }
+            if seg.kind == .startOfScan { break }
+        }
+        let scan = try XCTUnwrap(scanHeader)
+        // Decode the original SOS payload.
+        var br = JPEGBitReader(jpg, startingAt: entropyStart)
+        let originalComps = try JPEGScanDecoder
+            .decodeBaselineSequential(
+                from: &br,
+                scanHeader: scan,
+                frameComponents: frameComponents,
+                imageWidth: width, imageHeight: height,
+                dcCodebooks: dcMap, acCodebooks: acMap,
+                restartInterval: 0)
+
+        // Build encode-side Huffman tables from the original DHT.
+        var dcEnc: [[JPEGHuffmanEncodeEntry]?] = [nil, nil, nil, nil]
+        var acEnc: [[JPEGHuffmanEncodeEntry]?] = [nil, nil, nil, nil]
+        for (i, t) in dcTablesRaw.enumerated() {
+            if let t = t { dcEnc[i] = encodeTable(from: t) }
+        }
+        for (i, t) in acTablesRaw.enumerated() {
+            if let t = t { acEnc[i] = encodeTable(from: t) }
+        }
+
+        // Map JPEGScanHeader.components → JPEGScanComponentEncode.
+        let scanComps: [JPEGScanComponentEncode] = scan.components.map
+        { sc in
+            // Find index in frameComponents matching componentId.
+            let idx = frameComponents.firstIndex {
+                $0.componentId == sc.componentId
+            } ?? 0
+            return JPEGScanComponentEncode(
+                componentIndex: idx,
+                dcTableId: sc.dcTableId,
+                acTableId: sc.acTableId)
+        }
+
+        let encoded = try JPEGScanEncoder.encodeBaselineSequential(
+            components: originalComps,
+            frameComponents: frameComponents,
+            scanComponents: scanComps,
+            dcTables: dcEnc, acTables: acEnc,
+            restartInterval: 0,
+            imageWidth: width, imageHeight: height)
+
+        // Decode the re-encoded payload and compare to the original.
+        var br2 = JPEGBitReader(encoded)
+        let roundtripComps = try JPEGScanDecoder
+            .decodeBaselineSequential(
+                from: &br2,
+                scanHeader: scan,
+                frameComponents: frameComponents,
+                imageWidth: width, imageHeight: height,
+                dcCodebooks: dcMap, acCodebooks: acMap,
+                restartInterval: 0)
+        XCTAssertEqual(roundtripComps.count, originalComps.count)
+        for c in 0..<originalComps.count {
+            XCTAssertEqual(
+                roundtripComps[c].blocks.count,
+                originalComps[c].blocks.count,
+                "component \(c) block count mismatch")
+            for bi in 0..<originalComps[c].blocks.count {
+                XCTAssertEqual(
+                    roundtripComps[c].blocks[bi].coefficients,
+                    originalComps[c].blocks[bi].coefficients,
+                    "component \(c) block \(bi) coefficient mismatch")
+            }
+        }
+    }
+
     /// **End-to-end real-JPEG block check.** Decode a real JPEG
     /// block via `JPEGBlockDecoder`, re-encode it with our encoder
     /// + the standard Huffman tables, then decode the re-encoded
