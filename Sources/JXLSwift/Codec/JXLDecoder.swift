@@ -137,6 +137,44 @@ public struct JXLDecoder: Sendable {
         )
     }
 
+    /// Extract the **quantised** AC coefficient state from a JXL
+    /// VarDCT frame, returning a `JXLCoefficientPlanes` suitable for
+    /// the reverse-bridge (`JXLToJPEGAdapter.reconstruct`). This is
+    /// the API that, once implemented, removes the CLI's
+    /// `--source <jpg>` requirement for `jxl transcode --mode reverse`.
+    ///
+    /// **Status (v0.12.0gr scaffold).** Throws `notImplemented`.
+    /// The implementation will refactor `decodeVarDCTPartial` to
+    /// optionally stop after the AC group decode (line ~1320 today)
+    /// and return `(dcValues, acBlocks, frameDims, frameComponents)`
+    /// packaged into `JXLCoefficientPlanes` instead of running IDCT
+    /// + color conversion to pixels. The bitstream walk is already
+    /// complete through that point in the existing decoder; the
+    /// refactor is "factor out shared inner function + add a new
+    /// public entry that calls it with `stopAtCoefficients=true`".
+    ///
+    /// The bridge-specific case (single group, NBLTYPES=1, DCT8x8
+    /// strategy, JPEG quant matrices) is the immediate target — that
+    /// covers what our forward bridge produces and what the matrix
+    /// test (`testEndToEnd_ByteIdenticalMatrix_BaselineJPEGs`) exercises.
+    ///
+    /// - Parameter data: the JXL bytes (codestream or container).
+    /// - Returns: `JXLCoefficientPlanes` in JXL channel order
+    ///   ([X=Cb, Y, B=Cr] for kYCbCr 3-channel frames).
+    /// - Throws: `DecoderError.notImplemented` until the refactor
+    ///   above lands.
+    public func decodeToCoefficients(
+        _ data: Data
+    ) throws -> JXLCoefficientPlanes {
+        throw DecoderError.notImplemented(
+            "JXLDecoder.decodeToCoefficients — VarDCT coefficient "
+            + "extraction. The bitstream walk through DC + AC decode "
+            + "is already implemented in `decodeVarDCTPartial` (lines "
+            + "~570–1320); needs refactoring to factor out a shared "
+            + "inner function that returns coefficient state instead "
+            + "of running IDCT + color conv to pixels.")
+    }
+
     /// Skeleton VarDCT decoder. Parses what's tractable today and
     /// throws a structured `notImplemented` naming the first
     /// bitstream layer we can't yet read. As parsers for each

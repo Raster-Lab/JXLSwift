@@ -328,16 +328,38 @@ struct Transcode: ParsableCommand {
                   to: &standardError)
             throw JXLExitCode.generalError
         }
-        // Get coefficient planes. Today this requires a source JPEG
-        // (`--source`) since JXLDecoder.decodeToCoefficients(_:) is
-        // not yet implemented.
+        // Try the autonomous coefficient-decode path first. When
+        // `JXLDecoder.decodeToCoefficients(_:)` lands, this branch
+        // takes over and the `--source` flag becomes optional. For
+        // now this throws notImplemented; we catch and fall back to
+        // the source-JPEG path below.
+        var autonomousCoefs: JXLCoefficientPlanes? = nil
+        do {
+            autonomousCoefs = try JXLDecoder()
+                .decodeToCoefficients(jxlBytes)
+        } catch DecoderError.notImplemented {
+            // Expected today; fall through to the `--source` path.
+        } catch {
+            print("error: JXL coefficient decode failed: \(error)",
+                  to: &standardError)
+            throw JXLExitCode.generalError
+        }
+        if autonomousCoefs != nil {
+            // Future path — once decodeToCoefficients lands. For
+            // now (v0.12.0gr) this branch is unreachable.
+            print("warning: autonomous coefficient decode succeeded"
+                + " but the integration path is not wired yet; "
+                + "falling back to --source.",
+                to: &standardError)
+        }
         guard let sourcePath = sourceJPEGPath else {
             print(
                 "error: JXL → JPEG reverse transcode currently "
                 + "requires `--source <orig.jpg>` to mock the JXL "
-                + "frame's coefficient decode. The pure JXL-decode "
-                + "path needs `JXLDecoder.decodeToCoefficients(_:)` "
-                + "which is a separate phase of work.",
+                + "frame's coefficient decode. The autonomous "
+                + "`JXLDecoder.decodeToCoefficients(_:)` API is a "
+                + "scaffolded stub (v0.12.0gr) — implementation "
+                + "removes this `--source` requirement.",
                 to: &standardError)
             throw JXLExitCode.notImplemented
         }
