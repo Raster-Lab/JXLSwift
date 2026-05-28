@@ -43,7 +43,7 @@ with it.
   are built from the on-wire counts `writeHistogram` emits.
 - New `testEndToEnd_ANSBridge_DjxlReconstructsByteIdentical` locks in the
   djxl-valid property (our own reverse path can't detect a libjxl
-  divergence). Full suite: 664 tests, 7 skipped, 0 failures.
+  divergence). Full suite: 663 tests, 7 skipped, 0 failures.
 
 The DC/ACMetadata modular sections stay Huffman for now (they share one
 codebook across multiple sub-images — an rANS conversion there needs the
