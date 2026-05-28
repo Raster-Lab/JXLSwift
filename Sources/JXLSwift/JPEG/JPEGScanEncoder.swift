@@ -523,10 +523,16 @@ public enum JPEGScanEncoder {
                     continue
                 }
                 if av == 0 { run += 1; continue }
-                if av > 1 {
-                    runBuffer.append(Int(av & 1)); continue
-                }
-                // av == 1: newly nonzero.
+                // Nonzero coef at k ≤ eobK. Emit any pending ZRLs
+                // FIRST — libjpeg `encode_mcu_AC_refine` runs the
+                // `while (r > 15 && k <= EOB)` loop before *both* the
+                // already-nonzero (correction-bit) branch and the
+                // newly-nonzero branch. Doing it only for newly-
+                // nonzero coeffs (the earlier draft) misorders the ZRL
+                // and its buffered correction bits when a >15 zero run
+                // precedes an already-nonzero coef — corrupting the
+                // refinement scan (content-dependent; hit by some
+                // progressive frames).
                 while run > 15 {
                     let zrl = acTable[0xF0]
                     writer.writeBits(zrl.code, count: zrl.length)
@@ -534,6 +540,10 @@ public enum JPEGScanEncoder {
                     runBuffer.removeAll(keepingCapacity: true)
                     run -= 16
                 }
+                if av > 1 {
+                    runBuffer.append(Int(av & 1)); continue
+                }
+                // av == 1: newly nonzero.
                 let sym = (run << 4) | 1
                 let e = acTable[sym]
                 guard e.length > 0 else {

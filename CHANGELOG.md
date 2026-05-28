@@ -11,6 +11,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0hh — 🎉 Grayscale JPEGs reverse byte-identically
+
+Single-component (grayscale) JPEGs now reverse-transcode
+**byte-for-byte** through the autonomous path — baseline, odd
+dimensions, restart markers, **and progressive**.
+
+The decode needed no changes: libjxl stores a grayscale JPEG as a
+**3-channel VarDCT frame** with the luma in the Y (XYB index 1)
+channel and X/B all-zero. The fix is entirely in the reverse adapter
+— a new `JXLCoefficientPlanes.extractingChannel(_:)` pulls channel 1
+into a 1-channel plane for the single JPEG component (instead of the
+3-channel `inverseJXLBridgeRemap`, which tripped a
+`frameComponents.count 1 ≠ channelCount 3` shape check).
+
+**AC-refinement ZRL-ordering fix** ([JPEGScanEncoder.swift](Sources/JXLSwift/JPEG/JPEGScanEncoder.swift)).
+Progressive grayscale surfaced a latent bug in `encodeACRefine`
+(shared with **colour** progressive): the `while r > 15` ZRL loop ran
+only in the newly-nonzero branch, but libjpeg `encode_mcu_AC_refine`
+runs it before the already-nonzero (correction-bit) branch too. A
+zero-run longer than 15 immediately preceding an already-nonzero coef
+therefore emitted the ZRL and its buffered correction bits in the
+wrong order, corrupting the refinement scan (`djpeg`-confirmed pixel
+corruption, content-dependent — colour test fixtures never hit it).
+
+**Tests.** `testEndToEnd_AutonomousReverseTranscode_Grayscale` —
+16×16 / 64×48 baseline, 37×29 odd, 48×32 +restart, and 80×56 /
+200×137 progressive, all byte-identical. Full suite green; the
+AC-refine fix leaves every colour-progressive case unchanged.
+
 ### v0.12.0hg — 🎉 Odd (non-MCU-aligned) dimensions reverse byte-identically
 
 JPEGs whose width/height are **not** multiples of the MCU size — i.e.

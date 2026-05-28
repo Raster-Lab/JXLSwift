@@ -173,13 +173,21 @@ public enum JXLToJPEGAdapter {
             throw JXLToJPEGAdapterError.malformedJBRD(
                 "markerOrder is empty")
         }
-        // Step 1: Undo the JXL bridge channel remap so planes are
-        // in JPEG component order (Y, Cb, Cr).
-        let unremapped = coefficients.inverseJXLBridgeRemap(
-            colorTransform: colorTransform)
         // Build frameComponents and quantTables from `jbrd`.
         let frameComponents = try buildFrameComponents(jbrd: jbrd)
         let quantTables = try buildQuantTables(jbrd: jbrd)
+        // Step 1: bring planes into JPEG component order. Grayscale
+        // (1 JPEG component) is stored by libjxl as a 3-channel VarDCT
+        // frame with the luma in the Y (XYB index 1) channel and X/B
+        // all-zero — extract that single channel. Colour frames undo
+        // the [X,Y,B] → [Y,Cb,Cr] bridge remap.
+        let unremapped: JXLCoefficientPlanes
+        if frameComponents.count == 1 && coefficients.channelCount == 3 {
+            unremapped = coefficients.extractingChannel(1)
+        } else {
+            unremapped = coefficients.inverseJXLBridgeRemap(
+                colorTransform: colorTransform)
+        }
         // Step 2: Build the per-component coefficient image
         // (inverts the 8×8 transpose). The SOFn dimensions are the
         // *true* pixel size (from the JXL SizeHeader) when supplied —
@@ -602,6 +610,21 @@ public enum JXLToJPEGAdapter {
 }
 
 extension JXLCoefficientPlanes {
+
+    /// Reduce to a single channel `c`. Used for grayscale frames:
+    /// libjxl stores the lone luma component in the Y (XYB index 1)
+    /// channel of an otherwise-zero 3-channel VarDCT frame, so the
+    /// reverse bridge extracts that channel for the 1-component JPEG.
+    public func extractingChannel(_ c: Int) -> JXLCoefficientPlanes {
+        precondition(c >= 0 && c < channelCount,
+            "extractingChannel: \(c) out of range \(channelCount)")
+        return JXLCoefficientPlanes(
+            blocksX: blocksX, blocksY: blocksY,
+            channelCount: 1,
+            dcPerChannel: [dcPerChannel[c]],
+            acPerChannel: [acPerChannel[c]],
+            blocksPerChannel: [blocksPerChannel[c]])
+    }
 
     /// Invert `remappedForJXLBridge` — given planes in JXL channel
     /// order (X=Cb, Y, B=Cr), return planes in JPEG component order

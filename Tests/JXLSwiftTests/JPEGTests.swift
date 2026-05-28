@@ -6754,6 +6754,95 @@ final class JXLToJPEGAdapterTests: XCTestCase {
         }
     }
 
+    /// 🎉 **Grayscale (single-component) JPEGs reverse byte-identically.**
+    /// libjxl stores a grayscale JPEG as a 3-channel VarDCT frame with
+    /// the luma in the Y (XYB index 1) channel and X/B all-zero; the
+    /// reverse bridge extracts that channel for the 1-component JPEG.
+    /// Covers baseline, odd dimensions, restart markers, and
+    /// progressive (the last exercises the AC-refinement ZRL-ordering
+    /// fix).
+    func testEndToEnd_AutonomousReverseTranscode_Grayscale() throws {
+        let cjpeg = "/opt/homebrew/bin/cjpeg"
+        let cjxl = "/opt/homebrew/bin/cjxl"
+        guard FileManager.default.isExecutableFile(atPath: cjpeg),
+              FileManager.default.isExecutableFile(atPath: cjxl)
+        else { throw XCTSkip("cjpeg + cjxl required") }
+        struct V {
+            let label: String; let w: Int; let h: Int; let args: [String]
+        }
+        let variants: [V] = [
+            V(label: "16×16 baseline", w: 16, h: 16, args: ["-baseline"]),
+            V(label: "64×48 baseline", w: 64, h: 48, args: ["-baseline"]),
+            V(label: "37×29 odd baseline", w: 37, h: 29,
+              args: ["-baseline"]),
+            V(label: "48×32 +restart", w: 48, h: 32,
+              args: ["-baseline", "-restart", "2"]),
+            V(label: "80×56 progressive", w: 80, h: 56,
+              args: ["-progressive"]),
+            V(label: "200×137 progressive", w: 200, h: 137,
+              args: ["-progressive"]),
+        ]
+        var results: [String] = []
+        for v in variants {
+            let tmp = NSTemporaryDirectory()
+            let pgmP = tmp + "gs-\(UUID().uuidString).pgm"
+            let jpgP = tmp + "gs-\(UUID().uuidString).jpg"
+            let jxlP = tmp + "gs-\(UUID().uuidString).jxl"
+            defer {
+                for p in [pgmP, jpgP, jxlP] {
+                    try? FileManager.default.removeItem(atPath: p)
+                }
+            }
+            var pgm = Data("P5\n\(v.w) \(v.h)\n255\n".utf8)
+            for i in 0..<(v.w * v.h) {
+                pgm.append(UInt8((i * 13 + i / v.w * 7) % 256))
+            }
+            try pgm.write(to: URL(fileURLWithPath: pgmP))
+            let p1 = Process()
+            p1.launchPath = cjpeg
+            p1.arguments = ["-outfile", jpgP, "-quality", "82"]
+                + v.args + [pgmP]
+            p1.standardOutput = Pipe(); p1.standardError = Pipe()
+            try p1.run(); p1.waitUntilExit()
+            guard p1.terminationStatus == 0 else {
+                results.append("\(v.label): SKIP cjpeg"); continue
+            }
+            let p2 = Process()
+            p2.launchPath = cjxl
+            p2.arguments = ["--lossless_jpeg=1", jpgP, jxlP]
+            p2.standardOutput = Pipe(); p2.standardError = Pipe()
+            try p2.run(); p2.waitUntilExit()
+            guard p2.terminationStatus == 0 else {
+                results.append("\(v.label): SKIP cjxl"); continue
+            }
+            let srcJPG = try Data(contentsOf: URL(fileURLWithPath: jpgP))
+            let jxlBytes = try Data(contentsOf: URL(fileURLWithPath: jxlP))
+            let form = try parseJXLContainer(jxlBytes)
+            guard case .iso(let boxes) = form,
+                  let jbrdPayload = try extractJBRDBox(
+                    from: boxes, in: jxlBytes)
+            else { XCTFail("\(v.label): no jbrd box"); continue }
+            var r = BitReader(jbrdPayload)
+            var box = try JBRDBoxReader.read(from: &r)
+            let brotliStart = (r.position + 7) / 8
+            let brotli = jbrdPayload.suffix(from:
+                jbrdPayload.startIndex + brotliStart)
+            let decoded = try BrotliDecoder.decode(Data(brotli))
+            let bridge = try JXLDecoder().decodeJPEGBridgeData(jxlBytes)
+            XCTAssertEqual(box.components.count, 1,
+                "\(v.label): grayscale JPEG must have 1 component")
+            try box.distributeBrotliPayload(decoded)
+            let rebuilt = try JXLToJPEGAdapter.reconstruct(
+                bridgeData: bridge, jbrd: box)
+            XCTAssertEqual(rebuilt, srcJPG,
+                "\(v.label): grayscale reverse must be byte-identical")
+            results.append("\(v.label): ✓ (\(srcJPG.count)B)")
+        }
+        for line in results {
+            print("[autonomous reverse grayscale] \(line)")
+        }
+    }
+
     /// 🎉 **Fully autonomous reverse transcode — no `--source`.**
     ///
     /// Self-contained: `ppm → cjpeg → cjxl --lossless_jpeg=1`, then
