@@ -11,6 +11,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0hl — 🎉 Forward `jbrd` extractor — JPEG → JXL → JPEG byte-identical round-trip
+
+`JBRDBox.extract(fromJPEG:)` builds the jbrd reconstruction data from
+a source JPEG — the forward direction of the jbrd reader, and the
+libjxl `jpeg_data_reader` equivalent. It walks the markers and
+captures marker order, Huffman tables (with the EOI sentinel at the
+max code length), scan structure, quant-table metadata, component
+bindings, and the app/COM/tail byte content (carried in an
+uncompressed Brotli payload). All app markers are treated as
+`kUnknown` (their bytes go in the payload — correct for any marker;
+libjxl's ICC/Exif/XMP templates are a file-size optimisation we skip).
+
+**The forward bridge is now a true lossless-JPEG transcoder.** With
+the forward coefficient-bridge (the VarDCT frame) + this extractor +
+our reverse reconstruct, a source JPEG round-trips **byte-for-byte**:
+`testEndToEnd_ForwardJBRD_ExtractRoundTrip` proves it across baseline
+4:4:4 / 4:2:0 / 4:2:2, odd dimensions (17×23), and grayscale. The
+extracted jbrd was also verified **field-for-field identical** to
+cjxl's own `--lossless_jpeg=1` reference (marker order, all Huffman
+tables, quant `is_last` grouping, scan info, `last_needed_pass`,
+`has_zero_padding_bit`).
+
+(Progressive input is gated by `decodeToCoefficients`, which is
+baseline-only — a separate forward-path limitation. The remaining
+step to a CLI-complete forward transcode is container assembly:
+wrapping the codestream + jbrd box into the ISOBMFF container.)
+
 ### v0.12.0hk — Minimal Brotli encoder (uncompressed meta-blocks) — forward jbrd prerequisite
 
 `BrotliEncoder.encodeUncompressed(_:)` writes a payload as a valid

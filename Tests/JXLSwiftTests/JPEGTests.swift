@@ -5982,6 +5982,90 @@ final class JXLToJPEGAdapterTests: XCTestCase {
             + "luma in Y, X/B zero ✓")
     }
 
+    /// 🎉 **Forward `jbrd` extraction → byte-identical round-trip.**
+    /// `JBRDBox.extract(fromJPEG:)` captures a source JPEG's marker
+    /// order, Huffman tables, scan structure, quant metadata, and
+    /// app/COM/tail bytes (the libjxl `jpeg_data_reader` equivalent).
+    /// Combined with the forward coefficient-bridge and our reverse
+    /// reconstruct, the source JPEG comes back byte-for-byte — proving
+    /// the forward jbrd builder is correct across baseline 4:4:4 /
+    /// 4:2:0 / 4:2:2, odd dimensions, and grayscale. (Progressive
+    /// input is gated by `decodeToCoefficients`, which is baseline-only
+    /// — a separate forward-path limitation.)
+    func testEndToEnd_ForwardJBRD_ExtractRoundTrip() throws {
+        let cjpeg = "/opt/homebrew/bin/cjpeg"
+        guard FileManager.default.isExecutableFile(atPath: cjpeg)
+        else { throw XCTSkip("cjpeg required") }
+        struct V {
+            let label: String; let w: Int; let h: Int
+            let gray: Bool; let args: [String]
+        }
+        let variants: [V] = [
+            V(label: "16×16 4:4:4", w: 16, h: 16, gray: false,
+              args: ["-sample", "1x1,1x1,1x1"]),
+            V(label: "32×24 4:2:0", w: 32, h: 24, gray: false,
+              args: ["-sample", "2x2,1x1,1x1"]),
+            V(label: "40×40 4:2:2", w: 40, h: 40, gray: false,
+              args: ["-sample", "2x1,1x1,1x1"]),
+            V(label: "17×23 odd 4:4:4", w: 17, h: 23, gray: false,
+              args: ["-sample", "1x1,1x1,1x1"]),
+            V(label: "32×32 grayscale", w: 32, h: 32, gray: true,
+              args: []),
+        ]
+        var results: [String] = []
+        for v in variants {
+            let tmp = NSTemporaryDirectory()
+            let src = tmp + "fj-\(UUID().uuidString)."
+                + (v.gray ? "pgm" : "ppm")
+            let jpg = tmp + "fj-\(UUID().uuidString).jpg"
+            defer {
+                try? FileManager.default.removeItem(atPath: src)
+                try? FileManager.default.removeItem(atPath: jpg)
+            }
+            var p = Data("\(v.gray ? "P5" : "P6")\n\(v.w) \(v.h)\n255\n"
+                .utf8)
+            for i in 0..<(v.w * v.h) {
+                if v.gray {
+                    p.append(UInt8((i * 13 + i / v.w * 7) % 256))
+                } else {
+                    p.append(UInt8((i * 7) % 256))
+                    p.append(UInt8((i * 5 + 40) % 256))
+                    p.append(UInt8((i * 3 + 90) % 256))
+                }
+            }
+            try p.write(to: URL(fileURLWithPath: src))
+            let proc = Process()
+            proc.launchPath = cjpeg
+            proc.arguments = ["-outfile", jpg, "-quality", "80",
+                "-baseline"] + v.args + [src]
+            proc.standardOutput = Pipe(); proc.standardError = Pipe()
+            try proc.run(); proc.waitUntilExit()
+            guard proc.terminationStatus == 0 else {
+                results.append("\(v.label): SKIP cjpeg"); continue
+            }
+            let jpgData = try Data(contentsOf: URL(fileURLWithPath: jpg))
+
+            // Forward: coefficients → VarDCT JXL frame.
+            let coefs = try JPEGDecoder.decodeToCoefficients(jpgData)
+            let fwd = try JXLEncoder().encodeFromJPEGCoefficients(coefs)
+            let bridge = try JXLDecoder().decodeJPEGBridgeData(fwd.data)
+            // Forward jbrd: extract reconstruction data + payload.
+            var (box, payload) = try JBRDBox.extract(fromJPEG: jpgData)
+            try box.distributeBrotliPayload(
+                BrotliDecoder.decode(payload))
+            // Reverse reconstruct must reproduce the source exactly.
+            let rebuilt = try JXLToJPEGAdapter.reconstruct(
+                bridgeData: bridge, jbrd: box)
+            XCTAssertEqual(rebuilt, jpgData,
+                "\(v.label): forward-jbrd round-trip must be "
+                + "byte-identical")
+            results.append("\(v.label): ✓ (\(jpgData.count)B)")
+        }
+        for line in results {
+            print("[forward jbrd round-trip] \(line)")
+        }
+    }
+
     /// **ICC profile JPEGs — capability landed (v0.12.0hd).**
     ///
     /// Byte-identical reverse of ICC-profile JPEGs is now implemented
