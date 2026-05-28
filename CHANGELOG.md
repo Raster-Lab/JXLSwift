@@ -11,6 +11,63 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0hc — 🎉 Fully autonomous reverse transcode (JXL → JPEG, no `--source`)
+
+The reverse direction now reconstructs the source JPEG
+**byte-for-byte from the JXL file alone** — no reference to the
+original. This is the payoff of the whole `gv→hb` decode arc: a
+cjxl `--lossless_jpeg=1` file round-trips back to its exact source
+bytes using only what's inside it.
+
+**New API.**
+- `JXLDecoder.decodeJPEGBridgeData(_:) -> JXLJPEGBridgeData` —
+  decodes the DCT coefficient planes **plus** the RAW slot 0 quant
+  table and the frame's chroma subsampling / colour transform (the
+  data the jbrd Bundle leaves out). Built on the same early-capture
+  sentinel as `decodeToCoefficients`; the sentinel now also carries
+  the quant table + chroma info.
+- `JXLToJPEGAdapter.reconstruct(bridgeData:jbrd:)` — fills the two
+  jbrd slots the Bundle leaves empty and delegates to the existing
+  marker-walk reconstructor:
+  - **quant-table values** recovered from the codestream RAW slot
+    (`rawQuantTable[jxlC·64 + 8x+y] = naturalQuant[8y+x]`, the
+    inverse of `buildJXLBridgeRAWQuantPayload`, then natural →
+    zig-zag, stored into the table each component points at);
+  - **per-component sampling factors** recovered from the frame's
+    chroma subsampling (`hsample = 1 << (maxHShift − HShift(c))`,
+    matching libjxl `YCbCrChromaSubsampling::Set`).
+
+**End-to-end pipeline (no source):**
+
+```
+container → codestream + jbrd
+codestream → decodeJPEGBridgeData → coeffs + quant + chroma
+jbrd Bundle → Brotli → distribute (markers / Huffman / scan)
+reconstruct(bridgeData:jbrd:) → byte-identical JPEG
+```
+
+**Regression test.**
+`testEndToEnd_AutonomousReverseTranscode_NoSource` sweeps
+`cjpeg → cjxl --lossless_jpeg=1` (CFL on, the realistic default)
+and rebuilds from the JXL only, asserting byte-identical:
+
+```
+[autonomous reverse] 16×16 4:4:4 -> PASS (657B)
+[autonomous reverse] 64×64 4:4:4 -> PASS (1522B)
+[autonomous reverse] 16×16 4:2:0 -> PASS (647B)
+[autonomous reverse] 64×64 4:2:0 -> PASS (1251B)
+[autonomous reverse] 16×16 4:2:2 -> PASS (650B)
+```
+
+The original JPEG is read only for the final byte comparison —
+never fed into the rebuild.
+
+**Scope.** Baseline-sequential JPEGs with the common marker set
+(SOI/APPn/DQT/SOFn/DHT/SOS/EOI). Progressive (SOF2) and the
+codestream ICC extractor remain separate bites.
+
+**Tests.** 645 / 7 skipped / 0 failures.
+
 ### v0.12.0hb — 🎉 Chroma-subsampled coefficient decode (4:2:0 / 4:2:2)
 
 `JXLDecoder.decodeToCoefficients` now decodes chroma-subsampled

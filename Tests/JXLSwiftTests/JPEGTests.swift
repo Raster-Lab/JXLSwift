@@ -6365,6 +6365,120 @@ final class JXLToJPEGAdapterTests: XCTestCase {
             + " bytes ✓")
     }
 
+    /// 🎉 **Fully autonomous reverse transcode — no `--source`.**
+    ///
+    /// Self-contained: `ppm → cjpeg → cjxl --lossless_jpeg=1`, then
+    /// reconstruct the JPEG using **only** the JXL file:
+    /// 1. Parse the container → codestream + jbrd box.
+    /// 2. `JXLDecoder.decodeJPEGBridgeData(codestream)` → coefficients
+    ///    + RAW quant table + chroma info.
+    /// 3. jbrd Bundle → Brotli → distribute (markers / Huffman / scan).
+    /// 4. `JXLToJPEGAdapter.reconstruct(bridgeData:jbrd:)` — fills
+    ///    quant values + sampling factors from the bridge data.
+    /// 5. Assert byte-identical to the original (the original is read
+    ///    ONLY for the final comparison, never fed into the rebuild).
+    ///
+    /// Sweeps a few sizes × sampling shapes so a failure pin-points
+    /// the shape. This is the culmination of the gv→hb decode work.
+    func testEndToEnd_AutonomousReverseTranscode_NoSource() throws {
+        let cjpeg = "/opt/homebrew/bin/cjpeg"
+        let cjxl = "/opt/homebrew/bin/cjxl"
+        guard FileManager.default.isExecutableFile(atPath: cjpeg),
+              FileManager.default.isExecutableFile(atPath: cjxl)
+        else { throw XCTSkip("cjpeg + cjxl required") }
+        struct V { let label: String; let dim: Int; let sample: String }
+        let variants: [V] = [
+            V(label: "16×16 4:4:4", dim: 16, sample: "1x1,1x1,1x1"),
+            V(label: "64×64 4:4:4", dim: 64, sample: "1x1,1x1,1x1"),
+            V(label: "16×16 4:2:0", dim: 16, sample: "2x2,1x1,1x1"),
+            V(label: "64×64 4:2:0", dim: 64, sample: "2x2,1x1,1x1"),
+            V(label: "16×16 4:2:2", dim: 16, sample: "2x1,1x1,1x1"),
+        ]
+        var results: [(String, String)] = []
+        for v in variants {
+            let tmp = NSTemporaryDirectory()
+            let ppmP = tmp + "auto-\(UUID().uuidString).ppm"
+            let jpgP = tmp + "auto-\(UUID().uuidString).jpg"
+            let jxlP = tmp + "auto-\(UUID().uuidString).jxl"
+            defer {
+                try? FileManager.default.removeItem(atPath: ppmP)
+                try? FileManager.default.removeItem(atPath: jpgP)
+                try? FileManager.default.removeItem(atPath: jxlP)
+            }
+            var ppm = Data("P6\n\(v.dim) \(v.dim)\n255\n".utf8)
+            for y in 0..<v.dim {
+                for x in 0..<v.dim {
+                    ppm.append(UInt8((40 + x * 5) % 256))
+                    ppm.append(UInt8((90 + y * 3) % 256))
+                    ppm.append(UInt8((130 + (x + y) * 2) % 256))
+                }
+            }
+            try ppm.write(to: URL(fileURLWithPath: ppmP))
+            let p1 = Process()
+            p1.launchPath = cjpeg
+            p1.arguments = ["-outfile", jpgP, "-quality", "75",
+                "-baseline", "-sample", v.sample, ppmP]
+            p1.standardOutput = Pipe(); p1.standardError = Pipe()
+            try p1.run(); p1.waitUntilExit()
+            guard p1.terminationStatus == 0 else {
+                results.append((v.label, "SKIP cjpeg")); continue
+            }
+            let p2 = Process()
+            p2.launchPath = cjxl
+            // Default flags incl. CFL (the realistic cjxl invocation).
+            p2.arguments = ["--lossless_jpeg=1", jpgP, jxlP]
+            p2.standardOutput = Pipe(); p2.standardError = Pipe()
+            try p2.run(); p2.waitUntilExit()
+            guard p2.terminationStatus == 0 else {
+                results.append((v.label, "SKIP cjxl")); continue
+            }
+            let jxlBytes = try Data(contentsOf: URL(fileURLWithPath: jxlP))
+            let originalJPG = try Data(contentsOf: URL(fileURLWithPath: jpgP))
+            do {
+                // 1. Container → jbrd box.
+                let form = try parseJXLContainer(jxlBytes)
+                guard case .iso(let boxes) = form,
+                      let jbrdPayload = try extractJBRDBox(
+                        from: boxes, in: jxlBytes)
+                else {
+                    results.append((v.label, "FAIL: no jbrd box"))
+                    continue
+                }
+                var r = BitReader(jbrdPayload)
+                var box = try JBRDBoxReader.read(from: &r)
+                let bytesConsumed = (r.position + 7) / 8
+                let brotli = jbrdPayload.suffix(from: bytesConsumed)
+                let decoded = try BrotliDecoder.decode(Data(brotli))
+                try box.distributeBrotliPayload(decoded)
+                // 2. Decode coefficients + quant + chroma from JXL.
+                let bridge = try JXLDecoder()
+                    .decodeJPEGBridgeData(jxlBytes)
+                // 3. Reconstruct — autonomous (no source input).
+                let rebuilt = try JXLToJPEGAdapter.reconstruct(
+                    bridgeData: bridge, jbrd: box)
+                if rebuilt == originalJPG {
+                    results.append((v.label, "PASS (\(rebuilt.count)B)"))
+                } else {
+                    results.append((v.label,
+                        "FAIL: \(rebuilt.count)B vs \(originalJPG.count)B"))
+                }
+            } catch {
+                let m = "\(error)"
+                results.append((v.label,
+                    m.count > 90 ? String(m.prefix(87)) + "..." : m))
+            }
+        }
+        for (label, outcome) in results {
+            let padded = label.padding(
+                toLength: 14, withPad: " ", startingAt: 0)
+            print("[autonomous reverse] \(padded) -> \(outcome)")
+        }
+        for (label, outcome) in results where !outcome.hasPrefix("PASS")
+            && !outcome.hasPrefix("SKIP") {
+            XCTFail("autonomous reverse failed: \(label) — \(outcome)")
+        }
+    }
+
     /// 🎉 **End-to-end byte-identical reconstruction via jbrd.**
     ///
     /// 1. Load the original JPEG that produced the cjxl reference.

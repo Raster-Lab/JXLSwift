@@ -56,6 +56,76 @@ public enum JXLToJPEGAdapterError: Error, Sendable {
 /// byte-identical JPEG bytes.
 public enum JXLToJPEGAdapter {
 
+    /// **Autonomous reverse transcode.** Reconstruct the source JPEG
+    /// from a cjxl `--lossless_jpeg=1` file with **no reference to
+    /// the original** — every input comes from the JXL itself:
+    /// `bridgeData` (coefficients + RAW quant table + chroma info,
+    /// from `JXLDecoder.decodeJPEGBridgeData`) plus the container's
+    /// jbrd box (marker order / Huffman / scan structure).
+    ///
+    /// Fills the two slots the jbrd Bundle leaves empty — the quant
+    /// table **values** (recovered from the codestream RAW slot) and
+    /// the per-component **sampling factors** (recovered from the
+    /// frame's chroma subsampling) — then delegates to
+    /// `reconstruct(coefficients:jbrd:colorTransform:)`.
+    public static func reconstruct(
+        bridgeData: JXLJPEGBridgeData,
+        jbrd: JBRDBox
+    ) throws -> Data {
+        var box = jbrd
+        let ct = bridgeData.colorTransform
+        let isGray = box.components.count == 1
+        let order = JPEGToJXLAdapter.jpegOrder(
+            colorTransform: ct, isGray: isGray)
+        let mapping = [order.0, order.1, order.2]   // jxlChannel → jpegComp
+
+        // 1. Recover JPEG quant-table values from the RAW slot.
+        //    `rawQuantTable[jxlC*64 + 8*x + y] = naturalQuant[8*y + x]`
+        //    (inverse of `buildJXLBridgeRAWQuantPayload`); then pack
+        //    natural → zig-zag and store into the quant table each
+        //    component points at.
+        if let raw = bridgeData.rawQuantTable, raw.count == 3 * 64 {
+            for jxlC in 0..<3 {
+                let jpegC = mapping[jxlC]
+                guard jpegC < box.components.count else { continue }
+                let qIdx = Int(box.components[jpegC].quantIdx)
+                guard qIdx < box.quant.count else { continue }
+                var natural = [Int32](repeating: 1, count: 64)
+                for y in 0..<8 {
+                    for x in 0..<8 {
+                        natural[8 * y + x] = raw[jxlC * 64 + 8 * x + y]
+                    }
+                }
+                var zigzag = [Int32](repeating: 0, count: 64)
+                for k in 0..<64 {
+                    zigzag[k] = natural[JPEGZigZag.order[k]]
+                }
+                box.quant[qIdx].values = zigzag
+            }
+        }
+
+        // 2. Recover per-component JPEG sampling factors from the
+        //    frame's chroma subsampling. libjxl `Set` stores
+        //    `hsample[jpeg] == 1 << RawHShift(color)`; with
+        //    `RawHShift(c) = maxHShift - HShift(c)` and the color
+        //    channel for JPEG component `jpegC` being the `jxlC`
+        //    that maps to it.
+        let cs = bridgeData.chromaSubsampling
+        for jxlC in 0..<3 {
+            let jpegC = mapping[jxlC]
+            guard jpegC < box.components.count else { continue }
+            box.components[jpegC].hSampFactor =
+                1 << (cs.maxHShift - cs.hShift(jxlC))
+            box.components[jpegC].vSampFactor =
+                1 << (cs.maxVShift - cs.vShift(jxlC))
+        }
+
+        return try reconstruct(
+            coefficients: bridgeData.planes,
+            jbrd: box,
+            colorTransform: ct)
+    }
+
     /// Reconstruct the source JPEG bytes from a JXL frame + jbrd
     /// metadata. Output matches the source JPEG **byte-for-byte**
     /// when the jbrd's `app_data` / `com_data` / `inter_marker_data` /

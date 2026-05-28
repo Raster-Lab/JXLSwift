@@ -199,13 +199,93 @@ public struct JXLDecoder: Sendable {
             + "without firing the EarlyCoefficientCapture sentinel. "
             + "Hook may not be installed in decodeVarDCTPartial.")
     }
+
+    /// Decode everything the autonomous JPEG-reverse path needs from
+    /// a cjxl `--lossless_jpeg=1` codestream: the DCT coefficient
+    /// planes, the RAW slot 0 quant table, and the frame's chroma
+    /// subsampling + colour transform. Combined with the container's
+    /// jbrd box (marker order, Huffman tables, scan structure) this
+    /// is enough to reconstruct the source JPEG byte-for-byte with
+    /// no reference to the original — see
+    /// `JXLToJPEGAdapter.reconstruct(bridgeData:jbrd:)`.
+    ///
+    /// - Parameter data: JXL bytes (codestream or container).
+    /// - Returns: a `JXLJPEGBridgeData` bundle.
+    /// - Throws: `DecoderError.notImplemented` for non-VarDCT frames
+    ///   or if the early-capture hook doesn't fire.
+    public func decodeJPEGBridgeData(
+        _ data: Data
+    ) throws -> JXLJPEGBridgeData {
+        let inspection = try inspect(data)
+        let frameInspection = inspectFrameStructure(data)
+        guard frameInspection.encoding == FrameEncoding.varDCT else {
+            throw DecoderError.notImplemented(
+                "decodeJPEGBridgeData: frame is not VarDCT-encoded "
+                + "(got \(frameInspection.encoding ?? .modular))")
+        }
+        do {
+            _ = try decodeVarDCTPartial(
+                data: data, inspection: inspection,
+                frame: frameInspection,
+                capturingCoefficients: true)
+        } catch let capture as EarlyCoefficientCapture {
+            return JXLJPEGBridgeData(
+                planes: capture.planes,
+                rawQuantTable: capture.rawQuantTable,
+                chromaSubsampling: capture.chromaSubsampling,
+                colorTransform: capture.bridgeColorTransform)
+        }
+        throw DecoderError.notImplemented(
+            "decodeJPEGBridgeData: decoder reached pixel output "
+            + "without firing the capture sentinel.")
+    }
 }
 
 /// Sentinel error used by `decodeToCoefficients` to stop the
 /// `decodeVarDCTPartial` walk at the post-AC-decode point and
-/// return the packaged coefficient planes.
+/// return the packaged coefficient planes (plus the data the
+/// autonomous JPEG-reverse path needs: the RAW slot 0 quant table
+/// and the frame's chroma-subsampling / colour-transform).
 fileprivate struct EarlyCoefficientCapture: Error {
     let planes: JXLCoefficientPlanes
+    /// RAW slot 0 quant table (3×64 Int32, channel-major,
+    /// JXL-transposed layout) when slot 0 is the JPEG-compatible
+    /// RAW table; `nil` otherwise. Inverse of
+    /// `buildJXLBridgeRAWQuantPayload`.
+    let rawQuantTable: [Int32]?
+    let chromaSubsampling: YCbCrChromaSubsampling
+    /// The frame's colour transform mapped to the bridge enum.
+    let bridgeColorTransform: JXLBridgeColorTransform
+}
+
+/// Everything `decodeJPEGBridgeData` recovers from a cjxl
+/// `--lossless_jpeg=1` codestream — enough (combined with the jbrd
+/// box's marker / Huffman structure) to reconstruct the source JPEG
+/// byte-for-byte with no reference to the original.
+public struct JXLJPEGBridgeData: Sendable {
+    /// Decoded DCT coefficients in JXL channel order [X, Y, B].
+    public let planes: JXLCoefficientPlanes
+    /// RAW slot 0 quant table (3×64, channel-major, JXL-transposed),
+    /// or `nil` when the frame's slot 0 isn't a JPEG-compatible RAW
+    /// table.
+    public let rawQuantTable: [Int32]?
+    /// Frame chroma subsampling — drives JPEG sampling-factor
+    /// recovery.
+    public let chromaSubsampling: YCbCrChromaSubsampling
+    /// Frame colour transform (`.ycbcr` / `.none`).
+    public let colorTransform: JXLBridgeColorTransform
+
+    public init(
+        planes: JXLCoefficientPlanes,
+        rawQuantTable: [Int32]?,
+        chromaSubsampling: YCbCrChromaSubsampling,
+        colorTransform: JXLBridgeColorTransform
+    ) {
+        self.planes = planes
+        self.rawQuantTable = rawQuantTable
+        self.chromaSubsampling = chromaSubsampling
+        self.colorTransform = colorTransform
+    }
 }
 
 extension JXLDecoder {
@@ -1777,24 +1857,33 @@ extension JXLDecoder {
                     }
                 }
             }
-            // For chroma-subsampled frames the chroma planes have
-            // fewer blocks than the Y plane. Our existing decoder
-            // unfortunately allocates `dcValues[c]` and the
-            // `acBlocks` indexing uniformly to the Y-resolution grid
-            // (a known limitation noted in v0.12.0gv). For 4:4:4 the
-            // dims match cleanly; for subsampled inputs the chroma
-            // plane carries over-decoded data that the caller will
-            // need to handle as a downstream filtering step. We
-            // surface the JXL-channel-order arrays as-is; the
-            // `blocksPerChannel` carries the *correct* per-channel
-            // dims so callers can slice.
+            // `blocksPerChannel` (bpc) carries the correct
+            // per-channel dims; `acInXYBOrder[c]` was sampled at the
+            // chroma grid above (v0.12.0hb), so each channel's plane
+            // already has exactly `bpc[c]` blocks for subsampled
+            // frames.
             let planes = JXLCoefficientPlanes(
                 blocksX: totalBlocksX, blocksY: totalBlocksY,
                 channelCount: 3,
                 dcPerChannel: dcInXYBOrder,
                 acPerChannel: acInXYBOrder,
                 blocksPerChannel: bpc)
-            throw EarlyCoefficientCapture(planes: planes)
+            // Capture the RAW slot 0 quant table + chroma / colour
+            // info for the autonomous JPEG-reverse path. The qtable
+            // is present whenever slot 0 is the JPEG-compatible RAW
+            // table (independent of subsampling — CFL above is the
+            // only 4:4:4-only part).
+            let capturedQTable: [Int32]? =
+                isJPEGCompatibleRAW
+                ? acDequantInfo.encodings[0].rawQtable
+                : nil
+            let bridgeCT: JXLBridgeColorTransform =
+                (fh.colorTransform == .yCbCr) ? .ycbcr : .none
+            throw EarlyCoefficientCapture(
+                planes: planes,
+                rawQuantTable: capturedQTable,
+                chromaSubsampling: fh.chromaSubsampling,
+                bridgeColorTransform: bridgeCT)
         }
         if trace {
             for (bIdx, blockChannels) in acBlocks.enumerated() {
