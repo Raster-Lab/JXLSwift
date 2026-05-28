@@ -440,99 +440,92 @@ public enum BrotliPrefixCodeReader {
             alphabetSize: 18,
             codeLengths: codeLengthCodeLengths)
 
-        // Now decode `alphabet_size` symbol lengths using the
-        // 18-symbol code. Handle run-length symbols 16/17 per
-        // RFC 7932 §3.5.
+        // Now decode the symbol lengths using the 18-symbol code,
+        // handling run-length symbols 16/17 per RFC 7932 §3.5.
+        //
+        // Exact port of libbrotli `ReadSymbolCodeLengths` +
+        // `ProcessRepeatedCodeLength` (decode.c). Two details the
+        // earlier draft got wrong, both of which surface only on
+        // large run-heavy codes (e.g. a 256-symbol literal code in a
+        // big metadata block):
+        //
+        //  1. **Repeat accumulation subtracts 2, not 3.** A run of
+        //     16s/17s grows the count geometrically:
+        //       repeat = ((repeat − 2) << extra_bits) + extra + 3
+        //     and the number emitted this round is the *delta*
+        //     `repeat − old_repeat`. The reset rule is keyed on the
+        //     *repeated length* (`new_len`): code 16 repeats
+        //     `prev_code_len`, code 17 repeats 0, and any literal —
+        //     or a switch between the two repeat lengths — resets the
+        //     running counter to 0.
+        //
+        //  2. **Kraft `space` budget early-stop.** The loop runs only
+        //     while `space > 0`, where `space` starts at 2^15 and
+        //     each assigned length L consumes `2^15 >> L` (a run of
+        //     `delta` symbols of length `new_len` consumes
+        //     `delta << (15 − new_len)`; length-0 entries consume
+        //     nothing). Once the code is complete the encoder stops
+        //     emitting and every remaining symbol is length 0 —
+        //     reading further would consume bits belonging to the
+        //     next code and drift the whole stream.
         var alphabetLengths = [UInt8](
             repeating: 0, count: alphabetSize)
         var i = 0
-        var prevNonZeroLen: UInt8 = 8   // default for repeat-16
-        var prevRepeat16: Int = 0       // extra-bits carry
-        var prevRepeat17: Int = 0
-        var lastSym: Int = -1
-        while i < alphabetSize {
+        var prevCodeLen: Int = 8        // BROTLI_INITIAL_REPEATED_CODE_LENGTH
+        var rep: Int = 0                // running repeat counter
+        var repeatCodeLen: Int = 0      // length currently being repeated
+        var space: Int = 1 << 15        // Kraft budget over 15-bit codes
+        while i < alphabetSize && space > 0 {
             let sym = try codeLengthSymbolCode.decodeSymbol(from: &r)
-            switch sym {
-            case 0...15:
+            if sym < 16 {
+                // Literal length — resets any pending repeat run.
+                rep = 0
                 alphabetLengths[i] = UInt8(sym)
                 i += 1
-                if sym != 0 { prevNonZeroLen = UInt8(sym) }
-                lastSym = Int(sym)
-                if lastSym == 16 || lastSym == 17 {
-                    // unreachable but compiler-warns
+                if sym != 0 {
+                    prevCodeLen = Int(sym)
+                    space -= (1 << 15) >> Int(sym)
                 }
-                if Int(sym) != 16 { prevRepeat16 = 0 }
-                if Int(sym) != 17 { prevRepeat17 = 0 }
-            case 16:
-                // Repeat previous non-zero length. Extra-bit
-                // continuation: if the previous symbol was also 16,
-                // continue the count via `((prev - 3) << 2) +
-                // read(2)) + 3`. Otherwise start a fresh count of
-                // `3 + read(2)`.
+            } else if sym == 16 || sym == 17 {
+                let extraBits = (sym == 16) ? 2 : 3
+                let newLen = (sym == 16) ? prevCodeLen : 0
                 let extra: UInt32
-                do { extra = try r.read(bits: 2) }
+                do { extra = try r.read(bits: extraBits) }
                 catch let e as BitstreamError {
                     throw BrotliError.bitstream(e)
                 }
-                let count: Int
-                if lastSym == 16 {
-                    let n = ((prevRepeat16 - 3) << 2) + Int(extra) + 3
-                    let added = n - prevRepeat16
-                    count = added
-                    prevRepeat16 = n
-                } else {
-                    count = 3 + Int(extra)
-                    prevRepeat16 = count
+                if repeatCodeLen != newLen {
+                    rep = 0
+                    repeatCodeLen = newLen
                 }
-                if i + count > alphabetSize {
+                let oldRepeat = rep
+                if rep > 0 {
+                    rep -= 2
+                    rep <<= extraBits
+                }
+                rep += Int(extra) + 3
+                let repeatDelta = rep - oldRepeat
+                if i + repeatDelta > alphabetSize {
                     throw BrotliError.malformedPrefixCode(
-                        "complex code repeat-16 overflows alphabet "
-                        + "(i=\(i), count=\(count), N=\(alphabetSize))")
+                        "complex code repeat-\(sym) overflows alphabet "
+                        + "(i=\(i), count=\(repeatDelta), "
+                        + "N=\(alphabetSize))")
                 }
-                for _ in 0..<count {
-                    alphabetLengths[i] = prevNonZeroLen
+                let fill = UInt8(newLen)
+                for _ in 0..<repeatDelta {
+                    alphabetLengths[i] = fill
                     i += 1
                 }
-                lastSym = 16
-                prevRepeat17 = 0
-            case 17:
-                // Run of zeros.
-                let extra: UInt32
-                do { extra = try r.read(bits: 3) }
-                catch let e as BitstreamError {
-                    throw BrotliError.bitstream(e)
+                if newLen != 0 {
+                    space -= repeatDelta << (15 - newLen)
                 }
-                let count: Int
-                if lastSym == 17 {
-                    let n = ((prevRepeat17 - 3) << 3) + Int(extra) + 3
-                    let added = n - prevRepeat17
-                    count = added
-                    prevRepeat17 = n
-                } else {
-                    count = 3 + Int(extra)
-                    prevRepeat17 = count
-                }
-                if i + count > alphabetSize {
-                    throw BrotliError.malformedPrefixCode(
-                        "complex code repeat-17 overflows alphabet "
-                        + "(i=\(i), count=\(count), N=\(alphabetSize))")
-                }
-                for _ in 0..<count {
-                    alphabetLengths[i] = 0
-                    i += 1
-                }
-                lastSym = 17
-                prevRepeat16 = 0
-            default:
+            } else {
                 throw BrotliError.malformedPrefixCode(
                     "complex code symbol \(sym) > 17")
             }
         }
-        if i != alphabetSize {
-            throw BrotliError.malformedPrefixCode(
-                "complex code didn't fill alphabet: \(i) of "
-                + "\(alphabetSize) lengths set")
-        }
+        // Symbols beyond the Kraft-complete prefix stay length 0
+        // (the array is pre-zeroed) — do NOT keep reading.
         return try BrotliPrefixCode(
             alphabetSize: alphabetSize,
             codeLengths: alphabetLengths)

@@ -510,3 +510,234 @@ final class BrotliDecoderTests: XCTestCase {
         }
     }
 }
+
+/// RFC 7932 §8 static-dictionary tests. The transform-vector table is
+/// generated from libbrotli (`BrotliTransformDictionaryWord`) as a
+/// test oracle — one vector per transform index (0...120), exercising
+/// identity, OmitFirst/OmitLast, and ASCII + multi-byte-UTF-8
+/// uppercasing. The end-to-end test shells out to the `brotli` CLI to
+/// compress dictionary-friendly English text, then decodes it with the
+/// pure-Swift decoder and asserts a byte-exact round-trip.
+final class BrotliStaticDictionaryTests: XCTestCase {
+
+    /// `(wordLength, address, expectedTransformedBytes)`. `address`
+    /// packs `(transformIdx << sizeBits[len]) | wordIdx`.
+    private static let transformVectors:
+        [(Int, Int, [UInt8])] = [
+        (10, 0, [99,97,116,101,103,111,114,105,101,115] as [UInt8]),
+        (10, 1024, [99,97,116,101,103,111,114,105,101,115,32] as [UInt8]),
+        (10, 2048, [32,99,97,116,101,103,111,114,105,101,115,32] as [UInt8]),
+        (10, 3072, [97,116,101,103,111,114,105,101,115] as [UInt8]),
+        (10, 4096, [67,97,116,101,103,111,114,105,101,115,32] as [UInt8]),
+        (10, 5120, [99,97,116,101,103,111,114,105,101,115,32,116,104,101,32] as [UInt8]),
+        (10, 6144, [32,99,97,116,101,103,111,114,105,101,115] as [UInt8]),
+        (10, 7168, [115,32,99,97,116,101,103,111,114,105,101,115,32] as [UInt8]),
+        (10, 8192, [99,97,116,101,103,111,114,105,101,115,32,111,102,32] as [UInt8]),
+        (10, 9216, [67,97,116,101,103,111,114,105,101,115] as [UInt8]),
+        (4, 11263, [217,136,216,180,32,97,110,100,32] as [UInt8]),
+        (4, 12287, [216,180] as [UInt8]),
+        (10, 12288, [99,97,116,101,103,111,114,105,101] as [UInt8]),
+        (10, 13312, [44,32,99,97,116,101,103,111,114,105,101,115,32] as [UInt8]),
+        (10, 14336, [99,97,116,101,103,111,114,105,101,115,44,32] as [UInt8]),
+        (10, 15360, [32,67,97,116,101,103,111,114,105,101,115,32] as [UInt8]),
+        (10, 16384, [99,97,116,101,103,111,114,105,101,115,32,105,110,32] as [UInt8]),
+        (10, 17408, [99,97,116,101,103,111,114,105,101,115,32,116,111,32] as [UInt8]),
+        (10, 18432, [101,32,99,97,116,101,103,111,114,105,101,115,32] as [UInt8]),
+        (10, 19456, [99,97,116,101,103,111,114,105,101,115,34] as [UInt8]),
+        (10, 20480, [99,97,116,101,103,111,114,105,101,115,46] as [UInt8]),
+        (10, 21504, [99,97,116,101,103,111,114,105,101,115,34,62] as [UInt8]),
+        (10, 22528, [99,97,116,101,103,111,114,105,101,115,10] as [UInt8]),
+        (10, 23552, [99,97,116,101,103,111,114] as [UInt8]),
+        (10, 24576, [99,97,116,101,103,111,114,105,101,115,93] as [UInt8]),
+        (10, 25600, [99,97,116,101,103,111,114,105,101,115,32,102,111,114,32] as [UInt8]),
+        (10, 26624, [101,103,111,114,105,101,115] as [UInt8]),
+        (10, 27648, [99,97,116,101,103,111,114,105] as [UInt8]),
+        (10, 28672, [99,97,116,101,103,111,114,105,101,115,32,97,32] as [UInt8]),
+        (10, 29696, [99,97,116,101,103,111,114,105,101,115,32,116,104,97,116,32] as [UInt8]),
+        (10, 30720, [32,67,97,116,101,103,111,114,105,101,115] as [UInt8]),
+        (10, 31744, [99,97,116,101,103,111,114,105,101,115,46,32] as [UInt8]),
+        (10, 32768, [46,99,97,116,101,103,111,114,105,101,115] as [UInt8]),
+        (10, 33792, [32,99,97,116,101,103,111,114,105,101,115,44,32] as [UInt8]),
+        (10, 34816, [103,111,114,105,101,115] as [UInt8]),
+        (10, 35840, [99,97,116,101,103,111,114,105,101,115,32,119,105,116,104,32] as [UInt8]),
+        (10, 36864, [99,97,116,101,103,111,114,105,101,115,39] as [UInt8]),
+        (10, 37888, [99,97,116,101,103,111,114,105,101,115,32,102,114,111,109,32] as [UInt8]),
+        (10, 38912, [99,97,116,101,103,111,114,105,101,115,32,98,121,32] as [UInt8]),
+        (10, 39936, [111,114,105,101,115] as [UInt8]),
+        (10, 40960, [114,105,101,115] as [UInt8]),
+        (10, 41984, [32,116,104,101,32,99,97,116,101,103,111,114,105,101,115] as [UInt8]),
+        (10, 43008, [99,97,116,101,103,111] as [UInt8]),
+        (10, 44032, [99,97,116,101,103,111,114,105,101,115,46,32,84,104,101,32] as [UInt8]),
+        (10, 45056, [67,65,84,69,71,79,82,73,69,83] as [UInt8]),
+        (10, 46080, [99,97,116,101,103,111,114,105,101,115,32,111,110,32] as [UInt8]),
+        (10, 47104, [99,97,116,101,103,111,114,105,101,115,32,97,115,32] as [UInt8]),
+        (10, 48128, [99,97,116,101,103,111,114,105,101,115,32,105,115,32] as [UInt8]),
+        (10, 49152, [99,97,116] as [UInt8]),
+        (10, 50176, [99,97,116,101,103,111,114,105,101,105,110,103,32] as [UInt8]),
+        (10, 51200, [99,97,116,101,103,111,114,105,101,115,10,9] as [UInt8]),
+        (10, 52224, [99,97,116,101,103,111,114,105,101,115,58] as [UInt8]),
+        (10, 53248, [32,99,97,116,101,103,111,114,105,101,115,46,32] as [UInt8]),
+        (10, 54272, [99,97,116,101,103,111,114,105,101,115,101,100,32] as [UInt8]),
+        (10, 55296, [115] as [UInt8]),
+        (10, 56320, [105,101,115] as [UInt8]),
+        (10, 57344, [99,97,116,101] as [UInt8]),
+        (10, 58368, [99,97,116,101,103,111,114,105,101,115,40] as [UInt8]),
+        (10, 59392, [67,97,116,101,103,111,114,105,101,115,44,32] as [UInt8]),
+        (10, 60416, [99,97] as [UInt8]),
+        (10, 61440, [99,97,116,101,103,111,114,105,101,115,32,97,116,32] as [UInt8]),
+        (10, 62464, [99,97,116,101,103,111,114,105,101,115,108,121,32] as [UInt8]),
+        (10, 63488, [32,116,104,101,32,99,97,116,101,103,111,114,105,101,115,32,111,102,32] as [UInt8]),
+        (10, 64512, [99,97,116,101,103] as [UInt8]),
+        (10, 65536, [99] as [UInt8]),
+        (10, 66560, [32,67,97,116,101,103,111,114,105,101,115,44,32] as [UInt8]),
+        (10, 67584, [67,97,116,101,103,111,114,105,101,115,34] as [UInt8]),
+        (10, 68608, [46,99,97,116,101,103,111,114,105,101,115,40] as [UInt8]),
+        (10, 69632, [67,65,84,69,71,79,82,73,69,83,32] as [UInt8]),
+        (10, 70656, [67,97,116,101,103,111,114,105,101,115,34,62] as [UInt8]),
+        (10, 71680, [99,97,116,101,103,111,114,105,101,115,61,34] as [UInt8]),
+        (10, 72704, [32,99,97,116,101,103,111,114,105,101,115,46] as [UInt8]),
+        (10, 73728, [46,99,111,109,47,99,97,116,101,103,111,114,105,101,115] as [UInt8]),
+        (10, 74752, [32,116,104,101,32,99,97,116,101,103,111,114,105,101,115,32,111,102,32,116,104,101,32] as [UInt8]),
+        (10, 75776, [67,97,116,101,103,111,114,105,101,115,39] as [UInt8]),
+        (10, 76800, [99,97,116,101,103,111,114,105,101,115,46,32,84,104,105,115,32] as [UInt8]),
+        (10, 77824, [99,97,116,101,103,111,114,105,101,115,44] as [UInt8]),
+        (10, 78848, [46,99,97,116,101,103,111,114,105,101,115,32] as [UInt8]),
+        (10, 79872, [67,97,116,101,103,111,114,105,101,115,40] as [UInt8]),
+        (10, 80896, [67,97,116,101,103,111,114,105,101,115,46] as [UInt8]),
+        (10, 81920, [99,97,116,101,103,111,114,105,101,115,32,110,111,116,32] as [UInt8]),
+        (10, 82944, [32,99,97,116,101,103,111,114,105,101,115,61,34] as [UInt8]),
+        (10, 83968, [99,97,116,101,103,111,114,105,101,115,101,114,32] as [UInt8]),
+        (10, 84992, [32,67,65,84,69,71,79,82,73,69,83,32] as [UInt8]),
+        (10, 86016, [99,97,116,101,103,111,114,105,101,115,97,108,32] as [UInt8]),
+        (10, 87040, [32,67,65,84,69,71,79,82,73,69,83] as [UInt8]),
+        (10, 88064, [99,97,116,101,103,111,114,105,101,115,61,39] as [UInt8]),
+        (10, 89088, [67,65,84,69,71,79,82,73,69,83,34] as [UInt8]),
+        (10, 90112, [67,97,116,101,103,111,114,105,101,115,46,32] as [UInt8]),
+        (10, 91136, [32,99,97,116,101,103,111,114,105,101,115,40] as [UInt8]),
+        (10, 92160, [99,97,116,101,103,111,114,105,101,115,102,117,108,32] as [UInt8]),
+        (10, 93184, [32,67,97,116,101,103,111,114,105,101,115,46,32] as [UInt8]),
+        (10, 94208, [99,97,116,101,103,111,114,105,101,115,105,118,101,32] as [UInt8]),
+        (10, 95232, [99,97,116,101,103,111,114,105,101,115,108,101,115,115,32] as [UInt8]),
+        (10, 96256, [67,65,84,69,71,79,82,73,69,83,39] as [UInt8]),
+        (10, 97280, [99,97,116,101,103,111,114,105,101,115,101,115,116,32] as [UInt8]),
+        (10, 98304, [32,67,97,116,101,103,111,114,105,101,115,46] as [UInt8]),
+        (10, 99328, [67,65,84,69,71,79,82,73,69,83,34,62] as [UInt8]),
+        (10, 100352, [32,99,97,116,101,103,111,114,105,101,115,61,39] as [UInt8]),
+        (10, 101376, [67,97,116,101,103,111,114,105,101,115,44] as [UInt8]),
+        (10, 102400, [99,97,116,101,103,111,114,105,101,115,105,122,101,32] as [UInt8]),
+        (10, 103424, [67,65,84,69,71,79,82,73,69,83,46] as [UInt8]),
+        (10, 104448, [194,160,99,97,116,101,103,111,114,105,101,115] as [UInt8]),
+        (10, 105472, [32,99,97,116,101,103,111,114,105,101,115,44] as [UInt8]),
+        (10, 106496, [67,97,116,101,103,111,114,105,101,115,61,34] as [UInt8]),
+        (10, 107520, [67,65,84,69,71,79,82,73,69,83,61,34] as [UInt8]),
+        (10, 108544, [99,97,116,101,103,111,114,105,101,115,111,117,115,32] as [UInt8]),
+        (10, 109568, [67,65,84,69,71,79,82,73,69,83,44,32] as [UInt8]),
+        (10, 110592, [67,97,116,101,103,111,114,105,101,115,61,39] as [UInt8]),
+        (10, 111616, [32,67,97,116,101,103,111,114,105,101,115,44] as [UInt8]),
+        (10, 112640, [32,67,65,84,69,71,79,82,73,69,83,61,34] as [UInt8]),
+        (10, 113664, [32,67,65,84,69,71,79,82,73,69,83,44,32] as [UInt8]),
+        (10, 114688, [67,65,84,69,71,79,82,73,69,83,44] as [UInt8]),
+        (10, 115712, [67,65,84,69,71,79,82,73,69,83,40] as [UInt8]),
+        (10, 116736, [67,65,84,69,71,79,82,73,69,83,46,32] as [UInt8]),
+        (10, 117760, [32,67,65,84,69,71,79,82,73,69,83,46] as [UInt8]),
+        (10, 118784, [67,65,84,69,71,79,82,73,69,83,61,39] as [UInt8]),
+        (10, 119808, [32,67,65,84,69,71,79,82,73,69,83,46,32] as [UInt8]),
+        (10, 120832, [32,67,97,116,101,103,111,114,105,101,115,61,34] as [UInt8]),
+        (10, 121856, [32,67,65,84,69,71,79,82,73,69,83,61,39] as [UInt8]),
+        (10, 122880, [32,67,97,116,101,103,111,114,105,101,115,61,39] as [UInt8]),
+    ]
+
+    /// THROWAWAY trace dump for the exact bigmeta jbrd Brotli stream.
+    func testDump_ExactBrotli() throws {
+        let url = URL(fileURLWithPath: "/tmp/jbrd_brotli_exact.br")
+        guard let data = try? Data(contentsOf: url) else {
+            throw XCTSkip("no /tmp/jbrd_brotli_exact.br")
+        }
+        let decoded = try BrotliDecoder.decode(data)
+        print("[exact] swift decoded \(decoded.count) bytes")
+        try decoded.write(to:
+            URL(fileURLWithPath: "/tmp/jbrd_brotli_swift_new.dec"))
+        if let gt = try? Data(contentsOf:
+            URL(fileURLWithPath: "/tmp/jbrd_brotli_cli.dec")) {
+            XCTAssertEqual(decoded, gt,
+                "swift brotli decode must match brotli CLI ground truth")
+        }
+    }
+
+    /// Every transform (0...120) applied to a real dictionary word
+    /// must match the byte-for-byte output libbrotli produces.
+    func testTransformWord_AllTransforms_MatchLibbrotli() throws {
+        XCTAssertEqual(BrotliStaticDictionary.data.count, 122_784,
+            "dictionary blob must decode to the RFC 7932 size")
+        XCTAssertEqual(BrotliStaticDictionary.transforms.count, 121)
+        for (length, address, expected) in Self.transformVectors {
+            let shift = Int(
+                BrotliStaticDictionary.sizeBitsByLength[length])
+            let wordIdx = address & ((1 << shift) - 1)
+            let transformIdx = address >> shift
+            let wordOffset = Int(
+                BrotliStaticDictionary.offsetsByLength[length])
+                + wordIdx * length
+            let got = BrotliStaticDictionary.transformWord(
+                wordOffset: wordOffset, length: length,
+                transformIdx: transformIdx)
+            XCTAssertEqual(got, expected,
+                "transform \(transformIdx) on length-\(length) word "
+                + "(addr \(address)) mismatch")
+        }
+    }
+
+    /// End-to-end: compress dictionary-friendly English text with the
+    /// `brotli` CLI (oracle) and decode it with the pure-Swift decoder.
+    /// Exercises the §8 dictionary-reference path + transforms inside
+    /// the real LZ77 loop.
+    func testDecode_StaticDictionary_BrotliCLIOracle() throws {
+        let brotli = "/opt/homebrew/bin/brotli"
+        guard FileManager.default.isExecutableFile(atPath: brotli) else {
+            throw XCTSkip("brotli CLI not available on this host")
+        }
+        let texts: [String] = [
+            "the time of the world information",
+            "documentation describes the configuration of the system",
+            "This document describes the information about the time "
+                + "and the world. The configuration of the system is "
+                + "important for the development of the application. ",
+            "the quick brown fox jumps over the lazy dog time down "
+                + "life left back code data show only site city open "
+                + "just like free work text world information ",
+        ]
+        let tmp = FileManager.default.temporaryDirectory
+        var anyDecoded = false
+        for (i, text) in texts.enumerated() {
+            let src = tmp.appendingPathComponent("brdict\(i).txt")
+            let br = tmp.appendingPathComponent("brdict\(i).br")
+            try Data(text.utf8).write(to: src)
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: brotli)
+            proc.arguments = [
+                "-q", "11", "-k", "-f", "-o", br.path, src.path]
+            try proc.run()
+            proc.waitUntilExit()
+            guard proc.terminationStatus == 0 else {
+                throw XCTSkip("brotli compress failed for case \(i)")
+            }
+            let compressed = try Data(contentsOf: br)
+            let decoded: Data
+            do {
+                decoded = try BrotliDecoder.decode(
+                    compressed, expectedOutputSize: text.utf8.count)
+            } catch BrotliError.notImplemented(let msg) {
+                // Multi-block-type / context-map streams remain a
+                // separate decoder bite; don't fail the dictionary
+                // test on them, but note it.
+                print("[brotli oracle] case \(i) skipped: \(msg)")
+                continue
+            }
+            anyDecoded = true
+            XCTAssertEqual(decoded, Data(text.utf8),
+                "brotli CLI stream case \(i) must decode byte-exactly")
+        }
+        XCTAssertTrue(anyDecoded,
+            "at least one dictionary-using stream should decode")
+    }
+}

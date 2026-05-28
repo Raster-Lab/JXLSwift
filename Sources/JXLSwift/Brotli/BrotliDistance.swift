@@ -121,23 +121,32 @@ public enum BrotliDistance {
 
     /// Read one distance from the bitstream. Returns the resolved
     /// distance (already through the ring buffer if a short code
-    /// was used).
+    /// was used) **plus the `distance_context`** the caller needs to
+    /// compensate the ring-buffer roll on the static-dictionary path
+    /// (libjxl `ReadDistanceInternal`: `distance_context` is reset to
+    /// 0, then set to `1 >> code` for short codes 0...3 — i.e. it is
+    /// 1 only for short code 0, and 0 for every other code).
     ///
     /// Caller maintains `ringBuffer` (4 entries, most-recent-last)
-    /// and `ringBufferIdx`. This function updates both as appropriate.
+    /// and `ringBufferIdx`. For short code 0 this decrements
+    /// `ringBufferIdx` (the "double-roll" the reference later undoes
+    /// either by the normal-copy push or by `ringBufferIdx += context`
+    /// on the dictionary path).
     public static func readDistance(
         from r: inout BitReader,
         prefixCode: BrotliPrefixCode,
         lut: BrotliDistanceLut,
         ringBuffer: inout [Int],
         ringBufferIdx: inout Int
-    ) throws -> Int {
+    ) throws -> (distance: Int, context: Int) {
         let code = Int(try prefixCode.decodeSymbol(from: &r))
+        let context = (code == 0) ? 1 : 0
         if code < kBrotliNumDistanceShortCodes {
-            return resolveShortCode(
+            let distance = resolveShortCode(
                 code: code,
                 ringBuffer: &ringBuffer,
                 ringBufferIdx: &ringBufferIdx)
+            return (distance, context)
         }
         // Direct + regular codes: distance from LUT + extra bits.
         let extra: UInt32
@@ -149,6 +158,6 @@ public enum BrotliDistance {
         }
         let distance = Int(lut.offsets[code])
             + (Int(extra) << lut.npostfix)
-        return distance
+        return (distance, 0)
     }
 }

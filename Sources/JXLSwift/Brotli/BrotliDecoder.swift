@@ -49,11 +49,12 @@ public enum BrotliDecoder {
         if let n = expectedOutputSize {
             output.reserveCapacity(n)
         }
-        // 1. Stream header — WBITS.
+        // 1. Stream header — WBITS. The window size bounds the
+        // largest in-stream back-reference; distances beyond it
+        // address the static dictionary (RFC 7932 §8).
         let header = try BrotliMetaBlockReader.readStreamHeader(
             from: &r)
-        _ = header   // window size doesn't affect correctness for
-                     // the small-payload case we handle here
+        let windowBits = header.windowBits
 
         // 2. Meta-block loop.
         var isFirst = true
@@ -91,6 +92,7 @@ public enum BrotliDecoder {
                 // Compressed meta-block.
                 try decodeCompressedBody(
                     targetSize: mh.payloadSize,
+                    windowBits: windowBits,
                     from: &r, to: &output)
                 if mh.isLast { break }
             }
@@ -108,12 +110,15 @@ public enum BrotliDecoder {
     /// - NBLTYPESL/I/D = 1 (single block type per stream).
     /// - NTREESL = NTREESD = 1 (no context map; same prefix code used
     ///   for every literal / distance regardless of context).
-    /// - Static dictionary references (distance > output position +
-    ///   max-distance) are not supported — they throw `notImplemented`.
     /// - Multi-block-type streams (NBLTYPES > 1) throw `notImplemented`
     ///   because the block-length walker is not yet integrated.
+    ///
+    /// Static-dictionary back-references (RFC 7932 §8) — distances
+    /// beyond the sliding-window maximum — are resolved against
+    /// `BrotliStaticDictionary`.
     private static func decodeCompressedBody(
         targetSize: Int,
+        windowBits: Int,
         from r: inout BitReader,
         to output: inout Data
     ) throws {
@@ -181,48 +186,99 @@ public enum BrotliDecoder {
             // 3c. If we've filled the body, stop (the IC command's
             //     copy phase is sometimes skipped at end of stream).
             if output.count - bodyStart >= targetSize { break }
-            // 3d. Read or recall the distance.
+            // 3d. Resolve the distance + the `distance_context` used
+            //     to compensate the ring-buffer roll. The ring-buffer
+            //     *push* is deferred to the per-branch step in 3f so
+            //     it exactly mirrors libjxl `ProcessCommandsInternal`:
+            //     a normal LZ77 copy pushes the distance; a dictionary
+            //     reference only does `rbIdx += context` (no push).
             let distance: Int
+            let distanceContext: Int
             if cmd.distanceFlag == 0 {
-                // Use most recent distance from the ring buffer
-                // (code = 0 short code).
-                var rbCopy = rb
-                var rbIdxCopy = rbIdx
-                distance = BrotliDistance.resolveShortCode(
-                    code: 0,
-                    ringBuffer: &rbCopy,
-                    ringBufferIdx: &rbIdxCopy)
-                rb = rbCopy; rbIdx = rbIdxCopy
+                // Implicit "use last distance" (command-encoded
+                // distance_code 0): roll back one slot and reuse the
+                // most-recent distance. `context = 1` so the dict
+                // path undoes the roll; the copy path's push restores
+                // it instead. Net ring-buffer change: none.
+                distanceContext = 1
+                rbIdx -= 1
+                distance = rb[rbIdx & 3]
             } else {
-                distance = try BrotliDistance.readDistance(
+                let res = try BrotliDistance.readDistance(
                     from: &r, prefixCode: distanceTree,
                     lut: distanceLut,
                     ringBuffer: &rb, ringBufferIdx: &rbIdx)
+                distance = res.distance
+                distanceContext = res.context
             }
-            // 3e. Ring buffer update — only for "real" distances
-            //     (not when reusing the most-recent via code 0).
-            //     The ring buffer is updated whenever a fresh
-            //     distance is consumed.
-            if cmd.distanceFlag != 0 {
-                rb[rbIdx & 3] = distance
-                rbIdx += 1
+            if trace {
+                let rbStr = rb.map { String($0) }.joined(separator: ",")
+                let posNow = output.count - bodyStart
+                let line = "TRACE DIST dist=\(distance) "
+                    + "flag=\(cmd.distanceFlag) rb=[\(rbStr)] "
+                    + "rbIdx=\(rbIdx) pos=\(posNow)\n"
+                FileHandle.standardError.write(Data(line.utf8))
             }
-            // 3f. Copy `cmd.copyLength` bytes from `output[count -
-            //     distance]` onward.
+            // 3e. Either copy `cmd.copyLength` bytes from
+            //     `output[count - distance]` onward, or resolve a
+            //     static-dictionary reference when the distance
+            //     exceeds the sliding-window maximum.
             let absPos = output.count
             if distance <= 0 {
                 throw BrotliError.invalidBackReference(
                     distance: distance, outputSize: absPos)
             }
-            if distance > absPos {
-                // Static-dictionary reference — not yet implemented.
-                throw BrotliError.notImplemented(
-                    "static-dictionary back-reference "
-                    + "(distance \(distance) > output size "
-                    + "\(absPos)) — RFC 7932 §8 dictionary pending")
+            let maxBackward = (1 << windowBits) - 16
+            let maxDistance = min(absPos, maxBackward)
+            if distance > maxDistance {
+                // RFC 7932 §8 — static-dictionary word reference.
+                // Compensate the double ring-buffer roll; a dictionary
+                // distance is NOT remembered (no push).
+                rbIdx += distanceContext
+                // `copyLength` is the *dictionary word* length; the
+                // emitted byte count is the transformed length.
+                let copyLen = Int(cmd.copyLength)
+                guard copyLen >= 4 && copyLen <= 24 else {
+                    throw BrotliError.notImplemented(
+                        "dictionary copy length \(copyLen) outside "
+                        + "[4, 24] — RFC 7932 §8")
+                }
+                let address = distance - maxDistance - 1
+                let shift = Int(
+                    BrotliStaticDictionary.sizeBitsByLength[copyLen])
+                let wordIdx = address & ((1 << shift) - 1)
+                let transformIdx = address >> shift
+                guard transformIdx >= 0,
+                    transformIdx < BrotliStaticDictionary.transforms.count
+                else {
+                    throw BrotliError.invalidDictionaryIndex(
+                        UInt32(truncatingIfNeeded: transformIdx))
+                }
+                let wordOffset = Int(
+                    BrotliStaticDictionary.offsetsByLength[copyLen])
+                    + wordIdx * copyLen
+                let word = BrotliStaticDictionary.transformWord(
+                    wordOffset: wordOffset, length: copyLen,
+                    transformIdx: transformIdx)
+                if trace {
+                    FileHandle.standardError.write(Data(
+                        "TRACE DICT len=\(copyLen) addr=\(address) "
+                        .utf8))
+                    FileHandle.standardError.write(Data(
+                        "tfm=\(transformIdx) -> \(word.count)b\n".utf8))
+                }
+                for b in word {
+                    if output.count - bodyStart >= targetSize { break }
+                    output.append(b)
+                }
+                continue
             }
-            // Naive byte-by-byte copy handles overlapping
-            // back-references correctly (LZ77 self-reference).
+            // Normal LZ77 copy — push the distance into the recent
+            // ring buffer (libjxl: `dist_rb[idx&3]=dist; ++idx`),
+            // then copy byte-by-byte (handles overlapping
+            // self-references correctly).
+            rb[rbIdx & 3] = distance
+            rbIdx += 1
             for _ in 0..<cmd.copyLength {
                 if output.count - bodyStart >= targetSize { break }
                 let srcIdx = output.count - distance

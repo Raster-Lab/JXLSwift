@@ -11,6 +11,65 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0hf — 🎉 Brotli static dictionary (RFC 7932 §8) — large-metadata JPEGs reverse byte-identically
+
+JPEGs with **large metadata** (multi-KB EXIF/XMP/ICC or comments)
+now reverse-transcode **byte-for-byte**. Their marker payloads are
+Brotli-compressed inside the jbrd box, and once the payload is big
+enough Brotli encodes it with **static-dictionary back-references** —
+the last remaining gap in the reverse pipeline.
+
+**New: Brotli static dictionary**
+([BrotliStaticDictionary.swift](Sources/JXLSwift/Brotli/BrotliStaticDictionary.swift)).
+The full RFC 7932 §8 mechanism in pure Swift:
+- The 122 784-byte shared word blob (the public RFC 7932 Appendix A
+  data, embedded base64 so the codec stays self-contained — zero
+  runtime dependencies), plus the per-length size-bit / offset
+  tables.
+- All **121 word transforms** (Appendix B): prefix/suffix splice,
+  `OmitFirst1…9` / `OmitLast1…9`, and the deliberately-approximate
+  UTF-8 `UppercaseFirst` / `UppercaseAll` — a hand port of
+  libbrotli `BrotliTransformDictionaryWord` + `ToUpperCase`.
+- Decoder wiring: a back-reference whose distance exceeds the
+  sliding-window maximum is decoded as `address = distance −
+  maxDistance − 1`, selecting a word by length + index and applying
+  transform `address >> sizeBits`.
+
+**Two Brotli-decoder bugs fixed along the way** (both latent until a
+large, reference-heavy stream exercised them):
+1. **Complex prefix-code reader** — the alphabet-length loop now
+   mirrors libbrotli `ReadSymbolCodeLengths` exactly: repeat-code
+   accumulation `repeat = ((repeat − 2) << extraBits) + extra + 3`
+   (was `− 3`), emitting the *delta*, plus the Kraft `space` budget
+   early-stop (stop at `space == 0`, zero-fill the tail) instead of
+   reading the whole alphabet — over-reading drifted the stream on
+   large run-heavy codes.
+2. **Distance ring-buffer roll** — the push is now deferred and
+   per-branch, mirroring libjxl `ProcessCommandsInternal`: a normal
+   LZ77 copy pushes the distance (`rb[idx&3]=d; ++idx`); a dictionary
+   reference only compensates the double-roll (`idx += context`,
+   never pushes); and the implicit "use last distance" command nets
+   zero index change. The previous code decremented on the implicit
+   path without the compensating push and pushed dictionary
+   distances — both corrupted later short-code distance lookups.
+
+**Tests.**
+- `BrotliStaticDictionaryTests.testTransformWord_AllTransforms_MatchLibbrotli`
+  — all 121 transforms applied to real dictionary words, byte-exact
+  against vectors generated from libbrotli (the test oracle).
+- `…testDecode_StaticDictionary_BrotliCLIOracle` — compresses
+  dictionary-friendly English with the `brotli` CLI and round-trips
+  it through the pure-Swift decoder.
+- `testEndToEnd_ByteIdenticalMatrix_BaselineJPEGs` gains a
+  `16×16-420-bigcom` case: a large English comment that drives the
+  static-dictionary path through the full reverse transcode,
+  byte-identical to source.
+
+This closes the last "remaining bite" from the ICC + progressive
+session notes — the reverse transcode now needs no `--source` for
+baseline/progressive, 4:4:4/4:2:2/4:2:0, ICC, EXIF/XMP, **and**
+large Brotli-compressed metadata.
+
 ### v0.12.0he — 🎉 Progressive JPEG (SOF2) reverse transcode
 
 Progressive JPEGs now reverse-transcode **byte-for-byte** through

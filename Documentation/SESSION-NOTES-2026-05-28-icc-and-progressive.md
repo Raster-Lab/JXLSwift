@@ -48,17 +48,26 @@ reconstruct the source JPEG byte-identically — no `--source` — for:
    against the cjpeg source (the divergence pinpointed the exact
    scan).
 
-## Remaining bite
+## Remaining bite — ✅ DONE (`v0.12.0hf`)
 
-- **Brotli static dictionary** (RFC 7932 §8) — needed only when a
-  Brotli-compressed container box (large EXIF/XMP/ICC) references
-  the 122 KB static dictionary. Requires embedding the dictionary
-  blob (not available as a clean resource on this host — would need
-  extracting from `libbrotlicommon` or transcribing RFC 7932
-  Appendix A) plus the 121 word transforms and the dictionary-copy
-  path in the Brotli LZ77 decoder. Narrowest-value remaining item;
-  a dedicated future bite. Common-case metadata (small APP markers)
-  already round-trips via the uncompressed / simple Brotli path.
+- **Brotli static dictionary** (RFC 7932 §8) — **shipped.** Large
+  Brotli-compressed metadata (multi-KB EXIF/XMP/ICC or comments) now
+  reverses byte-for-byte. The 122 784-byte word blob is embedded
+  (base64, zero runtime deps), with all 121 transforms and the
+  dictionary-copy path wired into the LZ77 decoder. Two latent
+  Brotli-decoder bugs surfaced and were fixed: the complex
+  prefix-code repeat accumulation (`<< extraBits` after `− 2`, not
+  `− 3`) + Kraft `space` early-stop, and the distance ring-buffer
+  roll (per-branch push: copy pushes, dictionary only compensates,
+  implicit nets zero). Validated transform-by-transform against
+  libbrotli and end-to-end via the `brotli` CLI + a `bigcom`
+  reverse-transcode case.
+
+There is no longer a known real-world JPEG class the reverse
+transcode cannot reconstruct from the JXL alone. The next decoder
+bite, if a stream needs it, is Brotli **NBLTYPES > 1 / NTREES > 1**
+(multi-block-type + context-map metablocks) — currently surfaced as
+a clean `notImplemented` rather than a silent miss.
 
 ## Tests
 

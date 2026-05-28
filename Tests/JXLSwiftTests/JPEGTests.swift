@@ -5976,8 +5976,24 @@ final class JXLToJPEGAdapterTests: XCTestCase {
             if label.contains("com") {
                 let src = try Data(contentsOf: URL(
                     fileURLWithPath: jpgPath))
-                let comment = "JXLSwift matrix test".data(
-                    using: .utf8)!
+                // "bigcom": a large English comment that cjxl/libjxl
+                // Brotli-compresses *with static-dictionary
+                // references* (RFC 7932 §8) — exercises the dictionary
+                // word lookup + transforms in the reverse path. A
+                // short comment (else) stays in the uncompressed
+                // Brotli path.
+                let comment: Data
+                if label.contains("bigcom") {
+                    let unit = "the quick brown fox jumps over the "
+                        + "lazy dog and then some more time down life "
+                        + "left back code data show only site city "
+                        + "open just like free work text world "
+                        + "information "
+                    comment = Data(
+                        String(repeating: unit, count: 40).utf8)
+                } else {
+                    comment = Data("JXLSwift matrix test".utf8)
+                }
                 var marker = Data([0xFF, 0xFE])
                 let len = UInt16(comment.count + 2)
                 marker.append(UInt8((len >> 8) & 0xFF))
@@ -6131,6 +6147,11 @@ final class JXLToJPEGAdapterTests: XCTestCase {
             ppmPath: ppm16,
             cjpegArgs: ["-quality", "75", "-baseline"],
             label: "16x16-420-com")
+        // Large English comment → Brotli static-dictionary path.
+        try roundTripOne(
+            ppmPath: ppm16,
+            cjpegArgs: ["-quality", "75", "-baseline"],
+            label: "16x16-420-bigcom")
         try roundTripOne(
             ppmPath: ppm16,
             cjpegArgs: ["-quality", "75", "-baseline"],
