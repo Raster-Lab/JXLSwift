@@ -272,6 +272,27 @@ public func buildJXLContainer(codestream: Data) -> Data {
     return out
 }
 
+/// Build an ISOBMFF container carrying a JPEG-reconstruction `jbrd`
+/// box alongside the codestream. Emits: signature → `ftyp` → `jbrd` →
+/// `jxlc`. `jbrdPayload` is the serialised jbrd Bundle bytes followed
+/// by the (Brotli) marker/tail payload. The reverse transcode (and
+/// `djxl --jpeg`) reconstruct the source JPEG byte-for-byte from this.
+public func buildJXLContainerWithReconstruction(
+    codestream: Data, jbrdPayload: Data
+) -> Data {
+    var out = Data()
+    out.append(contentsOf: jxlContainerSignature)
+    let ftypPayload: [UInt8] = [
+        0x6A, 0x78, 0x6C, 0x20,  // major 'jxl '
+        0x00, 0x00, 0x00, 0x00,  // minor 0
+        0x6A, 0x78, 0x6C, 0x20   // compat 'jxl '
+    ]
+    out.append(box(type: "ftyp", payload: Data(ftypPayload)))
+    out.append(box(type: "jbrd", payload: jbrdPayload))
+    out.append(box(type: "jxlc", payload: codestream))
+    return out
+}
+
 /// Pack `payload` into an ISOBMFF box of `type`.
 /// Uses 32-bit size for boxes ≤ 2^32-9 bytes; extended-size otherwise.
 private func box(type: String, payload: Data) -> Data {

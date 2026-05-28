@@ -6066,6 +6066,92 @@ final class JXLToJPEGAdapterTests: XCTestCase {
         }
     }
 
+    /// 🎉 **Full lossless-JPEG transcode: JPEG → JXL → JPEG byte-identical.**
+    /// `JXLEncoder.encodeLosslessJPEG` emits a complete container
+    /// (signature + ftyp + jbrd + jxlc); the reverse path reconstructs
+    /// the source JPEG byte-for-byte — through our own decoder. (djxl
+    /// --jpeg also reconstructs it identically; verified manually.)
+    func testEndToEnd_LosslessJPEGContainer_RoundTrip() throws {
+        let cjpeg = "/opt/homebrew/bin/cjpeg"
+        guard FileManager.default.isExecutableFile(atPath: cjpeg)
+        else { throw XCTSkip("cjpeg required") }
+        struct V {
+            let label: String; let w: Int; let h: Int
+            let gray: Bool; let args: [String]
+        }
+        let variants: [V] = [
+            V(label: "24×16 4:4:4", w: 24, h: 16, gray: false,
+              args: ["-sample", "1x1,1x1,1x1"]),
+            V(label: "32×24 4:2:0", w: 32, h: 24, gray: false,
+              args: ["-sample", "2x2,1x1,1x1"]),
+            V(label: "32×32 grayscale", w: 32, h: 32, gray: true,
+              args: []),
+        ]
+        var results: [String] = []
+        for v in variants {
+            let tmp = NSTemporaryDirectory()
+            let src = tmp + "ll-\(UUID().uuidString)."
+                + (v.gray ? "pgm" : "ppm")
+            let jpg = tmp + "ll-\(UUID().uuidString).jpg"
+            defer {
+                try? FileManager.default.removeItem(atPath: src)
+                try? FileManager.default.removeItem(atPath: jpg)
+            }
+            var p = Data("\(v.gray ? "P5" : "P6")\n\(v.w) \(v.h)\n255\n"
+                .utf8)
+            for i in 0..<(v.w * v.h) {
+                if v.gray {
+                    p.append(UInt8((i * 11 + 3) % 256))
+                } else {
+                    p.append(UInt8((i * 7) % 256))
+                    p.append(UInt8((i * 5 + 40) % 256))
+                    p.append(UInt8((i * 3 + 90) % 256))
+                }
+            }
+            try p.write(to: URL(fileURLWithPath: src))
+            let proc = Process()
+            proc.launchPath = cjpeg
+            proc.arguments = ["-outfile", jpg, "-quality", "80",
+                "-baseline"] + v.args + [src]
+            proc.standardOutput = Pipe(); proc.standardError = Pipe()
+            try proc.run(); proc.waitUntilExit()
+            guard proc.terminationStatus == 0 else {
+                results.append("\(v.label): SKIP cjpeg"); continue
+            }
+            let jpgData = try Data(contentsOf: URL(fileURLWithPath: jpg))
+
+            // Forward: complete lossless-JPEG JXL container.
+            let container = try JXLEncoder()
+                .encodeLosslessJPEG(jpgData).data
+
+            // Reverse it through the library pipeline.
+            guard case .iso(let boxes) =
+                try parseJXLContainer(container),
+                let jbrdPayload = try extractJBRDBox(
+                    from: boxes, in: container)
+            else { XCTFail("\(v.label): no jbrd box"); continue }
+            var r = BitReader(jbrdPayload)
+            var box = try JBRDBoxReader.read(from: &r)
+            let brotliStart = (r.position + 7) / 8
+            let brotli = jbrdPayload.suffix(from:
+                jbrdPayload.startIndex + brotliStart)
+            try box.distributeBrotliPayload(
+                BrotliDecoder.decode(Data(brotli)))
+            let bridge = try JXLDecoder()
+                .decodeJPEGBridgeData(container)
+            let rebuilt = try JXLToJPEGAdapter.reconstruct(
+                bridgeData: bridge, jbrd: box)
+            XCTAssertEqual(rebuilt, jpgData,
+                "\(v.label): lossless JPEG→JXL→JPEG must be "
+                + "byte-identical")
+            results.append("\(v.label): ✓ "
+                + "(\(jpgData.count)B → \(container.count)B JXL)")
+        }
+        for line in results {
+            print("[lossless container round-trip] \(line)")
+        }
+    }
+
     /// **ICC profile JPEGs — capability landed (v0.12.0hd).**
     ///
     /// Byte-identical reverse of ICC-profile JPEGs is now implemented

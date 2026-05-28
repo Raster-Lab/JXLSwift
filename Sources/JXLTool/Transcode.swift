@@ -125,30 +125,19 @@ struct Transcode: ParsableCommand {
         case .pixelFallback:
             break  // proceed with the pixel-fallback path below
         case .coefficientBridge:
-            // True forward bridge: decode the JPEG to quantised DCT
-            // coefficients (no IDCT), then pack them into a VarDCT JXL
-            // frame whose decoder reproduces the source coefficients
-            // exactly. Output is djxl-decodable and round-trips through
-            // our own reverse decoder.
-            let coef: JPEGCoefficientImage
-            do {
-                coef = try JPEGDecoder.decodeToCoefficients(
-                    jpegBytes)
-            } catch let e as JPEGDecoderError {
-                print("JPEG decode error: "
-                    + (e.errorDescription ?? "\(e)"),
-                    to: &standardError)
-                throw JXLExitCode.generalError
-            }
+            // True lossless-JPEG transcode: pack the quantised DCT
+            // coefficients into a VarDCT JXL frame (no IDCT) and emit
+            // a complete container with a `jbrd` reconstruction box, so
+            // the reverse transcode (or `djxl --jpeg`) recovers the
+            // source JPEG byte-for-byte.
             let bridged: EncodedImage
             do {
-                bridged = try JXLEncoder()
-                    .encodeFromJPEGCoefficients(coef)
+                bridged = try JXLEncoder().encodeLosslessJPEG(jpegBytes)
             } catch let e as EncoderError {
                 // Out-of-scope input (precision / frame kind /
-                // component count / chroma sampling the bridge writer
-                // doesn't handle yet) — surface cleanly.
-                print("error: JPEG → JXL coefficient bridge: "
+                // component count / progressive — `decodeToCoefficients`
+                // is baseline-only). Surface cleanly.
+                print("error: JPEG → JXL lossless bridge: "
                     + e.localizedDescription
                     + ". Use --mode pixel-fallback (the default) for "
                     + "the lossy pixel path.",
@@ -164,11 +153,11 @@ struct Transcode: ParsableCommand {
             let pct = Double(bridged.data.count) * 100
                 / Double(max(1, jpegBytes.count))
             print(
-                "transcoded JPEG → JXL (coefficient-bridge): "
-                + "\(coef.width)×\(coef.height), "
+                "transcoded JPEG → JXL (lossless coefficient-bridge): "
                 + "\(formatBytes(jpegBytes.count)) → "
                 + "\(formatBytes(bridged.data.count)) "
-                + "(\(String(format: "%.1f", pct))% of source)")
+                + "(\(String(format: "%.1f", pct))% of source); "
+                + "reverse with `--mode reverse`")
             return
         case .reverse:
             print("error: --mode reverse runs JXL → JPEG, but "

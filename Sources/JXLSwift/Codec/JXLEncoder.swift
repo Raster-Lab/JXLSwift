@@ -499,6 +499,59 @@ public struct JXLEncoder: Sendable {
                 compressedSize: bytes.count,
                 encodingTime: Date().timeIntervalSince(start)))
     }
+
+    /// Encode a JPEG into a **lossless-JPEG JXL** — a complete ISOBMFF
+    /// container (signature + `ftyp` + `jbrd` + `jxlc`) from which the
+    /// source JPEG reconstructs **byte-for-byte**. Combines the forward
+    /// coefficient-bridge VarDCT frame (`encodeFromJPEGCoefficients`)
+    /// with `JBRDBox.extract` (the reconstruction data) and
+    /// `buildJXLContainerWithReconstruction`. The reverse transcode —
+    /// or `djxl --jpeg` — recovers the original JPEG exactly.
+    ///
+    /// Same input scope as `encodeFromJPEGCoefficients`: baseline-DCT,
+    /// 8-bit, 1- or 3-component JPEGs. Progressive input is not yet
+    /// supported (`decodeToCoefficients` is baseline-only).
+    ///
+    /// `originalSize` in the returned stats is the true source-JPEG
+    /// byte count (this entry point *has* the source bytes).
+    public func encodeLosslessJPEG(
+        _ jpegBytes: Data
+    ) throws -> EncodedImage {
+        let start = Date()
+        let coefs: JPEGCoefficientImage
+        do { coefs = try JPEGDecoder.decodeToCoefficients(jpegBytes) }
+        catch let e as JPEGDecoderError {
+            throw EncoderError.unsupportedFrame(
+                "lossless-JPEG bridge: \(e.errorDescription ?? "\(e)")")
+        }
+        let bridged = try encodeFromJPEGCoefficients(coefs)
+        // Reconstruction data: jbrd Bundle bytes + (Brotli) payload.
+        let box: JBRDBox
+        let brotliPayload: Data
+        do {
+            (box, brotliPayload) = try JBRDBox.extract(
+                fromJPEG: jpegBytes)
+        } catch {
+            throw EncoderError.notImplemented(
+                "lossless-JPEG bridge jbrd extract: \(error)")
+        }
+        var w = BitWriter()
+        do { try JBRDBoxWriter.write(box, to: &w) }
+        catch {
+            throw EncoderError.notImplemented(
+                "lossless-JPEG bridge jbrd serialise: \(error)")
+        }
+        var jbrdPayload = w.finishToData()
+        jbrdPayload.append(brotliPayload)
+        let container = buildJXLContainerWithReconstruction(
+            codestream: bridged.data, jbrdPayload: jbrdPayload)
+        return EncodedImage(
+            data: container,
+            stats: CompressionStats(
+                originalSize: jpegBytes.count,
+                compressedSize: container.count,
+                encodingTime: Date().timeIntervalSince(start)))
+    }
 }
 
 /// Split a 3-channel interleaved uint8 `ImageFrame` into per-channel

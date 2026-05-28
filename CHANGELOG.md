@@ -11,6 +11,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0hm — 🎉🎉 Lossless JPEG → JXL → JPEG complete (CLI + container)
+
+**The forward lossless transcode is complete.** `jxl-tool transcode
+--mode coefficient-bridge in.jpg out.jxl` now emits a full ISOBMFF
+container (signature + `ftyp` + `jbrd` + `jxlc`) — a true
+lossless-JPEG JXL — and `jxl-tool transcode --mode reverse out.jxl
+back.jpg` reconstructs the source **byte-for-byte**. Both directions
+run entirely in pure Swift.
+
+- New `JXLEncoder.encodeLosslessJPEG(_:)` orchestrates the whole
+  forward path: coefficients → VarDCT frame → `JBRDBox.extract` →
+  serialised jbrd Bundle + uncompressed-Brotli payload →
+  `buildJXLContainerWithReconstruction`.
+- The CLI's `coefficient-bridge` mode now produces a reversible
+  lossless JXL (was: a naked codestream with no reconstruction data).
+
+**Spec-compliant, not just self-consistent.** `djxl --jpeg` on our
+output reconstructs the source JPEG byte-for-byte too (verified for
+4:4:4 / 4:2:0 / grayscale) — libjxl accepts our container, jbrd box,
+and codestream.
+
+Test `testEndToEnd_LosslessJPEGContainer_RoundTrip` exercises the full
+container → reverse pipeline (4:4:4 / 4:2:0 / grayscale). Our files are
+currently larger than the source (single-cluster entropy + uncompressed
+Brotli — a size, not correctness, gap). Progressive forward input
+remains gated by `decodeToCoefficients` (baseline-only).
+
 ### v0.12.0hl — 🎉 Forward `jbrd` extractor — JPEG → JXL → JPEG byte-identical round-trip
 
 `JBRDBox.extract(fromJPEG:)` builds the jbrd reconstruction data from
