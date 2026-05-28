@@ -11,6 +11,73 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0gz — 🎉 Bit-exact reverse decode matrix: 4:4:4 sizes 16 → 512
+
+Expands the cjxl reverse-decode regression coverage from a single
+16×16 fixture to a **6-row matrix** spanning sizes 16/32/64/128/
+256/512 (all 4:4:4). Every row asserts bit-exact DC + AC
+coefficient round-trip against the JPEG-bridge reference.
+
+**Bug fix this round — `scaled_qtable` transpose.**
+
+While ramping up the matrix, the 128×128 row failed with
+`dcMM=0 acMM=16`. Diagnostic showed all 16 mismatches on channel
+2 at JXL position `k=16`, every block of color tile column 1. The
+fingerprint pointed at the CFL inverse's `scaled_qtable`
+precompute loop in
+[JXLDecoder.decodeVarDCTPartial](Sources/JXLSwift/Codec/JXLDecoder.swift).
+
+libjxl's loop iterates `i` in JPEG-natural order and stores at
+JXL-transposed position `(i%8)·8 + (i/8)` (`dec_group.cc:234-243`):
+
+```cpp
+int n = qtable[64 + i];       // JPEG-natural Y entry
+int d = qtable[64*c + i];     // JPEG-natural C entry
+scaled_qtable[64*c + (i%8)*8 + (i/8)] = (1<<11) * n / d;
+```
+
+Our RAW path stores the qtable in JXL-transposed order — i.e.
+`qtab[c·64 + s] = qtable_libjxl[c·64 + transpose(s)]`. Substituting
+`s = transpose(i)` (since `transpose` is an involution, `s` ranges
+over the same 0..63), the equation simplifies to:
+
+```swift
+scaled_qtable[64*c + s] = (1<<11) * qtab[64 + s] / qtab[64*c + s]
+```
+
+— **no extra transpose**. The previous draft kept the
+`(i%8)·8 + (i/8)` destination transpose, producing subtly-wrong
+scaled_qtable entries. The bug was invisible for ≤ 64×64 fixtures
+where JPEG Y AC energy concentrates at low frequencies, but
+pinned down at 128×128 where higher-frequency Y values made the
+mis-indexed ratios visible.
+
+**Matrix results (all PASS):**
+
+```
+[matrix] 16×16 4:4:4        -> PASS (blocks=2×2)
+[matrix] 32×32 4:4:4        -> PASS (blocks=4×4)
+[matrix] 64×64 4:4:4        -> PASS (blocks=8×8)
+[matrix] 128×128 4:4:4      -> PASS (blocks=16×16)
+[matrix] 256×256 4:4:4      -> PASS (blocks=32×32)
+[matrix] 512×512 4:4:4      -> PASS (blocks=64×64)
+```
+
+**Documented next bites (failing rows held out of the matrix):**
+- **1024×1024 4:4:4** — `dcMM=0 acMM=108544`. Multi-AC-group
+  decode bug surfaces at the 4×4 AC group grid; 2×2 (= 512×512)
+  works. A sizeable fraction of AC slots in the first AC group
+  decode as 0 even though JPEG had non-zero values there.
+- **16×16 4:2:2** — `invalidRCTType(64)` in ACMeta GroupHeader
+  (Squeeze RCT transform).
+- **16×16 4:2:0** — `acsCountMismatch(expected: 3, actual: 3)`
+  in AC strategy plane build (subsampled-Y carries fewer ACS
+  first-blocks than the full grid expects).
+- **32×32 4:2:0** — `unsupportedTransform(3)` in ACMeta
+  GroupHeader (Squeeze).
+
+**Tests.** 644 / 7 skipped / 0 failures.
+
 ### v0.12.0gy — 🎉 CFL inverse for JPEG-bridge RAW slot: bit-exact decode with libjxl default CFL enabled
 
 **The autonomous reverse pipeline now succeeds bit-exactly with

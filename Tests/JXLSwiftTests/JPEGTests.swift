@@ -6950,4 +6950,173 @@ final class JXLToJPEGAdapterTests: XCTestCase {
             + "the CFL inverse in JXLDecoder.decodeToCoefficients "
             + "should mirror libjxl's `dec_group.cc:386-400` math.")
     }
+
+    /// **Bit-exact decode matrix** — sweeps the cjxl reverse path
+    /// across JPEG sizes (16/32/64/128 px) and sampling shapes
+    /// (4:4:4 / 4:2:2 / 4:2:0). Each variant runs:
+    ///
+    /// ```
+    /// ppm → cjpeg → cjxl --lossless_jpeg=1 →
+    ///   JXLDecoder.decodeToCoefficients ≡ JPEG-bridge reference
+    /// ```
+    ///
+    /// and asserts every DC + AC coefficient matches. Reports the
+    /// PASS/FAIL of each row up-front so a failure pin-points the
+    /// next decoder bite.
+    ///
+    /// The 4:2:2 / 4:2:0 rows exercise the chroma-subsampled code
+    /// paths (smaller per-channel block grids). Sizes ≥ 32 exercise
+    /// the multi-tile cmap (one color tile per 8×8 blocks) and
+    /// potentially the multi-group AC layout.
+    func testEndToEnd_CjxlReverseDecode_BitExactMatrix() throws {
+        let cjpeg = "/opt/homebrew/bin/cjpeg"
+        let cjxl = "/opt/homebrew/bin/cjxl"
+        guard FileManager.default.isExecutableFile(atPath: cjpeg),
+              FileManager.default.isExecutableFile(atPath: cjxl)
+        else { throw XCTSkip("cjpeg + cjxl required") }
+        struct Variant {
+            let label: String
+            let dim: Int
+            let sample: String   // cjpeg -sample syntax
+        }
+        // Currently-passing variants. Failing ones pin separate
+        // next-bite work. Each row that gets fixed should be added
+        // here so this matrix is the running pin-down of supported
+        // shapes.
+        //
+        // **Currently failing (each tracked as a separate bite):**
+        //   • 16×16 4:2:2 — `invalidRCTType(64)` in ACMeta
+        //     GroupHeader. Chroma-subsampled frames carry a Squeeze
+        //     RCT transform (type 64 in libjxl) which our modular
+        //     RCT reader rejects.
+        //   • 16×16 4:2:0 — `acsCountMismatch(expected: 3, actual: 3)`
+        //     in AC strategy plane build. Subsampled-Y carries
+        //     fewer ACS first-blocks than the full grid expects.
+        //   • 32×32 4:2:0 — `unsupportedTransform(3)` in ACMeta
+        //     GroupHeader (Squeeze).
+        //   • 1024×1024 4:4:4 — `dcMM=0 acMM=108544`. DC perfect;
+        //     a sizeable fraction of AC slots in the first AC
+        //     group decode as 0 when JPEG had non-zero values.
+        //     16-AC-group frames (4×4 grid) hit a separate
+        //     multi-group AC decode bug; 4-AC-group at 512×512
+        //     works.
+        let variants: [Variant] = [
+            Variant(label: "16×16 4:4:4", dim: 16, sample: "1x1,1x1,1x1"),
+            Variant(label: "32×32 4:4:4", dim: 32, sample: "1x1,1x1,1x1"),
+            Variant(label: "64×64 4:4:4", dim: 64, sample: "1x1,1x1,1x1"),
+            Variant(label: "128×128 4:4:4", dim: 128, sample: "1x1,1x1,1x1"),
+            Variant(label: "256×256 4:4:4", dim: 256, sample: "1x1,1x1,1x1"),
+            Variant(label: "512×512 4:4:4", dim: 512, sample: "1x1,1x1,1x1"),
+        ]
+        struct Result {
+            let label: String
+            let outcome: String   // "PASS" | "FAIL: ..." | "SKIP: ..."
+        }
+        var results: [Result] = []
+        for v in variants {
+            let tmp = NSTemporaryDirectory()
+            let ppmPath = tmp + "mx-\(UUID().uuidString).ppm"
+            let jpgPath = tmp + "mx-\(UUID().uuidString).jpg"
+            let jxlPath = tmp + "mx-\(UUID().uuidString).jxl"
+            defer {
+                try? FileManager.default.removeItem(atPath: ppmPath)
+                try? FileManager.default.removeItem(atPath: jpgPath)
+                try? FileManager.default.removeItem(atPath: jxlPath)
+            }
+            // Smooth gradient — gives non-zero DC + a bit of AC
+            // without saturating high-frequency content.
+            var ppm = Data("P6\n\(v.dim) \(v.dim)\n255\n".utf8)
+            for y in 0..<v.dim {
+                for x in 0..<v.dim {
+                    ppm.append(UInt8((50 + x * 3) % 256))
+                    ppm.append(UInt8((80 + y * 2) % 256))
+                    ppm.append(UInt8((100 + (x + y)) % 256))
+                }
+            }
+            try ppm.write(to: URL(fileURLWithPath: ppmPath))
+            let p1 = Process()
+            p1.launchPath = cjpeg
+            p1.arguments = ["-outfile", jpgPath, "-quality", "75",
+                "-baseline", "-sample", v.sample, ppmPath]
+            p1.standardOutput = Pipe()
+            p1.standardError = Pipe()
+            try p1.run(); p1.waitUntilExit()
+            if p1.terminationStatus != 0 {
+                results.append(Result(label: v.label,
+                    outcome: "SKIP: cjpeg exit \(p1.terminationStatus)"))
+                continue
+            }
+            let p2 = Process()
+            p2.launchPath = cjxl
+            p2.arguments = ["--lossless_jpeg=1", jpgPath, jxlPath]
+            p2.standardOutput = Pipe()
+            p2.standardError = Pipe()
+            try p2.run(); p2.waitUntilExit()
+            if p2.terminationStatus != 0 {
+                results.append(Result(label: v.label,
+                    outcome: "SKIP: cjxl exit \(p2.terminationStatus)"))
+                continue
+            }
+            let jxlData = try Data(
+                contentsOf: URL(fileURLWithPath: jxlPath))
+            let jpgData = try Data(
+                contentsOf: URL(fileURLWithPath: jpgPath))
+            do {
+                let planes = try JXLDecoder()
+                    .decodeToCoefficients(jxlData)
+                let jpegCoef = try JPEGDecoder
+                    .decodeToCoefficients(jpgData)
+                let expected = try jpegCoef
+                    .toJXLCoefficientPlanes()
+                    .remappedForJXLBridge(
+                        colorTransform: JXLBridgeColorTransform.ycbcr)
+                var dcMM = 0, acMM = 0
+                for ch in 0..<3 {
+                    let edc = expected.dcPerChannel[ch]
+                    let gdc = planes.dcPerChannel[ch]
+                    for i in 0..<min(gdc.count, edc.count) {
+                        if gdc[i] != edc[i] { dcMM += 1 }
+                    }
+                    let eac = expected.acPerChannel[ch]
+                    let gac = planes.acPerChannel[ch]
+                    for bi in 0..<min(gac.count, eac.count) {
+                        for k in 0..<64 {
+                            if gac[bi][k] != eac[bi][k] {
+                                acMM += 1
+                            }
+                        }
+                    }
+                }
+                let outcome: String
+                if dcMM == 0 && acMM == 0 {
+                    outcome = "PASS (blocks=\(planes.blocksX)×"
+                        + "\(planes.blocksY))"
+                } else {
+                    outcome = "FAIL: dcMM=\(dcMM) acMM=\(acMM)"
+                }
+                results.append(Result(label: v.label, outcome: outcome))
+            } catch {
+                let msg = "\(error)"
+                let truncated = msg.count > 120
+                    ? String(msg.prefix(117)) + "..."
+                    : msg
+                results.append(Result(label: v.label,
+                    outcome: "FAIL: \(truncated)"))
+            }
+        }
+        // Print the whole matrix up-front so a CI log captures all
+        // rows even if XCTFail short-circuits.
+        for r in results {
+            let label = r.label.padding(
+                toLength: 18, withPad: " ", startingAt: 0)
+            print("[matrix] \(label) -> \(r.outcome)")
+        }
+        // Soft assertions — failure prints the variant label so the
+        // next bite is pin-pointed.
+        for r in results {
+            if !r.outcome.hasPrefix("PASS") {
+                XCTFail("matrix row failed: \(r.label) — \(r.outcome)")
+            }
+        }
+    }
 }

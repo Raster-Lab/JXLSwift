@@ -1590,24 +1590,32 @@ extension JXLDecoder {
                 && maxhs == 0 && maxvs == 0
             if isJPEGCompatibleRAW && isYCbCr444,
                let qtab = acDequantInfo.encodings[0].rawQtable {
-                // Precompute `scaled_qtable[c*64 + (x*8 + y)] =
-                // (1<<11) × qtable_Y[i_jpeg] / qtable_C[i_jpeg]`
-                // — libjxl `dec_group.cc:234-243`. The RAW path
-                // already stores the qtable in JXL-transposed
-                // order, so we read at `(i%8)*8 + (i/8)` to
-                // recover JPEG-natural before forming the ratio,
-                // then store back transposed. Equivalent to
-                // libjxl's `int n = qtable[64 + i]; int d =
-                // qtable[64*c + i]; scaled_qtable[64*c +
-                // (i%8)*8 + (i/8)] = (1<<11)*n/d`.
+                // Precompute `scaled_qtable[c*64 + s] = (1<<11) ×
+                // qtab[64 + s] / qtab[64*c + s]` for `s` in JXL
+                // transposed order. libjxl iterates `i` in JPEG
+                // natural order and stores at transposed position
+                // `(i%8)*8 + (i/8)` (`dec_group.cc:234-243`).
+                // Substituting `s = (i%8)*8 + (i/8)` and using
+                // the fact that our `qtab` is already stored in
+                // JXL transposed order
+                // (`qtab[c*64 + s] = qtable_libjxl[c*64 + transpose(s)]`),
+                // the equation simplifies — both reads and writes
+                // are at the same `s`, no extra transpose needed.
+                //
+                // **v0.12.0gz fix.** A previous draft kept the
+                // extra transpose, which produced subtly-wrong
+                // scaled_qtable entries. Invisible for small
+                // fixtures where the JPEG Y AC is concentrated
+                // at low frequencies, but pinned down at 128×128
+                // (16 AC mismatches all on channel 2 at k=16 of
+                // tile column 1).
                 var scaledQtable = [Int32](repeating: 0, count: 3 * 64)
                 for c in 0..<3 {
-                    for i in 0..<64 {
-                        let nVal = qtab[64 + i]       // Y channel
-                        let dVal = qtab[64 * c + i]   // C channel
+                    for s in 0..<64 {
+                        let nVal = qtab[64 + s]       // Y channel
+                        let dVal = qtab[64 * c + s]   // C channel
                         guard nVal > 0, dVal > 0 else { continue }
-                        let dst = (i % 8) * 8 + (i / 8)
-                        scaledQtable[64 * c + dst] =
+                        scaledQtable[64 * c + s] =
                             Int32(1 << kCFLFixedPointPrecision)
                             * nVal / dVal
                     }
