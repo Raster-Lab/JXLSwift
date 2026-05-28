@@ -12,6 +12,18 @@ matrix test against cjxl `--lossless_jpeg=1` output.
 | `v0.12.0gz` | Bit-exact reverse-decode matrix, 4:4:4 sizes 16→512. Found + fixed a `scaled_qtable` transpose in the CFL inverse (visible only ≥128×128). |
 | `v0.12.0ha` | **Per-block DC context index.** Multi-AC-group frames (768/1024) regressed because the block context's `dc_idx` was hard-coded 0; cjxl emits a non-default `BlockCtxMap` with DC thresholds (`numDcCtxs>1`). Matrix now 16→1024. |
 | `v0.12.0hb` | **Chroma-subsampled decode (4:2:0 / 4:2:2).** DC + AC planes now decoded at per-channel resolution; per-channel block-existence skip in the AC loop; capture hook samples chroma at the chroma grid; pixel-path `DequantDC` reads chroma at reduced res (crash fix). Matrix adds 4:2:0/4:2:2 rows incl. a 1024×1024 4:2:0 capstone. |
+| `v0.12.0hc` | **🎉 Fully autonomous reverse transcode (JXL → JPEG, no `--source`).** New `JXLDecoder.decodeJPEGBridgeData` (coeffs + RAW quant table + chroma) and `JXLToJPEGAdapter.reconstruct(bridgeData:jbrd:)` (recovers quant values + sampling factors from the JXL). Wired into `jxl-tool transcode --mode reverse` — byte-identical with no source. Test `testEndToEnd_AutonomousReverseTranscode_NoSource` (4:4:4 + 4:2:0 + 4:2:2). |
+
+## Milestone: autonomous reverse transcode
+
+As of `v0.12.0hc` the JXL → JPEG reverse direction is **fully
+autonomous and byte-identical** for baseline cjxl
+`--lossless_jpeg=1` files — no reference to the source JPEG. Both
+the library (`JXLDecoder.decodeJPEGBridgeData` +
+`JXLToJPEGAdapter.reconstruct(bridgeData:jbrd:)`) and the CLI
+(`jxl-tool transcode --mode reverse`) deliver it. The codestream
+supplies coefficients + quant tables + chroma; the jbrd box
+supplies marker order / Huffman / scan structure.
 
 ## State of the reverse coefficient decode
 
