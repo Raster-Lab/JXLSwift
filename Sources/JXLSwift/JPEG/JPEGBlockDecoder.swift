@@ -151,8 +151,10 @@ public enum JPEGBlockDecoder {
 
     /// Inline `JPEGHuffmanCodebook.decodeSymbol` adapter that
     /// pulls bits from a `JPEGBitReader` — saves a closure
-    /// allocation per Huffman decode.
-    private static func decodeSymbol(
+    /// allocation per Huffman decode. Internal so the progressive
+    /// scan decoder (`JPEGScanDecoder.decodeProgressive`) can reuse
+    /// the same primitive.
+    static func decodeSymbol(
         using book: JPEGHuffmanCodebook,
         huffvals: [UInt8],
         reader: inout JPEGBitReader
@@ -178,8 +180,9 @@ public enum JPEGBlockDecoder {
     /// EXTEND function (Figure F.12): negative values are
     /// represented as the bit pattern of `(value + (1 << s) - 1)`,
     /// so the high bit of the raw magnitude distinguishes sign.
-    /// `s == 0` yields 0.
-    private static func readExtendedMagnitude(
+    /// `s == 0` yields 0. Internal so the progressive scan decoder
+    /// can reuse the same EXTEND primitive.
+    static func readExtendedMagnitude(
         bits s: Int, from reader: inout JPEGBitReader
     ) throws -> Int32 {
         if s == 0 { return 0 }

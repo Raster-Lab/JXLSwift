@@ -108,6 +108,10 @@ extension JPEGDecoder {
         var restartInterval = 0
         var entropyStartOffset = 0
 
+        // Progressive (SOF2) accumulation: one zero-filled grid per
+        // frame component, refined in place across every scan.
+        var progressive: [JPEGComponentBlocks]?
+
         while let seg = try reader.next() {
             switch seg.kind {
             case .startOfFrame(let nibble):
@@ -150,7 +154,48 @@ extension JPEGDecoder {
             default:
                 break
             }
-            if seg.kind == .startOfScan { break }
+
+            if seg.kind == .startOfScan {
+                guard let scan = scanHeader else {
+                    throw JPEGDecoderError.missingScan
+                }
+                guard !frameComponents.isEmpty else {
+                    throw JPEGDecoderError.missingFrame
+                }
+                guard precision == 8 else {
+                    throw JPEGDecoderError.unsupported(
+                        "\(precision)-bit precision "
+                        + "(only 8-bit supported)")
+                }
+                let nC = frameComponents.count
+                guard nC == 1 || nC == 3 else {
+                    throw JPEGDecoderError.unsupported(
+                        "\(nC)-component frame "
+                        + "(only 1 or 3 supported)")
+                }
+                if frameKind == .progressiveDCT {
+                    // Decode this scan into the shared grids and keep
+                    // walking — the next scan refines them further.
+                    if progressive == nil {
+                        progressive = allocateProgressiveGrids(
+                            frameComponents: frameComponents,
+                            width: width, height: height)
+                    }
+                    var br = JPEGBitReader(data,
+                        startingAt: entropyStartOffset)
+                    try JPEGScanDecoder.decodeProgressive(
+                        from: &br, scanHeader: scan,
+                        frameComponents: frameComponents,
+                        imageWidth: width, imageHeight: height,
+                        dcCodebooks: dcMap, acCodebooks: acMap,
+                        restartInterval: restartInterval,
+                        components: &progressive!)
+                    continue   // resume segment walk for the next scan
+                }
+                // Sequential (baseline / extended): single scan, decode
+                // and stop.
+                break
+            }
             if seg.kind == .endOfImage { break }
         }
 
@@ -165,15 +210,30 @@ extension JPEGDecoder {
                 "\(precision)-bit precision "
                 + "(only 8-bit supported)")
         }
-        guard frameKind == .baselineDCT else {
-            throw JPEGDecoderError.unsupported(
-                "non-baseline frame: \(frameKind.label)")
-        }
         let nComponents = frameComponents.count
         guard nComponents == 1 || nComponents == 3 else {
             throw JPEGDecoderError.unsupported(
                 "\(nComponents)-component frame "
                 + "(only 1 or 3 supported)")
+        }
+
+        // Progressive: every scan already folded into `progressive`.
+        if frameKind == .progressiveDCT {
+            guard let comps = progressive else {
+                throw JPEGDecoderError.missingScan
+            }
+            return JPEGCoefficientImage(
+                width: width, height: height,
+                precision: precision, frameKind: frameKind,
+                frameComponents: frameComponents,
+                quantisedComponents: comps,
+                quantTables: quantTables)
+        }
+
+        guard frameKind == .baselineDCT
+            || frameKind == .extendedSequential else {
+            throw JPEGDecoderError.unsupported(
+                "non-baseline frame: \(frameKind.label)")
         }
 
         var bitReader = JPEGBitReader(data,
@@ -192,5 +252,29 @@ extension JPEGDecoder {
             frameComponents: frameComponents,
             quantisedComponents: comps,
             quantTables: quantTables)
+    }
+
+    /// Allocate zero-filled per-component coefficient grids sized
+    /// like the baseline-sequential decoder's output (each grid is
+    /// `mcusWide·Hi × mcusHigh·Vi` blocks). Progressive scans refine
+    /// these in place.
+    private static func allocateProgressiveGrids(
+        frameComponents: [JPEGFrameComponent],
+        width: Int, height: Int
+    ) -> [JPEGComponentBlocks] {
+        let maxH = frameComponents.map(\.hSamplingFactor).max() ?? 1
+        let maxV = frameComponents.map(\.vSamplingFactor).max() ?? 1
+        let mcusWide = (width + 8 * maxH - 1) / (8 * maxH)
+        let mcusHigh = (height + 8 * maxV - 1) / (8 * maxV)
+        return frameComponents.map { fc in
+            let bw = mcusWide * fc.hSamplingFactor
+            let bh = mcusHigh * fc.vSamplingFactor
+            return JPEGComponentBlocks(
+                componentId: fc.componentId,
+                blocksWide: bw, blocksHigh: bh,
+                blocks: Array(
+                    repeating: JPEGCoefficientBlock(),
+                    count: bw * bh))
+        }
     }
 }

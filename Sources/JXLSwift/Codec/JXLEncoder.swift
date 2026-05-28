@@ -458,10 +458,18 @@ public struct JXLEncoder: Sendable {
                 "JPEG coefficient bridge: only 8-bit precision "
                 + "supported (got \(jpeg.precision)-bit)")
         }
-        guard jpeg.frameKind == .baselineDCT else {
+        // Baseline, extended-sequential, and progressive DCT frames
+        // all hand off the same quantised-coefficient grids — the
+        // bridge encodes the coefficients, not the entropy layout, so
+        // the source scan structure is irrelevant here. Lossless
+        // (SOF3) and hierarchical frames have no DCT grid to bridge.
+        switch jpeg.frameKind {
+        case .baselineDCT, .extendedSequential, .progressiveDCT:
+            break
+        default:
             throw EncoderError.unsupportedFrame(
-                "JPEG coefficient bridge: only baseline-DCT "
-                + "frames supported (got \(jpeg.frameKind.label))")
+                "JPEG coefficient bridge: only DCT frames supported "
+                + "(got \(jpeg.frameKind.label))")
         }
         let nComponents = jpeg.frameComponents.count
         guard nComponents == 1 || nComponents == 3 else {
