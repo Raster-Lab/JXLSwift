@@ -11,6 +11,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0ho — ANS histogram writer (complex path) — foundation for forward size
+
+First step toward closing the forward file-size gap (our bridge files
+are ~1.6–1.7× cjxl's). The headline cause is entropy coding: we emit
+prefix (Huffman) codes with a hard ≥1 bit/symbol floor and a single
+pooled cluster, where cjxl uses rANS (fractional bits) with a clustered
+context map. Matching that needs a full ANS encoder, built up in
+testable units.
+
+This unit is the **general ANS histogram serializer**
+(`SpecANSDistribution.writeComplex`) — the inverse of the already-
+implemented `readComplex`. It encodes an arbitrary frequency
+distribution via the complex `ReadHistogram` layout (per-symbol
+log-counts + shift-controlled refinement bits, with one omit position
+carrying the residual). Non-omit counts are quantised **down** to the
+representable grid so the omit slot only grows, which guarantees it
+keeps the maximal log-count and the decoder re-derives the same omit
+position. `writeHistogram` now routes >2-symbol non-flat distributions
+here (previously `.complexPathNotImplemented`) and returns the on-wire
+(quantised) distribution so a future ANS token encoder can build a
+matching frequency table.
+
+No production bytes change yet — nothing emits ANS token streams until
+the rANS `TokenStreamWriter` path lands. Validated by 300 random
+histograms + edge cases (dominant-symbol, internal zeros, near-uniform,
+powers-of-two) round-tripping `writeComplex → readHistogram` exactly.
+Full suite: 660 tests, 7 skipped, 0 failures.
+
 ### v0.12.0hn — 🎉 Progressive JPEG (SOF2) forward transcode — byte-identical
 
 **The forward bridge now accepts progressive JPEGs**, closing the

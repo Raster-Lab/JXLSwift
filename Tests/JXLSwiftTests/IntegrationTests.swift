@@ -1525,6 +1525,88 @@ final class FoundationTests: XCTestCase {
             "1000 highly-skewed symbols should compress to <50 bytes; got \(bytes.count)")
     }
 
+    // MARK: - Complex ANS histogram serialisation (§C.6.3, write path)
+
+    /// `SpecANSDistribution.writeComplex` round-trips through
+    /// `readHistogram` (the complex branch): the decoder reconstructs
+    /// **exactly** the on-wire (quantised) distribution the writer
+    /// returned, and that distribution still sums to `range = 4096`.
+    /// Sweeps 300 pseudo-random histograms across a range of alphabet
+    /// sizes + skews — the cases the simple/flat shortcuts can't handle.
+    func testSpecANS_Complex_RoundTrip_Random() throws {
+        var seed: UInt64 = 0x9E3779B97F4A7C15
+        func rnd(_ n: Int) -> Int {
+            seed = seed &* 6364136223846793005 &+ 1442695040888963407
+            return Int((seed >> 33) % UInt64(max(1, n)))
+        }
+        for trial in 0..<300 {
+            let alphabet = 3 + rnd(80)            // 3…82 symbols
+            var raw = [UInt32](repeating: 0, count: alphabet)
+            // Mixed skew: a few heavy symbols + a long light tail.
+            for i in 0..<alphabet {
+                raw[i] = UInt32(rnd(trial % 3 == 0 ? 8 : 200))
+            }
+            // Guarantee ≥ 3 non-zero so the complex path is exercised
+            // (simple handles 1–2 non-zero).
+            raw[0] = max(raw[0], 1)
+            raw[alphabet / 2] = max(raw[alphabet / 2], 1)
+            raw[alphabet - 1] = max(raw[alphabet - 1], 1)
+            let dist = try ANSDistribution(rawFrequencies: raw)
+            let counts = dist.frequencies.map { Int32($0) }
+            XCTAssertEqual(counts.reduce(0, +), 4096)
+
+            var w = BitWriter()
+            let wire = try SpecANSDistribution.writeComplex(
+                counts, to: &w, precisionBits: 12)
+            XCTAssertEqual(wire.reduce(0, +), 4096,
+                "trial \(trial): wire counts must sum to range")
+            w.alignToByte()
+            let data = w.finishToData()
+
+            var r = BitReader(data)
+            let back = try SpecANSDistribution.readHistogram(
+                from: &r, precisionBits: 12)
+            XCTAssertEqual(back, wire,
+                "trial \(trial) (alphabet \(alphabet)): decoded "
+                + "histogram must equal the on-wire distribution")
+            // Every symbol the writer kept non-zero must survive (an ANS
+            // token encoder relies on this — a used symbol needs freq>0).
+            for i in 0..<wire.count where wire[i] > 0 {
+                XCTAssertGreaterThan(back[i], 0,
+                    "trial \(trial): symbol \(i) lost its frequency")
+            }
+        }
+    }
+
+    /// Edge cases the random sweep is unlikely to hit: one dominant
+    /// symbol with a sparse tail, a near-uniform large alphabet, and a
+    /// distribution with internal zeros.
+    func testSpecANS_Complex_RoundTrip_EdgeCases() throws {
+        func check(_ raw: [UInt32], _ label: String) throws {
+            let dist = try ANSDistribution(rawFrequencies: raw)
+            let counts = dist.frequencies.map { Int32($0) }
+            var w = BitWriter()
+            let wire = try SpecANSDistribution.writeComplex(
+                counts, to: &w, precisionBits: 12)
+            XCTAssertEqual(wire.reduce(0, +), 4096, "\(label): sum")
+            w.alignToByte()
+            var r = BitReader(w.finishToData())
+            let back = try SpecANSDistribution.readHistogram(
+                from: &r, precisionBits: 12)
+            XCTAssertEqual(back, wire, "\(label): round-trip")
+        }
+        // One huge symbol + sparse tail.
+        try check([4000, 3, 2, 1, 5, 7, 9], "dominant+tail")
+        // Internal zeros between non-zeros.
+        try check([50, 0, 0, 30, 0, 20, 0, 0, 10, 5], "internal-zeros")
+        // Near-uniform large alphabet (not exactly flat).
+        try check([UInt32](repeating: 7, count: 64).enumerated().map {
+            UInt32(7 + ($0.offset % 5)) }, "near-uniform-64")
+        // Powers-of-two counts (exact-representable at high shift).
+        try check([2048, 1024, 512, 256, 128, 64, 32, 16, 8, 8],
+                  "powers-of-two")
+    }
+
     // MARK: - Phase E4a: Simple prefix-code-table serialisation (§C.6.2.1)
 
     /// Hand-derived bit pattern: a 2-symbol simple prefix code with
@@ -5575,19 +5657,21 @@ extension FoundationTests {
         }
     }
 
-    /// The writer rejects a non-flat, >2-symbol distribution because
-    /// the complex path (RLE + per-position log-counts) isn't
-    /// implemented yet.
-    func testSpecANSDistribution_WriterRejectsComplex() {
-        // 4 distinct symbols, non-flat → throws.
+    /// The writer now handles a non-flat, >2-symbol distribution via
+    /// the complex path (v0.12.0ho): it quantises to the representable
+    /// grid and `readHistogram` reconstructs that on-wire distribution
+    /// exactly. (Was previously a `.complexPathNotImplemented` throw.)
+    func testSpecANSDistribution_WriterHandlesComplex() throws {
+        // 4 distinct symbols, non-flat, summing to range = 4096.
         let counts: [Int32] = [1000, 100, 2000, 996]
         var w = BitWriter()
-        XCTAssertThrowsError(
-            try SpecANSDistribution.writeHistogram(counts, to: &w)
-        ) { err in
-            XCTAssertEqual(err as? SpecANSDistributionError,
-                           .complexPathNotImplemented)
-        }
+        let wire = try SpecANSDistribution.writeHistogram(counts, to: &w)
+        XCTAssertEqual(wire.reduce(0, +), 4096)
+        w.alignToByte()
+        var r = BitReader(w.finishToData())
+        let decoded = try SpecANSDistribution.readHistogram(from: &r)
+        XCTAssertEqual(decoded, wire,
+            "complex histogram must round-trip to its on-wire form")
     }
 
     /// Reader: hand-built bitstream covering the simple 1-symbol path.

@@ -62,6 +62,27 @@ fileprivate let kComplexLogCountHuff: [(consume: Int, value: Int)] = [
     (3, 10), (4, 4),  (3, 7), (4, 1), (3, 6), (3, 8), (3, 9), (4, 2),
 ]
 
+/// Inverse of `kComplexLogCountHuff`: maps a log-count value to its
+/// `(length, code)` prefix codeword. Built once from the decode table.
+/// `code` holds the codeword in the low `length` bits, first-emitted
+/// bit in the LSB — exactly what `BitReader.peek` reads back and the
+/// 7-bit table indexes. A log-count value appears at several table
+/// indices (the higher peek bits vary); they all share the same low
+/// `consume` bits, so the first occurrence is canonical.
+fileprivate let kComplexLogCountEncode: [(length: Int, code: UInt32)] = {
+    var table = [(length: Int, code: UInt32)](
+        repeating: (0, 0), count: 16)
+    var seen = [Bool](repeating: false, count: 16)
+    for idx in 0..<128 {
+        let e = kComplexLogCountHuff[idx]
+        guard e.value >= 0 && e.value < 16, !seen[e.value] else { continue }
+        let mask = (1 << e.consume) - 1
+        table[e.value] = (e.consume, UInt32(idx & mask))
+        seen[e.value] = true
+    }
+    return table
+}()
+
 public enum SpecANSDistribution {
 
     /// Read one per-cluster distribution. `precisionBits` is the
@@ -294,17 +315,25 @@ public enum SpecANSDistribution {
     /// Write a histogram. Picks the smallest encoding that fits:
     /// 1-symbol simple if only one symbol has non-zero count; 2-symbol
     /// simple if exactly two; flat if all entries within ±1 of each
-    /// other; otherwise throws `.complexPathNotImplemented`.
+    /// other; otherwise the **complex** path (`writeComplex`).
+    ///
+    /// - Returns: the **on-wire** count distribution — identical to the
+    ///   input for the simple/flat paths, but the complex path quantises
+    ///   counts to the representable grid (see `writeComplex`). An ANS
+    ///   token encoder MUST build its frequency table from this returned
+    ///   array, not the raw input, or the encode and decode tables will
+    ///   disagree.
+    @discardableResult
     public static func writeHistogram(
         _ counts: [Int32],
         to w: inout BitWriter,
         precisionBits: Int = 12
-    ) throws {
+    ) throws -> [Int32] {
         let range = Int32(1) << Int32(precisionBits)
         let nonzero = counts.enumerated().filter { $0.element > 0 }
         if nonzero.count == 1 {
             try writeSimpleOne(symbol: nonzero[0].offset, to: &w)
-            return
+            return counts
         }
         if nonzero.count == 2 {
             try writeSimpleTwo(
@@ -313,15 +342,179 @@ public enum SpecANSDistribution {
                 symbol1: nonzero[1].offset,
                 to: &w, precisionBits: precisionBits
             )
-            return
+            return counts
         }
         // Flat detection — every count is base or base+1, with the
         // first `range mod alphabetSize` entries being base+1.
         if isFlat(counts: counts, range: range) {
             try writeFlat(alphabetSize: counts.count, to: &w)
-            return
+            return counts
         }
-        throw SpecANSDistributionError.complexPathNotImplemented
+        return try writeComplex(counts, to: &w, precisionBits: precisionBits)
+    }
+
+    // MARK: - Complex path writer
+
+    /// Serialise an arbitrary histogram via the complex `ReadHistogram`
+    /// layout — the inverse of `readComplex`. `counts` must sum to
+    /// `range = 1 << precisionBits`; the returned array is the
+    /// **quantised on-wire distribution** (it also sums to `range`).
+    ///
+    /// The complex layout encodes each symbol's count as a `logcount`
+    /// (≈ ⌊log2(count)⌋ + 1) plus `bitcount` refinement bits, where
+    /// `bitcount` depends on a per-histogram `shift`. The grid of
+    /// representable counts is therefore coarser than the integers, so
+    /// non-omit counts are quantised **down** to the grid; the single
+    /// omit position (the symbol with the largest log-count) absorbs the
+    /// rounding so the total stays exactly `range`. Quantising down
+    /// guarantees the omit count only ever grows, so it keeps the
+    /// maximal log-count and the decoder re-derives the same omit
+    /// position. RLE of repeated log-counts is not emitted (it is a
+    /// size-only optimisation the reader tolerates by its absence).
+    ///
+    /// `shift` is chosen to minimise total quantisation distortion
+    /// across the candidate range `0...13` (the decoder rejects
+    /// `shift > precisionBits + 1`).
+    @discardableResult
+    public static func writeComplex(
+        _ counts: [Int32],
+        to w: inout BitWriter,
+        precisionBits: Int = 12
+    ) throws -> [Int32] {
+        let range = Int32(1) << Int32(precisionBits)
+        // Trim trailing zeros; the layout needs length ≥ 3.
+        var length = counts.count
+        while length > 3 && counts[length - 1] == 0 { length -= 1 }
+        guard length >= 3 else {
+            throw SpecANSDistributionError.invalidHistogram(
+                "complex path needs alphabet length ≥ 3 (got \(length))")
+        }
+
+        // Pick the shift with least quantisation distortion (ties →
+        // smaller shift, i.e. fewer refinement bits).
+        var best: (shift: Int32, wire: [Int32], omit: Int, logs: [Int])?
+        var bestDist = Int.max
+        for shift in Int32(0)...13 {
+            guard let cand = quantiseComplex(
+                counts, length: length, shift: shift,
+                range: range, precisionBits: precisionBits)
+            else { continue }
+            if cand.distortion < bestDist {
+                bestDist = cand.distortion
+                best = (shift, cand.wire, cand.omit, cand.logs)
+            }
+        }
+        guard let chosen = best else {
+            throw SpecANSDistributionError.invalidHistogram(
+                "no valid shift quantised the histogram")
+        }
+
+        // Histogram-kind prefix: is_simple = 0, is_flat = 0 → complex.
+        // (The reader consumes these two bits before `readComplex`.)
+        w.writeBit(false)
+        w.writeBit(false)
+        // 1. shift.
+        writeShift(chosen.shift, precisionBits: precisionBits, to: &w)
+        // 2. length − 3.
+        try w.writeVarLenUint8(UInt32(length - 3))
+        // 3. all log-counts (no RLE).
+        for j in 0..<length {
+            let enc = kComplexLogCountEncode[chosen.logs[j]]
+            w.write(bits: enc.length, value: enc.code)
+        }
+        // 4. refinement bits for every non-omit position with code ≥ 2.
+        for j in 0..<length where j != chosen.omit {
+            let code = chosen.logs[j]
+            guard code >= 2 else { continue }
+            let bc = getPopulationCountPrecision(
+                Int32(code - 1), chosen.shift,
+                logTabSize: Int32(precisionBits))
+            if bc > 0 {
+                let base = Int32(1) << Int32(code - 1)
+                let extra = (chosen.wire[j] - base)
+                    >> Int32(code - 1 - bc)
+                w.write(bits: bc, value: UInt32(extra))
+            }
+        }
+        return chosen.wire
+    }
+
+    /// Quantise `counts` to the representable grid for `shift` and pick
+    /// the omit position. Returns `nil` if the omit count would be
+    /// non-positive (invalid). `distortion` is `Σ|count − wire|`.
+    private static func quantiseComplex(
+        _ counts: [Int32], length: Int, shift: Int32,
+        range: Int32, precisionBits: Int
+    ) -> (wire: [Int32], omit: Int, logs: [Int], distortion: Int)? {
+        // Provisional (quantise-down) wire counts + their log-counts.
+        var wire = [Int32](repeating: 0, count: length)
+        var logs = [Int](repeating: 0, count: length)
+        var maxLog = 0
+        for j in 0..<length {
+            let c = j < counts.count ? counts[j] : 0
+            wire[j] = quantiseDown(c, shift: shift, precisionBits: precisionBits)
+            logs[j] = logCount(wire[j])
+            if logs[j] > maxLog { maxLog = logs[j] }
+        }
+        // Omit = first position achieving the maximal provisional
+        // log-count (matches the decoder's first-max rule).
+        guard let omit = (0..<length).first(where: { logs[$0] == maxLog })
+        else { return nil }
+        // The omit symbol absorbs the residual so the total is `range`.
+        var sumOthers: Int32 = 0
+        for j in 0..<length where j != omit { sumOthers &+= wire[j] }
+        let omitWire = range - sumOthers
+        guard omitWire > 0 else { return nil }
+        wire[omit] = omitWire
+        logs[omit] = logCount(omitWire)
+        // Distortion (the omit slot included).
+        var dist = 0
+        for j in 0..<length {
+            let c = j < counts.count ? counts[j] : 0
+            dist += abs(Int(c) - Int(wire[j]))
+        }
+        return (wire, omit, logs, dist)
+    }
+
+    /// Quantise a single count **down** to the nearest value
+    /// representable by `(logcount, bitcount)` refinement at `shift`.
+    private static func quantiseDown(
+        _ c: Int32, shift: Int32, precisionBits: Int
+    ) -> Int32 {
+        if c <= 0 { return 0 }
+        if c == 1 { return 1 }
+        let lm1 = Int32(31 - UInt32(c).leadingZeroBitCount)  // ⌊log2 c⌋
+        let bc = getPopulationCountPrecision(
+            lm1, shift, logTabSize: Int32(precisionBits))
+        let base = Int32(1) << lm1
+        let granShift = Int32(Int(lm1) - bc)
+        let gran = Int32(1) << granShift
+        let e = (c - base) / gran
+        return base + e * gran
+    }
+
+    /// `logcount` of a count value, matching the decoder's mapping:
+    /// 0 → 0, 1 → 1, c ≥ 2 → ⌊log2 c⌋ + 1.
+    private static func logCount(_ c: Int32) -> Int {
+        if c <= 0 { return 0 }
+        if c == 1 { return 1 }
+        return Int(32 - UInt32(c).leadingZeroBitCount)  // ⌊log2 c⌋ + 1
+    }
+
+    /// Write the variable-length `shift` prefix (inverse of the reader's
+    /// unary-then-tail decode).
+    private static func writeShift(
+        _ shift: Int32, precisionBits: Int, to w: inout BitWriter
+    ) {
+        let upperBoundLog = floorLog2Nonzero(UInt32(precisionBits + 1))
+        let sp1 = UInt32(shift + 1)
+        let log = floorLog2Nonzero(sp1)
+        for _ in 0..<log { w.writeBit(true) }
+        if log < upperBoundLog { w.writeBit(false) }
+        if log > 0 {
+            let extra = sp1 & ((UInt32(1) << UInt32(log)) - 1)
+            w.write(bits: log, value: extra)
+        }
     }
 
     private static func writeSimpleOne(symbol: Int, to w: inout BitWriter) throws {
