@@ -11,6 +11,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0hi — Forward coefficient-bridge wired to the CLI; coefficient fidelity verified
+
+`jxl-tool transcode --mode coefficient-bridge in.jpg out.jxl` now
+**writes** its output. The bridge writer (`JXLBridgeEncoder` +
+`VarDCTBitstreamWriter`) was already substantially implemented; the
+CLI path had a stale guard that expected `encodeFromJPEGCoefficients`
+to throw and discarded the (working) result with an "unexpectedly
+succeeded" error. Fixed to write the bytes and report the ratio.
+
+**Coefficient fidelity now verified.** The forward bridge is
+loss-free at the coefficient level:
+`testEndToEnd_DecodeToCoefficients_ForwardBridgeRoundTrip` now
+forward-encodes a real cjpeg JPEG, decodes it back with our byte-exact
+reverse decoder, and asserts every quantised DCT coefficient (after
+undoing the bridge remap + 8×8 transpose) **exactly** matches the
+source — across all three channels. Independently confirmed that our
+forward output and **cjxl's** `--lossless_jpeg=1` output decode (via
+our decoder) to *identical* coefficients + quant matrix.
+
+(Pixel comparison via `djxl` is not byte-exact across decoders —
+libjxl's float IDCT + AdjustQuantBias differ from libjpeg's integer
+path; cjxl's own bridge shows the same ±tens diff vs `djpeg`. The
+quantised-coefficient round-trip is the real correctness guarantee.)
+
+Verified colour (4:4:4 / 4:2:0) forward output is `djxl`-decodable.
+**Remaining forward-bridge work:** grayscale forward output isn't yet
+`djxl`-valid (the encoder's 1-component path needs the same Y-channel
+handling the reverse path got in `hh`); entropy coding is
+single-cluster (our files are larger than cjxl's — a size, not
+correctness, gap); and the `jbrd` box builder (for byte-identical
+JXL → JPEG of our *own* output) is still to come.
+
 ### v0.12.0hh — 🎉 Grayscale JPEGs reverse byte-identically
 
 Single-component (grayscale) JPEGs now reverse-transcode

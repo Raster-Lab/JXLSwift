@@ -5862,29 +5862,53 @@ final class JXLToJPEGAdapterTests: XCTestCase {
         XCTAssertEqual(p1.terminationStatus, 0)
         let jpgData = try Data(contentsOf: URL(fileURLWithPath: jpgPath))
 
-        // Forward bridge.
+        // Forward bridge: JPEG coefficients → VarDCT JXL frame.
         let coefs = try JPEGDecoder.decodeToCoefficients(jpgData)
         let jxlOut = try JXLEncoder()
             .encodeFromJPEGCoefficients(coefs)
 
-        // Try autonomous coefficient decode. This may throw
-        // notImplemented if the decoder hits an unsupported layer.
+        // **Coefficient fidelity.** Decode the forward-bridge output
+        // with our (byte-exact) reverse decoder and confirm it
+        // recovers the *exact* source quantised coefficients —
+        // proving the forward VarDCT encode is loss-free. (Pixel
+        // comparison via djxl is not byte-exact across decoders:
+        // libjxl's float IDCT + AdjustQuantBias differ from libjpeg's
+        // integer path — cjxl's own bridge shows the same ±tens diff
+        // vs djpeg. The quantised-coefficient round-trip is the real
+        // correctness guarantee.)
+        let bridge: JXLJPEGBridgeData
         do {
-            let planes = try JXLDecoder()
-                .decodeToCoefficients(jxlOut.data)
-            XCTAssertEqual(planes.channelCount, 3,
-                "expected 3-channel YCbCr planes")
-            XCTAssertGreaterThan(planes.blocksX, 0)
-            XCTAssertGreaterThan(planes.blocksY, 0)
-            print("[decodeToCoefficients] "
-                + "blocks=\(planes.blocksX)×\(planes.blocksY) "
-                + "channels=\(planes.channelCount)")
+            bridge = try JXLDecoder().decodeJPEGBridgeData(jxlOut.data)
         } catch DecoderError.notImplemented(let msg) {
             throw XCTSkip(
-                "decodeToCoefficients hit unsupported decoder layer: "
-                + "\(msg). This is incremental progress — each layer "
-                + "fix moves the throw point further into the decode.")
+                "forward-bridge decode hit unsupported layer: \(msg)")
         }
+        XCTAssertEqual(bridge.planes.channelCount, 3)
+        // Undo the JXL bridge remap, then the 8×8 transpose, to get
+        // back per-component natural-order coefficients.
+        let unremap = bridge.planes.inverseJXLBridgeRemap(
+            colorTransform: bridge.colorTransform)
+        for c in 0..<3 {
+            let srcBlocks = coefs.quantisedComponents[c].blocks
+            XCTAssertEqual(unremap.acPerChannel[c].count,
+                srcBlocks.count, "channel \(c) block count")
+            for b in 0..<srcBlocks.count {
+                var nat = [Int32](repeating: 0, count: 64)
+                nat[0] = unremap.dcPerChannel[c][b]
+                let ac = unremap.acPerChannel[c][b]
+                for y in 0..<8 {
+                    for x in 0..<8 where y * 8 + x != 0 {
+                        nat[x * 8 + y] = ac[y * 8 + x]
+                    }
+                }
+                XCTAssertEqual(nat, srcBlocks[b].coefficients,
+                    "forward bridge must preserve coefficients exactly "
+                    + "(channel \(c), block \(b))")
+            }
+        }
+        print("[forward bridge] coefficient-faithful: "
+            + "\(coefs.width)×\(coefs.height), "
+            + "\(jpgData.count)B → \(jxlOut.data.count)B JXL")
     }
 
     /// **ICC profile JPEGs — capability landed (v0.12.0hd).**
