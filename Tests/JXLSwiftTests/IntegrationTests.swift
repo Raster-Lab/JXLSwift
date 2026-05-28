@@ -1607,6 +1607,153 @@ final class FoundationTests: XCTestCase {
                   "powers-of-two")
     }
 
+    // MARK: - Interleaved rANS token encoder (§C.6.3, write path)
+
+    /// Full ANS-section round-trip: build a header + per-cluster ANS
+    /// histograms + an interleaved rANS token stream with
+    /// `ANSTokenStreamWriter`, then decode it back through the public
+    /// `EntropySectionHeader` / `MultiClusterCodebook` / `TokenStreamReader`
+    /// path (which uses the libjxl-compatible **alias** tables by
+    /// default). A successful round-trip therefore proves the encoder's
+    /// rANS state machine + extra-bit interleaving + alias slot inversion
+    /// agree with a decoder that is itself byte-verified against cjxl.
+    private func roundTripANSSection(
+        values: [[UInt32]],          // per-cluster value streams
+        order: [Int],                // cluster index per emitted token
+        cfg: HybridUintConfig,
+        logAlpha: Int,
+        contextMap: ContextMap
+    ) throws {
+        let numClusters = contextMap.numClusters
+        let numContexts = contextMap.numContexts
+        // Histogram tokens per cluster, normalise each to 4096.
+        var hist = [[Int]](repeating:
+            [Int](repeating: 0, count: cfg.maxToken + 1), count: numClusters)
+        // Flatten the per-token (context, value) emission order.
+        var emission: [(ctx: Int, value: UInt32)] = []
+        var cursor = [Int](repeating: 0, count: numClusters)
+        for ctx in order {
+            let cluster = Int(contextMap.map[ctx])
+            let v = values[cluster][cursor[cluster]]
+            cursor[cluster] += 1
+            emission.append((ctx, v))
+            hist[cluster][Int(cfg.encode(v).token)] += 1
+        }
+        var normalised: [[Int32]] = []
+        for c in 0..<numClusters {
+            // Guarantee a usable distribution even for tiny streams.
+            if hist[c].reduce(0, +) == 0 { hist[c][0] = 1 }
+            let d = try ANSDistribution(
+                rawFrequencies: hist[c].map { UInt32($0) })
+            normalised.append(d.frequencies.map { Int32($0) })
+        }
+
+        // Write header + histograms (capturing the on-wire counts) +
+        // the interleaved token stream, all into one bitstream.
+        let uintConfigs = [HybridUintConfig](repeating: cfg, count: numClusters)
+        let header = EntropySectionHeader(
+            lz77: .disabled, contextMap: contextMap,
+            usePrefixCode: false, logAlphaSize: logAlpha,
+            uintConfigs: uintConfigs)
+        var w = BitWriter()
+        try header.write(to: &w, numContexts: numContexts)
+        var wire: [[Int32]] = []
+        for c in 0..<numClusters {
+            wire.append(try SpecANSDistribution.writeHistogram(
+                normalised[c], to: &w))
+        }
+        let codebook = MultiClusterCodebook(
+            huffmanTables: [], ansCounts: wire,
+            alphabetSizes: wire.map { $0.count })
+        var enc = try ANSTokenStreamWriter(header: header, codebook: codebook)
+        for e in emission { try enc.writeToken(context: e.ctx, value: e.value) }
+        try enc.finish(to: &w)
+        let data = w.finishToData()
+
+        // Decode through the public reader path (alias tables).
+        var r = BitReader(data)
+        let hdr = try EntropySectionHeader.read(from: &r, numContexts: numContexts)
+        let cb = try MultiClusterCodebook.read(from: &r, header: hdr)
+        var reader = TokenStreamReader(header: hdr, codebook: cb)
+        var decoded: [UInt32] = []
+        for e in emission {
+            decoded.append(try reader.readToken(context: e.ctx, from: &r))
+        }
+        XCTAssertEqual(decoded, emission.map { $0.value },
+            "ANS token stream must round-trip exactly")
+    }
+
+    /// Single-cluster streams across a sweep of sizes + value ranges
+    /// (small values → no extra bits; large values → HybridUint extra
+    /// bits interleaved with rANS renorm words).
+    func testANSTokenStream_RoundTrip_SingleCluster() throws {
+        let cfg = HybridUintConfig.raw4
+        var seed: UInt64 = 0xC0FFEE
+        func rnd(_ n: Int) -> Int {
+            seed = seed &* 6364136223846793005 &+ 1442695040888963407
+            return Int((seed >> 33) % UInt64(max(1, n)))
+        }
+        let map = ContextMap.trivial(numContexts: 1)
+        for trial in 0..<60 {
+            let n = 20 + rnd(800)
+            var vals = [UInt32]()
+            for _ in 0..<n {
+                // ~⅓ large (exercise extra bits), rest small.
+                vals.append(UInt32(rnd(3) == 0 ? rnd(9000) : rnd(16)))
+            }
+            do {
+                try roundTripANSSection(
+                    values: [vals], order: [Int](repeating: 0, count: n),
+                    cfg: cfg, logAlpha: 6, contextMap: map)
+            } catch {
+                XCTFail("trial \(trial) (n=\(n)) threw: \(error)")
+            }
+        }
+    }
+
+    /// Two-cluster stream with a context map: tokens are routed to two
+    /// distinct distributions (e.g. a peaked "counts" cluster + a spread
+    /// "coefficients" cluster), interleaved in emission order.
+    func testANSTokenStream_RoundTrip_TwoClusters() throws {
+        let cfg = HybridUintConfig.raw4
+        var seed: UInt64 = 0x1234_5678
+        func rnd(_ n: Int) -> Int {
+            seed = seed &* 6364136223846793005 &+ 1442695040888963407
+            return Int((seed >> 33) % UInt64(max(1, n)))
+        }
+        // 3 user contexts → clusters {0, 1, 0}.
+        let map = try ContextMap(numClusters: 2, useMTF: false, map: [0, 1, 0])
+        for trial in 0..<40 {
+            let nA = 30 + rnd(400)   // cluster 0 (contexts 0 & 2)
+            let nB = 30 + rnd(400)   // cluster 1 (context 1)
+            var cluster0 = [UInt32](); var cluster1 = [UInt32]()
+            for _ in 0..<nA { cluster0.append(UInt32(rnd(8))) }       // peaked
+            for _ in 0..<nB { cluster1.append(UInt32(rnd(6000))) }    // spread
+            // Interleave an emission order across contexts 0,1,2.
+            var order = [Int]()
+            var rem0 = nA, rem1 = nB
+            // contexts 0 and 2 both pull from cluster 0; split nA between them.
+            var rem0a = nA / 2
+            var rem0b = nA - rem0a
+            while rem0a + rem0b + rem1 > 0 {
+                let pick = rnd(3)
+                if pick == 0 && rem0a > 0 { order.append(0); rem0a -= 1; rem0 -= 1 }
+                else if pick == 1 && rem1 > 0 { order.append(1); rem1 -= 1 }
+                else if rem0b > 0 { order.append(2); rem0b -= 1; rem0 -= 1 }
+                else if rem0a > 0 { order.append(0); rem0a -= 1; rem0 -= 1 }
+                else if rem1 > 0 { order.append(1); rem1 -= 1 }
+            }
+            _ = rem0
+            do {
+                try roundTripANSSection(
+                    values: [cluster0, cluster1], order: order,
+                    cfg: cfg, logAlpha: 7, contextMap: map)
+            } catch {
+                XCTFail("trial \(trial) threw: \(error)")
+            }
+        }
+    }
+
     // MARK: - Phase E4a: Simple prefix-code-table serialisation (§C.6.2.1)
 
     /// Hand-derived bit pattern: a 2-symbol simple prefix code with

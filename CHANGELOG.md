@@ -11,6 +11,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0hp — Interleaved rANS token encoder (libjxl-compatible)
+
+Second ANS-encoder unit (after the v0.12.0ho histogram writer). New
+`ANSTokenStreamWriter` produces the exact interleaved bitstream the
+streaming rANS decoder consumes:
+
+```
+init(32) , [renorm_0(16)?] , extra_0 , [renorm_1(16)?] , extra_1 , …
+```
+
+rANS encodes in reverse, so renorm words are produced last-symbol-first
+and, reversed, line up with the decoder's forward reads; the HybridUint
+extra bits are plain forward bits emitted in token order right after
+each token's refill. The encode step is the exact inverse of
+`ANSStreamDecoder.readSymbol`, including the **alias** slot assignment —
+the encoder inverts libjxl's `AliasTable` lookup by scanning the
+`tabSize` slots once per cluster to build a `(symbol, residue) → slot`
+map.
+
+**This is libjxl-compatible by construction.** Our `AliasTable` /
+`ANSStreamDecoder` are verified byte-exact against cjxl-emitted streams,
+so a stream that round-trips through them is decodable by djxl too. The
+encoder builds its alias tables from the **on-wire** (quantised) counts
+returned by `writeHistogram`, keeping encode and decode tables in lock-
+step.
+
+Validated by full ANS-section round-trips (header + per-cluster
+histograms + interleaved tokens) decoded through the public
+`EntropySectionHeader` / `MultiClusterCodebook` / `TokenStreamReader`
+path in its default alias mode: 60 single-cluster trials (small +
+large/extra-bit values) and 40 two-cluster trials (peaked + spread
+distributions, interleaved emission). Scope: `lz77.enabled == false`.
+Not yet wired into the bridge — that (cost-gated ANS vs Huffman) is the
+next step. Full suite: 662 tests, 7 skipped, 0 failures.
+
 ### v0.12.0ho — ANS histogram writer (complex path) — foundation for forward size
 
 First step toward closing the forward file-size gap (our bridge files
