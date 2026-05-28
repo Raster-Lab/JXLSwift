@@ -6668,6 +6668,92 @@ final class JXLToJPEGAdapterTests: XCTestCase {
         }
     }
 
+    /// Restart markers (DRI + RST0–7) and the 4:4:0 (1×2) sampling
+    /// shape reverse byte-identically through the autonomous path.
+    /// Both were unblocked by the subsampling-aware block-grid fix
+    /// (v0.12.0hg): the scan encoder restores restart intervals and
+    /// padding bits, and 4:4:0 is just `maxVShift=1, maxHShift=0`.
+    func testEndToEnd_AutonomousReverseTranscode_RestartAnd440()
+        throws
+    {
+        let cjpeg = "/opt/homebrew/bin/cjpeg"
+        let cjxl = "/opt/homebrew/bin/cjxl"
+        guard FileManager.default.isExecutableFile(atPath: cjpeg),
+              FileManager.default.isExecutableFile(atPath: cjxl)
+        else { throw XCTSkip("cjpeg + cjxl required") }
+        struct V {
+            let label: String; let w: Int; let h: Int
+            let args: [String]
+        }
+        let variants: [V] = [
+            V(label: "40×24 4:2:0 +restart", w: 40, h: 24,
+              args: ["-restart", "2", "-sample", "2x2,1x1,1x1"]),
+            V(label: "48×48 4:4:4 +restart", w: 48, h: 48,
+              args: ["-restart", "3", "-sample", "1x1,1x1,1x1"]),
+            V(label: "40×24 4:4:0", w: 40, h: 24,
+              args: ["-sample", "1x2,1x1,1x1"]),
+        ]
+        var results: [String] = []
+        for v in variants {
+            let tmp = NSTemporaryDirectory()
+            let ppmP = tmp + "rs-\(UUID().uuidString).ppm"
+            let jpgP = tmp + "rs-\(UUID().uuidString).jpg"
+            let jxlP = tmp + "rs-\(UUID().uuidString).jxl"
+            defer {
+                for p in [ppmP, jpgP, jxlP] {
+                    try? FileManager.default.removeItem(atPath: p)
+                }
+            }
+            var ppm = Data("P6\n\(v.w) \(v.h)\n255\n".utf8)
+            for i in 0..<(v.w * v.h) {
+                ppm.append(UInt8((i * 11 + i / v.w * 5) % 256))
+                ppm.append(UInt8((i * 7 + 30) % 256))
+                ppm.append(UInt8((i * 3 + 70) % 256))
+            }
+            try ppm.write(to: URL(fileURLWithPath: ppmP))
+            let p1 = Process()
+            p1.launchPath = cjpeg
+            p1.arguments = ["-outfile", jpgP, "-quality", "80",
+                "-baseline"] + v.args + [ppmP]
+            p1.standardOutput = Pipe(); p1.standardError = Pipe()
+            try p1.run(); p1.waitUntilExit()
+            guard p1.terminationStatus == 0 else {
+                results.append("\(v.label): SKIP cjpeg"); continue
+            }
+            let p2 = Process()
+            p2.launchPath = cjxl
+            p2.arguments = ["--lossless_jpeg=1", jpgP, jxlP]
+            p2.standardOutput = Pipe(); p2.standardError = Pipe()
+            try p2.run(); p2.waitUntilExit()
+            guard p2.terminationStatus == 0 else {
+                results.append("\(v.label): SKIP cjxl"); continue
+            }
+            let srcJPG = try Data(contentsOf: URL(fileURLWithPath: jpgP))
+            let jxlBytes = try Data(contentsOf: URL(fileURLWithPath: jxlP))
+            let form = try parseJXLContainer(jxlBytes)
+            guard case .iso(let boxes) = form,
+                  let jbrdPayload = try extractJBRDBox(
+                    from: boxes, in: jxlBytes)
+            else { XCTFail("\(v.label): no jbrd box"); continue }
+            var r = BitReader(jbrdPayload)
+            var box = try JBRDBoxReader.read(from: &r)
+            let brotliStart = (r.position + 7) / 8
+            let brotli = jbrdPayload.suffix(from:
+                jbrdPayload.startIndex + brotliStart)
+            let decoded = try BrotliDecoder.decode(Data(brotli))
+            let bridge = try JXLDecoder().decodeJPEGBridgeData(jxlBytes)
+            try box.distributeBrotliPayload(decoded)
+            let rebuilt = try JXLToJPEGAdapter.reconstruct(
+                bridgeData: bridge, jbrd: box)
+            XCTAssertEqual(rebuilt, srcJPG,
+                "\(v.label): autonomous reverse must be byte-identical")
+            results.append("\(v.label): ✓ (\(srcJPG.count)B)")
+        }
+        for line in results {
+            print("[autonomous reverse restart/440] \(line)")
+        }
+    }
+
     /// 🎉 **Fully autonomous reverse transcode — no `--source`.**
     ///
     /// Self-contained: `ppm → cjpeg → cjxl --lossless_jpeg=1`, then

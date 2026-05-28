@@ -35,10 +35,20 @@ Two coupled fixes:
    / 4:2:2 frames tripped `acsCountMismatch` and then a downstream
    plane-shape `precondition`.
 
-**Tests.** `testEndToEnd_AutonomousReverseTranscode_OddDimensions`
-round-trips 17×23 4:4:4, 30×18 4:2:0, 45×37 4:2:2, and 100×67 4:2:0
-byte-identically through the fully-autonomous reverse path (no
-`--source`). Full suite green, no regressions on MCU-aligned frames.
+The same block-grid fix also unblocked, for free, two cases that had
+been failing for the same reason (their non-multiple-of-`8<<shift`
+luma grids): **restart markers** (DRI + RST0–7) and the **4:4:0**
+(1×2 vertical) sampling shape.
+
+**Tests.**
+- `testEndToEnd_AutonomousReverseTranscode_OddDimensions` — round-trips
+  17×23 4:4:4, 30×18 4:2:0, 45×37 4:2:2, and 100×67 4:2:0
+  byte-identically through the fully-autonomous reverse path (no
+  `--source`).
+- `testEndToEnd_AutonomousReverseTranscode_RestartAnd440` — 40×24
+  4:2:0 +restart, 48×48 4:4:4 +restart, and 40×24 4:4:0.
+
+Full suite green, no regressions on MCU-aligned frames.
 
 (Grayscale — 1 colour channel — remains a separate bite: the VarDCT
 decode is currently 3-channel-coupled and needs an `nbColor`-aware
