@@ -234,6 +234,30 @@ extension JXLCoefficientPlanes {
             blocksPerChannel: blocksPerChannel)
     }
 
+    /// Expand a 1-channel (grayscale) plane set into the 3-channel
+    /// YCbCr layout libjxl uses for grayscale JPEG transcode: the
+    /// lone luma goes to the Y (XYB index 1) channel, X (0) and B (2)
+    /// are all-zero. libjxl's VarDCT/colour machinery is inherently
+    /// 3-channel — a 1-channel VarDCT frame is rejected by its
+    /// decoder — so the forward bridge writes 3 channels even though
+    /// the image metadata stays grayscale (the inverse of the reverse
+    /// path's `extractingChannel(1)`).
+    public func expandGrayscaleToThreeChannel() -> JXLCoefficientPlanes {
+        precondition(channelCount == 1,
+            "expandGrayscaleToThreeChannel requires 1 channel")
+        let bpc = blocksPerChannel[0]
+        let nBlocks = bpc.blocksX * bpc.blocksY
+        let zeroDC = [Int32](repeating: 0, count: nBlocks)
+        let zeroAC = Array(
+            repeating: [Int32](repeating: 0, count: 64),
+            count: nBlocks)
+        return JXLCoefficientPlanes(
+            blocksX: blocksX, blocksY: blocksY, channelCount: 3,
+            dcPerChannel: [zeroDC, dcPerChannel[0], zeroDC],
+            acPerChannel: [zeroAC, acPerChannel[0], zeroAC],
+            blocksPerChannel: [bpc, bpc, bpc])
+    }
+
     /// Reorder per-channel planes by the JPEG → JXL channel map
     /// for the chosen `color_transform`. Returns a new
     /// `JXLCoefficientPlanes` whose `dcPerChannel[i]` /

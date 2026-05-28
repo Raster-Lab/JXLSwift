@@ -2929,9 +2929,14 @@ final class JPEGFoundationTests: XCTestCase {
             quantTables: [qt])
         let state = try JXLBridgeEncoder.prepareFromJPEG(
             img, colorTransform: .ycbcr)
-        XCTAssertEqual(state.planes.channelCount, 1)
-        // .ycbcr → DCzero, so DC is unchanged from source.
-        XCTAssertEqual(state.planes.dcPerChannel[0][0], 50)
+        // Grayscale is expanded to the 3-channel YCbCr layout libjxl
+        // requires for VarDCT — luma in Y (XYB index 1), X/B all-zero.
+        XCTAssertEqual(state.planes.channelCount, 3)
+        // .ycbcr → DCzero, so the luma DC is unchanged from source and
+        // lands in the Y channel; the synthetic chroma is zero.
+        XCTAssertEqual(state.planes.dcPerChannel[1][0], 50)
+        XCTAssertEqual(state.planes.dcPerChannel[0][0], 0)
+        XCTAssertEqual(state.planes.dcPerChannel[2][0], 0)
         XCTAssertEqual(state.frameHeaderParams.colorTransform,
                        .yCbCr)
     }
@@ -5909,6 +5914,72 @@ final class JXLToJPEGAdapterTests: XCTestCase {
         print("[forward bridge] coefficient-faithful: "
             + "\(coefs.width)×\(coefs.height), "
             + "\(jpgData.count)B → \(jxlOut.data.count)B JXL")
+    }
+
+    /// **Grayscale forward bridge.** A grayscale JPEG (1 component)
+    /// is encoded as a 3-channel YCbCr VarDCT frame with the luma in
+    /// the Y (XYB index 1) channel and X/B all-zero — the layout
+    /// libjxl requires (its VarDCT decoder rejects a 1-channel frame)
+    /// and `djxl` accepts. The image metadata stays grayscale. This
+    /// verifies the forward bridge recovers the source luma exactly
+    /// in Y and leaves the synthetic chroma zero.
+    func testEndToEnd_ForwardBridge_Grayscale() throws {
+        let cjpeg = "/opt/homebrew/bin/cjpeg"
+        guard FileManager.default.isExecutableFile(atPath: cjpeg)
+        else { throw XCTSkip("cjpeg required") }
+        let tmp = NSTemporaryDirectory()
+        let pgm = tmp + "gfwd-\(UUID().uuidString).pgm"
+        let jpg = tmp + "gfwd-\(UUID().uuidString).jpg"
+        defer {
+            try? FileManager.default.removeItem(atPath: pgm)
+            try? FileManager.default.removeItem(atPath: jpg)
+        }
+        var pgmData = Data("P5\n32 32\n255\n".utf8)
+        for i in 0..<(32 * 32) {
+            pgmData.append(UInt8((i * 13 + i / 32 * 7) % 256))
+        }
+        try pgmData.write(to: URL(fileURLWithPath: pgm))
+        let p = Process()
+        p.launchPath = cjpeg
+        p.arguments = ["-outfile", jpg, "-quality", "80",
+            "-baseline", pgm]
+        p.standardOutput = Pipe(); p.standardError = Pipe()
+        try p.run(); p.waitUntilExit()
+        XCTAssertEqual(p.terminationStatus, 0)
+        let jpgData = try Data(contentsOf: URL(fileURLWithPath: jpg))
+
+        let coefs = try JPEGDecoder.decodeToCoefficients(jpgData)
+        XCTAssertEqual(coefs.frameComponents.count, 1, "grayscale")
+        let jxlOut = try JXLEncoder()
+            .encodeFromJPEGCoefficients(coefs)
+
+        let bridge = try JXLDecoder().decodeJPEGBridgeData(jxlOut.data)
+        // libjxl grayscale layout: 3 channels, luma in Y(1), X/B zero.
+        XCTAssertEqual(bridge.planes.channelCount, 3)
+        let srcBlocks = coefs.quantisedComponents[0].blocks
+        for b in 0..<srcBlocks.count {
+            // X (0) and B (2) channels are all-zero.
+            XCTAssertTrue(bridge.planes.dcPerChannel[0][b] == 0
+                && bridge.planes.acPerChannel[0][b].allSatisfy { $0 == 0 },
+                "X channel block \(b) must be zero")
+            XCTAssertTrue(bridge.planes.dcPerChannel[2][b] == 0
+                && bridge.planes.acPerChannel[2][b].allSatisfy { $0 == 0 },
+                "B channel block \(b) must be zero")
+            // Y (1) channel recovers the source luma (un-transpose).
+            var nat = [Int32](repeating: 0, count: 64)
+            nat[0] = bridge.planes.dcPerChannel[1][b]
+            let ac = bridge.planes.acPerChannel[1][b]
+            for y in 0..<8 {
+                for x in 0..<8 where y * 8 + x != 0 {
+                    nat[x * 8 + y] = ac[y * 8 + x]
+                }
+            }
+            XCTAssertEqual(nat, srcBlocks[b].coefficients,
+                "Y channel must recover source luma (block \(b))")
+        }
+        print("[forward bridge grayscale] 32×32: "
+            + "\(jpgData.count)B → \(jxlOut.data.count)B JXL, "
+            + "luma in Y, X/B zero ✓")
     }
 
     /// **ICC profile JPEGs — capability landed (v0.12.0hd).**

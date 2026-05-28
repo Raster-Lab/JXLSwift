@@ -1614,16 +1614,21 @@ public enum VarDCTBitstreamWriter {
             xsize: UInt32(state.source.width),
             ysize: UInt32(state.source.height)
         ).write(to: &w)
-        // 3. ImageMetadata — non-XYB, matched to component count.
-        let nch = state.planes.channelCount
+        // 3. ImageMetadata — non-XYB, colour encoding from the
+        //    *source* component count, not the VarDCT frame channel
+        //    count. A grayscale JPEG (1 component) is stored as a
+        //    3-channel YCbCr VarDCT frame (libjxl requirement) but
+        //    keeps `grayscaleD65` metadata so the decoder outputs a
+        //    single channel — matching cjxl `--lossless_jpeg=1`.
+        let sourceComponents = state.source.frameComponents.count
         let colorEncoding: ColorEncoding
-        switch nch {
+        switch sourceComponents {
         case 1: colorEncoding = .grayscaleD65
         case 3: colorEncoding = .srgb
         default:
             throw WriterError.unsupported(
-                "bridge prelude: channel count \(nch) "
-                + "(only 1 or 3 supported)")
+                "bridge prelude: source component count "
+                + "\(sourceComponents) (only 1 or 3 supported)")
         }
         let meta = ImageMetadata(
             allDefault: false, orientation: 1,

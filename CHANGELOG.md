@@ -11,6 +11,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0hj — Grayscale forward bridge is djxl-valid
+
+Closes the grayscale gap noted in `hi`. A grayscale JPEG (1 component)
+now forward-transcodes to a JXL that **`djxl` decodes** — to pixels
+**identical** to cjxl's own `--lossless_jpeg=1` output of the same
+JPEG.
+
+The fix mirrors the reverse-path insight (`hh`): libjxl stores
+grayscale as a **3-channel YCbCr VarDCT frame** with the luma in the Y
+(XYB index 1) channel and X/B all-zero — a 1-channel VarDCT frame is
+rejected by libjxl's decoder. Our forward bridge previously emitted a
+1-channel frame (malformed; even our own decoder couldn't read it).
+Now:
+- `JXLCoefficientPlanes.expandGrayscaleToThreeChannel()` lifts the
+  lone luma into Y with zero X/B; `prepareFromJPEG` applies it.
+- The prelude writer derives the `grayscaleD65` colour encoding from
+  the **source component count**, not the (now 3-channel) frame — so
+  the metadata stays grayscale while the frame is YCbCr, exactly as
+  cjxl does.
+
+Verified: our grayscale forward output decodes (via our own decoder)
+to the same `[0, luma, 0]` channel structure as cjxl, and `djxl`
+renders both to identical pixels. New test
+`testEndToEnd_ForwardBridge_Grayscale` asserts the Y channel recovers
+the source luma exactly and X/B are zero.
+
 ### v0.12.0hi — Forward coefficient-bridge wired to the CLI; coefficient fidelity verified
 
 `jxl-tool transcode --mode coefficient-bridge in.jpg out.jxl` now

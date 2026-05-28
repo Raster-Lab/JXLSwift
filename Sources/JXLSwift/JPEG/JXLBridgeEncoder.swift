@@ -242,8 +242,16 @@ public enum JXLBridgeEncoder {
         // Step 3.1 — shape adapter (also runs the 4:4:4 check).
         let rawPlanes = try jpeg.toJXLCoefficientPlanes()
         // Step 3.2 — channel-order remap to JXL X / Y / B slots.
-        let remapped = rawPlanes.remappedForJXLBridge(
+        // Grayscale (1 component) is expanded to the 3-channel YCbCr
+        // layout libjxl uses for grayscale JPEG transcode — luma in Y,
+        // X/B all-zero — since libjxl's VarDCT decoder rejects a
+        // 1-channel frame. The image metadata stays grayscale (set
+        // from the source component count in the prelude writer).
+        let remapped0 = rawPlanes.remappedForJXLBridge(
             colorTransform: colorTransform)
+        let remapped = remapped0.channelCount == 1
+            ? remapped0.expandGrayscaleToThreeChannel()
+            : remapped0
         // Step 3.3 — DC adjustment (DCzero for .ycbcr, +1024/qt
         // for .none). The DC quant per JXL channel comes from
         // the raw payload below; build that first to share the
