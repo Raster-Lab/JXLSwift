@@ -149,6 +149,37 @@ public struct BlockCtxMap: Sendable {
         return Int(ctxMap[idx])
     }
 
+    /// Per-block DC context index (libjxl `compressed_dc.cc::DequantDC`,
+    /// the `num_dc_ctxs > 1` branch). Combines the three channels'
+    /// **quantised integer** DC values into a single `dc_idx` in
+    /// `[0, numDcCtxs)` by counting how many per-channel thresholds
+    /// each value exceeds, then mixing the three buckets:
+    ///
+    /// ```
+    /// bucket = bucket_x
+    /// bucket = bucket * (dcThresholds[2].count + 1) + bucket_b
+    /// bucket = bucket * (dcThresholds[1].count + 1) + bucket_y
+    /// ```
+    ///
+    /// `dcX` / `dcY` / `dcB` are the integer DC values for the block
+    /// in XYB channel order (X = libjxl storage channel 1, Y =
+    /// storage 0, B = storage 2 — the caller supplies them already
+    /// de-mapped to X/Y/B). When `numDcCtxs <= 1` this always
+    /// returns 0 (the spec-default single-DC-context case).
+    public func dcContextIndex(dcX: Int32, dcY: Int32, dcB: Int32) -> Int {
+        if numDcCtxs <= 1 { return 0 }
+        var bucketX = 0
+        for t in dcThresholds[0] where dcX > t { bucketX += 1 }
+        var bucketY = 0
+        for t in dcThresholds[1] where dcY > t { bucketY += 1 }
+        var bucketB = 0
+        for t in dcThresholds[2] where dcB > t { bucketB += 1 }
+        var bucket = bucketX
+        bucket = bucket * (dcThresholds[2].count + 1) + bucketB
+        bucket = bucket * (dcThresholds[1].count + 1) + bucketY
+        return bucket
+    }
+
     /// Per-block nnz context: maps (predicted-nnz bucket, block class)
     /// to a compact context index in `[0, numCtxs * kNonZeroBuckets)`.
     public func nonZeroContext(

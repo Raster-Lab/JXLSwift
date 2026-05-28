@@ -1258,6 +1258,34 @@ extension JXLDecoder {
                         return computed
                     }()
                     let acBlockQF = UInt32(entry.qf)
+                    // Per-block DC context index (libjxl
+                    // `compressed_dc.cc::DequantDC`). When the
+                    // BlockCtxMap carries DC thresholds
+                    // (`numDcCtxs > 1`), the block context depends on
+                    // which DC buckets the three channels' quantised
+                    // DC values fall into — NOT just `dc_idx = 0`.
+                    // cjxl emits a non-default BlockCtxMap with DC
+                    // thresholds for larger / higher-DC-variance
+                    // frames; using a hard-coded 0 routes high-DC
+                    // blocks (e.g. the bottom of a vertical gradient,
+                    // group rows gy ≥ 2) to the wrong histogram
+                    // cluster, corrupting `nzeros` and over-reading
+                    // the AC token stream. dcValues is in storage
+                    // order [Y, X, B]; the DC plane is full-res for
+                    // 4:4:4 so it indexes by global block position.
+                    let dcBlockIdx = by * dcWidth + bx
+                    let blockDcIdx: Int
+                    if bctx.numDcCtxs > 1,
+                       dcBlockIdx < dcValues[0].count,
+                       dcBlockIdx < dcValues[1].count,
+                       dcBlockIdx < dcValues[2].count {
+                        blockDcIdx = bctx.dcContextIndex(
+                            dcX: dcValues[1][dcBlockIdx],
+                            dcY: dcValues[0][dcBlockIdx],
+                            dcB: dcValues[2][dcBlockIdx])
+                    } else {
+                        blockDcIdx = 0
+                    }
                     // `blockChannels` is XYB-indexed: slot 0 = X,
                     // 1 = Y, 2 = B. libjxl decodes channels in stream
                     // order {1, 0, 2} (Y, X, B), so the i-th decoded
@@ -1287,7 +1315,7 @@ extension JXLDecoder {
                         // (it does the `c^1 if c<2` swap internally
                         // to map storage→ctx_map row).
                         let blockCtx = bctx.context(
-                            dcIdx: 0, qf: acBlockQF,
+                            dcIdx: blockDcIdx, qf: acBlockQF,
                             ord: strategy.orderBucket, c: storageC
                         )
                         // Per-channel coeff order. When the bitstream

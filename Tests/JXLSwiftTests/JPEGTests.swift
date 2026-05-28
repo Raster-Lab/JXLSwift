@@ -6984,6 +6984,12 @@ final class JXLToJPEGAdapterTests: XCTestCase {
         // here so this matrix is the running pin-down of supported
         // shapes.
         //
+        // 768×768 and 1024×1024 exercise the multi-AC-group
+        // (9- and 16-group) path with cjxl's non-default
+        // BlockCtxMap (DC thresholds, `numDcCtxs > 1`). They
+        // regressed before v0.12.0ha, where the per-block DC
+        // context index was hard-coded to 0.
+        //
         // **Currently failing (each tracked as a separate bite):**
         //   • 16×16 4:2:2 — `invalidRCTType(64)` in ACMeta
         //     GroupHeader. Chroma-subsampled frames carry a Squeeze
@@ -6994,12 +7000,6 @@ final class JXLToJPEGAdapterTests: XCTestCase {
         //     fewer ACS first-blocks than the full grid expects.
         //   • 32×32 4:2:0 — `unsupportedTransform(3)` in ACMeta
         //     GroupHeader (Squeeze).
-        //   • 1024×1024 4:4:4 — `dcMM=0 acMM=108544`. DC perfect;
-        //     a sizeable fraction of AC slots in the first AC
-        //     group decode as 0 when JPEG had non-zero values.
-        //     16-AC-group frames (4×4 grid) hit a separate
-        //     multi-group AC decode bug; 4-AC-group at 512×512
-        //     works.
         let variants: [Variant] = [
             Variant(label: "16×16 4:4:4", dim: 16, sample: "1x1,1x1,1x1"),
             Variant(label: "32×32 4:4:4", dim: 32, sample: "1x1,1x1,1x1"),
@@ -7007,6 +7007,8 @@ final class JXLToJPEGAdapterTests: XCTestCase {
             Variant(label: "128×128 4:4:4", dim: 128, sample: "1x1,1x1,1x1"),
             Variant(label: "256×256 4:4:4", dim: 256, sample: "1x1,1x1,1x1"),
             Variant(label: "512×512 4:4:4", dim: 512, sample: "1x1,1x1,1x1"),
+            Variant(label: "768×768 4:4:4", dim: 768, sample: "1x1,1x1,1x1"),
+            Variant(label: "1024×1024 4:4:4", dim: 1024, sample: "1x1,1x1,1x1"),
         ]
         struct Result {
             let label: String

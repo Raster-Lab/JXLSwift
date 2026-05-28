@@ -1,8 +1,56 @@
 # 1024×1024 multi-AC-group decode bug — investigation notes
 
-**Date:** 2026-05-28. **Status:** localized, not fixed. Matrix test
-(`testEndToEnd_CjxlReverseDecode_BitExactMatrix`) is capped at
-512×512 (all green); 1024×1024 is the next bite.
+**Date:** 2026-05-28. **Status: RESOLVED (v0.12.0ha).** Root cause
+was the hard-coded `dcIdx = 0` in the AC decode's block-context
+lookup. The matrix test now covers 16 → 1024 (8 rows, all green).
+
+## Resolution
+
+The bug was **not** in multi-group handling per se, nor in the
+codebook/context-map for many clusters. It was the per-block **DC
+context index** (`dc_idx`), which we hard-coded to 0 in
+`JXLDecoder`'s AC decode call to `BlockCtxMap.context(...)`.
+
+cjxl emits a **non-default `BlockCtxMap`** with DC thresholds
+(`numDcCtxs = 8` for the test fixtures: 1 threshold per channel →
+2³ buckets) once a frame has enough DC variance. libjxl computes
+`dc_idx` per block in `compressed_dc.cc::DequantDC` by counting how
+many per-channel thresholds each of the three quantised DC values
+exceeds, then mixing the buckets:
+
+```
+bucket = bucket_x
+bucket = bucket * (dc_thresholds[2].count + 1) + bucket_b
+bucket = bucket * (dc_thresholds[1].count + 1) + bucket_y
+```
+
+The block context routes through `ctx_map[... * numDcCtxs + dc_idx]`,
+so a wrong `dc_idx` selects the wrong histogram cluster → wrong
+`nzeros` → reads too many AC tokens → bitstream drift → eventual
+EOF or silent value corruption.
+
+**Why it only appeared at group row gy ≥ 2:** the test fixtures
+are vertical gradients, so DC grows with `y`. Blocks in the top
+two group rows (gy 0–1, y < 512 px) had DC below the thresholds
+(`dc_idx == 0`, accidentally correct); blocks at gy ≥ 2 crossed
+the thresholds and needed a non-zero `dc_idx`. That is why 512×512
+(gy ≤ 1) was bit-exact while 768/1024 (gy ≥ 2) failed — a content
+coincidence, not a group-count limit.
+
+**Fix:**
+- `ACContext.swift`: new `BlockCtxMap.dcContextIndex(dcX:dcY:dcB:)`
+  implementing the `DequantDC` bucket formula (returns 0 when
+  `numDcCtxs <= 1`).
+- `JXLDecoder.swift`: compute the per-block `dc_idx` from
+  `dcValues` (storage order [Y, X, B]) once per block and pass it
+  to `bctx.context(...)` instead of the hard-coded 0.
+
+The notes below are the original investigation trail, preserved
+for the diagnostic methodology.
+
+---
+
+# Original investigation (status at time of writing: localized, not fixed)
 
 ## Symptom
 

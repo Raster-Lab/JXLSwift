@@ -11,6 +11,64 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0ha — 🎉 Per-block DC context index: multi-AC-group decode fixed (matrix 16 → 1024)
+
+Fixes a VarDCT AC-decode bug that corrupted any frame whose cjxl
+`BlockCtxMap` carried DC thresholds (`numDcCtxs > 1`). The
+bit-exact reverse-decode matrix now spans **16 → 1024** (8 rows,
+all green), adding the 768×768 (9-group) and 1024×1024 (16-group)
+cases that previously failed.
+
+**Root cause.** The per-block **DC context index** (`dc_idx`) was
+hard-coded to `0` in `JXLDecoder`'s AC decode call to
+`BlockCtxMap.context(...)`. cjxl emits a non-default `BlockCtxMap`
+with DC thresholds once a frame has enough DC variance (the test
+fixtures get `numDcCtxs = 8` — one threshold per channel → 2³
+buckets). libjxl derives `dc_idx` per block
+(`compressed_dc.cc::DequantDC`) by counting how many per-channel
+thresholds each of the three quantised DC values exceeds:
+
+```
+bucket = bucket_x
+bucket = bucket * (dc_thresholds[2].count + 1) + bucket_b
+bucket = bucket * (dc_thresholds[1].count + 1) + bucket_y
+```
+
+The block context routes through
+`ctx_map[… * numDcCtxs + dc_idx]`, so a wrong `dc_idx` selects the
+wrong histogram cluster → wrong `nzeros` → reads too many AC tokens
+→ bitstream drift → eventual EOF or silent value corruption.
+
+**Why it masqueraded as a "multi-group" bug.** The investigation
+(see `SESSION-NOTES-2026-05-28-multigroup-ac-investigation.md`)
+first localized the failure to group rows `gy ≥ 2`. That was a
+content coincidence: the test gradients grow in DC with `y`, so
+only blocks below the third group row (y ≥ 512 px) crossed the DC
+thresholds and needed a non-zero `dc_idx`. 512×512 (gy ≤ 1) was
+accidentally correct with `dc_idx = 0`; 768/1024 (gy ≥ 2) were not.
+Single-section frames up to a 51-cluster 256×256 fixture decoded
+fine, ruling out cluster count.
+
+**Fix.**
+- `ACContext.swift`: new `BlockCtxMap.dcContextIndex(dcX:dcY:dcB:)`
+  implementing the `DequantDC` bucket formula (returns 0 when
+  `numDcCtxs <= 1`, preserving the spec-default fast path).
+- `JXLDecoder.swift`: compute the per-block `dc_idx` once per block
+  from `dcValues` (storage order [Y, X, B]) and pass it to
+  `bctx.context(...)`. Guarded to the 4:4:4 full-resolution DC
+  plane; chroma-subsampled frames (separate unsupported bite) fall
+  back to 0.
+
+**Matrix results (all PASS):**
+
+```
+[matrix] 16×16 … 512×512    -> PASS (as before)
+[matrix] 768×768 4:4:4      -> PASS (blocks=96×96)    [NEW]
+[matrix] 1024×1024 4:4:4    -> PASS (blocks=128×128)  [NEW]
+```
+
+**Tests.** 644 / 7 skipped / 0 failures.
+
 ### v0.12.0gz — 🎉 Bit-exact reverse decode matrix: 4:4:4 sizes 16 → 512
 
 Expands the cjxl reverse-decode regression coverage from a single
