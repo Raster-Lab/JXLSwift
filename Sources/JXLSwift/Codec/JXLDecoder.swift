@@ -233,7 +233,8 @@ public struct JXLDecoder: Sendable {
                 planes: capture.planes,
                 rawQuantTable: capture.rawQuantTable,
                 chromaSubsampling: capture.chromaSubsampling,
-                colorTransform: capture.bridgeColorTransform)
+                colorTransform: capture.bridgeColorTransform,
+                icc: capture.icc)
         }
         throw DecoderError.notImplemented(
             "decodeJPEGBridgeData: decoder reached pixel output "
@@ -256,6 +257,9 @@ fileprivate struct EarlyCoefficientCapture: Error {
     let chromaSubsampling: YCbCrChromaSubsampling
     /// The frame's colour transform mapped to the bridge enum.
     let bridgeColorTransform: JXLBridgeColorTransform
+    /// Reconstructed codestream ICC profile (§C.3.4) when the frame
+    /// carries one; `nil` otherwise.
+    let icc: Data?
 }
 
 /// Everything `decodeJPEGBridgeData` recovers from a cjxl
@@ -274,17 +278,24 @@ public struct JXLJPEGBridgeData: Sendable {
     public let chromaSubsampling: YCbCrChromaSubsampling
     /// Frame colour transform (`.ycbcr` / `.none`).
     public let colorTransform: JXLBridgeColorTransform
+    /// Reconstructed codestream ICC profile (§C.3.4), or `nil` when
+    /// the frame's colour encoding is enumerated rather than ICC.
+    /// The reverse transcode splices this into the APP2
+    /// `ICC_PROFILE` marker.
+    public let icc: Data?
 
     public init(
         planes: JXLCoefficientPlanes,
         rawQuantTable: [Int32]?,
         chromaSubsampling: YCbCrChromaSubsampling,
-        colorTransform: JXLBridgeColorTransform
+        colorTransform: JXLBridgeColorTransform,
+        icc: Data? = nil
     ) {
         self.planes = planes
         self.rawQuantTable = rawQuantTable
         self.chromaSubsampling = chromaSubsampling
         self.colorTransform = colorTransform
+        self.icc = icc
     }
 }
 
@@ -329,8 +340,21 @@ extension JXLDecoder {
         // Same prep `decodeModular` runs.
         var r = BitReader(codestream, startingAt: 16)
         _ = try SizeHeader.read(from: &r)
-        _ = try ImageMetadata.read(from: &r)
+        let reparsedMeta = try ImageMetadata.read(from: &r)
         _ = try? r.readCustomTransformData(xybEncoded: metadata.xybEncoded)
+        // Codestream ICC stream (§C.3.4) sits between the metadata
+        // and the byte boundary when `useICC` is set. Decode it both
+        // to keep the bit position aligned for the FrameHeader/TOC
+        // and to recover the profile for the JPEG reverse path.
+        var frameICC: Data? = nil
+        if reparsedMeta.colorEncoding.useICC {
+            do { frameICC = try ICCStream.decode(from: &r) }
+            catch {
+                throw DecoderError.notImplemented(
+                    "VarDCT decode: codestream ICC stream decode "
+                    + "failed: \(error)")
+            }
+        }
         try r.alignToByte()
         let ctx = FrameHeaderContext(
             xybEncoded: metadata.xybEncoded,
@@ -1883,7 +1907,8 @@ extension JXLDecoder {
                 planes: planes,
                 rawQuantTable: capturedQTable,
                 chromaSubsampling: fh.chromaSubsampling,
-                bridgeColorTransform: bridgeCT)
+                bridgeColorTransform: bridgeCT,
+                icc: frameICC)
         }
         if trace {
             for (bIdx, blockChannels) in acBlocks.enumerated() {
@@ -4509,6 +4534,11 @@ extension JXLDecoder {
             )
         }
         _ = try? r.readCustomTransformData(xybEncoded: m.xybEncoded)
+        // Consume the codestream ICC stream (§C.3.4) so the
+        // FrameHeader/TOC read stays bit-aligned.
+        if m.colorEncoding.useICC {
+            _ = try? ICCStream.decode(from: &r)
+        }
         try? r.alignToByte()
         let ctx = FrameHeaderContext(
             xybEncoded: m.xybEncoded,

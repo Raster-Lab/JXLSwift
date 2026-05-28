@@ -451,53 +451,71 @@ public struct ComplexPrefixCodeFormat {
             throw ComplexPrefixCodeError.prefixCode(e)
         }
 
-        // Decode the actual lengths array.
+        // Decode the actual lengths array. Faithful port of libjxl
+        // `dec_huffman.cc::ReadHuffmanCodeLengths`: the loop stops
+        // when the Kraft budget `space` (2^15) reaches 0 — NOT when
+        // `alphabetSize` symbols have been read — and the repeat
+        // codes (16/17) **accumulate** across consecutive uses of
+        // the same repeat kind. (A previous draft read all
+        // `alphabetSize` lengths with a naive `3 + extra` repeat;
+        // that is correct only for short, run-free codes and
+        // produced oversubscribed lengths for large run-heavy codes
+        // like the codestream ICC's 523-symbol alphabet.)
         var actual = [UInt8](repeating: 0, count: alphabetSize)
-        var i = 0
-        var prevNonZero: UInt8 = 8    // spec default — only meaningful
-                                      // before any non-zero length emitted
+        var symbol = 0
+        var prevCodeLen: UInt8 = 8          // kDefaultCodeLength
+        var rep = 0
+        var repeatCodeLen: UInt8 = 0
+        var lenSpace = 32768                 // 2^15 Kraft budget
 
-        while i < alphabetSize {
-            let symbol: Int
+        while symbol < alphabetSize && lenSpace > 0 {
+            let sym: Int
             do {
-                symbol = try metaTable.decode(from: &r)
+                sym = try metaTable.decode(from: &r)
             } catch let e as BitstreamError {
                 throw ComplexPrefixCodeError.bitstream(e)
             }
-            switch symbol {
-            case 0...15:
-                actual[i] = UInt8(symbol)
-                if symbol > 0 { prevNonZero = UInt8(symbol) }
-                i += 1
-            case 16:
-                let extra = try r.read(bits: 2)
-                let count = 3 + Int(extra)
-                guard i + count <= alphabetSize else {
+            if sym < 16 {
+                rep = 0
+                actual[symbol] = UInt8(sym)
+                symbol += 1
+                if sym != 0 {
+                    prevCodeLen = UInt8(sym)
+                    lenSpace -= 32768 >> sym
+                }
+            } else if sym == 16 || sym == 17 {
+                let extraBits = sym - 14         // 16→2, 17→3
+                let newLen: UInt8 = (sym == 16) ? prevCodeLen : 0
+                if repeatCodeLen != newLen {
+                    rep = 0
+                    repeatCodeLen = newLen
+                }
+                let oldRepeat = rep
+                if rep > 0 {
+                    rep -= 2
+                    rep <<= extraBits
+                }
+                let extra = try r.read(bits: extraBits)
+                rep += Int(extra) + 3
+                let delta = rep - oldRepeat
+                guard symbol + delta <= alphabetSize else {
                     throw ComplexPrefixCodeError.lengthsArrayOverflow(
-                        emittedCount: i + count, alphabetSize: alphabetSize)
+                        emittedCount: symbol + delta,
+                        alphabetSize: alphabetSize)
                 }
-                for _ in 0..<count {
-                    actual[i] = prevNonZero
-                    i += 1
+                for _ in 0..<delta {
+                    actual[symbol] = repeatCodeLen
+                    symbol += 1
                 }
-            case 17:
-                let extra = try r.read(bits: 3)
-                let count = 3 + Int(extra)
-                guard i + count <= alphabetSize else {
-                    throw ComplexPrefixCodeError.lengthsArrayOverflow(
-                        emittedCount: i + count, alphabetSize: alphabetSize)
+                if repeatCodeLen != 0 {
+                    lenSpace -= delta << (15 - Int(repeatCodeLen))
                 }
-                for _ in 0..<count {
-                    actual[i] = 0
-                    i += 1
-                }
-            case 18:
-                throw ComplexPrefixCodeError.reservedSymbol(value: 18)
-            default:
-                throw ComplexPrefixCodeError.reservedSymbol(value: symbol)
+            } else {
+                throw ComplexPrefixCodeError.reservedSymbol(value: sym)
             }
         }
-
+        // Remaining symbols (past the point the Kraft budget filled)
+        // are zero-length — already zero-initialised.
         return actual
     }
 

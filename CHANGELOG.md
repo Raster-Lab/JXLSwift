@@ -11,6 +11,63 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0hd — 🎉 Codestream ICC extractor: ICC-profile JPEGs reverse byte-identically
+
+ICC-profile JPEGs now round-trip **byte-for-byte** through the
+autonomous reverse path. When cjxl `--lossless_jpeg=1` transcodes a
+JPEG whose APP2 marker carries an ICC profile, it moves the profile
+into the codestream's compressed ICC stream (§C.3.4) — our decoder
+now reads it and splices it back into the APP2 marker on
+reconstruction.
+
+**New module `ICCStream`**
+([Codestream/ICCStream.swift](Sources/JXLSwift/Codestream/ICCStream.swift)).
+A faithful port of libjxl `icc_codec.cc` / `icc_codec_common.cc`:
+- `enc_size` (U64) + an entropy section (`kNumICCContexts == 41`) +
+  `enc_size` ANS bytes read with the position/neighbour context
+  `ICCANSContext(i, prev1, prev2)`;
+- `UnpredictICC` — the command interpreter (header prediction, tag
+  list with TRC/XYZ expansion, Insert / Shuffle2/4 / Predict /
+  type-string commands, `LinearPredictICCValue`).
+
+**Prefix-code fix (the load-bearing bug).** The ICC's 523-symbol
+LZ77 prefix code exposed a latent bug in our complex-prefix length
+decoder
+([PrefixCodeSerialisation.swift](Sources/JXLSwift/Entropy/PrefixCodeSerialisation.swift)):
+the repeat codes (16/17) used a naive `count = 3 + extra` with no
+accumulation, and the loop read all `alphabetSize` lengths instead
+of stopping when the Kraft budget reached 0. Both are correct only
+for short, run-free codes. Reimplemented to mirror libjxl
+`dec_huffman.cc::ReadHuffmanCodeLengths` exactly — repeat
+accumulation (`rep = (rep − 2) << extra_bits; rep += delta + 3`)
+plus the 2^15 `space` budget with zero-fill of the tail. This makes
+our complex prefix decoder correct for **all** large run-heavy
+codes, not just ICC. (No regressions: prior small prefix codes were
+unaffected.)
+
+**Integration.**
+- `JXLDecoder`: consume the ICC stream after `ImageMetadata` /
+  `readCustomTransformData` (when `colorEncoding.useICC`) in
+  `decodeVarDCTPartial` and `inspectFrameStructure`, keeping the
+  FrameHeader/TOC bit-aligned. `JXLJPEGBridgeData` /
+  `decodeJPEGBridgeData` now carry the recovered `icc`.
+- Reverse transcode: `JBRDBox.distributeBrotliPayload(_:external:)`
+  already splices `external.icc` into the APP2 marker(s); the
+  autonomous path now feeds it `bridge.icc`. Wired into the library
+  reconstruct and `jxl-tool transcode --mode reverse`.
+
+**Tests.**
+`testEndToEnd_AutonomousReverseTranscode_ICCProfile` builds a
+baseline JPEG with an embedded sRGB APP2 ICC marker, transcodes via
+cjxl, and reconstructs byte-identically from the JXL alone (ICC
+3144 B recovered, output 3831 B == source). CLI verified:
+
+```
+$ jxl-tool transcode --mode reverse icc.jxl out.jpg   # byte-identical
+```
+
+646 tests / 7 skipped / 0 failures.
+
 ### v0.12.0hc — 🎉 Fully autonomous reverse transcode (JXL → JPEG, no `--source`)
 
 The reverse direction now reconstructs the source JPEG

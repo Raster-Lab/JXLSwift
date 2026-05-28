@@ -319,8 +319,18 @@ struct Transcode: ParsableCommand {
                   to: &standardError)
             throw JXLExitCode.generalError
         }
+        // Autonomous path (v0.12.0hc / v0.12.0hd): decode the
+        // coefficients + RAW quant table + chroma info + codestream
+        // ICC from the JXL itself and reconstruct with no `--source`.
+        // Decode the bridge BEFORE distributing the jbrd payload so
+        // the recovered ICC can be spliced into the APP2 marker.
+        // Falls back to the source path only when the autonomous
+        // decode can't handle the frame (non-VarDCT, progressive,
+        // etc.) AND `--source` was supplied.
+        var rebuilt: Data? = nil
+        let bridge = try? JXLDecoder().decodeJPEGBridgeData(jxlBytes)
         let external = JBRDBox.ExternalMetadata(
-            exif: exifBox, xmp: xmpBox, icc: nil)
+            exif: exifBox, xmp: xmpBox, icc: bridge?.icc)
         do {
             try box.distributeBrotliPayload(
                 decoded, external: external)
@@ -330,15 +340,11 @@ struct Transcode: ParsableCommand {
                   to: &standardError)
             throw JXLExitCode.generalError
         }
-        // Autonomous path (v0.12.0hc): decode the coefficients +
-        // RAW quant table + chroma info from the JXL itself and
-        // reconstruct with no `--source`. Falls back to the source
-        // path only when the autonomous decode can't handle the
-        // frame (non-VarDCT, progressive, etc.) AND `--source` was
-        // supplied.
-        var rebuilt: Data? = nil
         do {
-            let bridge = try JXLDecoder().decodeJPEGBridgeData(jxlBytes)
+            guard let bridge = bridge else {
+                throw DecoderError.notImplemented(
+                    "autonomous coefficient decode unavailable")
+            }
             rebuilt = try JXLToJPEGAdapter.reconstruct(
                 bridgeData: bridge, jbrd: box)
         } catch let e as DecoderError {

@@ -6365,6 +6365,101 @@ final class JXLToJPEGAdapterTests: XCTestCase {
             + " bytes ✓")
     }
 
+    /// 🎉 **Autonomous reverse transcode of an ICC-profile JPEG.**
+    ///
+    /// Builds a baseline JPEG with an embedded APP2 `ICC_PROFILE`
+    /// marker (sRGB), runs `cjxl --lossless_jpeg=1` (which moves the
+    /// ICC into the codestream's compressed ICC stream, §C.3.4), and
+    /// reconstructs **byte-identically from the JXL alone**:
+    /// `decodeJPEGBridgeData` recovers the ICC from the codestream
+    /// (`ICCStream` — enc_size + ANS + `UnpredictICC`), and the jbrd
+    /// distribution splices it back into the APP2 marker.
+    func testEndToEnd_AutonomousReverseTranscode_ICCProfile() throws {
+        let cjpeg = "/opt/homebrew/bin/cjpeg"
+        let cjxl = "/opt/homebrew/bin/cjxl"
+        let iccPath =
+            "/System/Library/ColorSync/Profiles/sRGB Profile.icc"
+        guard FileManager.default.isExecutableFile(atPath: cjpeg),
+              FileManager.default.isExecutableFile(atPath: cjxl),
+              FileManager.default.fileExists(atPath: iccPath)
+        else { throw XCTSkip("cjpeg + cjxl + sRGB ICC required") }
+        let tmp = NSTemporaryDirectory()
+        let ppmP = tmp + "icc-\(UUID().uuidString).ppm"
+        let baseP = tmp + "icc-base-\(UUID().uuidString).jpg"
+        let jpgP = tmp + "icc-\(UUID().uuidString).jpg"
+        let jxlP = tmp + "icc-\(UUID().uuidString).jxl"
+        defer {
+            for p in [ppmP, baseP, jpgP, jxlP] {
+                try? FileManager.default.removeItem(atPath: p)
+            }
+        }
+        // 16×16 4:4:4 gradient → baseline JPEG.
+        var ppm = Data("P6\n16 16\n255\n".utf8)
+        for y in 0..<16 {
+            for x in 0..<16 {
+                ppm.append(UInt8(50 + x * 10))
+                ppm.append(UInt8(80 + y * 8))
+                ppm.append(UInt8(min(255, 100 + (x + y) * 5)))
+            }
+        }
+        try ppm.write(to: URL(fileURLWithPath: ppmP))
+        let p1 = Process()
+        p1.launchPath = cjpeg
+        p1.arguments = ["-outfile", baseP, "-quality", "75",
+            "-baseline", "-sample", "1x1,1x1,1x1", ppmP]
+        p1.standardOutput = Pipe(); p1.standardError = Pipe()
+        try p1.run(); p1.waitUntilExit()
+        XCTAssertEqual(p1.terminationStatus, 0)
+        // Splice an APP2 ICC_PROFILE marker after SOI.
+        let icc = try Data(contentsOf: URL(fileURLWithPath: iccPath))
+        let baseJPG = try Data(contentsOf: URL(fileURLWithPath: baseP))
+        var tag = Data("ICC_PROFILE\u{0}".utf8)
+        tag.append(1); tag.append(1)             // seq=1, count=1
+        tag.append(icc)
+        let segLen = tag.count + 2
+        var seg = Data([0xFF, 0xE2,
+            UInt8((segLen >> 8) & 0xFF), UInt8(segLen & 0xFF)])
+        seg.append(tag)
+        var iccJPG = Data(baseJPG.prefix(2))     // SOI
+        iccJPG.append(seg)
+        iccJPG.append(baseJPG.suffix(from: baseJPG.startIndex + 2))
+        try iccJPG.write(to: URL(fileURLWithPath: jpgP))
+        let p2 = Process()
+        p2.launchPath = cjxl
+        p2.arguments = ["--lossless_jpeg=1", jpgP, jxlP]
+        p2.standardOutput = Pipe(); p2.standardError = Pipe()
+        try p2.run(); p2.waitUntilExit()
+        XCTAssertEqual(p2.terminationStatus, 0,
+            "cjxl should accept the ICC JPEG")
+        let jxlBytes = try Data(contentsOf: URL(fileURLWithPath: jxlP))
+
+        // Autonomous reverse: everything from the JXL.
+        let form = try parseJXLContainer(jxlBytes)
+        guard case .iso(let boxes) = form,
+              let jbrdPayload = try extractJBRDBox(
+                from: boxes, in: jxlBytes)
+        else { XCTFail("no jbrd box"); return }
+        var r = BitReader(jbrdPayload)
+        var box = try JBRDBoxReader.read(from: &r)
+        let bytesConsumed = (r.position + 7) / 8
+        let brotli = jbrdPayload.suffix(from: bytesConsumed)
+        let decoded = try BrotliDecoder.decode(Data(brotli))
+        let bridge = try JXLDecoder().decodeJPEGBridgeData(jxlBytes)
+        XCTAssertNotNil(bridge.icc, "codestream ICC must be recovered")
+        XCTAssertEqual(bridge.icc?.count, icc.count,
+            "recovered ICC length must match the embedded sRGB profile")
+        try box.distributeBrotliPayload(
+            decoded,
+            external: JBRDBox.ExternalMetadata(icc: bridge.icc))
+        let rebuilt = try JXLToJPEGAdapter.reconstruct(
+            bridgeData: bridge, jbrd: box)
+        XCTAssertEqual(rebuilt, iccJPG,
+            "autonomous reverse of an ICC JPEG must be byte-identical")
+        print("[autonomous reverse ICC] rebuilt \(rebuilt.count)B "
+            + "== source \(iccJPG.count)B ✓ "
+            + "(ICC \(bridge.icc?.count ?? 0)B recovered)")
+    }
+
     /// 🎉 **Fully autonomous reverse transcode — no `--source`.**
     ///
     /// Self-contained: `ppm → cjpeg → cjxl --lossless_jpeg=1`, then
@@ -6449,11 +6544,16 @@ final class JXLToJPEGAdapterTests: XCTestCase {
                 let bytesConsumed = (r.position + 7) / 8
                 let brotli = jbrdPayload.suffix(from: bytesConsumed)
                 let decoded = try BrotliDecoder.decode(Data(brotli))
-                try box.distributeBrotliPayload(decoded)
-                // 2. Decode coefficients + quant + chroma from JXL.
+                // 2. Decode coefficients + quant + chroma + ICC from
+                //    the codestream (no source).
                 let bridge = try JXLDecoder()
                     .decodeJPEGBridgeData(jxlBytes)
-                // 3. Reconstruct — autonomous (no source input).
+                // 3. Distribute jbrd payload, splicing the recovered
+                //    codestream ICC into the APP2 marker(s).
+                try box.distributeBrotliPayload(
+                    decoded,
+                    external: JBRDBox.ExternalMetadata(icc: bridge.icc))
+                // 4. Reconstruct — autonomous (no source input).
                 let rebuilt = try JXLToJPEGAdapter.reconstruct(
                     bridgeData: bridge, jbrd: box)
                 if rebuilt == originalJPG {
