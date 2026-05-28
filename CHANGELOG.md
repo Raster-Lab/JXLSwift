@@ -11,6 +11,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0hg — 🎉 Odd (non-MCU-aligned) dimensions reverse byte-identically
+
+JPEGs whose width/height are **not** multiples of the MCU size — i.e.
+almost every real photograph — now reverse-transcode **byte-for-byte**
+through the autonomous path, across 4:4:4, 4:2:2, **and 4:2:0**.
+
+Two coupled fixes:
+1. **True SOFn dimensions.** The reconstructed `SOFn` marker now
+   carries the exact pixel size from the JXL `SizeHeader` (e.g.
+   17×23), not the block-rounded grid (24×24). `JXLJPEGBridgeData`
+   gained `width`/`height`, threaded through
+   `reconstruct(bridgeData:jbrd:)` into the coefficient image. (The
+   entropy stream is unchanged — the MCU count is `ceil`-based, so
+   17 and 24 both yield 3 MCU columns.)
+2. **Chroma-subsampling-aware block grid.** The VarDCT decode now
+   pads the luma block grid the way libjxl `FrameDimensions::Set`
+   does — `xsizeBlocks = DivCeil(xsize, 8 << maxHShift) << maxHShift`
+   — and `totalBlocksX/Y` reuse it so the DC plane and AC grid agree.
+   A 30×18 4:2:0 frame is a **4×4** luma block grid (matching the
+   JPEG's 16×16-MCU padding), not 4×3. The old `(xsize+7)/8` only
+   matched for dims already a multiple of `8 << shift`, so odd 4:2:0
+   / 4:2:2 frames tripped `acsCountMismatch` and then a downstream
+   plane-shape `precondition`.
+
+**Tests.** `testEndToEnd_AutonomousReverseTranscode_OddDimensions`
+round-trips 17×23 4:4:4, 30×18 4:2:0, 45×37 4:2:2, and 100×67 4:2:0
+byte-identically through the fully-autonomous reverse path (no
+`--source`). Full suite green, no regressions on MCU-aligned frames.
+
+(Grayscale — 1 colour channel — remains a separate bite: the VarDCT
+decode is currently 3-channel-coupled and needs an `nbColor`-aware
+pass.)
+
 ### v0.12.0hf — 🎉 Brotli static dictionary (RFC 7932 §8) — large-metadata JPEGs reverse byte-identically
 
 JPEGs with **large metadata** (multi-KB EXIF/XMP/ICC or comments)

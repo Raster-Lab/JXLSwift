@@ -6571,6 +6571,103 @@ final class JXLToJPEGAdapterTests: XCTestCase {
             + "(ICC \(bridge.icc?.count ?? 0)B recovered)")
     }
 
+    /// 🎉 **Odd (non-MCU-aligned, non-square) dimensions reverse
+    /// byte-identically.** The SOFn width/height come from the JXL
+    /// `SizeHeader` (true pixel size, e.g. 17×23) rather than the
+    /// block-rounded grid, and the VarDCT block grid uses the
+    /// chroma-subsampling-aware padding (libjxl `FrameDimensions`):
+    /// a 30×18 4:2:0 luma plane is 4×4 blocks, not 4×3. Both are
+    /// needed for odd-sized JPEGs — especially 4:2:0, the norm for
+    /// real photographs.
+    func testEndToEnd_AutonomousReverseTranscode_OddDimensions()
+        throws
+    {
+        let cjpeg = "/opt/homebrew/bin/cjpeg"
+        let cjxl = "/opt/homebrew/bin/cjxl"
+        guard FileManager.default.isExecutableFile(atPath: cjpeg),
+              FileManager.default.isExecutableFile(atPath: cjxl)
+        else { throw XCTSkip("cjpeg + cjxl required") }
+        struct V {
+            let label: String; let w: Int; let h: Int
+            let sample: String
+        }
+        let variants: [V] = [
+            V(label: "17×23 4:4:4", w: 17, h: 23,
+              sample: "1x1,1x1,1x1"),
+            V(label: "30×18 4:2:0", w: 30, h: 18,
+              sample: "2x2,1x1,1x1"),
+            V(label: "45×37 4:2:2", w: 45, h: 37,
+              sample: "2x1,1x1,1x1"),
+            V(label: "100×67 4:2:0", w: 100, h: 67,
+              sample: "2x2,1x1,1x1"),
+        ]
+        var results: [String] = []
+        for v in variants {
+            let tmp = NSTemporaryDirectory()
+            let ppmP = tmp + "od-\(UUID().uuidString).ppm"
+            let jpgP = tmp + "od-\(UUID().uuidString).jpg"
+            let jxlP = tmp + "od-\(UUID().uuidString).jxl"
+            defer {
+                for p in [ppmP, jpgP, jxlP] {
+                    try? FileManager.default.removeItem(atPath: p)
+                }
+            }
+            var ppm = Data("P6\n\(v.w) \(v.h)\n255\n".utf8)
+            for i in 0..<(v.w * v.h) {
+                ppm.append(UInt8((i * 13 + i / v.w * 7) % 256))
+                ppm.append(UInt8((i * 5 + 40) % 256))
+                ppm.append(UInt8((i * 3 + 90) % 256))
+            }
+            try ppm.write(to: URL(fileURLWithPath: ppmP))
+            let p1 = Process()
+            p1.launchPath = cjpeg
+            p1.arguments = ["-outfile", jpgP, "-quality", "82",
+                "-baseline", "-sample", v.sample, ppmP]
+            p1.standardOutput = Pipe(); p1.standardError = Pipe()
+            try p1.run(); p1.waitUntilExit()
+            guard p1.terminationStatus == 0 else {
+                results.append("\(v.label): SKIP cjpeg"); continue
+            }
+            let p2 = Process()
+            p2.launchPath = cjxl
+            p2.arguments = ["--lossless_jpeg=1", jpgP, jxlP]
+            p2.standardOutput = Pipe(); p2.standardError = Pipe()
+            try p2.run(); p2.waitUntilExit()
+            guard p2.terminationStatus == 0 else {
+                results.append("\(v.label): SKIP cjxl"); continue
+            }
+            let srcJPG = try Data(contentsOf: URL(fileURLWithPath: jpgP))
+            let jxlBytes = try Data(contentsOf: URL(fileURLWithPath: jxlP))
+
+            // Fully autonomous reverse — everything from the JXL.
+            let form = try parseJXLContainer(jxlBytes)
+            guard case .iso(let boxes) = form,
+                  let jbrdPayload = try extractJBRDBox(
+                    from: boxes, in: jxlBytes)
+            else { XCTFail("\(v.label): no jbrd box"); continue }
+            var r = BitReader(jbrdPayload)
+            var box = try JBRDBoxReader.read(from: &r)
+            let brotliStart = (r.position + 7) / 8
+            let brotli = jbrdPayload.suffix(from:
+                jbrdPayload.startIndex + brotliStart)
+            let decoded = try BrotliDecoder.decode(Data(brotli))
+            let bridge = try JXLDecoder().decodeJPEGBridgeData(jxlBytes)
+            XCTAssertEqual(bridge.width, v.w,
+                "\(v.label): bridge width must be the true pixel size")
+            XCTAssertEqual(bridge.height, v.h,
+                "\(v.label): bridge height must be the true pixel size")
+            try box.distributeBrotliPayload(decoded)
+            let rebuilt = try JXLToJPEGAdapter.reconstruct(
+                bridgeData: bridge, jbrd: box)
+            XCTAssertEqual(rebuilt, srcJPG,
+                "\(v.label): autonomous reverse must be byte-identical")
+            results.append("\(v.label): ✓ (\(srcJPG.count)B)")
+        }
+        for line in results {
+            print("[autonomous reverse odd-dim] \(line)")
+        }
+    }
+
     /// 🎉 **Fully autonomous reverse transcode — no `--source`.**
     ///
     /// Self-contained: `ppm → cjpeg → cjxl --lossless_jpeg=1`, then

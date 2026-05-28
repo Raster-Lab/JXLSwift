@@ -123,7 +123,9 @@ public enum JXLToJPEGAdapter {
         return try reconstruct(
             coefficients: bridgeData.planes,
             jbrd: box,
-            colorTransform: ct)
+            colorTransform: ct,
+            imageWidth: bridgeData.width,
+            imageHeight: bridgeData.height)
     }
 
     /// Reconstruct the source JPEG bytes from a JXL frame + jbrd
@@ -163,7 +165,9 @@ public enum JXLToJPEGAdapter {
     public static func reconstruct(
         coefficients: JXLCoefficientPlanes,
         jbrd: JBRDBox,
-        colorTransform: JXLBridgeColorTransform
+        colorTransform: JXLBridgeColorTransform,
+        imageWidth: Int? = nil,
+        imageHeight: Int? = nil
     ) throws -> Data {
         guard !jbrd.markerOrder.isEmpty else {
             throw JXLToJPEGAdapterError.malformedJBRD(
@@ -177,10 +181,14 @@ public enum JXLToJPEGAdapter {
         let frameComponents = try buildFrameComponents(jbrd: jbrd)
         let quantTables = try buildQuantTables(jbrd: jbrd)
         // Step 2: Build the per-component coefficient image
-        // (inverts the 8×8 transpose).
+        // (inverts the 8×8 transpose). The SOFn dimensions are the
+        // *true* pixel size (from the JXL SizeHeader) when supplied —
+        // not the block-rounded grid — so odd-sized JPEGs (e.g.
+        // 17×23) reconstruct byte-identically. The block-rounded
+        // fallback preserves callers that don't thread the true size.
         let image = try unremapped.toJPEGCoefficientImage(
-            width: coefficients.blocksX * 8,
-            height: coefficients.blocksY * 8,
+            width: imageWidth ?? coefficients.blocksX * 8,
+            height: imageHeight ?? coefficients.blocksY * 8,
             precision: 8, frameKind: .baselineDCT,
             frameComponents: frameComponents,
             quantTables: quantTables)

@@ -234,6 +234,8 @@ public struct JXLDecoder: Sendable {
                 rawQuantTable: capture.rawQuantTable,
                 chromaSubsampling: capture.chromaSubsampling,
                 colorTransform: capture.bridgeColorTransform,
+                width: Int(inspection.xsize),
+                height: Int(inspection.ysize),
                 icc: capture.icc)
         }
         throw DecoderError.notImplemented(
@@ -283,18 +285,28 @@ public struct JXLJPEGBridgeData: Sendable {
     /// The reverse transcode splices this into the APP2
     /// `ICC_PROFILE` marker.
     public let icc: Data?
+    /// True image pixel dimensions from the JXL `SizeHeader` — the
+    /// source JPEG's SOFn `width`/`height`. These are the *exact*
+    /// dimensions (e.g. 17×23), not the block-rounded grid
+    /// (`blocksX*8`), so odd-sized JPEGs reconstruct byte-identically.
+    public let width: Int
+    public let height: Int
 
     public init(
         planes: JXLCoefficientPlanes,
         rawQuantTable: [Int32]?,
         chromaSubsampling: YCbCrChromaSubsampling,
         colorTransform: JXLBridgeColorTransform,
+        width: Int,
+        height: Int,
         icc: Data? = nil
     ) {
         self.planes = planes
         self.rawQuantTable = rawQuantTable
         self.chromaSubsampling = chromaSubsampling
         self.colorTransform = colorTransform
+        self.width = width
+        self.height = height
         self.icc = icc
     }
 }
@@ -746,8 +758,23 @@ extension JXLDecoder {
         // px) stitch each group's sub-region into the full-frame DC /
         // cmap / EPF / strategy planes. DC group `dcG` lives at TOC
         // section `1 + dcG`.
-        let xsizeBlocks = (xsize + 7) / 8
-        let ysizeBlocks = (ysize + 7) / 8
+        // Block-grid dimensions with chroma-subsampling-aware padding,
+        // mirroring libjxl `FrameDimensions::Set`:
+        //   xsize_blocks = DivCeil(xsize, 8 << maxHShift) << maxHShift
+        // For 4:4:4 this is the plain `ceil(xsize/8)`. For subsampled
+        // frames the luma grid is padded up to a multiple of the
+        // subsampling factor so the chroma block grid aligns — e.g. a
+        // 30×18 4:2:0 frame is 4×4 blocks, not 4×3. (The old
+        // `(xsize+7)/8` only matched for dims already a multiple of
+        // `8 << shift`, which is why odd-sized 4:2:0/4:2:2 frames
+        // tripped `acsCountMismatch`.)
+        let blkCS = fh.chromaSubsampling
+        let xsizeBlocks =
+            ((xsize + (8 << blkCS.maxHShift) - 1) / (8 << blkCS.maxHShift))
+            << blkCS.maxHShift
+        let ysizeBlocks =
+            ((ysize + (8 << blkCS.maxVShift) - 1) / (8 << blkCS.maxVShift))
+            << blkCS.maxVShift
         let dcWidth = xsizeBlocks
         let dcHeight = ysizeBlocks
         // Colour-tile map dimensions — one entry per 64-px tile.
@@ -1276,8 +1303,12 @@ extension JXLDecoder {
         // textured cjxl-d=1 frames mix in DCT16x16 (ord 2),
         // DCT32x16/16x32 (ord 6), etc.
         var naturalOrderCache: [Int: [Int]] = [:]
-        let totalBlocksX = (xsize + 7) / 8
-        let totalBlocksY = (ysize + 7) / 8
+        // Use the chroma-subsampling-aware padded block grid (same as
+        // `xsizeBlocks`/`ysizeBlocks`) so the AC grid matches the DC
+        // plane — for subsampled frames the luma grid is padded up to a
+        // multiple of the subsampling factor (libjxl `FrameDimensions`).
+        let totalBlocksX = xsizeBlocks
+        let totalBlocksY = ysizeBlocks
         // acBlocks[totalBlockIdx][iterC] is the 64-coef block for the
         // i-th decoded (block, channel) pair, indexed by GLOBAL block
         // position (totalBlocksX × totalBlocksY).
