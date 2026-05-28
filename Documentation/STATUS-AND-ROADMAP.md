@@ -28,9 +28,9 @@ GPU paths (land later, behind the proven scalar path).
 | | |
 |---|---|
 | **Version** | v0.12.0hj (Phase J line) |
-| **Tests** | 653 passing / 7 skipped / 0 failures (`swift test -c release`, ~47 s) |
+| **Tests** | 658 passing / 7 skipped / 0 failures (`swift test -c release`, ~48 s) |
 | **Dependencies** | `swift-argument-parser` (CLI only). Zero runtime deps. |
-| **Headline capability** | **JXL → JPEG reverse transcode is byte-identical** across the full real-world JPEG matrix, with no `--source` needed. The **JPEG → JXL forward bridge** is coefficient-faithful and `djxl`-decodable for colour + grayscale. |
+| **Headline capability** | **Lossless JPEG ⇄ JXL transcoding is byte-identical in both directions**, with no `--source` needed — across baseline + progressive, all chroma, odd dims, grayscale, and metadata. The forward path emits a full lossless-JPEG container that `djxl --jpeg` also reconstructs byte-for-byte. One open gap: forward file size (entropy-coding optimisation, not correctness). |
 
 **What works end-to-end today**
 
@@ -74,8 +74,8 @@ Legend: ✅ done · 🟩 substantially done · ⏳ in progress · ⬜ not starte
 | **M** | Modular sub-codec (lossless path) | 🟩 | predictors, RCT, channel decode, MA-tree all used by the VarDCT/bridge decode |
 | **V** | VarDCT | 🟩 | **decoder** decodes real cjxl frames (DC/AC groups, context maps, coeff orders, CFL, RAW quant, chroma subsampling, ICC); **encoder** writes coefficient-bridge frames |
 | **R** | Restoration filters (Gaborish, EPF) | ⬜ | bridge frames disable them (`kSkipAdaptiveLFSmoothing`); pixel-path filters not yet implemented |
-| **J** | JPEG ⇄ JXL transcoding | 🟩 | **reverse complete & byte-identical**; **forward** coefficient-faithful + djxl-valid (see §5) |
-| **Brotli** | RFC 7932 decoder | ✅ | meta-blocks, simple/complex prefix codes, distance ring buffer, **static dictionary + 121 transforms**; context-maps/multi-block-type (NTREES>1) not needed for jbrd payloads |
+| **J** | JPEG ⇄ JXL transcoding | 🟩 | **both directions byte-identical** (baseline + progressive, all chroma, odd dims, grayscale); forward emits a full lossless container, djxl-valid. Open gap: forward file size (see §5) |
+| **Brotli** | RFC 7932 decoder + uncompressed encoder | ✅ | decoder: meta-blocks, simple/complex prefix codes, distance ring buffer, **static dictionary + 121 transforms**; encoder: uncompressed meta-blocks (jbrd tail). Context-maps/multi-block-type (NTREES>1) not needed for jbrd payloads |
 
 > The CLAUDE.md phase table predates the v0.12.0g–hj work and under-states **V** and **J**.
 > This table is the current truth.
@@ -107,26 +107,32 @@ bridge** (no IDCT/DCT round-trip) + the **jbrd** (JPEG Bitstream Reconstruction 
 Pipeline: `parse container → jbrd Bundle → Brotli-decode tail → JXLDecoder.decodeJPEGBridgeData
 (coefficients + RAW quant + chroma + colour transform + ICC) → JXLToJPEGAdapter.reconstruct`.
 
-### 5.2 Forward: JPEG → JXL — 🟩 **coefficient-faithful, djxl-decodable**
+### 5.2 Forward: JPEG → JXL — ✅ **lossless container, byte-identical round-trip**
 
-`transcode --mode coefficient-bridge` packs quantised JPEG DCT coefficients into a VarDCT JXL
-frame (`JXLBridgeEncoder` + `VarDCTBitstreamWriter`).
+`JXLEncoder.encodeLosslessJPEG` (CLI `transcode --mode coefficient-bridge`) emits a complete
+ISOBMFF container — signature + `ftyp` + `jbrd` + `jxlc` — a true lossless-JPEG JXL. Reverse
+(`--mode reverse`) reconstructs the source **byte-for-byte** from the JXL alone.
 
 - **Coefficient fidelity proven:** forward-encode → decode with our byte-exact reverse decoder
-  → every quantised coefficient matches the source exactly. Our output decodes (via our
-  decoder) to *identical* coefficients + quant matrix as cjxl's `--lossless_jpeg=1`.
-- **`djxl`-decodable:** colour (4:4:4 / 4:2:0) and grayscale; grayscale renders to pixels
-  identical to cjxl's own forward output.
+  → every quantised coefficient matches the source exactly. Our output decodes to *identical*
+  coefficients + quant matrix as cjxl's `--lossless_jpeg=1`.
+- **`djxl --jpeg`-valid:** libjxl reconstructs the source JPEG byte-for-byte from our container
+  (4:4:4 / 4:2:0 / grayscale) — it accepts our jbrd box, container, and codestream.
+- **Forward `jbrd` builder** (`JBRDBox.extract(fromJPEG:)`) captures marker order, Huffman
+  tables (EOI sentinel), scan structure, quant metadata, component bindings, app/COM/tail.
+- **Brotli encoder** (`BrotliEncoder.encodeUncompressed`) carries the jbrd tail as
+  uncompressed RFC 7932 meta-blocks.
+- **Input coverage:** baseline (SOF0), **progressive (SOF2 — all four entropy modes)**,
+  extended-sequential; 4:4:4 / 4:2:2 / 4:2:0; odd dimensions; grayscale. The pure-Swift
+  progressive scan decoder (`JPEGScanDecoder.decodeProgressive`) folds the full multi-scan
+  coefficient state during `decodeToCoefficients`.
 
 ### 5.3 What remains in Phase J
 
 - **Forward entropy-coding size.** Single-cluster Huffman today → our bridge files are larger
-  than cjxl's. A file-size optimisation (multi-cluster histograms), not a correctness gap.
-- **Forward `jbrd` box builder.** Needed for a byte-identical JXL → JPEG round-trip of our
-  *own* forward output (capture Huffman tables + marker order). Reverse already consumes jbrd;
-  the *writer* is the missing piece.
-- **Brotli encoder.** Reverse uses the Brotli *decoder*; the forward jbrd tail would need a
-  Brotli *encoder* (or store uncompressed).
+  than cjxl's (e.g. 256² 4:2:0: ours ~54 KB vs cjxl ~34 KB). A file-size optimisation
+  (rANS + multi-cluster histogram clustering in the VarDCT bridge writer), **not** a
+  correctness gap — every byte round-trips today. This is the one open item.
 
 ---
 
@@ -177,7 +183,7 @@ round-trip test.
 
 ```bash
 swift build -c release
-swift test  -c release            # 653 tests / 7 skipped, ~47 s
+swift test  -c release            # 658 tests / 7 skipped, ~48 s
 .build/release/jxl-tool --version
 
 # byte-identical reverse transcode (no source needed)
@@ -194,14 +200,12 @@ Test oracles (optional, dev-time): `cjxl` / `djxl` / `jxlinfo` / `brotli` / `cjp
 
 ## 9. Suggested next milestones (priority order)
 
-1. **Forward `jbrd` box builder** → byte-identical JXL → JPEG round-trip of our *own* forward
-   output (the natural Phase J completion). Pairs with a small Brotli encoder (or uncompressed
-   tail).
-2. **Forward entropy-coding size** — multi-cluster histograms to match cjxl file sizes.
-3. **Restoration filters (Phase R)** — Gaborish + EPF for the lossy pixel-decode path.
-4. **Full lossy VarDCT** beyond the JPEG-bridge subset (XYB colour, full AC-strategy search on
+1. **Forward entropy-coding size** — rANS + multi-cluster histogram clustering in the VarDCT
+   bridge writer to match cjxl file sizes (the one open Phase J item; correctness is done).
+2. **Restoration filters (Phase R)** — Gaborish + EPF for the lossy pixel-decode path.
+3. **Full lossy VarDCT** beyond the JPEG-bridge subset (XYB colour, full AC-strategy search on
    encode).
-5. **Brotli NTREES>1 / NBLTYPES>1** — only if a non-cjxl Brotli stream ever needs decoding
+4. **Brotli NTREES>1 / NBLTYPES>1** — only if a non-cjxl Brotli stream ever needs decoding
    (cjxl jbrd payloads don't).
 
 ---

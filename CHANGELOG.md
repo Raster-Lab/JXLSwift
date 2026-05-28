@@ -11,6 +11,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0hn — 🎉 Progressive JPEG (SOF2) forward transcode — byte-identical
+
+**The forward bridge now accepts progressive JPEGs**, closing the
+last input-coverage gap (the reverse direction already handled SOF2
+since v0.12.0he). `decodeToCoefficients` was baseline-only; it now
+decodes the full multi-scan progressive coefficient state in pure
+Swift.
+
+- New `JPEGScanDecoder.decodeProgressive` — the inverse of
+  `encodeProgressive`. Dispatches on Ss/Se (spectral selection) +
+  Ah/Al (successive approximation) to the four progressive entropy
+  modes (DC first / DC refine / AC first / AC refine), refining a
+  shared per-component coefficient buffer across every scan. AC-refine
+  ports libjpeg `decode_mcu_AC_refine` faithfully (correction bits for
+  already-nonzero coeffs, newly-nonzero run/size + sign, EOB runs, the
+  do-while `--r < 0` landing).
+- `decodeToCoefficients` walks every SOS for SOF2 frames, folding each
+  band into the accumulation grids (DHT/DQT/DRI may change between
+  scans). The sequential path is unchanged.
+- `encodeFromJPEGCoefficients` accepts any DCT frame kind (baseline /
+  extended-sequential / progressive) — the bridge encodes the
+  coefficient grids, not the entropy layout, so the source scan
+  structure is irrelevant there.
+
+Test `testEndToEnd_ForwardProgressive_LosslessContainer_RoundTrip`
+sweeps 4:4:4 / 4:2:0 / 4:2:2 / odd dimensions through the full
+forward (`encodeLosslessJPEG`) + reverse pipeline and asserts
+byte-for-byte identity. Because the reverse `encodeProgressive` is
+deterministic (proven against cjxl in v0.12.0he), a byte-identical
+round-trip proves the decoded coefficients are exact. Full suite: 658
+tests, 7 skipped, 0 failures. Forward file size remains the one open
+gap (single-cluster entropy + uncompressed Brotli).
+
 ### v0.12.0hm — 🎉🎉 Lossless JPEG → JXL → JPEG complete (CLI + container)
 
 **The forward lossless transcode is complete.** `jxl-tool transcode
