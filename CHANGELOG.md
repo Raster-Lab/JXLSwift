@@ -62,6 +62,19 @@ and rebuilds from the JXL only, asserting byte-identical:
 The original JPEG is read only for the final byte comparison —
 never fed into the rebuild.
 
+**CLI.** `jxl-tool transcode --mode reverse in.jxl out.jpg` now
+runs autonomously — no `--source`. Verified byte-identical on a
+32×32 4:2:0 fixture:
+
+```
+$ jxl-tool transcode --mode reverse cli.jxl cli-out.jpg
+wrote 725 bytes to cli-out.jpg
+$ cmp cli.jpg cli-out.jpg   # byte-identical
+```
+
+`--source` is retained as an optional fallback for frames the
+autonomous decoder can't handle (e.g. progressive).
+
 **Scope.** Baseline-sequential JPEGs with the common marker set
 (SOI/APPn/DQT/SOFn/DHT/SOS/EOI). Progressive (SOF2) and the
 codestream ICC extractor remain separate bites.
