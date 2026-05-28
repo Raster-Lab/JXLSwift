@@ -7008,6 +7008,8 @@ final class JXLToJPEGAdapterTests: XCTestCase {
             Variant(label: "64×64 4:2:0", dim: 64, sample: "2x2,1x1,1x1"),
             Variant(label: "256×256 4:2:0", dim: 256, sample: "2x2,1x1,1x1"),
             Variant(label: "512×512 4:2:0", dim: 512, sample: "2x2,1x1,1x1"),
+            // Capstone: subsampling + 16 AC groups + DC thresholds.
+            Variant(label: "1024×1024 4:2:0", dim: 1024, sample: "2x2,1x1,1x1"),
         ]
         struct Result {
             let label: String
