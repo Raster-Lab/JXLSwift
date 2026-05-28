@@ -11,6 +11,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0hk — Minimal Brotli encoder (uncompressed meta-blocks) — forward jbrd prerequisite
+
+`BrotliEncoder.encodeUncompressed(_:)` writes a payload as a valid
+Brotli stream using RFC 7932 §9.2 **uncompressed meta-blocks** (raw
+bytes, no entropy coding) plus the empty-last terminator. Larger than
+a real Brotli encoder's output, but fully spec-compliant — it
+round-trips through our own decoder and is accepted by the `brotli`
+CLI (libbrotli).
+
+This unblocks the forward `jbrd` builder's metadata/tail payload
+without a full entropy-coding Brotli encoder (a future file-size
+bite). The jbrd **Bundle serializer** (`JBRDBoxWriter`, the bit-exact
+inverse of the reader) already exists and is round-trip-tested; the
+remaining pieces for a byte-identical JPEG → JXL → JPEG round-trip of
+our own forward output are the JPEG → `JBRDBox` extractor and the
+container assembly.
+
+Tests: `testBrotliEncoder_Uncompressed_RoundTrips` (empty, small,
+byte-boundary, and >64 KB multi-MNIBBLES payloads through our decoder)
+and `…_AcceptedByBrotliCLI` (spec-compliance via libbrotli).
+
 ### v0.12.0hj — Grayscale forward bridge is djxl-valid
 
 Closes the grayscale gap noted in `hi`. A grayscale JPEG (1 component)

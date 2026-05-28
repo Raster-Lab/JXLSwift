@@ -647,6 +647,55 @@ final class BrotliStaticDictionaryTests: XCTestCase {
         (10, 122880, [32,67,97,116,101,103,111,114,105,101,115,61,39] as [UInt8]),
     ]
 
+    /// `BrotliEncoder.encodeUncompressed` produces a valid Brotli
+    /// stream that round-trips through our decoder, across empty,
+    /// small, byte-boundary, and >64 KB (multi-MNIBBLES) payloads.
+    func testBrotliEncoder_Uncompressed_RoundTrips() throws {
+        var rng: UInt64 = 0x9E3779B97F4A7C15
+        func rnd() -> UInt8 {
+            rng = rng &* 6364136223846793005 &+ 1442695040888963407
+            return UInt8((rng >> 33) & 0xFF)
+        }
+        let sizes = [0, 1, 2, 255, 256, 257, 1024,
+                     65535, 65536, 65537, 200_000]
+        for n in sizes {
+            let data = Data((0..<n).map { _ in rnd() })
+            let stream = BrotliEncoder.encodeUncompressed(data)
+            let decoded = try BrotliDecoder.decode(stream)
+            XCTAssertEqual(decoded, data,
+                "uncompressed Brotli round-trip failed at \(n) bytes")
+        }
+    }
+
+    /// The `brotli` CLI (libbrotli) accepts our uncompressed stream —
+    /// confirms spec-compliance, not just self-consistency.
+    func testBrotliEncoder_Uncompressed_AcceptedByBrotliCLI() throws {
+        let brotli = "/opt/homebrew/bin/brotli"
+        guard FileManager.default.isExecutableFile(atPath: brotli) else {
+            throw XCTSkip("brotli CLI not available")
+        }
+        let payload = Data("JFIF\u{0}\u{1}\u{1}\u{0} the quick brown fox"
+            .utf8) + Data((0..<300).map { UInt8($0 & 0xFF) })
+        let stream = BrotliEncoder.encodeUncompressed(payload)
+        let tmp = FileManager.default.temporaryDirectory
+        let brP = tmp.appendingPathComponent("unc-\(UUID()).br")
+        let outP = tmp.appendingPathComponent("unc-\(UUID()).bin")
+        defer {
+            try? FileManager.default.removeItem(at: brP)
+            try? FileManager.default.removeItem(at: outP)
+        }
+        try stream.write(to: brP)
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: brotli)
+        proc.arguments = ["-d", "-k", "-f", "-o", outP.path, brP.path]
+        try proc.run(); proc.waitUntilExit()
+        XCTAssertEqual(proc.terminationStatus, 0,
+            "brotli CLI must accept our uncompressed stream")
+        let cliDecoded = try Data(contentsOf: outP)
+        XCTAssertEqual(cliDecoded, payload,
+            "brotli CLI decode must match the source payload")
+    }
+
     /// Every transform (0...120) applied to a real dictionary word
     /// must match the byte-for-byte output libbrotli produces.
     func testTransformWord_AllTransforms_MatchLibbrotli() throws {
