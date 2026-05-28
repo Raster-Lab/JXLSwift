@@ -11,6 +11,53 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0he — 🎉 Progressive JPEG (SOF2) reverse transcode
+
+Progressive JPEGs now reverse-transcode **byte-for-byte** through
+the autonomous path. cjxl `--lossless_jpeg=1` stores the full DCT
+coefficients in the codestream and the multi-scan progressive
+structure in the jbrd box; `JPEGScanEncoder.encodeProgressive`
+re-derives each scan's entropy stream from the full coefficients.
+
+**New: progressive scan encoder**
+([JPEGScanEncoder.swift](Sources/JXLSwift/JPEG/JPEGScanEncoder.swift)).
+All four progressive entropy modes (JPEG Annex G):
+- **DC first** (Ss=0, Ah=0): DPCM of `dc >> Al` (arithmetic point
+  transform), interleaved across components.
+- **DC refine** (Ss=0, Ah≠0): one bit `(dc >> Al) & 1` per block.
+- **AC first** (Ss>0, Ah=0): run/size + magnitude of `ac >> Al`
+  (magnitude point transform) with EOB-run (EOBn) coding.
+- **AC refine** (Ss>0, Ah≠0): the hard one — newly-nonzero coeffs
+  (run/size=1 + sign), inline correction bits for already-nonzero
+  coeffs skipped in each run, trailing correction bits carried with
+  the EOB run, and EOBn coding. The correction-bit ordering (after
+  the run/size symbol + sign, never before) and the
+  flush-EOB-run-at-block-start discipline are what make it
+  byte-exact against libjpeg-turbo.
+
+**Integration.** `JXLToJPEGAdapter` detects SOF2 (0xC2) and routes
+each SOS through `encodeProgressive`; it also now scopes the
+per-scan Huffman tables to those defined by DHT markers emitted
+*before* that scan (`huffDefinedUpTo`) — progressive JPEGs redefine
+the same slot IDs between scans, so the full table list would apply
+the wrong scan's table.
+
+**Tests.**
+`testEndToEnd_AutonomousReverseTranscode_Progressive` reconstructs
+byte-identically from the JXL alone across 32/64/128 px 4:4:4 + a
+64×64 4:2:0 case, with dense pseudo-noise content exercising the
+EOB-run and ZRL refinement paths:
+
+```
+[progressive reverse] 32×32 4:4:4   -> PASS (1164B)
+[progressive reverse] 64×64 4:4:4   -> PASS (3927B)
+[progressive reverse] 128×128 4:4:4 -> PASS (14164B)
+[progressive reverse] 64×64 4:2:0   -> PASS (2287B)
+```
+
+CLI verified (`jxl-tool transcode --mode reverse prog.jxl out.jpg`
+→ byte-identical). 647 tests / 7 skipped / 0 failures.
+
 ### v0.12.0hd — 🎉 Codestream ICC extractor: ICC-profile JPEGs reverse byte-identically
 
 ICC-profile JPEGs now round-trip **byte-for-byte** through the

@@ -6350,6 +6350,111 @@ final class JXLToJPEGAdapterTests: XCTestCase {
             + " bytes ✓")
     }
 
+    /// 🎉 **Autonomous reverse transcode of progressive JPEGs.**
+    ///
+    /// Progressive (SOF2) JPEGs split each coefficient across multiple
+    /// scans (DC first/refine, AC first/refine per component, with
+    /// spectral selection Ss/Se and successive approximation Ah/Al).
+    /// cjxl `--lossless_jpeg=1` stores the full coefficients in the
+    /// codestream + the scan structure in the jbrd box; our
+    /// `JPEGScanEncoder.encodeProgressive` re-derives each scan's
+    /// entropy data from the full coefficients and reconstructs the
+    /// source **byte-for-byte** with no `--source`. Sweeps sizes and
+    /// sampling shapes (incl. dense noise to exercise EOB runs +
+    /// ZRL, and 4:2:0).
+    func testEndToEnd_AutonomousReverseTranscode_Progressive() throws {
+        let cjpeg = "/opt/homebrew/bin/cjpeg"
+        let cjxl = "/opt/homebrew/bin/cjxl"
+        guard FileManager.default.isExecutableFile(atPath: cjpeg),
+              FileManager.default.isExecutableFile(atPath: cjxl)
+        else { throw XCTSkip("cjpeg + cjxl required") }
+        struct V { let label: String; let dim: Int; let sample: String }
+        let variants: [V] = [
+            V(label: "32×32 4:4:4", dim: 32, sample: "1x1,1x1,1x1"),
+            V(label: "64×64 4:4:4", dim: 64, sample: "1x1,1x1,1x1"),
+            V(label: "128×128 4:4:4", dim: 128, sample: "1x1,1x1,1x1"),
+            V(label: "64×64 4:2:0", dim: 64, sample: "2x2,1x1,1x1"),
+        ]
+        var results: [(String, String)] = []
+        for v in variants {
+            let tmp = NSTemporaryDirectory()
+            let ppmP = tmp + "pg-\(UUID().uuidString).ppm"
+            let jpgP = tmp + "pg-\(UUID().uuidString).jpg"
+            let jxlP = tmp + "pg-\(UUID().uuidString).jxl"
+            defer {
+                for p in [ppmP, jpgP, jxlP] {
+                    try? FileManager.default.removeItem(atPath: p)
+                }
+            }
+            // Gradient + deterministic pseudo-noise → dense AC so the
+            // progressive AC-refinement EOB-run / ZRL paths run.
+            var ppm = Data("P6\n\(v.dim) \(v.dim)\n255\n".utf8)
+            var seed: UInt32 = UInt32(v.dim)
+            func rnd() -> Int { seed = seed &* 1103515245 &+ 12345
+                return Int((seed >> 16) & 0x3F) }
+            for y in 0..<v.dim {
+                for x in 0..<v.dim {
+                    ppm.append(UInt8((x * 7 + rnd()) % 256))
+                    ppm.append(UInt8((y * 5 + rnd()) % 256))
+                    ppm.append(UInt8(((x + y) * 3 + rnd()) % 256))
+                }
+            }
+            try ppm.write(to: URL(fileURLWithPath: ppmP))
+            let p1 = Process()
+            p1.launchPath = cjpeg
+            p1.arguments = ["-outfile", jpgP, "-quality", "78",
+                "-progressive", "-sample", v.sample, ppmP]
+            p1.standardOutput = Pipe(); p1.standardError = Pipe()
+            try p1.run(); p1.waitUntilExit()
+            guard p1.terminationStatus == 0 else {
+                results.append((v.label, "SKIP cjpeg")); continue
+            }
+            let p2 = Process()
+            p2.launchPath = cjxl
+            p2.arguments = ["--lossless_jpeg=1", jpgP, jxlP]
+            p2.standardOutput = Pipe(); p2.standardError = Pipe()
+            try p2.run(); p2.waitUntilExit()
+            guard p2.terminationStatus == 0 else {
+                results.append((v.label, "SKIP cjxl")); continue
+            }
+            let jxlBytes = try Data(contentsOf: URL(fileURLWithPath: jxlP))
+            let originalJPG = try Data(contentsOf: URL(fileURLWithPath: jpgP))
+            do {
+                let form = try parseJXLContainer(jxlBytes)
+                guard case .iso(let boxes) = form,
+                      let jbrdPayload = try extractJBRDBox(
+                        from: boxes, in: jxlBytes)
+                else { results.append((v.label, "FAIL: no jbrd")); continue }
+                var r = BitReader(jbrdPayload)
+                var box = try JBRDBoxReader.read(from: &r)
+                let bc = (r.position + 7) / 8
+                let dec = try BrotliDecoder.decode(
+                    Data(jbrdPayload.suffix(from: bc)))
+                let bridge = try JXLDecoder().decodeJPEGBridgeData(jxlBytes)
+                try box.distributeBrotliPayload(
+                    dec, external: JBRDBox.ExternalMetadata(icc: bridge.icc))
+                let rebuilt = try JXLToJPEGAdapter.reconstruct(
+                    bridgeData: bridge, jbrd: box)
+                results.append((v.label, rebuilt == originalJPG
+                    ? "PASS (\(rebuilt.count)B)"
+                    : "FAIL: \(rebuilt.count)B vs \(originalJPG.count)B"))
+            } catch {
+                let m = "\(error)"
+                results.append((v.label,
+                    m.count > 90 ? String(m.prefix(87)) + "..." : m))
+            }
+        }
+        for (label, outcome) in results {
+            let padded = label.padding(
+                toLength: 14, withPad: " ", startingAt: 0)
+            print("[progressive reverse] \(padded) -> \(outcome)")
+        }
+        for (label, outcome) in results
+        where !outcome.hasPrefix("PASS") && !outcome.hasPrefix("SKIP") {
+            XCTFail("progressive reverse failed: \(label) — \(outcome)")
+        }
+    }
+
     /// 🎉 **Autonomous reverse transcode of an ICC-profile JPEG.**
     ///
     /// Builds a baseline JPEG with an embedded APP2 `ICC_PROFILE`

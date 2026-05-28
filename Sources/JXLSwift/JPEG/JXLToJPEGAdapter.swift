@@ -195,6 +195,7 @@ public enum JXLToJPEGAdapter {
         var scanIdx = 0
         var huffCursor = 0
         var quantCursor = 0
+        var isProgressive = false
         for marker in jbrd.markerOrder {
             switch marker {
             case 0xD8:
@@ -242,7 +243,8 @@ public enum JXLToJPEGAdapter {
                 out.append(UInt8((jbrd.restartInterval >> 8) & 0xFF))
                 out.append(UInt8(jbrd.restartInterval & 0xFF))
             case 0xC0, 0xC1, 0xC2, 0xC3:
-                // SOFn.
+                // SOFn. 0xC2 = progressive DCT (SOF2).
+                if marker == 0xC2 { isProgressive = true }
                 try emitSOF(marker: marker, image: image, to: &out)
             case 0xC4:
                 // DHT — consume Huffman codes up to is_last.
@@ -256,7 +258,8 @@ public enum JXLToJPEGAdapter {
                 }
                 try emitSOSPlusScan(
                     jbrd: jbrd, scanIdx: scanIdx,
-                    image: image, to: &out)
+                    image: image, progressive: isProgressive,
+                    huffDefinedUpTo: huffCursor, to: &out)
                 scanIdx += 1
             case 0xFF:
                 // Intermarker data sentinel.
@@ -442,6 +445,8 @@ public enum JXLToJPEGAdapter {
     private static func emitSOSPlusScan(
         jbrd: JBRDBox, scanIdx: Int,
         image: JPEGCoefficientImage,
+        progressive: Bool,
+        huffDefinedUpTo: Int,
         to out: inout Data
     ) throws {
         let scan = jbrd.scanInfo[scanIdx]
@@ -468,7 +473,12 @@ public enum JXLToJPEGAdapter {
             repeating: nil, count: 4)
         var acTables: [[JPEGHuffmanEncodeEntry]?] = Array(
             repeating: nil, count: 4)
-        for hc in jbrd.huffmanCode {
+        // Use only the Huffman tables defined by DHT markers emitted
+        // *before* this scan (`huffDefinedUpTo`). Progressive JPEGs
+        // redefine the same slot IDs between scans, so the full list
+        // would wrongly apply a later scan's table. Later definitions
+        // within the active prefix override earlier ones.
+        for hc in jbrd.huffmanCode.prefix(huffDefinedUpTo) {
             let isAC = (hc.slotId & 0x10) != 0
             let id = hc.slotId & 0x0F
             var counts17 = [UInt32](repeating: 0, count: 17)
@@ -490,14 +500,28 @@ public enum JXLToJPEGAdapter {
                 dcTableId: Int(sc.dcTblIdx),
                 acTableId: Int(sc.acTblIdx))
         }
-        let scanBytes = try JPEGScanEncoder.encodeBaselineSequential(
-            components: image.quantisedComponents,
-            frameComponents: image.frameComponents,
-            scanComponents: scanCompsEnc,
-            dcTables: dcTables, acTables: acTables,
-            restartInterval: Int(jbrd.restartInterval),
-            imageWidth: image.width,
-            imageHeight: image.height)
+        let scanBytes: Data
+        if progressive {
+            scanBytes = try JPEGScanEncoder.encodeProgressive(
+                ss: Int(scan.ss), se: Int(scan.se),
+                ah: Int(scan.ah), al: Int(scan.al),
+                components: image.quantisedComponents,
+                frameComponents: image.frameComponents,
+                scanComponents: scanCompsEnc,
+                dcTables: dcTables, acTables: acTables,
+                restartInterval: Int(jbrd.restartInterval),
+                imageWidth: image.width,
+                imageHeight: image.height)
+        } else {
+            scanBytes = try JPEGScanEncoder.encodeBaselineSequential(
+                components: image.quantisedComponents,
+                frameComponents: image.frameComponents,
+                scanComponents: scanCompsEnc,
+                dcTables: dcTables, acTables: acTables,
+                restartInterval: Int(jbrd.restartInterval),
+                imageWidth: image.width,
+                imageHeight: image.height)
+        }
         out.append(scanBytes)
     }
 
