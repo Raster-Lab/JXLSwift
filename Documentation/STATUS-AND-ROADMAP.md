@@ -129,10 +129,17 @@ ISOBMFF container — signature + `ftyp` + `jbrd` + `jxlc` — a true lossless-J
 
 ### 5.3 What remains in Phase J
 
-- **Forward entropy-coding size.** Single-cluster Huffman today → our bridge files are larger
-  than cjxl's (e.g. 256² 4:2:0: ours ~54 KB vs cjxl ~34 KB). A file-size optimisation
-  (rANS + multi-cluster histogram clustering in the VarDCT bridge writer), **not** a
-  correctness gap — every byte round-trips today. This is the one open item.
+- **Forward entropy-coding size.** The AC group now uses **rANS** (v0.12.0hq), closing most of
+  the gap: 256² 4:2:0 is ~42.7 KB (was ~54 KB Huffman; cjxl ~33.8 KB), 4:4:4 ~80 KB (was
+  ~108 KB; cjxl ~62 KB) — down from ~1.6–1.7× to ~1.26–1.29× cjxl. Both our reverse path and
+  `djxl` reconstruct byte-for-byte. **Remaining size work** (all lossless recodes, not
+  correctness): (a) **multi-cluster context modelling** for the AC group — needs the
+  entropy-coded (ANS) context-map *writer* so the 7425-entry map is cheap (the simple-path map
+  costs ~928 B, which kills clustering); (b) convert the **DC / ACMetadata modular** sections to
+  rANS (they share one codebook across sub-images → needs multi-sub-image stream handling).
+- Foundations now in place: `SpecANSDistribution.writeComplex` (general ANS histogram
+  serialiser, v0.12.0ho) and `ANSTokenStreamWriter` (interleaved, libjxl-compatible rANS token
+  encoder, v0.12.0hp).
 
 ---
 

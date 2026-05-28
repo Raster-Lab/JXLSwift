@@ -36,6 +36,14 @@ public enum ANSConstants {
     public static let logTabSize: Int = 12
     public static let tabSize: UInt32 = 1 << UInt32(logTabSize)         // 4096
     public static let stateLowerBound: UInt32 = 1 << 16                  // 65 536
+    /// libjxl `ANS_SIGNATURE` (`lib/jxl/ans_params.h`). The encoder's
+    /// initial rANS state is `ANS_SIGNATURE << 16`; the decoder verifies
+    /// its **final** state returns to that exact value, so a stream
+    /// initialised with any other value (e.g. `stateLowerBound`) decodes
+    /// with our lenient reader but is rejected by libjxl/djxl.
+    public static let signature: UInt32 = 0x13
+    /// Initial encoder state / expected decoder final state.
+    public static let initialState: UInt32 = signature << 16            // 0x130000
 }
 
 /// A normalised probability distribution for an alphabet. Frequencies

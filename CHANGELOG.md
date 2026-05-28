@@ -11,6 +11,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0hq — 🎉 Forward bridge AC group switches to rANS — ~21–25% smaller
+
+The forward JPEG→JXL bridge now entropy-codes the AC coefficient group
+(the ~90% of the file that matters) with **rANS instead of Huffman**,
+cost-gated against the prefix path. rANS removes Huffman's ≥1 bit/symbol
+floor, so on a 256×256 fixture:
+
+| | source | ours (Huffman) | ours (rANS) | cjxl |
+|---|---|---|---|---|
+| 4:4:4 | 79.4 KB | 107.7 KB | **80.4 KB** | 62.3 KB |
+| 4:2:0 | 39.9 KB | 54.1 KB | **42.7 KB** | 33.8 KB |
+
+The gap to cjxl narrows from ~1.6–1.7× to ~1.26–1.29× (the remainder is
+multi-cluster context modelling — a later step). **Both** our own
+reverse transcode and the real `djxl` binary reconstruct the source JPEG
+**byte-for-byte** from the rANS output.
+
+The decisive correctness detail: rANS is only libjxl-valid if the
+encoder's initial state is `ANS_SIGNATURE << 16` (0x130000). libjxl's
+decoder verifies its *final* state returns to that value; our reader
+doesn't, so an init of the bare `stateLowerBound` round-tripped through
+*our* decoder but was rejected by djxl ("Failed to decode image"). Fixed
+by adding `ANSConstants.initialState` and seeding `ANSTokenStreamWriter`
+with it.
+
+- `buildBridgeACCodebook` builds both a prefix and an rANS candidate and
+  keeps the smaller by **actually encoding** the section both ways (no
+  estimation error). The codebook's `usePrefixCode` flag carries the
+  decision; `writeBridgeACGroup` dispatches on it. The rANS alias tables
+  are built from the on-wire counts `writeHistogram` emits.
+- New `testEndToEnd_ANSBridge_DjxlReconstructsByteIdentical` locks in the
+  djxl-valid property (our own reverse path can't detect a libjxl
+  divergence). Full suite: 664 tests, 7 skipped, 0 failures.
+
+The DC/ACMetadata modular sections stay Huffman for now (they share one
+codebook across multiple sub-images — an rANS conversion there needs the
+multi-sub-image stream handling, a later bite).
+
 ### v0.12.0hp — Interleaved rANS token encoder (libjxl-compatible)
 
 Second ANS-encoder unit (after the v0.12.0ho histogram writer). New

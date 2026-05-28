@@ -1125,19 +1125,110 @@ public enum VarDCTBitstreamWriter {
             alphabet = 2
             counts.append(1)
         }
+        let contexts = bctx.numACContexts
+
+        // --- Candidate A: single-cluster prefix (Huffman) ----------
         let lengths = lengthLimitedCanonicalHuffman(
             counts: counts, maxLength: 15, alphabetSize: alphabet)
-        let table = try PrefixCodeTable(lengths: lengths)
-        let codebook = MultiClusterCodebook(
-            huffmanTables: [table], ansCounts: [],
+        let huffTable = try PrefixCodeTable(lengths: lengths)
+        let huffCodebook = MultiClusterCodebook(
+            huffmanTables: [huffTable], ansCounts: [],
             alphabetSizes: [alphabet])
-        let contexts = bctx.numACContexts
-        let header = EntropySectionHeader(
+        let huffHeader = EntropySectionHeader(
             lz77: .disabled,
             contextMap: ContextMap.trivial(numContexts: contexts),
             usePrefixCode: true, logAlphaSize: 15,
             uintConfigs: [cfg])
-        return (header, codebook, contexts)
+
+        // --- Candidate B: single-cluster rANS (ANS) ----------------
+        // rANS removes Huffman's ≥1 bit/symbol floor (fractional bits).
+        // The frequency table is the **on-wire** quantised distribution
+        // `writeHistogram` emits, so the encoder's alias tables match
+        // what the decoder reconstructs. logAlphaSize is the minimal
+        // 5…8 covering the token alphabet.
+        var ansCandidate: (EntropySectionHeader, MultiClusterCodebook)?
+        do {
+            let dist = try ANSDistribution(
+                rawFrequencies: counts.map { UInt32(max(0, $0)) })
+            let normalised = dist.frequencies.map { Int32($0) }
+            var scratch = BitWriter()
+            let wire = try SpecANSDistribution.writeHistogram(
+                normalised, to: &scratch)
+            var logAlpha = 5
+            while (1 << logAlpha) < wire.count && logAlpha < 8 {
+                logAlpha += 1
+            }
+            if wire.count <= (1 << logAlpha) {
+                let ansCodebook = MultiClusterCodebook(
+                    huffmanTables: [], ansCounts: [wire],
+                    alphabetSizes: [wire.count])
+                let ansHeader = EntropySectionHeader(
+                    lz77: .disabled,
+                    contextMap: ContextMap.trivial(numContexts: contexts),
+                    usePrefixCode: false, logAlphaSize: logAlpha,
+                    uintConfigs: [cfg])
+                ansCandidate = (ansHeader, ansCodebook)
+            }
+        } catch {
+            ansCandidate = nil   // fall back to Huffman on any ANS issue
+        }
+
+        // --- Pick the smaller by actually encoding both --------------
+        // Encoding into scratch buffers is exact (no estimation error)
+        // and cheap for a one-shot transcode. Clustering is a pure
+        // lossless recode — the decoded coefficients never change.
+        guard let (ansHeader, ansCodebook) = ansCandidate else {
+            return (huffHeader, huffCodebook, contexts)
+        }
+        let huffBits = (try? estimateBridgeACSectionBits(
+            header: huffHeader, codebook: huffCodebook,
+            perGroup: perGroup, contexts: contexts)) ?? Int.max
+        let ansBits = (try? estimateBridgeACSectionBits(
+            header: ansHeader, codebook: ansCodebook,
+            perGroup: perGroup, contexts: contexts)) ?? Int.max
+        if ProcessInfo.processInfo.environment["JXL_TRACE"] != nil {
+            FileHandle.standardError.write(Data(
+                ("TRACE bridge AC entropy: huffman=\(huffBits)b "
+                 + "ans=\(ansBits)b → "
+                 + "\(ansBits < huffBits ? "ANS" : "Huffman")\n").utf8))
+        }
+        if ansBits < huffBits {
+            return (ansHeader, ansCodebook, contexts)
+        }
+        return (huffHeader, huffCodebook, contexts)
+    }
+
+    /// Encode the AC section's codebook + token stream into a scratch
+    /// `BitWriter` and return the bit count — the exact size of the
+    /// entropy-coder-dependent part, used to pick prefix vs rANS.
+    static func estimateBridgeACSectionBits(
+        header: EntropySectionHeader,
+        codebook: MultiClusterCodebook,
+        perGroup: [[(context: Int, value: UInt32)]],
+        contexts: Int
+    ) throws -> Int {
+        var w = BitWriter()
+        try header.write(to: &w, numContexts: contexts)
+        try codebook.write(to: &w, header: header)
+        if header.usePrefixCode {
+            let tw = TokenStreamWriter(header: header, codebook: codebook)
+            for grp in perGroup {
+                for tok in grp {
+                    try tw.writeToken(
+                        context: tok.context, value: tok.value, to: &w)
+                }
+            }
+        } else {
+            var aw = try ANSTokenStreamWriter(
+                header: header, codebook: codebook)
+            for grp in perGroup {
+                for tok in grp {
+                    try aw.writeToken(context: tok.context, value: tok.value)
+                }
+            }
+            try aw.finish(to: &w)
+        }
+        return w.bitCount
     }
 
     /// Write the bridge frame's DC group section body. Mirrors
@@ -1442,11 +1533,25 @@ public enum VarDCTBitstreamWriter {
                 "writeBridgeACGroup: groupIndex \(groupIndex) "
                 + "out of range (only \(perGroup.count) groups)")
         }
-        let acWriter = TokenStreamWriter(
-            header: acHeader, codebook: acCodebook)
-        for tok in perGroup[groupIndex] {
-            try acWriter.writeToken(
-                context: tok.context, value: tok.value, to: &w)
+        // The codebook's `usePrefixCode` flag selects the entropy coder:
+        // prefix (Huffman) writes each token inline; rANS buffers the
+        // whole group and emits one interleaved stream (init + renorm +
+        // extra bits). Both decode through the same VarDCT AC-group path.
+        if acHeader.usePrefixCode {
+            let acWriter = TokenStreamWriter(
+                header: acHeader, codebook: acCodebook)
+            for tok in perGroup[groupIndex] {
+                try acWriter.writeToken(
+                    context: tok.context, value: tok.value, to: &w)
+            }
+        } else {
+            var acWriter = try ANSTokenStreamWriter(
+                header: acHeader, codebook: acCodebook)
+            for tok in perGroup[groupIndex] {
+                try acWriter.writeToken(
+                    context: tok.context, value: tok.value)
+            }
+            try acWriter.finish(to: &w)
         }
         // No alpha for the bridge.
     }

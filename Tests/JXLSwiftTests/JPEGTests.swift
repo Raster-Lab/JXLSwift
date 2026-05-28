@@ -6152,6 +6152,84 @@ final class JXLToJPEGAdapterTests: XCTestCase {
         }
     }
 
+    /// **djxl-compatibility of the ANS bridge (v0.12.0hq).** The forward
+    /// bridge now entropy-codes the AC group with rANS (cost-gated vs
+    /// Huffman). rANS is only libjxl-compatible if the encoder's initial
+    /// state is `ANS_SIGNATURE << 16` (our reader doesn't check the final
+    /// state, but djxl does). This test transcodes with `encodeLosslessJPEG`
+    /// and reconstructs with the **real djxl** binary, asserting
+    /// byte-identity — catching any regression of the libjxl-valid
+    /// property that our own reverse path can't detect. Uses sizes large
+    /// enough that the cost gate selects ANS. Skipped without cjpeg/djxl.
+    func testEndToEnd_ANSBridge_DjxlReconstructsByteIdentical() throws {
+        let cjpeg = "/opt/homebrew/bin/cjpeg"
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: cjpeg),
+              FileManager.default.isExecutableFile(atPath: djxl)
+        else { throw XCTSkip("cjpeg + djxl required") }
+        struct V { let label: String; let dim: Int; let sample: String }
+        let variants: [V] = [
+            V(label: "128×128 4:4:4", dim: 128, sample: "1x1,1x1,1x1"),
+            V(label: "128×128 4:2:0", dim: 128, sample: "2x2,1x1,1x1"),
+        ]
+        var results: [String] = []
+        for v in variants {
+            let tmp = NSTemporaryDirectory()
+            let ppmP = tmp + "ansd-\(UUID().uuidString).ppm"
+            let jpgP = tmp + "ansd-\(UUID().uuidString).jpg"
+            let jxlP = tmp + "ansd-\(UUID().uuidString).jxl"
+            let outP = tmp + "ansd-\(UUID().uuidString).out.jpg"
+            defer {
+                for p in [ppmP, jpgP, jxlP, outP] {
+                    try? FileManager.default.removeItem(atPath: p)
+                }
+            }
+            var ppm = Data("P6\n\(v.dim) \(v.dim)\n255\n".utf8)
+            var seed: UInt32 = UInt32(v.dim &* 2654435761 & 0xFFFFFFFF)
+            func rnd() -> Int { seed = seed &* 1103515245 &+ 12345
+                return Int((seed >> 16) & 0x3F) }
+            for y in 0..<v.dim {
+                for x in 0..<v.dim {
+                    ppm.append(UInt8((x * 7 + rnd()) % 256))
+                    ppm.append(UInt8((y * 5 + rnd()) % 256))
+                    ppm.append(UInt8(((x + y) * 3 + rnd()) % 256))
+                }
+            }
+            try ppm.write(to: URL(fileURLWithPath: ppmP))
+            let p1 = Process()
+            p1.launchPath = cjpeg
+            p1.arguments = ["-outfile", jpgP, "-quality", "85",
+                "-baseline", "-sample", v.sample, ppmP]
+            p1.standardOutput = Pipe(); p1.standardError = Pipe()
+            try p1.run(); p1.waitUntilExit()
+            guard p1.terminationStatus == 0 else {
+                results.append("\(v.label): SKIP cjpeg"); continue
+            }
+            let jpgData = try Data(contentsOf: URL(fileURLWithPath: jpgP))
+            let container = try JXLEncoder().encodeLosslessJPEG(jpgData).data
+            try container.write(to: URL(fileURLWithPath: jxlP))
+            // Reconstruct via the real djxl binary (output .jpg ⇒ JPEG
+            // bitstream reconstruction from the jbrd box).
+            let p2 = Process()
+            p2.launchPath = djxl
+            p2.arguments = [jxlP, outP]
+            p2.standardOutput = Pipe(); p2.standardError = Pipe()
+            try p2.run(); p2.waitUntilExit()
+            guard p2.terminationStatus == 0,
+                  let outData = try? Data(contentsOf: URL(fileURLWithPath: outP))
+            else { results.append("\(v.label): djxl FAILED to decode"); continue }
+            results.append(outData == jpgData
+                ? "\(v.label): ✓ djxl byte-identical "
+                    + "(\(jpgData.count)B → \(container.count)B JXL)"
+                : "\(v.label): djxl MISMATCH "
+                    + "\(outData.count)B vs \(jpgData.count)B")
+        }
+        for line in results { print("[ANS bridge djxl] \(line)") }
+        for line in results where !line.contains("✓") && !line.contains("SKIP") {
+            XCTFail("ANS bridge djxl failed: \(line)")
+        }
+    }
+
     /// **Progressive forward transcode (v0.12.0hn).** The reverse
     /// direction already round-trips progressive JPEGs (cjxl stores
     /// the full coefficients; we re-derive each scan). This test

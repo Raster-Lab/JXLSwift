@@ -142,8 +142,11 @@ public struct ANSTokenStreamWriter {
             repeating: Seg(hasRefill: false, refill: 0,
                            extraBits: 0, extraNBits: 0),
             count: pending.count)
-        // Reverse-order rANS encode, starting from the lower bound.
-        var state: UInt32 = ANSConstants.stateLowerBound
+        // Reverse-order rANS encode, starting from libjxl's initial
+        // state (`ANS_SIGNATURE << 16`). The decoder's forward pass ends
+        // at this exact value, which libjxl/djxl verifies — using the
+        // bare lower bound decodes with our reader but fails djxl.
+        var state: UInt32 = ANSConstants.initialState
         var i = pending.count - 1
         while i >= 0 {
             let t = pending[i]
