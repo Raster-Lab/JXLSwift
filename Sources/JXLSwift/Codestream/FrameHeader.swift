@@ -103,6 +103,58 @@ public struct YCbCrChromaSubsampling: Sendable, Equatable {
         let cr = try r.read(bits: 2)
         return YCbCrChromaSubsampling(y: y, cb: cb, cr: cr)
     }
+
+    /// libjxl `kHShift` / `kVShift` — the per-mode horizontal /
+    /// vertical right-shift exponents. Mode is the 2-bit
+    /// `channel_mode_[c]` value; the shift is `1 << kHShift[mode]`
+    /// samples per block in each dimension.
+    private static let kHShift: [Int] = [0, 1, 1, 0]
+    private static let kVShift: [Int] = [0, 1, 0, 1]
+
+    /// `channel_mode_[c]` as an `Int` for color channel `c`
+    /// (0 = X/Cb, 1 = Y, 2 = B/Cr — the libjxl
+    /// `YCbCrChromaSubsampling` ordering, which is how the values
+    /// are stored on the wire).
+    @inline(__always)
+    private func mode(_ c: Int) -> Int {
+        switch c {
+        case 0: return Int(channelModes.0)
+        case 1: return Int(channelModes.1)
+        default: return Int(channelModes.2)
+        }
+    }
+
+    /// libjxl `MaxHShift()` — `max_c kHShift[channel_mode_[c]]`.
+    public var maxHShift: Int {
+        max(Self.kHShift[mode(0)],
+            max(Self.kHShift[mode(1)], Self.kHShift[mode(2)]))
+    }
+    /// libjxl `MaxVShift()`.
+    public var maxVShift: Int {
+        max(Self.kVShift[mode(0)],
+            max(Self.kVShift[mode(1)], Self.kVShift[mode(2)]))
+    }
+
+    /// libjxl `HShift(c) = maxhs - kHShift[channel_mode_[c]]` for
+    /// color channel `c` (0 = X/Cb, 1 = Y, 2 = B/Cr). The result
+    /// is the per-block horizontal right-shift this channel's plane
+    /// uses relative to the (full-resolution) frame block grid.
+    @inline(__always)
+    public func hShift(_ c: Int) -> Int {
+        return maxHShift - Self.kHShift[mode(c)]
+    }
+    /// libjxl `VShift(c)`.
+    @inline(__always)
+    public func vShift(_ c: Int) -> Int {
+        return maxVShift - Self.kVShift[mode(c)]
+    }
+
+    /// True when all three channels are full-resolution (4:4:4).
+    public var is444: Bool {
+        return hShift(0) == 0 && vShift(0) == 0
+            && hShift(1) == 0 && vShift(1) == 0
+            && hShift(2) == 0 && vShift(2) == 0
+    }
 }
 
 /// Per-frame blending info — how the frame composites onto the

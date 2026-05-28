@@ -649,9 +649,21 @@ extension JXLDecoder {
         // Colour-tile map dimensions — one entry per 64-px tile.
         let acCmapWidth = max(1, (dcWidth + 7) / 8)
         let acCmapHeight = max(1, (dcHeight + 7) / 8)
-        // Full-frame accumulators stitched from each DC group.
-        var dcValues: [[Int32]] = (0..<3).map { _ in
-            [Int32](repeating: 0, count: dcWidth * dcHeight)
+        // Per-STORAGE-channel DC plane shifts + dimensions. Storage
+        // order is [Y, X, B]; the colour-channel HShift/VShift map
+        // to it as Y=colour 1, X=colour 0, B=colour 2 (libjxl
+        // `dec_modular.cc::DecodeVarDCTDC`). For 4:4:4 all shifts
+        // are 0 and the chroma planes equal the full DC grid.
+        let dcCS = fh.chromaSubsampling
+        let dcChanHShift = [dcCS.hShift(1), dcCS.hShift(0), dcCS.hShift(2)]
+        let dcChanVShift = [dcCS.vShift(1), dcCS.vShift(0), dcCS.vShift(2)]
+        let dcChanWidth = (0..<3).map { dcWidth >> dcChanHShift[$0] }
+        let dcChanHeight = (0..<3).map { dcHeight >> dcChanVShift[$0] }
+        // Full-frame accumulators stitched from each DC group. Each
+        // channel sized at its (possibly subsampled) DC resolution.
+        var dcValues: [[Int32]] = (0..<3).map {
+            [Int32](repeating: 0,
+                    count: dcChanWidth[$0] * dcChanHeight[$0])
         }
         var ytoxMapFull = [Int32](
             repeating: 0, count: acCmapWidth * acCmapHeight)
@@ -764,12 +776,20 @@ extension JXLDecoder {
             }
             let (dcTree, dcPostHdr, dcPostCb) = try resolveModularTree(
                 useGlobal: dcGH.useGlobalTree, label: "DC group \(dcG)")
-            // DC channels — 3 channels of the group's block region.
-            let dcChannels = [
-                ModularChannelGeometry(width: gW, height: gH),
-                ModularChannelGeometry(width: gW, height: gH),
-                ModularChannelGeometry(width: gW, height: gH),
-            ]
+            // DC channels — 3 channels of the group's block region,
+            // decoded in STORAGE order [Y, X, B]. For chroma-
+            // subsampled frames the X (Cb) and B (Cr) DC planes are
+            // reduced per `chroma_subsampling.HShift/VShift` (the
+            // shifts precomputed above as `dcChanHShift/VShift`).
+            // A wrong (full-res) chroma plane over-reads the modular
+            // token stream and drifts the bit position into the
+            // ACMeta GroupHeader (the `unsupportedTransform` /
+            // `invalidRCT` symptom).
+            let dcChannels = (0..<3).map { s in
+                ModularChannelGeometry(
+                    width: gW >> dcChanHShift[s],
+                    height: gH >> dcChanVShift[s])
+            }
             var dcStream = TokenStreamReader(
                 header: dcPostHdr, codebook: dcPostCb)
             let dcVals: [[Int32]]
@@ -786,8 +806,11 @@ extension JXLDecoder {
             }
             for c in 0..<3 {
                 placeRegion(dcVals[c], into: &dcValues[c],
-                            offX: gOffX, offY: gOffY, w: gW, h: gH,
-                            dstWidth: dcWidth)
+                            offX: gOffX >> dcChanHShift[c],
+                            offY: gOffY >> dcChanVShift[c],
+                            w: gW >> dcChanHShift[c],
+                            h: gH >> dcChanVShift[c],
+                            dstWidth: dcChanWidth[c])
             }
 
             // ACMetadata for this DC group. count is read with
@@ -1209,31 +1232,48 @@ extension JXLDecoder {
             var acTokenStream = TokenStreamReader(
                 header: firstACHist.0, codebook: firstACHist.1
             )
-            // Per-group nzeros plane (per channel × cell grid). For
-            // multi-block strategies (DCT16x16 etc.) we stamp the
-            // first-block's nzeros to ALL covered cells so subsequent
-            // first-blocks see the right neighbour values when
-            // computing `predNnz`. Mirrors libjxl `dec_group.cc`'s
-            // `nzeros_pos[(y+cy)*stride + (x+cx)] = nzeros` loop.
+            // Per-group, per-channel nzeros plane. Indexed by XYB
+            // channel (0=X, 1=Y, 2=B) at that channel's (possibly
+            // chroma-subsampled) resolution — libjxl keeps a separate
+            // `num_nzeroes` plane per channel and indexes it by the
+            // chroma block coordinate `(sbx, sby)`. For multi-block
+            // strategies (DCT16x16 etc.) we stamp the first-block's
+            // nzeros to ALL covered cells so subsequent first-blocks
+            // see the right neighbour values (mirrors libjxl
+            // `dec_group.cc`'s `nzeros_pos[...] = nzeros` loop). For
+            // 4:4:4 the three planes are identical full-res grids,
+            // matching the previous single-plane behaviour.
             let groupBlocksY = byEnd - byStart
-            var nzPlane = [Int32](
-                repeating: 0,
-                count: 3 * groupBlocksY * groupBlocksX
-            )
+            // XYB-channel shifts (0=X, 1=Y, 2=B). Y is always 0.
+            let acHShift = [dcCS.hShift(0), dcCS.hShift(1), dcCS.hShift(2)]
+            let acVShift = [dcCS.vShift(0), dcCS.vShift(1), dcCS.vShift(2)]
+            let gbXc = (0..<3).map {
+                (groupBlocksX + (1 << acHShift[$0]) - 1) >> acHShift[$0]
+            }
+            let gbYc = (0..<3).map {
+                (groupBlocksY + (1 << acVShift[$0]) - 1) >> acVShift[$0]
+            }
+            // Within-group chroma origin per channel (group start
+            // block, shifted to chroma resolution).
+            let chromaOrgX = (0..<3).map { bxStart >> acHShift[$0] }
+            let chromaOrgY = (0..<3).map { byStart >> acVShift[$0] }
+            var nzPlaneC: [[Int32]] = (0..<3).map {
+                [Int32](repeating: 0, count: gbXc[$0] * gbYc[$0])
+            }
+            // `cgx`/`cgy` are within-group chroma cell coordinates.
             @inline(__always) func nzPredict(
-                c: Int, gx: Int, gy: Int
+                xybC: Int, cgx: Int, cgy: Int
             ) -> UInt32 {
-                let stride = groupBlocksX
-                let chanOff = c * groupBlocksY * stride
-                if gy == 0 && gx == 0 { return 32 }
-                if gy == 0 {
-                    return UInt32(nzPlane[chanOff + (gx - 1)])
+                let stride = gbXc[xybC]
+                if cgy == 0 && cgx == 0 { return 32 }
+                if cgy == 0 {
+                    return UInt32(nzPlaneC[xybC][cgx - 1])
                 }
-                if gx == 0 {
-                    return UInt32(nzPlane[chanOff + (gy - 1) * stride + gx])
+                if cgx == 0 {
+                    return UInt32(nzPlaneC[xybC][(cgy - 1) * stride + cgx])
                 }
-                let above = nzPlane[chanOff + (gy - 1) * stride + gx]
-                let left  = nzPlane[chanOff + gy * stride + (gx - 1)]
+                let above = nzPlaneC[xybC][(cgy - 1) * stride + cgx]
+                let left  = nzPlaneC[xybC][cgy * stride + (cgx - 1)]
                 return UInt32((above + left + 1) >> 1)
             }
             for by in byStart..<byEnd {
@@ -1273,16 +1313,24 @@ extension JXLDecoder {
                     // the AC token stream. dcValues is in storage
                     // order [Y, X, B]; the DC plane is full-res for
                     // 4:4:4 so it indexes by global block position.
-                    let dcBlockIdx = by * dcWidth + bx
+                    // Per-channel DC plane index at this block,
+                    // accounting for chroma subsampling (storage
+                    // order [Y, X, B] = dcValues[0/1/2]).
+                    let yDcIdx = (by >> dcChanVShift[0]) * dcChanWidth[0]
+                        + (bx >> dcChanHShift[0])
+                    let xDcIdx = (by >> dcChanVShift[1]) * dcChanWidth[1]
+                        + (bx >> dcChanHShift[1])
+                    let bDcIdx = (by >> dcChanVShift[2]) * dcChanWidth[2]
+                        + (bx >> dcChanHShift[2])
                     let blockDcIdx: Int
                     if bctx.numDcCtxs > 1,
-                       dcBlockIdx < dcValues[0].count,
-                       dcBlockIdx < dcValues[1].count,
-                       dcBlockIdx < dcValues[2].count {
+                       yDcIdx < dcValues[0].count,
+                       xDcIdx < dcValues[1].count,
+                       bDcIdx < dcValues[2].count {
                         blockDcIdx = bctx.dcContextIndex(
-                            dcX: dcValues[1][dcBlockIdx],
-                            dcY: dcValues[0][dcBlockIdx],
-                            dcB: dcValues[2][dcBlockIdx])
+                            dcX: dcValues[1][xDcIdx],
+                            dcY: dcValues[0][yDcIdx],
+                            dcB: dcValues[2][bDcIdx])
                     } else {
                         blockDcIdx = 0
                     }
@@ -1292,7 +1340,14 @@ extension JXLDecoder {
                     // block is stored at its XYB slot `storageC`, not
                     // at iteration index `i`. (Verified against an
                     // instrumented djxl 0.11.2 `dec_group.cc` trace.)
-                    var blockChannels: [[Int32]] = [[], [], []]
+                    // Pre-fill all three channels with zero blocks so
+                    // chroma positions that carry no block (subsampled
+                    // X/B at odd block coordinates) stay well-formed.
+                    var blockChannels: [[Int32]] = [
+                        [Int32](repeating: 0, count: strategySize),
+                        [Int32](repeating: 0, count: strategySize),
+                        [Int32](repeating: 0, count: strategySize),
+                    ]
                     let cellsX = strategy.blockCells.cellsX
                     let cellsY = strategy.blockCells.cellsY
                     // libjxl `dec_group.cc:554` iterates channels in
@@ -1307,9 +1362,23 @@ extension JXLDecoder {
                         // 0 (X), iter 2 → 2 (B).
                         let storageC = [1, 0, 2][iterIdx]
                         let xybC = storageC                 // 0=X, 1=Y, 2=B
+                        // Chroma-subsampling block-existence test
+                        // (libjxl `GetBlockFromBitstream::LoadBlock`):
+                        // a channel's block exists at (bx,by) only when
+                        // the chroma coordinate maps back exactly. For
+                        // 4:2:0, X/B blocks exist only at even (bx,by).
+                        let hs = acHShift[xybC]
+                        let vs = acVShift[xybC]
+                        let sbx = bx >> hs
+                        let sby = by >> vs
+                        if (sbx << hs != bx) || (sby << vs != by) {
+                            continue
+                        }
+                        let cgx = sbx - chromaOrgX[xybC]
+                        let cgy = sby - chromaOrgY[xybC]
                         var blk = [Int32](repeating: 0, count: strategySize)
                         let predNnz = nzPredict(
-                            c: iterIdx, gx: groupColIdx, gy: groupRowIdx
+                            xybC: xybC, cgx: cgx, cgy: cgy
                         )
                         // BlockCtxMap.Context takes libjxl STORAGE c
                         // (it does the `c^1 if c<2` swap internally
@@ -1362,13 +1431,20 @@ extension JXLDecoder {
                         let nzPerCell =
                             (nzTotal + Int32(strategy.coveredBlocks) - 1)
                                 / Int32(strategy.coveredBlocks)
-                        let stride = groupBlocksX
-                        let chanOff = iterIdx * groupBlocksY * stride
+                        // Stamp the per-channel chroma-resolution
+                        // nzeros plane at this block's covered cells.
+                        // For DCT8 (the only strategy in the JPEG
+                        // bridge) cellsX = cellsY = 1, so this writes
+                        // a single cell at (cgx, cgy).
+                        let stride = gbXc[xybC]
                         for cy in 0..<cellsY {
                             for cx in 0..<cellsX {
-                                nzPlane[chanOff
-                                    + (groupRowIdx + cy) * stride
-                                    + (groupColIdx + cx)] = nzPerCell
+                                let px = cgx + cx
+                                let py = cgy + cy
+                                if px < gbXc[xybC] && py < gbYc[xybC] {
+                                    nzPlaneC[xybC][py * stride + px] =
+                                        nzPerCell
+                                }
                             }
                         }
                         blockChannels[storageC] = blk
@@ -1562,14 +1638,25 @@ extension JXLDecoder {
                 dcValues[2],   // B (Cr)
             ]
             // acBlocks[blkIdx][c] is indexed by XYB channel c
-            // directly (per the `acIterToXYB = [0, 1, 2]` mapping
-            // documented at line ~1495 of the original decoder).
+            // directly (per the `acIterToXYB = [0, 1, 2]` mapping).
+            // For chroma-subsampled frames the X/B channels carry
+            // their block only at full positions `(cbx<<hs, cby<<vs)`;
+            // sample at the chroma grid so each channel's plane has
+            // exactly `bpc[c]` blocks. For 4:4:4 (hs=vs=0) this
+            // collapses to the full-grid enumeration.
             var acInXYBOrder: [[[Int32]]] = [[], [], []]
             for c in 0..<3 {
-                acInXYBOrder[c].reserveCapacity(
-                    totalBlocksX * totalBlocksY)
-                for blkIdx in 0..<(totalBlocksX * totalBlocksY) {
-                    acInXYBOrder[c].append(acBlocks[blkIdx][c])
+                let hs = maxhs - kH[cm[c]]
+                let vs = maxvs - kV[cm[c]]
+                let cbX = totalBlocksX >> hs
+                let cbY = totalBlocksY >> vs
+                acInXYBOrder[c].reserveCapacity(cbX * cbY)
+                for cby in 0..<cbY {
+                    for cbx in 0..<cbX {
+                        let fullIdx =
+                            (cby << vs) * totalBlocksX + (cbx << hs)
+                        acInXYBOrder[c].append(acBlocks[fullIdx][c])
+                    }
                 }
             }
 
@@ -1873,13 +1960,30 @@ extension JXLDecoder {
         var dcFloat: [[Float]] = (0..<3).map { _ in
             [Float](repeating: 0, count: dcWidth * dcHeight)
         }
-        for idx in 0..<(dcWidth * dcHeight) {
-            let inX = Float(dcValues[1][idx]) * mulDC[0] * dcExtraFactor
-            let inY = Float(dcValues[0][idx]) * mulDC[1] * dcExtraFactor
-            let inB = Float(dcValues[2][idx]) * mulDC[2] * dcExtraFactor
-            dcFloat[1][idx] = inY
-            dcFloat[0][idx] = inX + dcCflX * inY
-            dcFloat[2][idx] = inB + dcCflB * inY
+        // Read each channel's quantised DC at its (possibly
+        // subsampled) plane resolution and nearest-neighbour
+        // upsample into the full-resolution `dcFloat`. dcValues is
+        // storage order [Y, X, B]; for 4:4:4 the per-channel index
+        // collapses to `idx`. (The full pixel path's chroma
+        // upsampling is nearest-neighbour only — proper subsampled
+        // pixel reconstruction is out of scope; the in-scope
+        // `decodeToCoefficients` path returns before reaching here.)
+        for y in 0..<dcHeight {
+            for x in 0..<dcWidth {
+                let idx = y * dcWidth + x
+                let yIdx = (y >> dcChanVShift[0]) * dcChanWidth[0]
+                    + (x >> dcChanHShift[0])
+                let xIdx = (y >> dcChanVShift[1]) * dcChanWidth[1]
+                    + (x >> dcChanHShift[1])
+                let bIdx = (y >> dcChanVShift[2]) * dcChanWidth[2]
+                    + (x >> dcChanHShift[2])
+                let inX = Float(dcValues[1][xIdx]) * mulDC[0] * dcExtraFactor
+                let inY = Float(dcValues[0][yIdx]) * mulDC[1] * dcExtraFactor
+                let inB = Float(dcValues[2][bIdx]) * mulDC[2] * dcExtraFactor
+                dcFloat[1][idx] = inY
+                dcFloat[0][idx] = inX + dcCflX * inY
+                dcFloat[2][idx] = inB + dcCflB * inY
+            }
         }
         // `kSkipAdaptiveDCSmoothing` is frame-flag bit 7 (128);
         // `kUseDcFrame` is bit 5 (32) and also implies skip.

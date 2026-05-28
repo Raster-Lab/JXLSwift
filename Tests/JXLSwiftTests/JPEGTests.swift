@@ -6990,16 +6990,10 @@ final class JXLToJPEGAdapterTests: XCTestCase {
         // regressed before v0.12.0ha, where the per-block DC
         // context index was hard-coded to 0.
         //
-        // **Currently failing (each tracked as a separate bite):**
-        //   • 16×16 4:2:2 — `invalidRCTType(64)` in ACMeta
-        //     GroupHeader. Chroma-subsampled frames carry a Squeeze
-        //     RCT transform (type 64 in libjxl) which our modular
-        //     RCT reader rejects.
-        //   • 16×16 4:2:0 — `acsCountMismatch(expected: 3, actual: 3)`
-        //     in AC strategy plane build. Subsampled-Y carries
-        //     fewer ACS first-blocks than the full grid expects.
-        //   • 32×32 4:2:0 — `unsupportedTransform(3)` in ACMeta
-        //     GroupHeader (Squeeze).
+        // The 4:2:0 / 4:2:2 rows exercise the chroma-subsampled
+        // path (reduced-resolution X/B DC + AC planes, per-channel
+        // block-existence skipping in the AC token loop), landed in
+        // v0.12.0hb.
         let variants: [Variant] = [
             Variant(label: "16×16 4:4:4", dim: 16, sample: "1x1,1x1,1x1"),
             Variant(label: "32×32 4:4:4", dim: 32, sample: "1x1,1x1,1x1"),
@@ -7009,6 +7003,11 @@ final class JXLToJPEGAdapterTests: XCTestCase {
             Variant(label: "512×512 4:4:4", dim: 512, sample: "1x1,1x1,1x1"),
             Variant(label: "768×768 4:4:4", dim: 768, sample: "1x1,1x1,1x1"),
             Variant(label: "1024×1024 4:4:4", dim: 1024, sample: "1x1,1x1,1x1"),
+            Variant(label: "16×16 4:2:0", dim: 16, sample: "2x2,1x1,1x1"),
+            Variant(label: "16×16 4:2:2", dim: 16, sample: "2x1,1x1,1x1"),
+            Variant(label: "64×64 4:2:0", dim: 64, sample: "2x2,1x1,1x1"),
+            Variant(label: "256×256 4:2:0", dim: 256, sample: "2x2,1x1,1x1"),
+            Variant(label: "512×512 4:2:0", dim: 512, sample: "2x2,1x1,1x1"),
         ]
         struct Result {
             let label: String

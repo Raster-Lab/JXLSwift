@@ -11,6 +11,64 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0hb — 🎉 Chroma-subsampled coefficient decode (4:2:0 / 4:2:2)
+
+`JXLDecoder.decodeToCoefficients` now decodes chroma-subsampled
+cjxl `--lossless_jpeg=1` frames **bit-exactly**. The matrix test
+adds 4:2:0 / 4:2:2 rows at 16 → 512; every DC + AC coefficient
+matches the JPEG-bridge reference, with correct per-channel block
+grids (Y full-resolution, Cb/Cr reduced).
+
+**What was wrong.** The decoder treated every channel as
+full-resolution. For a subsampled frame the X (Cb) and B (Cr)
+planes are smaller, so:
+- the **DC-group modular decode** read full-resolution chroma DC,
+  over-reading the token stream and drifting the bit position into
+  the ACMeta `GroupHeader` (the `unsupportedTransform(3)` /
+  `invalidRCTType(64)` symptom — it was reading garbage, not an
+  actual Squeeze/RCT transform); and
+- the **AC token loop** decoded a chroma block at every full-res
+  position instead of only where a chroma block exists, exhausting
+  the bitstream.
+
+**Fix.**
+- `FrameHeader.swift`: `YCbCrChromaSubsampling` gains
+  `hShift(_:)`, `vShift(_:)`, `maxHShift`, `maxVShift`, `is444`,
+  matching libjxl `frame_header.h` (`kHShift=[0,1,1,0]`,
+  `kVShift=[0,1,0,1]`, `HShift(c)=maxhs-kHShift[mode(c)]`).
+- `JXLDecoder.swift`:
+  - DC plane: per-storage-channel dimensions; chroma DC channels
+    decoded and placed at reduced resolution; per-channel DC plane
+    indexing for the DC context index.
+  - AC loop: per-channel, chroma-resolution `nzeros` planes;
+    per-channel block-existence skip
+    (`(sbx<<hs != bx) || (sby<<vs != by)` → continue), mirroring
+    libjxl `GetBlockFromBitstream::LoadBlock`.
+  - Capture hook: samples chroma blocks at the chroma grid so each
+    channel's plane carries exactly `blocksPerChannel[c]` blocks.
+  - Pixel-path `DequantDC`: reads each channel's DC at its plane
+    resolution (nearest-neighbour upsample) — fixes an
+    `Index out of range` crash on subsampled frames in the full
+    `decode()` path. (Full subsampled *pixel* reconstruction —
+    proper chroma upsampling — remains out of scope; the in-scope
+    coefficient path returns before reaching it.)
+
+For 4:4:4 every shift is 0 and all paths collapse to the previous
+full-resolution behaviour (no regression: the 8 existing 4:4:4
+matrix rows still pass).
+
+**Matrix results (all PASS):**
+
+```
+16×16 … 1024×1024 4:4:4   -> PASS (as before)
+16×16 4:2:0 / 4:2:2       -> PASS (blocks=2×2)         [NEW]
+64×64 4:2:0               -> PASS (blocks=8×8)         [NEW]
+256×256 4:2:0             -> PASS (blocks=32×32)       [NEW]
+512×512 4:2:0             -> PASS (blocks=64×64)       [NEW]
+```
+
+**Tests.** 644 / 7 skipped / 0 failures.
+
 ### v0.12.0ha — 🎉 Per-block DC context index: multi-AC-group decode fixed (matrix 16 → 1024)
 
 Fixes a VarDCT AC-decode bug that corrupted any frame whose cjxl
