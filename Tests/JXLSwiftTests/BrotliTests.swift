@@ -647,23 +647,6 @@ final class BrotliStaticDictionaryTests: XCTestCase {
         (10, 122880, [32,67,97,116,101,103,111,114,105,101,115,61,39] as [UInt8]),
     ]
 
-    /// THROWAWAY trace dump for the exact bigmeta jbrd Brotli stream.
-    func testDump_ExactBrotli() throws {
-        let url = URL(fileURLWithPath: "/tmp/jbrd_brotli_exact.br")
-        guard let data = try? Data(contentsOf: url) else {
-            throw XCTSkip("no /tmp/jbrd_brotli_exact.br")
-        }
-        let decoded = try BrotliDecoder.decode(data)
-        print("[exact] swift decoded \(decoded.count) bytes")
-        try decoded.write(to:
-            URL(fileURLWithPath: "/tmp/jbrd_brotli_swift_new.dec"))
-        if let gt = try? Data(contentsOf:
-            URL(fileURLWithPath: "/tmp/jbrd_brotli_cli.dec")) {
-            XCTAssertEqual(decoded, gt,
-                "swift brotli decode must match brotli CLI ground truth")
-        }
-    }
-
     /// Every transform (0...120) applied to a real dictionary word
     /// must match the byte-for-byte output libbrotli produces.
     func testTransformWord_AllTransforms_MatchLibbrotli() throws {
