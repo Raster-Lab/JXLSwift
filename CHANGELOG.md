@@ -11,6 +11,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0i8 — Learned 4-/8-bin WP-activity thresholds (recursive)
+
+Generalises the learned threshold (i7 did only 2-bin) to **4- and 8-bin**
+splits. `learnedSplitThreshold` is replaced by `learnedThresholdSets`,
+which sorts the activity pairs once and does **level-order recursive
+greedy splitting**: each level splits every current range at its
+entropy-minimising boundary, yielding 1 / 3 / 7 thresholds (2 / 4 / 8
+bins). The sorted threshold set feeds `activitySplitTree` directly
+(greedy recursion produces a valid ordered partition). All three learned
+sets are added as cost-gated candidates alongside the fixed
+median/quartile/octile sets, deduped against the fixed set of the same
+size. On a 1024² 16-bit image with four **unequal-size** activity bands
+(~50/25/15/10% at amplitudes 2/16/96/512 — boundaries near the 50th/75th
+/90th percentiles, which the fixed quartiles miss), the learned splits
+beat the fixed splits at every granularity (learned 627525 / 655060 /
+746168 B vs fixed 638794 / 677245 / 773124 B for 8 / 4 / 2-bin), and the
+**learned 8-bin wins overall** (~1.8% under fixed-8, ~13% under fixed-2);
+byte-exact through `djxl` and our decoder. New
+`testSpecModularEncoder_LearnedMultiBin_MultiGroup_DjxlRoundTrip`.
+Full suite: 677 tests.
+
 ### v0.12.0i7 — Learned 2-bin WP-activity threshold
 
 The WP-activity splits so far used **fixed** percentile thresholds

@@ -13692,6 +13692,76 @@ extension FoundationTests {
         }
     }
 
+    /// Multi-group lossless Modular where a **learned multi-bin** split
+    /// (4- or 8-bin with entropy-optimal thresholds) wins: a 1024² 16-bit
+    /// image with four activity regions of **unequal size** — ~50% / ~25%
+    /// / ~15% / ~10% at four distinct noise amplitudes. The activity-level
+    /// boundaries fall near the 50th/75th/90th percentiles, so the fixed
+    /// quartile/octile splits land in the wrong places while the learned
+    /// recursive split finds the real boundaries. Validated byte-exact
+    /// through **our decoder** and **`djxl`** (16-bit big-endian PGM).
+    func testSpecModularEncoder_LearnedMultiBin_MultiGroup_DjxlRoundTrip()
+        throws {
+        let w = 1024, h = 1024
+        var pixels = [UInt16](repeating: 0, count: w * h)
+        var seed: UInt32 = 0x51ed_270b
+        // Row bands sized 50% / 25% / 15% / 10% with amplitudes 2/16/96/512.
+        let b0 = 512, b1 = 768, b2 = 922      // band ends (rows)
+        for y in 0..<h {
+            let amp: Int32 = y < b0 ? 2 : (y < b1 ? 16 : (y < b2 ? 96 : 512))
+            for x in 0..<w {
+                seed = seed &* 1103515245 &+ 12345
+                let noise = Int32(truncatingIfNeeded: seed) % amp
+                var v = Int32(2048 + ((x + y) & 0x007f)) + noise
+                if v < 0 { v = 0 }
+                if v > 65535 { v = 65535 }
+                pixels[y * w + x] = UInt16(v)
+            }
+        }
+        let bytes = try SpecModularEncoder.encodeGrayscale16(
+            width: w, height: h, pixels: pixels)
+        // Our decoder: byte-exact.
+        let image = try JXLDecoder().decodeModular(bytes)
+        XCTAssertEqual(image.channels.count, 1, "expected 1 channel")
+        for i in 0..<(w * h) {
+            XCTAssertEqual(image.channels[0].pixels[i], Int32(pixels[i]),
+                "our-decoder pixel \(i)")
+        }
+        // djxl: byte-exact (16-bit big-endian PGM).
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("djxl not available at \(djxl)")
+        }
+        let tmp = NSTemporaryDirectory()
+        let inP = tmp + "jxlswift_learnedN_mg.jxl"
+        let outP = tmp + "jxlswift_learnedN_mg.pgm"
+        defer { try? FileManager.default.removeItem(atPath: inP)
+                try? FileManager.default.removeItem(atPath: outP) }
+        try bytes.write(to: URL(fileURLWithPath: inP))
+        let p = Process(); p.launchPath = djxl
+        p.arguments = [inP, outP]
+        let errPipe = Pipe()
+        p.standardOutput = Pipe(); p.standardError = errPipe
+        try p.run(); p.waitUntilExit()
+        let err = String(
+            data: errPipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8) ?? ""
+        XCTAssertEqual(p.terminationStatus, 0,
+            "djxl rejected our \(w)×\(h) learned-multi-bin bytes; "
+            + "stderr: \(err)")
+        let pgm = try Data(contentsOf: URL(fileURLWithPath: outP))
+        var nl = 0, start = 0
+        for (i, b) in pgm.enumerated() where b == 0x0a {
+            nl += 1; if nl == 3 { start = i + 1; break }
+        }
+        for i in 0..<(w * h) {
+            let hi = UInt16(pgm[start + 2 * i])
+            let lo = UInt16(pgm[start + 2 * i + 1])
+            XCTAssertEqual((hi << 8) | lo, pixels[i],
+                "djxl 16-bit pixel \(i) mismatch")
+        }
+    }
+
     /// Multi-group lossless Modular where the **8-bin (octile)**
     /// WP-activity split wins: a 1024² 16-bit image in eight horizontal
     /// bands of geometrically-increasing noise amplitude over a gentle
