@@ -14629,6 +14629,47 @@ extension FoundationTests {
         }
     }
 
+    /// **Constant images** (every pixel equal) — the residuals are all the
+    /// same token, so the codebook sees a 1-symbol histogram (the case
+    /// that crashed pre-i17). Validates the ≥2-symbol-alphabet fix yields
+    /// **djxl-valid** output, at a non-trivial single-section size and a
+    /// multi-group size, byte-exact through our decoder and `djxl`.
+    func testSpecModularEncoder_ConstantImage_DjxlRoundTrip() throws {
+        for (w, h, val) in [(64, 64, UInt16(40000)), (600, 600, UInt16(12345))] {
+            let px = [UInt16](repeating: val, count: w * h)
+            let bytes = try SpecModularEncoder.encodeGrayscale16(
+                width: w, height: h, pixels: px)
+            let image = try JXLDecoder().decodeModular(bytes)
+            for i in 0..<(w * h) {
+                XCTAssertEqual(image.channels[0].pixels[i], Int32(val),
+                    "\(w)×\(h) const our-decoder \(i)")
+            }
+            let djxl = "/opt/homebrew/bin/djxl"
+            guard FileManager.default.isExecutableFile(atPath: djxl) else {
+                throw XCTSkip("djxl not available at \(djxl)")
+            }
+            let tmp = NSTemporaryDirectory()
+            let inP = tmp + "const_\(w).jxl", outP = tmp + "const_\(w).pgm"
+            defer { try? FileManager.default.removeItem(atPath: inP)
+                    try? FileManager.default.removeItem(atPath: outP) }
+            try bytes.write(to: URL(fileURLWithPath: inP))
+            let p = Process(); p.launchPath = djxl
+            p.arguments = [inP, outP]
+            p.standardOutput = Pipe(); p.standardError = Pipe()
+            try p.run(); p.waitUntilExit()
+            XCTAssertEqual(p.terminationStatus, 0, "djxl rejected \(w)×\(h) constant")
+            let pgm = try Data(contentsOf: URL(fileURLWithPath: outP))
+            var nl = 0, s = 0
+            for (i, bch) in pgm.enumerated() where bch == 0x0a {
+                nl += 1; if nl == 3 { s = i + 1; break }
+            }
+            for i in 0..<(w * h) {
+                let v = (UInt16(pgm[s + i * 2]) << 8) | UInt16(pgm[s + i * 2 + 1])
+                XCTAssertEqual(v, val, "\(w)×\(h) const djxl \(i)")
+            }
+        }
+    }
+
     /// Robustness at **degenerate / tiny dimensions** — 1×1, 1×N, N×1,
     /// 2×2, small odd — across grayscale / gray+alpha / RGB at 8- and
     /// 16-bit. These exercise the WP, neighbour edge fall-backs and group

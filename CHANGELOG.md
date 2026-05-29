@@ -26,7 +26,10 @@ Kraft-complete and `djxl`-valid). New
 `testSpecModularEncoder_EdgeDimensions_RoundTrip` sweeps 1×1, 1×N, N×1,
 2×2 and small odd sizes across grayscale / gray+alpha / RGB at 8- and
 16-bit, byte-exact through our decoder (+ `djxl` at two sizes) — pinning
-the "arbitrary dimensions" claim at the boundary. Full suite: 687 tests.
+the "arbitrary dimensions" claim at the boundary.
+`testSpecModularEncoder_ConstantImage_DjxlRoundTrip` additionally
+`djxl`-validates the fix on genuinely constant frames at a single-section
+(64²) and a multi-group (600²) size. Full suite: 688 tests.
 
 ### v0.12.0i16 — Subsample the single-section greedy learner
 

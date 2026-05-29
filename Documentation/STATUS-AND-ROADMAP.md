@@ -28,7 +28,7 @@ GPU paths (land later, behind the proven scalar path).
 | | |
 |---|---|
 | **Version** | v0.12.0i17 (Phase J line) |
-| **Tests** | 687 passing / 7 skipped / 0 failures (`swift test -c release`, ~70 s) |
+| **Tests** | 688 passing / 7 skipped / 0 failures (`swift test -c release`, ~70 s) |
 | **Dependencies** | `swift-argument-parser` (CLI only). Zero runtime deps. |
 | **Project focus** | **Lossless, for medical imaging.** Lossy *encode* (full VarDCT from pixels) is deferred to the very last phase. The lossy *decode* path is complete and `djxl`-matching, but new encoder work is lossless-first. |
 | **Headline capability** | **Two lossless encode paths, both `djxl`-validated:** (1) **lossless JPEG ⇄ JXL transcoding**, byte-identical both directions, no `--source` needed — baseline + progressive, all chroma, odd dims, grayscale, metadata, any size ≤ 2048 px/side (multi-AC-group); forward ~1.03–1.05× cjxl on real content. (2) **native lossless Modular encode** of raw pixels — 8- and 16-bit grayscale / **grayscale+alpha** / RGB / RGBA, **arbitrary dimensions** (≤ 16384, incl. multi-DC-group > 4096 px), byte-exact through `djxl` — covering the core medical case (16-bit grayscale CT/MR). |
