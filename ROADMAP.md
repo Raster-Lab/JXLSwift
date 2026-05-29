@@ -412,9 +412,16 @@ remains for 1.0 is conformance, completeness, hardening, performance, and API st
    *measured* optimisation path (NEON / Accelerate), scalar Swift remaining the source of truth
    (constraint 1 / [Phase O](#phase-o--optimisation-paths-independent-of-correctness)). Speed is
    design priority #1, so 1.0 should ship a known baseline.
-5. **API freeze + family parity — v0.17.0 (release candidate).** Audit the public surface against
-   J2KSwift ([FAMILY-API-PARITY.md](Documentation/FAMILY-API-PARITY.md)), finalise it, and commit
-   to stability. Docs + examples.
+5. **API freeze + family parity — in progress (v0.17.0 RC).** Audit + align the public surface vs
+   J2KSwift ([FAMILY-API-PARITY.md](Documentation/FAMILY-API-PARITY.md)). Done: the `convert`
+   subcommand landed (closing the last common-set CLI gap — PNM ↔ JXL, JPEG → PNM/JXL,
+   `djxl`-validated); CLI flags are `-i/-o` in both repos; stale version string fixed
+   (`0.13.0-dev`); the parity doc's stale "stub subcommand" / positional-args claims corrected.
+   **Open (needs sign-off):** the one accidental divergence is preset quality —
+   `JXLConfiguration.balanced=0.9/.fast=0.75` vs J2KSwift `0.85/0.70` (+ J2K's `.maxCompression`);
+   recommended to align JXL→J2K but deferred to explicit sign-off (changes preset behaviour). The
+   structural image-model divergence (flat-interleaved vs planar-per-component) stays frozen-by-design,
+   bridged by `CompressionImage`.
 
 **v1.0.0** = all of the above, green on the lossless conformance corpus, with a frozen public API.
 The VarDCT lossy *decoder* ships as-is (preview); its `d = 2/5/10` byte-equality close-out tracks

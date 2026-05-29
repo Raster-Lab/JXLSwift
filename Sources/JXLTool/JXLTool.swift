@@ -4,8 +4,9 @@
 // `jxl-tool` binary is also produced (legacy alias) by the second
 // `.executable` product entry in Package.swift.
 //
-// STATUS: foundation only. `info` works (parses container + SizeHeader).
-// `encode`/`decode` throw "not yet implemented" — see ROADMAP.md.
+// STATUS: mature lossless codec. `info`, `encode` (lossless Modular +
+// preview lossy VarDCT), `decode`, `transcode` (JPEG ⇄ JXL), `convert`,
+// and `batch` all work; output is `djxl`-validated. See ROADMAP.md.
 
 import ArgumentParser
 
@@ -13,11 +14,11 @@ import ArgumentParser
 struct JXLTool: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "jxl",
-        abstract: "JPEG XL inspect/encode/decode (pure Swift, ISO/IEC 18181).",
-        version: "jxl \(JXLToolVersion) (pure-Swift, foundation only — see ROADMAP.md)",
+        abstract: "JPEG XL inspect/encode/decode/convert (pure Swift, ISO/IEC 18181).",
+        version: "jxl \(JXLToolVersion) (pure-Swift JPEG XL, ISO/IEC 18181)",
         subcommands: [
             // Core codec subcommands.
-            Info.self, Encode.self, Decode.self,
+            Info.self, Encode.self, Decode.self, Convert.self,
             // Project-internal placeholder (M0 lossless vertical slice).
             EncodeM0.self, DecodeM0.self,
             // Performance.
@@ -29,7 +30,7 @@ struct JXLTool: ParsableCommand {
     )
 }
 
-let JXLToolVersion = "0.5.0-pure-swift"
+let JXLToolVersion = "0.13.0-dev"
 
 enum JXLExitCode: Int32, Error {
     case generalError = 1

@@ -102,7 +102,7 @@ For family parity, JXLSwift's CLI should be **`jxl`** (drop the
 | `validate` | ✅ (conformance) | ❌ |
 | `benchmark` | ✅ | ✅ |
 | `compare` | ✅ (compare two images) | ❌ |
-| `convert` | ✅ (image format convert) | ❌ |
+| `convert` | ✅ (image format convert) | ✅ (since v0.13.0-dev — PNM ↔ JXL, JPEG → PNM/JXL, format by extension) |
 | `batch` | ✅ | ✅ (since v0.11.0bs — `encode` + `decode` sub-subcommands, `--recursive`, `--filter`, `--continue-on-error`, `--json`) |
 | `completions` | ✅ (shell completions) | ❌ |
 | `version` | ✅ | (via `--version` flag) |
@@ -124,10 +124,10 @@ For family parity, JXLSwift's CLI should be **`jxl`** (drop the
 
 | Flag | J2KSwift | JXLSwift |
 |---|---|---|
-| Input | `-i, --input <path>` | (positional) |
-| Output | `-o, --output <path>` | (positional) |
-| Quality | `-q, --quality <0..1>` | (varies by subcommand) |
-| Lossless | `--lossless` | (implicit) |
+| Input | `-i, --input <path>` | `-i, --input <path>` ✅ |
+| Output | `-o, --output <path>` | `-o, --output <path>` ✅ |
+| Quality | `-q, --quality <0..1>` | `-q, --quality <0..100>` (lossy encode/convert) |
+| Lossless | `--lossless` | `-l, --lossless` ✅ |
 | Codec / variant | `--codec <variant>` | (no equivalent yet) |
 | Preset | `--preset <fast\|balanced\|quality>` | (none) |
 | Format | `--format <j2k\|jp2\|jpx\|jph>` | (none) |
@@ -158,7 +158,19 @@ All five Phase A items are landed:
    [Sources/JXLSwift/Codec/EncodingOptions.swift](../Sources/JXLSwift/Codec/EncodingOptions.swift). Pin-down: `testFamilyParity_JXLConfiguration_MapsToEncodingOptions`.
 4. **`jxl` CLI alias** — added as a second `.executable` product targeting the existing `JXLTool` target. SwiftPM compiles two binaries (`jxl` and `jxl-tool`) from one source.
    [Package.swift:23](../Package.swift).
-5. **Stub subcommands** (`version`, `compare`, `completions`, `validate`) — tracked in [Sources/JXLTool/Stubs.swift](../Sources/JXLTool/Stubs.swift). All registered in `JXLTool.subcommands`. Each prints a "not yet implemented" message and exits with `JXLExitCode.notImplemented`. The parsing surface (flags, arg names) matches J2KSwift's `j2k` for drop-in compatibility.
+5. **Family-parity subcommands** (`version`, `compare`, `completions`, `validate`) — in [Sources/JXLTool/Stubs.swift](../Sources/JXLTool/Stubs.swift), all registered in `JXLTool.subcommands`. **No longer stubs** — each is fully implemented (e.g. `compare` does per-frame pixel diffing, `completions` emits real shell completions, `validate` checks codestream structure). The parsing surface (flags, arg names) matches J2KSwift's `j2k` for drop-in compatibility.
+
+> **Status update (v0.13.0-dev).** Since the text below was written: CLI flags
+> are now `-i/-o` (not positional) in both repos; the `convert` subcommand has
+> landed in JXLSwift (PNM ↔ JXL, JPEG → PNM/JXL); and `JXLToolVersion` reports
+> `0.13.0-dev` (was a stale `0.5.0-pure-swift`). **One accidental divergence
+> remains for the API freeze, needs a direction decision:** preset quality
+> values differ — JXLSwift `JXLConfiguration.balanced = 0.9` / `.fast = 0.75`
+> vs J2KSwift `.balanced = 0.85` / `.fast = 0.70`, and J2KSwift has a
+> `.maxCompression = 0.50` preset JXLSwift lacks. Recommended: align JXLSwift
+> to J2KSwift's values (0.85 / 0.70) and add `.maxCompression`, since J2KSwift
+> shipped first; but this changes preset behaviour for existing JXL callers, so
+> it is left for explicit sign-off rather than changed unilaterally (see §4).
 
 ### Phase B — parity migrations ✅ shipped (v0.9.0v–y)
 
