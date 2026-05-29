@@ -11,6 +11,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0i16 — Subsample the single-section greedy learner
+
+The single-section greedy multi-property learner trained on *every*
+pixel; the multi-group path already learns from a ≤ 256K uniform
+subsample (and routes all pixels via `ModularTree.walk`). This brings the
+single-section path in line: it learns the tree from the same ≤ 256K
+sample, then routes every pixel through the tree. For the common case
+(≤ 256K pixels — e.g. any grayscale frame ≤ 512², the core medical
+input) the stride is 1, so the sample is every pixel and the output is
+**byte-identical** to before. Larger multi-channel single-section frames
+(e.g. 512² RGB = 786K px → stride 3) now learn ~3× faster, at a
+negligible ratio cost. New
+`testSpecModularEncoder_GreedySubsample_LargeRGB_DjxlRoundTrip` exercises
+the subsample path (byte-exact through our decoder + `djxl`).
+Full suite: 686 tests.
+
 ### v0.12.0i15 — Lossless encoder performance (byte-identical)
 
 Profiling the lossless Modular encoder (design priority #1 is speed)

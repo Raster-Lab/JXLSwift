@@ -2050,14 +2050,47 @@ public enum SpecModularEncoder {
         // entropy-coded context map, which our decoder round-trips but djxl
         // currently rejects — supporting that is future work. The win here
         // is multi-PROPERTY routing, not more contexts than the octile path.
-        guard let (tree, contexts, numCtx) = greedyTreeAndContexts(
-            propsFlat: propsFlat, tokBucket: tokBucket,
-            pixelCount: n, propIndices: propIndices,
-            maxTok: maxTok, maxLeaves: 8, minGain: 32.0),
-            numCtx >= 2 else { return nil }
+        // Learn the tree from a uniform subsample (≤ ~256K pixels), matching
+        // the multi-group path and bounding the learner's cost on large
+        // multi-channel frames. For the common ≤256K case stride is 1 — the
+        // sample IS every pixel, so the tree (and output) is identical to
+        // learning on all pixels. Routing then walks the tree per pixel via
+        // the decoder's own `ModularTree.walk`, so contexts agree exactly.
+        let stride = max(1, n / 256_000)
+        let sampleProps: [Int32]
+        let sampleTok: [Int]
+        var sampleMaxTok = 0
+        if stride == 1 {
+            sampleProps = propsFlat; sampleTok = tokBucket; sampleMaxTok = maxTok
+        } else {
+            var sp = [Int32](); var st = [Int]()
+            sp.reserveCapacity((n / stride + 1) * propCount)
+            var i = 0
+            while i < n {
+                let b = i * propCount
+                for k in 0..<propCount { sp.append(propsFlat[b + k]) }
+                let tk = tokBucket[i]
+                st.append(tk)
+                if tk > sampleMaxTok { sampleMaxTok = tk }
+                i += stride
+            }
+            sampleProps = sp; sampleTok = st
+        }
+        guard sampleTok.count >= 2,
+              let (tree, _, numCtx) = greedyTreeAndContexts(
+                propsFlat: sampleProps, tokBucket: sampleTok,
+                pixelCount: sampleTok.count, propIndices: propIndices,
+                maxTok: sampleMaxTok, maxLeaves: 8, minGain: 32.0),
+              numCtx >= 2 else { return nil }
+        var props16 = [Int32](repeating: 0, count: 16)
         var ordered: [(ctx: Int, val: UInt32)] = []
         ordered.reserveCapacity(n)
-        for i in 0..<n { ordered.append((contexts[i], tokens[i])) }
+        for i in 0..<n {
+            let b = i * propCount
+            for k in 0..<propCount { props16[Int(propIndices[k])] = propsFlat[b + k] }
+            guard let leaf = try? tree.walk(properties: props16) else { return nil }
+            ordered.append((leaf.leafId, tokens[i]))
+        }
         return assembleMultiContextSection(
             tree: tree, numContexts: numCtx, ordered: ordered, postCfg: postCfg)
     }

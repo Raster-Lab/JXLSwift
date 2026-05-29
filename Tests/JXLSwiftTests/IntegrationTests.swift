@@ -14629,6 +14629,83 @@ extension FoundationTests {
         }
     }
 
+    /// Exercises the **subsampled** single-section greedy learner: a 512²
+    /// RGB 16-bit frame is 786 432 pixels (> the 256K subsample target →
+    /// stride 3), so the greedy candidate learns its tree from a sample and
+    /// routes every pixel via `ModularTree.walk`. Two-axis structure (row →
+    /// activity, column → directional gradient) favours the multi-property
+    /// tree. Validated byte-exact through **our decoder** and **`djxl`**
+    /// (16-bit PPM) — the regression that fails if the subsample-learned
+    /// tree's routing/output is wrong.
+    func testSpecModularEncoder_GreedySubsample_LargeRGB_DjxlRoundTrip() throws {
+        let w = 512, h = 512
+        var r = [UInt16](repeating: 0, count: w * h)
+        var g = [UInt16](repeating: 0, count: w * h)
+        var b = [UInt16](repeating: 0, count: w * h)
+        var seed: UInt32 = 0x33aa_55c0
+        let amp: [Int32] = [2, 24, 160, 1024]
+        for y in 0..<h {
+            for x in 0..<w {
+                let i = y * w + x
+                let gr = y / 128, gc = x / 128
+                let lx = Int32(x % 128), ly = Int32(y % 128)
+                var dir: Int32 = 0
+                if gc == 1 { dir = lx } else if gc == 2 { dir = ly }
+                else if gc == 3 { dir = lx + ly }
+                func ch(_ base: Int32) -> UInt16 {
+                    seed = seed &* 1103515245 &+ 12345
+                    var v = base + dir + Int32(truncatingIfNeeded: seed) % amp[gr]
+                    if v < 0 { v = 0 }; if v > 65535 { v = 65535 }
+                    return UInt16(v)
+                }
+                r[i] = ch(8192); g[i] = ch(20000); b[i] = ch(40000)
+            }
+        }
+        let bytes = try SpecModularEncoder.encodeRGB16(
+            width: w, height: h, r: r, g: g, b: b)
+        let image = try JXLDecoder().decodeModular(bytes)
+        XCTAssertEqual(image.channels.count, 3, "expected RGB")
+        for i in 0..<(w * h) {
+            XCTAssertEqual(image.channels[0].pixels[i], Int32(r[i]), "R \(i)")
+            XCTAssertEqual(image.channels[1].pixels[i], Int32(g[i]), "G \(i)")
+            XCTAssertEqual(image.channels[2].pixels[i], Int32(b[i]), "B \(i)")
+        }
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("djxl not available at \(djxl)")
+        }
+        let tmp = NSTemporaryDirectory()
+        let inP = tmp + "jxlswift_greedysub.jxl"
+        let outP = tmp + "jxlswift_greedysub.ppm"
+        defer { try? FileManager.default.removeItem(atPath: inP)
+                try? FileManager.default.removeItem(atPath: outP) }
+        try bytes.write(to: URL(fileURLWithPath: inP))
+        let p = Process(); p.launchPath = djxl
+        p.arguments = [inP, outP]
+        let errPipe = Pipe()
+        p.standardOutput = Pipe(); p.standardError = errPipe
+        try p.run(); p.waitUntilExit()
+        let err = String(
+            data: errPipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8) ?? ""
+        XCTAssertEqual(p.terminationStatus, 0,
+            "djxl rejected our \(w)×\(h) subsampled-greedy RGB; stderr: \(err)")
+        let ppm = try Data(contentsOf: URL(fileURLWithPath: outP))
+        var nl = 0, start = 0
+        for (i, bb) in ppm.enumerated() where bb == 0x0a {
+            nl += 1; if nl == 3 { start = i + 1; break }
+        }
+        // 16-bit PPM: 6 bytes/pixel (R,G,B each big-endian).
+        for i in 0..<(w * h) {
+            let rv = (UInt16(ppm[start + i * 6 + 0]) << 8) | UInt16(ppm[start + i * 6 + 1])
+            let gv = (UInt16(ppm[start + i * 6 + 2]) << 8) | UInt16(ppm[start + i * 6 + 3])
+            let bv = (UInt16(ppm[start + i * 6 + 4]) << 8) | UInt16(ppm[start + i * 6 + 5])
+            XCTAssertEqual(rv, r[i], "djxl R \(i)")
+            XCTAssertEqual(gv, g[i], "djxl G \(i)")
+            XCTAssertEqual(bv, b[i], "djxl B \(i)")
+        }
+    }
+
     /// High-level `JXLEncoder.encode(_:)` routes a 2-channel
     /// (grayscale + alpha) `ImageFrame` to `encodeGrayscaleAlpha*` —
     /// closing the gap where that 2-channel encoder existed but was
