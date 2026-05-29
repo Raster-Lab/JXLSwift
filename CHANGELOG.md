@@ -11,6 +11,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0i0 / i1 — Native lossless Modular ratio: cost-gated WP + rANS
+
+The native lossless Modular encoder (the primary lossless-for-medical
+path) used gradient prediction + Huffman, producing files ~1.4–2.0×
+larger than cjxl lossless. It now **cost-gates the predictor**
+(ClampedGradient vs the adaptive Weighted Predictor — reusing the
+decoder's `WeightedPredictor` struct, so encode/decode agree by
+construction) **and the entropy coder** (Huffman vs rANS, lifting the
+≥1 bit/symbol floor), picking the smallest of the four by actually
+encoding the sub-image. Applied to **both** the single-section path
+(i0, ≤512² — CT/MR slices) and the multi-group path (i1, > 512² — large
+mammography / DR / CR), with WP run per-rect to match the decoder's
+independent per-group decode and rANS emitting one fresh stream per group.
+
+Validated byte-exact through **djxl** and our decoder across 8-/16-bit
+grayscale + RGB at single- and multi-group sizes. Ratio vs cjxl `-d0 -e7`:
+512² structured 1.59→1.38×, mammography-like 1280×1024 16-bit 1.68×. The
+remaining gap is multi-context modelling (cjxl's property-split MA-tree vs
+our single context) — a larger, separate lever. New regression test pins
+the WP path (single + multi-group). Full suite: 671 tests.
+
 ### v0.12.0hz — Honest lossless/lossy CLI label (medical trust)
 
 The encoder falls back to the lossless Modular path for inputs the lossy
