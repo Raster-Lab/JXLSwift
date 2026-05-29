@@ -9,12 +9,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
-## [0.13.0-dev] — 2026-05-29 (in development)
+## [0.13.0] — 2026-05-29 (release)
 
 **Headline:** the **road to a lossless v1.0** — a real conformance gate, a
-robustness sweep + decoder fuzz, the `convert` CLI verb, and a performance
-baseline. One genuine decode-correctness bug fixed along the way. See
+robustness sweep + decoder fuzz, the `convert` CLI verb, a performance
+baseline, and **medical-grade validation against a real radiology DICOM
+corpus**. One genuine decode-correctness bug fixed along the way. See
 [ROADMAP.md](ROADMAP.md) "Road to v1.0.0 (lossless-first)".
+
+### Medical-grade validation (real DICOM corpus)
+
+JXLSwift's lossless path was validated end-to-end against a **30,329-file
+radiology DICOM corpus** (CT, MR, CR, DX, MG, PX, US, XA). JXLSwift stays
+DICOM-unaware (constraint 5): an external extractor (pydicom) pulls the raw
+pixel buffers and feeds them to the codec, and reconstruction is checked
+byte-exact through **both the pure-Swift decoder and the libjxl reference
+decoder `djxl`**. A stratified sample covering **every distinct pixel
+configuration** (modality × transfer-syntax × 8/16-bit × grayscale/colour ×
+single/multi-frame, including JPEG/JPEG-LS-sourced and MONOCHROME1) was run:
+
+- **2,867 images PASS, 0 FAIL** (62 non-image SR/structured-report files have
+  no pixel data and were skipped) — every PASS byte-exact via djxl. Coverage:
+  MR (1256), CT (1009), multi-frame XA cine (155), 16-bit XA (153), colour
+  **YBR JPEG US** (219), CR incl. JPEG-LS (40), DX + **MONOCHROME1** (19), PX
+  incl. JPEG-lossless/JPEG-LS (15), up to **4784×3521** radiographs.
+- A default-**effort-7** subset (greedy multi-property MA-tree path) over the
+  common configs: **31/31 PASS**, djxl byte-exact.
+
+Reproducible (PHI-safe, aggregate-only) via `scripts/medical-dicom-validate.sh`.
 
 ### Conformance gate (milestone 1)
 

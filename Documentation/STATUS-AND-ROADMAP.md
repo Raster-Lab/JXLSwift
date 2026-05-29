@@ -27,7 +27,7 @@ GPU paths (land later, behind the proven scalar path).
 
 | | |
 |---|---|
-| **Version** | v0.13.0-dev (road-to-lossless-1.0 line) |
+| **Version** | v0.13.0 (road-to-lossless-1.0 line; medical-grade DICOM-validated) |
 | **Tests** | 695 passing / 8 skipped / 0 failures (`swift test -c release`, ~77 s) — incl. a lossless **conformance gate** (`ConformanceTests`, `djxl`-oracle) and a **robustness** sweep + decoder fuzz (`RobustnessTests`) |
 | **Dependencies** | `swift-argument-parser` (CLI only). Zero runtime deps. |
 | **Project focus** | **Lossless, for medical imaging.** Lossy *encode* (full VarDCT from pixels) is deferred to the very last phase. The lossy *decode* path is complete and `djxl`-matching, but new encoder work is lossless-first. |
