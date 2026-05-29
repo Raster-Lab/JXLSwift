@@ -11,6 +11,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0i2 — Multi-context lossless Modular (WP-activity split, 2 contexts)
+
+First multi-context path in the native lossless encoder. Splits residuals
+by the **WP-error property** (property 15 = local activity) into two
+contexts — flat vs active regions — each with its own histogram, beating
+one pooled histogram on structured images. Single-section (≤512²); cost-
+gated by full-section size against the single-context candidate, so never
+a regression.
+
+A 3-node property-15 decision tree (WP leaves); the decoder runs WP to
+compute the property and walk the tree, and the encoder reuses the same
+`WeightedPredictor` + `propertyValue` in the decoder's order, so contexts
+match by construction. Reuses the djxl-proven multi-cluster entropy
+machinery. Validated byte-exact through djxl **and** our decoder; where
+chosen: 512² structured 1.38→1.35×, RGB 1.53→1.45× cjxl.
+
+This proves multi-context modular encoding is libjxl-valid. Going beyond
+two contexts needs the tree encoder generalised to deeper trees:
+`ModularTree.encode` emits depth-first, which round-trips the trivial and
+3-node cases but **not** balanced multi-level trees (the decoder fills
+level-order) — a careful follow-up. Full suite: 671 tests.
+
 ### v0.12.0i0 / i1 — Native lossless Modular ratio: cost-gated WP + rANS
 
 The native lossless Modular encoder (the primary lossless-for-medical

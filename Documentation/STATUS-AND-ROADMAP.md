@@ -1,6 +1,6 @@
 # JXLSwift — Status & Roadmap
 
-**A current-state knowledge map of the project.** Snapshot as of **v0.12.0i1** (2026-05-29).
+**A current-state knowledge map of the project.** Snapshot as of **v0.12.0i2** (2026-05-29).
 For the original project charter + constraints see [ROADMAP.md](../ROADMAP.md); for the
 load-bearing rules see [CLAUDE.md](../CLAUDE.md); for release-by-release detail see
 [CHANGELOG.md](../CHANGELOG.md).
@@ -27,7 +27,7 @@ GPU paths (land later, behind the proven scalar path).
 
 | | |
 |---|---|
-| **Version** | v0.12.0i1 (Phase J line) |
+| **Version** | v0.12.0i2 (Phase J line) |
 | **Tests** | 671 passing / 7 skipped / 0 failures (`swift test -c release`, ~50 s) |
 | **Dependencies** | `swift-argument-parser` (CLI only). Zero runtime deps. |
 | **Project focus** | **Lossless, for medical imaging.** Lossy *encode* (full VarDCT from pixels) is deferred to the very last phase. The lossy *decode* path is complete and `djxl`-matching, but new encoder work is lossless-first. |
@@ -75,7 +75,7 @@ Legend: ✅ done · 🟩 substantially done · ⏳ in progress · ⬜ not starte
 | **F** | Foundation (bitstream, container, signature, SizeHeader) | ✅ | read + write + round-trip |
 | **H** | Image headers (BitDepth, ColorEncoding, ExtraChannelInfo, ImageMetadata) | ✅ | read + write + round-trip |
 | **E** | Entropy (HybridUint, prefix codes, rANS, dist serialisation, context maps, LZ77) | ✅ | read + write incl. complex histograms and the full entropy-coded context-map path (both directions); LZ77 back-reference *encoding* still pending |
-| **M** | Modular sub-codec (lossless path) | ✅ | predictors, RCT, channel decode, MA-tree (decode); **`SpecModularEncoder` is a spec-compliant lossless *encoder*** — 8/16-bit gray/RGB/RGBA, **arbitrary dims ≤ 8192** (v0.12.0hy), multi-group, `djxl`-validated byte-exact. Cost-gates predictor (ClampedGradient vs **Weighted Predictor**) × entropy (Huffman vs **rANS**) per image (v0.12.0i0/i1) → ~1.4–1.7× cjxl lossless. The primary lossless-for-medical path |
+| **M** | Modular sub-codec (lossless path) | ✅ | predictors, RCT, channel decode, MA-tree (decode); **`SpecModularEncoder` is a spec-compliant lossless *encoder*** — 8/16-bit gray/RGB/RGBA, **arbitrary dims ≤ 8192** (v0.12.0hy), multi-group, `djxl`-validated byte-exact. Cost-gates predictor (ClampedGradient vs **Weighted Predictor**) × entropy (Huffman vs **rANS**) per image (v0.12.0i0/i1), plus a 2-context **WP-activity split** (v0.12.0i2) → ~1.4–1.7× cjxl lossless. The primary lossless-for-medical path |
 | **V** | VarDCT | 🟩 | **decoder** decodes real cjxl frames (DC/AC groups, context maps, coeff orders, CFL, RAW quant, chroma subsampling, ICC); **encoder** writes coefficient-bridge frames |
 | **R** | Restoration filters (Gaborish, EPF) | ✅ | Gaborish (3×3 smoothing) + EPF (all 3 passes, sharpness/QF-driven sigma) implemented in `VarDCT/Gaborish.swift` + `VarDCT/EPF.swift` and wired into the lossy pixel decode. **Decode matches `djxl` per-pixel** at 256²/384² (max diff 1 vs the float-IDCT reference, v0.12.0hx). The JPEG bridge still disables them (`kSkipAdaptiveLFSmoothing`) as cjxl does for transcode |
 | **J** | JPEG ⇄ JXL transcoding | 🟩 | **both directions byte-identical** (baseline + progressive, all chroma, odd dims, grayscale, multi-AC-group ≤ 2048 px/side); forward emits a full lossless container, djxl-valid. AC + DC/ACMetadata both rANS, cost-gated clusters ≤ 64 → ~1.03–1.05× cjxl (real AC-rich), ~1.4× (very smooth). Remaining gap: DC tree + coeff orders (see §5) |
@@ -240,12 +240,13 @@ Test oracles (optional, dev-time): `cjxl` / `djxl` / `jxlinfo` / `brotli` / `cjp
 last phase.** Both lossless encode paths (JPEG transcode + native Modular) are complete and
 `djxl`-validated, so candidate lossless-first work:
 
-1. **Lossless ratio — multi-context modelling.** The native Modular encoder is now ~1.4–1.7×
-   cjxl lossless (cost-gated WP + rANS, v0.12.0i0/i1). The remaining gap is that we use a
-   **single context** (one tree leaf) where cjxl splits the MA-tree on neighbour properties
-   (e.g. the WP-error magnitude) into many per-context histograms. Adding a property-split tree
-   (the encoder already has WP + the decoder already walks property trees) is the biggest
-   remaining lossless lever — and a substantial tree-construction effort.
+1. **Lossless ratio — more contexts.** A **2-context** WP-activity split landed (v0.12.0i2,
+   djxl-valid), proving multi-context modular encoding works. Going to many contexts (cjxl-style)
+   needs `ModularTree.encode` generalised to **deeper trees**: it currently emits depth-first,
+   which round-trips trivial / 3-node shapes but not balanced multi-level trees (the decoder fills
+   level-order) — so the encoder must emit in the decoder's order (and a tree-roundtrip unit test
+   should pin it). Then learned thresholds + N activity bins (+ extend to the multi-group path).
+   This is the biggest remaining lossless lever.
 2. **Lossless coverage for medical inputs** — >8192 px dimensions (the current cap), bit depths
    beyond 16, gray+alpha at arbitrary dims, encode-effort tuning. Driven by the actual corpus.
 3. **Forward transcode size** is effectively complete (~1.03–1.05× cjxl on real content;
