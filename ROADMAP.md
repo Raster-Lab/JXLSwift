@@ -401,9 +401,13 @@ remains for 1.0 is conformance, completeness, hardening, performance, and API st
      attempt failed. The verified whitelist `{4,5,9,10,12,15}` already yields a complete, correct,
      competitive lossless encoder; widening it is a *ratio* lever, not a correctness gap, and is
      deferred to a post-1.0 ticket.
-3. **Robustness hardening — v0.15.0.** A parameterised corpus sweep (dims × bit-depth × channels ×
-   content × effort, all `djxl` byte-exact) plus a decoder fuzz pass (malformed input must throw,
-   never trap). The v0.12.0i17 constant-image crash shows degenerate inputs still hide bugs.
+3. **Robustness hardening — ✅ done (v0.15.0).** `Tests/JXLSwiftTests/RobustnessTests.swift`: a
+   parameterised lossless sweep (10 dims incl. 1×1/1×N/N×1/group-boundary × {8,12,16}-bit ×
+   {gray, gray+alpha, RGB, RGBA} × {constant, gradient, random, sparse}) — **400 round-trip cases**
+   plus the full **effort ladder 1…9**, with a `djxl`-byte-exact subset over previously-uncovered
+   cells (tiny gray+alpha, constant RGBA at a group boundary, random gray16/RGBA16). Plus a decoder
+   fuzz pass (truncation + byte mutation across three seed codestreams) proving graceful
+   degradation — **0 traps across 1,812 malformed inputs** (each is cleanly thrown or decoded).
 4. **Performance baseline — v0.16.0.** Profile the encode/decode hot paths and land the first
    *measured* optimisation path (NEON / Accelerate), scalar Swift remaining the source of truth
    (constraint 1 / [Phase O](#phase-o--optimisation-paths-independent-of-correctness)). Speed is
