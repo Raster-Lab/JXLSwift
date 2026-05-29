@@ -1276,15 +1276,29 @@ public enum VarDCTBitstreamWriter {
             ansCandidate = nil   // fall back to Huffman on any ANS issue
         }
 
-        // --- Candidate C: multi-cluster rANS -----------------------
+        // --- Candidate C: multi-cluster rANS ------------------------
         // Groups the AC contexts into histogram clusters so each token
         // is coded against a context-tuned distribution — the dominant
         // size lever (Candidates A/B code everything against ONE global
         // histogram). Its many-cluster context map is serialised by
         // `ContextMap.write`, which picks the cheap entropy-coded full
         // path for this large, repetitive map.
-        let multiCandidate = buildBridgeMultiClusterACCandidate(
-            perGroup: perGroup, contexts: contexts, cfg: cfg)
+        //
+        // Two cluster caps are tried (32 and 64): detailed images keep
+        // gaining from more clusters (each clears the per-cluster
+        // overhead threshold), while small images self-limit below the
+        // cap regardless. The higher cap captures the detailed-image win;
+        // the lower cap guards against the greedy threshold
+        // over-fragmenting (the cost-gate below keeps whichever is
+        // actually smaller).
+        let multiCandidates = [
+            buildBridgeMultiClusterACCandidate(
+                perGroup: perGroup, contexts: contexts, cfg: cfg,
+                maxClusters: 32),
+            buildBridgeMultiClusterACCandidate(
+                perGroup: perGroup, contexts: contexts, cfg: cfg,
+                maxClusters: 64),
+        ]
 
         // --- Pick the smallest by actually encoding each ------------
         // Encoding into scratch buffers is exact (no estimation error)
@@ -1304,7 +1318,7 @@ public enum VarDCTBitstreamWriter {
             let b = sectionBits(cand.0, cand.1)
             if b < bestBits { best = cand; bestBits = b; pick = "ANS-1cl" }
         }
-        if let cand = multiCandidate {
+        for cand in multiCandidates.compactMap({ $0 }) {
             let b = sectionBits(cand.0, cand.1)
             if b < bestBits {
                 best = cand; bestBits = b
@@ -1313,8 +1327,7 @@ public enum VarDCTBitstreamWriter {
         }
         if ProcessInfo.processInfo.environment["JXL_TRACE"] != nil {
             FileHandle.standardError.write(Data(
-                ("TRACE bridge AC entropy: pick=\(pick) bits=\(bestBits)"
-                 + " (multi=\(multiCandidate?.0.numHistograms ?? 0)cl)\n")
+                ("TRACE bridge AC entropy: pick=\(pick) bits=\(bestBits)\n")
                 .utf8))
         }
         return (best.0, best.1, contexts)
@@ -1377,7 +1390,7 @@ public enum VarDCTBitstreamWriter {
         perGroup: [[(context: Int, value: UInt32)]],
         contexts: Int,
         cfg: HybridUintConfig,
-        maxClusters: Int = 16,
+        maxClusters: Int = 32,
         overheadBits: Double = 70
     ) -> (EntropySectionHeader, MultiClusterCodebook)? {
         guard contexts > 1 else { return nil }
