@@ -12281,6 +12281,99 @@ extension FoundationTests {
         print("[v0.7.0 32×32] our RGB means: \(oursMean) vs djxl ≈ (124, 124, 124)")
     }
 
+    /// **At-scale lossy decode vs djxl (Phase R, v0.12.0hx).** The
+    /// small fixtures above only sanity-check the mean. This decodes
+    /// real cjxl `-d 1` lossy frames at sizes that exercise the full
+    /// pixel pipeline — multi-group AC, chroma upsampling, Gaborish,
+    /// **EPF** (all three passes), inverse XYB — and compares
+    /// **per-pixel** against the `djxl` reference. Cross-decoder pixels
+    /// aren't byte-exact (float IDCT + AdjustQuantBias), so the bound is
+    /// a tight tolerance: max ≤ 6, mean ≤ 1.0. 384² is a 2×2 group grid.
+    func testVarDCT_LossyDecode_AtScale_MatchesDjxlPerPixel() throws {
+        let cjxl = "/opt/homebrew/bin/cjxl"
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: cjxl),
+              FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("cjxl/djxl not available")
+        }
+        func readPPM(_ path: String) throws -> (Int, Int, [UInt8]) {
+            let d = try Data(contentsOf: URL(fileURLWithPath: path))
+            // Parse "P6\n<w> <h>\n<max>\n" then raw RGB.
+            var i = 0
+            func token() -> String {
+                while i < d.count, d[i] == 0x20 || d[i] == 0x0a { i += 1 }
+                var s = ""
+                while i < d.count, d[i] != 0x20, d[i] != 0x0a {
+                    s.append(Character(UnicodeScalar(d[i]))); i += 1
+                }
+                return s
+            }
+            _ = token()                       // "P6"
+            let w = Int(token())!, h = Int(token())!
+            _ = token()                       // max
+            i += 1                             // single whitespace after max
+            return (w, h, Array(d[i...]))
+        }
+        for dim in [256, 384] {
+            let tmp = NSTemporaryDirectory()
+            let id = UUID().uuidString
+            let pnmP = tmp + "ls-\(id).ppm"
+            let jxlP = tmp + "ls-\(id).jxl"
+            let djP  = tmp + "ls-\(id).dj.ppm"
+            defer { for p in [pnmP, jxlP, djP] {
+                try? FileManager.default.removeItem(atPath: p) } }
+            var ppm = Data("P6\n\(dim) \(dim)\n255\n".utf8)
+            var seed = UInt32(dim)
+            func rnd() -> Int { seed = seed &* 1103515245 &+ 12345
+                return Int((seed >> 16) & 0x1F) }
+            for y in 0..<dim {
+                for x in 0..<dim {
+                    ppm.append(UInt8((x + rnd()) & 0xff))
+                    ppm.append(UInt8((y + rnd()) & 0xff))
+                    ppm.append(UInt8(((x + y) >> 1 + rnd()) & 0xff))
+                }
+            }
+            try ppm.write(to: URL(fileURLWithPath: pnmP))
+            let p1 = Process(); p1.launchPath = cjxl
+            p1.arguments = [pnmP, jxlP, "-d", "1"]
+            p1.standardOutput = Pipe(); p1.standardError = Pipe()
+            try p1.run(); p1.waitUntilExit()
+            guard p1.terminationStatus == 0 else {
+                XCTFail("\(dim)²: cjxl failed"); continue
+            }
+            // Our decode.
+            let frame = try JXLDecoder()
+                .decode(Data(contentsOf: URL(fileURLWithPath: jxlP)))
+            XCTAssertEqual(frame.width, dim)
+            XCTAssertEqual(frame.height, dim)
+            // djxl reference.
+            let p2 = Process(); p2.launchPath = djxl
+            p2.arguments = [jxlP, djP]
+            p2.standardOutput = Pipe(); p2.standardError = Pipe()
+            try p2.run(); p2.waitUntilExit()
+            guard p2.terminationStatus == 0 else {
+                XCTFail("\(dim)²: djxl failed"); continue
+            }
+            let (dw, dh, ref) = try readPPM(djP)
+            XCTAssertEqual(dw, dim); XCTAssertEqual(dh, dim)
+            XCTAssertEqual(frame.data.count, ref.count,
+                "\(dim)²: pixel buffer size mismatch")
+            var maxDiff = 0, sumDiff = 0
+            let n = min(frame.data.count, ref.count)
+            for i in 0..<n {
+                let d = abs(Int(frame.data[i]) - Int(ref[i]))
+                if d > maxDiff { maxDiff = d }
+                sumDiff += d
+            }
+            let mean = Double(sumDiff) / Double(max(1, n))
+            print("[lossy @\(dim)²] max=\(maxDiff) mean=\(String(format: "%.3f", mean)) vs djxl")
+            XCTAssertLessThanOrEqual(maxDiff, 6,
+                "\(dim)²: per-pixel max diff vs djxl too large (\(maxDiff))")
+            XCTAssertLessThanOrEqual(mean, 1.0,
+                "\(dim)²: per-pixel mean diff vs djxl too large (\(mean))")
+        }
+    }
+
     /// EPF sigma calculation early-exits for sharpness=0 with the
     /// default LUT — `inv_sigma` falls below `kMinSigma`, signalling
     /// pass-through. Cross-validated against libjxl's epf.cc:
