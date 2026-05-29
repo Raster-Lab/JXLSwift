@@ -11,6 +11,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0i5 — Multi-context lossless Modular on the multi-group path
+
+Extends the WP-activity split (previously single-section ≤512² only) to
+the **multi-group** path. The property-15 tree (2-bin median or 4-bin
+quartile, cost-gated) now lives once in the DC-global section, and every
+AC group section routes its tokens through the shared per-context
+codebook; WP runs fresh per rect on both encoder and decoder, so the
+per-pixel activity — hence the context — agrees by construction.
+Thresholds are pooled across all rects so one global tree serves every
+group. The whole candidate (global Huffman vs rANS codebook × 2/4 bins)
+is assembled in full and cost-gated by total section bytes against the
+single-context multi-group result; smaller wins. On a bimodal 768²
+16-bit image (smooth region + noise region) the multi-context path is
+selected and is ~4.7% smaller (480937→458349 B), byte-exact through
+`djxl` **and** our decoder. New
+`testSpecModularEncoder_MultiContext_MultiGroup_Bimodal16_DjxlRoundTrip`.
+Full suite: 673 tests.
+
 ### v0.12.0i3 / i4 — Deeper-tree encode fix + 4-context WP-activity split
 
 **i3** fixes `ModularTree.encode`: it emitted nodes depth-first, but the

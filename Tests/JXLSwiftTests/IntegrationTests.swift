@@ -13545,6 +13545,81 @@ extension FoundationTests {
         }
     }
 
+    /// Multi-context lossless Modular on a **multi-group** (> 512 px)
+    /// image whose local-activity distribution is strongly bimodal: a
+    /// large smooth-gradient region (low WP-error) beside a concentrated
+    /// high-amplitude noise region (high WP-error). The property-15
+    /// WP-activity split into low/high contexts beats one pooled
+    /// histogram, so the encoder's new multi-group multi-context path is
+    /// selected. The global property-15 tree lives once in DC global and
+    /// every AC group routes its tokens through the shared per-context
+    /// codebook; WP runs fresh per rect on both sides, so contexts agree
+    /// by construction. Validated byte-exact through **our decoder** and
+    /// **`djxl`** (big-endian 16-bit PGM) — fails if the global-tree /
+    /// per-group-routed coding is wrong.
+    func testSpecModularEncoder_MultiContext_MultiGroup_Bimodal16_DjxlRoundTrip()
+        throws {
+        let w = 768, h = 768
+        var pixels = [UInt16](repeating: 0, count: w * h)
+        var seed: UInt32 = 0x1234_5678
+        for y in 0..<h {
+            for x in 0..<w {
+                let i = y * w + x
+                if x < 512 {
+                    // Smooth, low-amplitude — narrow residual distribution.
+                    pixels[i] = UInt16((x + y) & 0x03ff)
+                } else {
+                    // High-amplitude pseudo-random — wide distribution.
+                    seed = seed &* 1103515245 &+ 12345
+                    pixels[i] = UInt16(truncatingIfNeeded: seed)
+                }
+            }
+        }
+        let bytes = try SpecModularEncoder.encodeGrayscale16(
+            width: w, height: h, pixels: pixels)
+        // Our decoder: byte-exact.
+        let image = try JXLDecoder().decodeModular(bytes)
+        XCTAssertEqual(image.channels.count, 1,
+            "expected 1 grayscale channel")
+        for i in 0..<(w * h) {
+            XCTAssertEqual(image.channels[0].pixels[i], Int32(pixels[i]),
+                "our-decoder pixel \(i)")
+        }
+        // djxl: byte-exact (16-bit big-endian PGM).
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("djxl not available at \(djxl)")
+        }
+        let tmp = NSTemporaryDirectory()
+        let inP = tmp + "jxlswift_mc_mg.jxl"
+        let outP = tmp + "jxlswift_mc_mg.pgm"
+        defer { try? FileManager.default.removeItem(atPath: inP)
+                try? FileManager.default.removeItem(atPath: outP) }
+        try bytes.write(to: URL(fileURLWithPath: inP))
+        let p = Process(); p.launchPath = djxl
+        p.arguments = [inP, outP]
+        let errPipe = Pipe()
+        p.standardOutput = Pipe(); p.standardError = errPipe
+        try p.run(); p.waitUntilExit()
+        let err = String(
+            data: errPipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8) ?? ""
+        XCTAssertEqual(p.terminationStatus, 0,
+            "djxl rejected our \(w)×\(h) multi-context multi-group bytes; "
+            + "stderr: \(err)")
+        let pgm = try Data(contentsOf: URL(fileURLWithPath: outP))
+        var nl = 0, start = 0
+        for (i, b) in pgm.enumerated() where b == 0x0a {
+            nl += 1; if nl == 3 { start = i + 1; break }
+        }
+        for i in 0..<(w * h) {
+            let hi = UInt16(pgm[start + 2 * i])
+            let lo = UInt16(pgm[start + 2 * i + 1])
+            XCTAssertEqual((hi << 8) | lo, pixels[i],
+                "djxl 16-bit pixel \(i) mismatch")
+        }
+    }
+
     /// `encodeGrayscale16` round-trips arbitrary 16-bit grayscale
     /// content through our decoder. Covers a wide-amplitude ramp and
     /// LCG noise — the latter exercises the larger residual-token
