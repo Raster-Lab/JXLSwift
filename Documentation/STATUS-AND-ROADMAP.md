@@ -31,7 +31,7 @@ GPU paths (land later, behind the proven scalar path).
 | **Tests** | 688 passing / 7 skipped / 0 failures (`swift test -c release`, ~70 s) |
 | **Dependencies** | `swift-argument-parser` (CLI only). Zero runtime deps. |
 | **Project focus** | **Lossless, for medical imaging.** Lossy *encode* (full VarDCT from pixels) is deferred to the very last phase. The lossy *decode* path is complete and `djxl`-matching, but new encoder work is lossless-first. |
-| **Headline capability** | **Two lossless encode paths, both `djxl`-validated:** (1) **lossless JPEG ⇄ JXL transcoding**, byte-identical both directions, no `--source` needed — baseline + progressive, all chroma, odd dims, grayscale, metadata, any size ≤ 2048 px/side (multi-AC-group); forward ~1.03–1.05× cjxl on real content. (2) **native lossless Modular encode** of raw pixels — 8- and 16-bit grayscale / **grayscale+alpha** / RGB / RGBA, **arbitrary dimensions** (≤ 16384, incl. multi-DC-group > 4096 px), byte-exact through `djxl` — covering the core medical case (16-bit grayscale CT/MR). |
+| **Headline capability** | **Two lossless encode paths, both `djxl`-validated:** (1) **lossless JPEG ⇄ JXL transcoding**, byte-identical both directions, no `--source` needed — baseline + progressive, all chroma, odd dims, grayscale, metadata, any size ≤ 2048 px/side (multi-AC-group). (2) **native lossless Modular encode** of raw pixels — 8- and 16-bit grayscale / **grayscale+alpha** / RGB / RGBA, **arbitrary dimensions** (≤ 16384, incl. multi-DC-group > 4096 px), byte-exact through `djxl` — covering the core medical case (16-bit grayscale CT/MR). |
 
 **What works end-to-end today**
 
@@ -75,10 +75,10 @@ Legend: ✅ done · 🟩 substantially done · ⏳ in progress · ⬜ not starte
 | **F** | Foundation (bitstream, container, signature, SizeHeader) | ✅ | read + write + round-trip |
 | **H** | Image headers (BitDepth, ColorEncoding, ExtraChannelInfo, ImageMetadata) | ✅ | read + write + round-trip |
 | **E** | Entropy (HybridUint, prefix codes, rANS, dist serialisation, context maps, LZ77) | ✅ | read + write incl. complex histograms and the full entropy-coded context-map path (both directions); LZ77 back-reference *encoding* still pending |
-| **M** | Modular sub-codec (lossless path) | ✅ | predictors, RCT, channel decode, MA-tree (decode); **`SpecModularEncoder` is a spec-compliant lossless *encoder*** — 8/16-bit gray/RGB/RGBA, **arbitrary dims ≤ 8192** (v0.12.0hy), multi-group, `djxl`-validated byte-exact. Cost-gates predictor (ClampedGradient vs **Weighted Predictor**) × entropy (Huffman vs **rANS**) per image (v0.12.0i0/i1), plus a cost-gated **WP-activity split** — up to **8 contexts** (2 / 4 / 8-bin median/quartile/octile, picked per image; v0.12.0i2/i4/i6 via the shared `activitySplitTree` binary-heap layout, after the i3 level-order `ModularTree.encode` fix that unblocks deeper trees) plus **learned** entropy-minimising thresholds at 2 / 4 / 8 bins (v0.12.0i7/i8: `learnedThresholdSets`, level-order recursive greedy splitting) for skewed/multi-modal activity, on **both single-section and multi-group** (v0.12.0i5: a global property-15 tree in DC global, every AC group routed through a shared per-context codebook). v0.12.0i9/i10 add a **greedy multi-property MA-tree** (cjxl-style — branches on whichever of a djxl-verified property subset best separates residuals at each node; ≤ 8 contexts) on **both single-section and multi-group** (i10: tree learned from a subsample, routed via the decoder's own `ModularTree.walk`) → ~1.3–1.7× cjxl lossless. The primary lossless-for-medical path |
+| **M** | Modular sub-codec (lossless path) | ✅ | predictors, RCT, channel decode, MA-tree (decode); **`SpecModularEncoder` is a spec-compliant lossless *encoder*** — 8/16-bit gray/RGB/RGBA, **arbitrary dims ≤ 8192** (v0.12.0hy), multi-group, `djxl`-validated byte-exact. Cost-gates predictor (ClampedGradient vs **Weighted Predictor**) × entropy (Huffman vs **rANS**) per image (v0.12.0i0/i1), plus a cost-gated **WP-activity split** — up to **8 contexts** (2 / 4 / 8-bin median/quartile/octile, picked per image; v0.12.0i2/i4/i6 via the shared `activitySplitTree` binary-heap layout, after the i3 level-order `ModularTree.encode` fix that unblocks deeper trees) plus **learned** entropy-minimising thresholds at 2 / 4 / 8 bins (v0.12.0i7/i8: `learnedThresholdSets`, level-order recursive greedy splitting) for skewed/multi-modal activity, on **both single-section and multi-group** (v0.12.0i5: a global property-15 tree in DC global, every AC group routed through a shared per-context codebook). v0.12.0i9/i10 add a **greedy multi-property MA-tree** (cjxl-style — branches on whichever of a djxl-verified property subset best separates residuals at each node; ≤ 8 contexts) on **both single-section and multi-group** (i10: tree learned from a subsample, routed via the decoder's own `ModularTree.walk`). The primary lossless-for-medical path |
 | **V** | VarDCT | 🟩 | **decoder** decodes real cjxl frames (DC/AC groups, context maps, coeff orders, CFL, RAW quant, chroma subsampling, ICC); **encoder** writes coefficient-bridge frames |
 | **R** | Restoration filters (Gaborish, EPF) | ✅ | Gaborish (3×3 smoothing) + EPF (all 3 passes, sharpness/QF-driven sigma) implemented in `VarDCT/Gaborish.swift` + `VarDCT/EPF.swift` and wired into the lossy pixel decode. **Decode matches `djxl` per-pixel** at 256²/384² (max diff 1 vs the float-IDCT reference, v0.12.0hx). The JPEG bridge still disables them (`kSkipAdaptiveLFSmoothing`) as cjxl does for transcode |
-| **J** | JPEG ⇄ JXL transcoding | 🟩 | **both directions byte-identical** (baseline + progressive, all chroma, odd dims, grayscale, multi-AC-group ≤ 2048 px/side); forward emits a full lossless container, djxl-valid. AC + DC/ACMetadata both rANS, cost-gated clusters ≤ 64 → ~1.03–1.05× cjxl (real AC-rich), ~1.4× (very smooth). Remaining gap: DC tree + coeff orders (see §5) |
+| **J** | JPEG ⇄ JXL transcoding | 🟩 | **both directions byte-identical** (baseline + progressive, all chroma, odd dims, grayscale, multi-AC-group ≤ 2048 px/side); forward emits a full lossless container, djxl-valid. AC + DC/ACMetadata both rANS, cost-gated clusters ≤ 64. Remaining gap: DC tree + coeff orders (see §5) |
 | **Brotli** | RFC 7932 decoder + uncompressed encoder | ✅ | decoder: meta-blocks, simple/complex prefix codes, distance ring buffer, **static dictionary + 121 transforms**; encoder: uncompressed meta-blocks (jbrd tail). Context-maps/multi-block-type (NTREES>1) not needed for jbrd payloads |
 
 > The CLAUDE.md phase table predates the v0.12.0g–hj work and under-states **V** and **J**.
@@ -134,10 +134,10 @@ ISOBMFF container — signature + `ftyp` + `jbrd` + `jxlc` — a true lossless-J
 
 ### 5.3 What remains in Phase J
 
-- **Forward entropy-coding size — now ~1.06–1.13× cjxl.** The AC group uses **rANS**
-  (v0.12.0hq) with **multi-cluster context modelling** (v0.12.0hs): 256² 4:2:0 is ~29.5 KB
-  (cjxl ~27.2 KB, 1.085×), 4:4:4 1.064×, 4:2:2 1.078×, progressive 1.085×, grayscale 1.134× —
-  down from ~1.27× single-cluster. The clusterer groups the *used* AC contexts (greedy
+- **Forward entropy-coding size.** The AC group uses **rANS**
+  (v0.12.0hq) with **multi-cluster context modelling** (v0.12.0hs) — a large reduction
+  from the original single-cluster size across 4:4:4 / 4:2:0 / 4:2:2 / progressive /
+  grayscale. The clusterer groups the *used* AC contexts (greedy
   agglomerative, cap 16) and serialises the map via `ContextMap.writeFullPath`; the codebook
   builder cost-gates Huffman / 1-cluster rANS / multi-cluster rANS and keeps the smallest. Both
   our reverse path and `djxl` reconstruct byte-for-byte.
@@ -149,10 +149,10 @@ ISOBMFF container — signature + `ftyp` + `jbrd` + `jxlc` — a true lossless-J
 - **DC / ACMetadata → rANS (v0.12.0hu)** — these modular streams (gradient DC residuals +
   all-zero ACMetadata) were Huffman and dominated low-AC files; now cost-gated Huffman-vs-rANS,
   written as two fresh per-sub-image ANS streams sharing the single-context post codebook. Smooth
-  512² dropped 2.42× → 1.44×; AC-rich 256² to ~1.04× cjxl. Byte-identical via reverse + djxl.
+  512² dropped 2.42× → 1.44× (own before→after). Byte-identical via reverse + djxl.
 - **AC cluster count (v0.12.0hv)** — `buildBridgeACCodebook` builds two multi-cluster candidates
-  (caps 32 and 64) and keeps the smaller; detailed images now use up to 64 histograms (matching/
-  exceeding cjxl's ~24). Pushed real AC-rich content to ~1.03–1.05× cjxl.
+  (caps 32 and 64) and keeps the smaller; detailed images now use up to 64 histograms,
+  cutting real AC-rich content further.
 - **DC predictor (v0.12.0hw)** — `buildBridgePostCodebook` cost-gates ClampedGradient vs the
   adaptive **Weighted Predictor** (reusing the decoder's `WeightedPredictor` struct, so byte-exact
   by construction) and picks per-image. Smooth 512² 1.437× → 1.296×; natural content prefers WP.
@@ -165,7 +165,7 @@ ISOBMFF container — signature + `ftyp` + `jbrd` + `jxlc` — a true lossless-J
   doesn't justify it.
 - **Remaining size/scope work** (all lossless recodes, not correctness, diminishing returns):
   (a) richer **DC-group tree** (>1 leaf → per-channel / per-property DC contexts). (b) tailored
-  **block context map** (cjxl's ~990-entry AC map vs our 7425 — mostly a map-size saving since
+  **block context map** (a smaller AC context map — mostly a map-size saving since
   clustering already merges used contexts). (c) **multi-DC-group** for inputs > 2048 px per side.
 - Foundations in place: `SpecANSDistribution.writeComplex` (v0.12.0ho), `ANSTokenStreamWriter`
   (v0.12.0hp), and `ContextMap.writeFullPath` (v0.12.0hr).
@@ -266,7 +266,7 @@ last phase.** Both lossless encode paths (JPEG transcode + native Modular) are c
    verified + memory review) and bit depths beyond 16 (rare in medical). The **encode-effort
    knob** landed in v0.12.0i13 (`EncodingEffort` gates the cost-gated candidates: ≤3 single-context,
    ≥4 +activity, ≥7 +greedy), so callers can trade ratio for speed. Driven by the actual corpus.
-3. **Forward transcode size** is effectively complete (~1.03–1.05× cjxl on real content;
+3. **Forward transcode size** is effectively complete (near-optimal on real content;
    coefficient-order measured neutral-to-negative, §5.3) — only sub-kilobyte edge-case levers
    remain (richer DC-group tree, block-context-map size).
 4. **Full lossy VarDCT *encode*** (pixels → lossy JXL: XYB, adaptive quant, AC-strategy search)

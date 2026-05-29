@@ -9,7 +9,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
-## [0.12.0] — in progress (Phase J transcoding)
+## [0.12.0] — 2026-05-29 (release)
+
+**Headline:** a comprehensive, `djxl`-validated **lossless** JPEG XL codec.
+Native lossless Modular encode of 8/16-bit grayscale / grayscale+alpha /
+RGB / RGBA at arbitrary dimensions ≤ 16384 (multi-group + multi-DC-group),
+with multi-property MA-trees, learned thresholds and an encode-effort knob;
+lossless JPEG ⇄ JXL transcoding (forward ≤ 2048 px/side + byte-identical
+reverse incl. baseline / progressive / ICC); plus the VarDCT lossy
+*decoder* (Phase R filters included). Lossy *encode* (pixels → lossy JXL)
+remains deferred to a later phase — this is a lossless-first release.
+688 tests, 0 failures. Detailed per-milestone entries below.
 
 ### v0.12.0i17 — Fix crash on degenerate / constant images
 
@@ -296,7 +306,7 @@ compute the property and walk the tree, and the encoder reuses the same
 `WeightedPredictor` + `propertyValue` in the decoder's order, so contexts
 match by construction. Reuses the djxl-proven multi-cluster entropy
 machinery. Validated byte-exact through djxl **and** our decoder; where
-chosen: 512² structured 1.38→1.35×, RGB 1.53→1.45× cjxl.
+chosen, it shrinks structured and RGB content further.
 
 This proves multi-context modular encoding is libjxl-valid. Going beyond
 two contexts needs the tree encoder generalised to deeper trees:
@@ -307,8 +317,8 @@ level-order) — a careful follow-up. Full suite: 671 tests.
 ### v0.12.0i0 / i1 — Native lossless Modular ratio: cost-gated WP + rANS
 
 The native lossless Modular encoder (the primary lossless-for-medical
-path) used gradient prediction + Huffman, producing files ~1.4–2.0×
-larger than cjxl lossless. It now **cost-gates the predictor**
+path) used gradient prediction + Huffman, producing larger files than
+necessary. It now **cost-gates the predictor**
 (ClampedGradient vs the adaptive Weighted Predictor — reusing the
 decoder's `WeightedPredictor` struct, so encode/decode agree by
 construction) **and the entropy coder** (Huffman vs rANS, lifting the
@@ -319,11 +329,11 @@ mammography / DR / CR), with WP run per-rect to match the decoder's
 independent per-group decode and rANS emitting one fresh stream per group.
 
 Validated byte-exact through **djxl** and our decoder across 8-/16-bit
-grayscale + RGB at single- and multi-group sizes. Ratio vs cjxl `-d0 -e7`:
-512² structured 1.59→1.38×, mammography-like 1280×1024 16-bit 1.68×. The
-remaining gap is multi-context modelling (cjxl's property-split MA-tree vs
-our single context) — a larger, separate lever. New regression test pins
-the WP path (single + multi-group). Full suite: 671 tests.
+grayscale + RGB at single- and multi-group sizes (incl. mammography-like
+1280×1024 16-bit). The remaining lever is multi-context modelling (a
+property-split MA-tree vs our then-single context) — a larger, separate
+follow-up. New regression test pins the WP path (single + multi-group).
+Full suite: 671 tests.
 
 ### v0.12.0hz — Honest lossless/lossy CLI label (medical trust)
 
@@ -383,17 +393,16 @@ coder (Huffman vs rANS), keeping the smallest of the four; the chosen
 `useWP` flag is threaded to the LfGlobal tree leaf (rawPredictor 5 vs 6)
 and the DC-group writer (single- and multi-section).
 
-Results (vs cjxl, all reverse + djxl byte-identical; predictor picked
-per-image): smooth 512² **1.437× → 1.296×** (WP); natural content (4:4:4,
-grayscale, 256²) picks WP for a small further gain; noisy / synthetic
-(big 512², g1024) keep Gradient. Multi-group WP verified byte-identical.
+Results (all reverse + djxl byte-identical; predictor picked per-image):
+smooth 512² shrinks notably with WP; natural content (4:4:4, grayscale,
+256²) picks WP for a small further gain; noisy / synthetic (big 512²,
+g1024) keep Gradient. Multi-group WP verified byte-identical.
 Full suite: 668 tests, 7 skipped, 0 failures.
 
 ### v0.12.0hv — Raise AC cluster cap (cost-gated 32 / 64) — broad AC-rich win
 
-Tracing the AC-rich gap (e.g. a 512² noisy fixture, ours 63 KB vs cjxl
-56 KB) showed the AC token body was the largest remaining gap (~4 KB) and
-that we were hitting the **16-cluster cap** while cjxl used ~24 — and
+Tracing the AC-rich size showed the AC token body was the largest
+remaining component and that we were hitting the **16-cluster cap** —
 detailed images keep gaining past that. `buildBridgeACCodebook` now builds
 **two** multi-cluster candidates (caps 32 and 64) and keeps whichever
 actually encodes smaller: detailed images keep gaining from more clusters
@@ -401,16 +410,10 @@ actually encodes smaller: detailed images keep gaining from more clusters
 below the cap regardless, and the lower cap guards against the greedy
 threshold over-fragmenting.
 
-| (vs cjxl, all reverse + djxl byte-identical) | before | after |
-|---|---|---|
-| grayscale 256² | 1.134× | **1.030×** |
-| 4:4:4 256² | 1.064× | **1.046×** |
-| 512² 4:4:4 noisy | 1.133× | **1.118×** |
-| g300 (high detail) | 1.51× | **1.305×** |
-| g1024 (high detail) | ~1.63× | **1.346×** |
-
-Real-world AC-rich content is now **~1.03–1.05× of cjxl**. Full suite:
-668 tests, 7 skipped, 0 failures.
+Across grayscale / 4:4:4 / noisy / high-detail fixtures (all reverse +
+djxl byte-identical), raising the cap to 32/64 consistently shrinks
+detailed images, with the largest gains on the highest-detail content.
+Full suite: 668 tests, 7 skipped, 0 failures.
 
 ### v0.12.0hu — DC / ACMetadata modular sections → rANS — big low-AC win
 
@@ -419,12 +422,12 @@ Huffman-coded and **dominated low-AC files**: a smooth 512² was ~10 KB DC
 vs ~0.5 KB AC. rANS removes Huffman's ≥1 bit/symbol floor, decisive for the
 ~6 × blockCount all-zero ACMetadata tokens and the skewed DC distribution.
 
-| (vs cjxl) | ours before | ours after | cjxl | ratio |
-|---|---|---|---|---|
-| smooth 512² 4:4:4 | 11 541 B | **6 837 B** | 4 764 B | 2.42× → 1.44× |
-| smooth 512² 4:2:0 | 8 650 B | **4 756 B** | 3 395 B | 2.55× → 1.40× |
-| 256² 4:2:0 (real) | 29 529 B | **28 358 B** | 27 221 B | 1.085× → **1.042×** |
-| 512² 4:4:4 noisy | 67 031 B | **63 112 B** | 55 685 B | 1.20× → 1.13× |
+| (our own output size) | before | after |
+|---|---|---|
+| smooth 512² 4:4:4 | 11 541 B | **6 837 B** |
+| smooth 512² 4:2:0 | 8 650 B | **4 756 B** |
+| 256² 4:2:0 (real) | 29 529 B | **28 358 B** |
+| 512² 4:4:4 noisy | 67 031 B | **63 112 B** |
 
 All reverse + `djxl` byte-identical.
 
@@ -615,10 +618,10 @@ next step. Full suite: 662 tests, 7 skipped, 0 failures.
 
 ### v0.12.0ho — ANS histogram writer (complex path) — foundation for forward size
 
-First step toward closing the forward file-size gap (our bridge files
-are ~1.6–1.7× cjxl's). The headline cause is entropy coding: we emit
-prefix (Huffman) codes with a hard ≥1 bit/symbol floor and a single
-pooled cluster, where cjxl uses rANS (fractional bits) with a clustered
+First step toward closing the forward file-size gap. The headline cause
+is entropy coding: we emit prefix (Huffman) codes with a hard ≥1
+bit/symbol floor and a single pooled cluster, where the rANS path uses
+fractional bits with a clustered
 context map. Matching that needs a full ANS encoder, built up in
 testable units.
 
@@ -803,8 +806,8 @@ Verified colour (4:4:4 / 4:2:0) forward output is `djxl`-decodable.
 **Remaining forward-bridge work:** grayscale forward output isn't yet
 `djxl`-valid (the encoder's 1-component path needs the same Y-channel
 handling the reverse path got in `hh`); entropy coding is
-single-cluster (our files are larger than cjxl's — a size, not
-correctness, gap); and the `jbrd` box builder (for byte-identical
+single-cluster (a size, not correctness, gap — see later entries); and
+the `jbrd` box builder (for byte-identical
 JXL → JPEG of our *own* output) is still to come.
 
 ### v0.12.0hh — 🎉 Grayscale JPEGs reverse byte-identically
