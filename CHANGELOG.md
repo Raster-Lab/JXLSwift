@@ -9,6 +9,73 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## [0.13.0-dev] — 2026-05-29 (in development)
+
+**Headline:** the **road to a lossless v1.0** — a real conformance gate, a
+robustness sweep + decoder fuzz, the `convert` CLI verb, and a performance
+baseline. One genuine decode-correctness bug fixed along the way. See
+[ROADMAP.md](ROADMAP.md) "Road to v1.0.0 (lossless-first)".
+
+### Conformance gate (milestone 1)
+
+- Wired the official [jxl-conformance](https://github.com/libjxl/conformance)
+  vectors into the suite (`Tests/JXLSwiftTests/ConformanceTests.swift`):
+  env-gated `JXL_CONFORMANCE_DIR` for the full corpus + a committed lossless
+  subset (`lz77_flower`, `alpha_triangles`) so the gate runs green by default,
+  with `djxl` as the pixel oracle. `scripts/fetch-conformance.sh` populates the
+  full corpus.
+- **Fixed a real decode bug surfaced by the gate:** `assembleImageFrame` masked
+  16-bit-container samples to 16 bits instead of clamping to the **declared**
+  sample range `[0, 2^bps−1]`. A 9-bit RGBA vector reconstructed out-of-gamut
+  values (511→767) where `djxl` clamps to 511. Fixed with a unified clamp — a
+  no-op for valid in-range streams and for bps ∈ {8,16}. All 4,194,304 samples
+  of `alpha_triangles` now match `djxl`; `lz77_flower` stays byte-identical.
+- Triaged the lossless corpus: the rest are clean **feature-gaps** (Squeeze,
+  delta-Palette, Float32, Patches, EXIF orientation, upsampling, CMYK-layers,
+  SpotColor) recorded for the v0.14.0 decoder work; lossy VarDCT vectors are
+  out of the lossless gate.
+
+### Lossless completeness (milestone 2)
+
+- **>8-cluster context maps** and the **rANS "complex" (full) histogram mode**
+  were found to be already implemented and `djxl`-byte-exact — the deferral
+  notes were stale. Corrected the headers/docs and added an E5 test pinning the
+  full context-map path at 9/16/26/64-cluster maps.
+- **Decisions recorded as deliberate 1.0 limitations** (each is a *ratio*/feature
+  lever, not a correctness gap, and libjxl is intentionally absent per
+  constraint 4): reconciling the `fillModularProperties` slot formulas (props
+  6,7,8,11,13,14), and forward JPEG→JXL **transcode > 2048 px** (multi-DC-group;
+  concrete plan recorded at the `JXLBridgeEncoder` guard).
+
+### Robustness hardening (milestone 3)
+
+- `Tests/JXLSwiftTests/RobustnessTests.swift`: a parameterised lossless sweep
+  (**400 round-trip cases** across 10 dims incl. 1×1/1×N/N×1/group-boundary ×
+  {8,12,16}-bit × {gray, gray+alpha, RGB, RGBA} × {constant, gradient, random,
+  sparse}) + the full **effort ladder 1…9** + a `djxl`-byte-exact subset over
+  previously-uncovered cells.
+- A **decoder fuzz** pass (truncation + byte mutation over three seed
+  codestreams): **0 traps across 1,812 malformed inputs** — every one is cleanly
+  thrown or decoded.
+
+### API freeze + family parity (milestone 5, partial)
+
+- Added the **`convert`** subcommand (the last common-set CLI verb vs J2KSwift):
+  PNM ↔ JXL, JPEG → PNM/JXL, format by extension; `djxl`-validated both ways.
+- Fixed the stale `JXLToolVersion` (`0.5.0-pure-swift` → `0.13.0-dev`) and the
+  "foundation only" status string; corrected `FAMILY-API-PARITY.md` (the "stub
+  subcommand" + positional-args claims). The one remaining accidental
+  divergence (preset quality 0.9/0.75 vs J2K 0.85/0.70) is documented as a
+  flagged decision needing sign-off.
+
+### Performance baseline (milestone 4, baseline + plan)
+
+- `jxl-tool benchmark --mode lossless --effort N` + `scripts/benchmark-lossless.sh`
+  make the speed↔ratio ladder measurable. Hot-path analysis in
+  [Phase O](ROADMAP.md): decode ~1 Mpx/s (effort-independent); encode dominated
+  by the high-effort cost-gated MA-tree search; the next win is vectorising the
+  per-pixel inner loops (a dedicated byte-identical-verified SIMD effort).
+
 ## [0.12.0] — 2026-05-29 (release)
 
 **Headline:** a comprehensive, `djxl`-validated **lossless** JPEG XL codec.
