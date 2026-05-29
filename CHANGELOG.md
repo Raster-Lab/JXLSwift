@@ -11,6 +11,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0i10 — Greedy multi-property MA-tree on the multi-group path
+
+Extends the i9 greedy multi-property tree (single-section only) to the
+**multi-group** path, where multi-context gains matter most. The
+per-group section assembly is factored into a shared
+`assembleMultiGroupContextSections` (DC-global tree + shared per-context
+codebook, Huffman/rANS cost-gated, per-group context-routed sections) —
+used by both the activity split and the new greedy candidate.
+`buildSectionsGreedyTree` runs WP fresh per rect, records the
+djxl-verified property subset `{4,5,9,10,12,15}` + the WP token per pixel
+(per-group write order), **learns the tree from a uniform subsample**
+(≤ ~256K pixels, bounding the learner's cost on large frames), then
+routes every pixel through `ModularTree.walk` — the decoder's own walk —
+so contexts agree by construction. Size-gated to ≤ 4M px to bound the
+per-pixel property memory; larger frames keep the activity split.
+
+On a 1024² 16-bit two-axis image (4×4 grid: row → activity, column →
+directional gradient) the greedy tree is selected and beats both the
+activity split and single-context (953030 vs 956250 / 1001205 B),
+byte-exact through `djxl` and our decoder. New
+`testSpecModularEncoder_GreedyMultiProperty_MultiGroup_DjxlRoundTrip`.
+Full suite: 679 tests.
+
 ### v0.12.0i9 — Greedy multi-property MA-tree (cjxl-style)
 
 First **multi-property** lossless context model: a greedy (best-first)

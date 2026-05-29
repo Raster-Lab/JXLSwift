@@ -750,24 +750,35 @@ public enum SpecModularEncoder {
         singleSections.append(acGlobalEmpty)
         singleSections.append(contentsOf: acSections)
 
-        // Multi-context candidate: a global property-15 WP-activity tree
-        // (carried once in DC global) with every AC group routed through a
-        // shared per-context codebook. Cost-gated by total section bytes —
-        // the section count (hence TOC shape) is identical, so summed
-        // payload bytes is the faithful comparison.
+        // Candidates, smallest total wins (section count — hence TOC shape
+        // — is identical, so summed payload bytes is the faithful gate):
+        //  • single-context (above),
+        //  • activity split — a global property-15 WP-activity tree in DC
+        //    global, every AC group routed through a shared codebook,
+        //  • greedy multi-property MA-tree — branches on whichever of the
+        //    djxl-verified properties best separates residuals.
         func total(_ s: [Data]) -> Int { s.reduce(0) { $0 + $1.count } }
+        var best = singleSections
         if let multi = try? buildSectionsMultiContext(
             width: width, height: height,
             channels: channels, sampleHi: sampleHi,
             numGroupsX: numGroupsX, numGroupsY: numGroupsY,
             numGroups: numGroups, numDcGroups: numDcGroups,
             groupDim: groupDim),
-           total(multi) < total(singleSections) {
-            return EncodedSections(
-                groupSizeShift: groupSizeShift, sections: multi)
+           total(multi) < total(best) {
+            best = multi
+        }
+        if let greedy = buildSectionsGreedyTree(
+            width: width, height: height,
+            channels: channels, sampleHi: sampleHi,
+            numGroupsX: numGroupsX, numGroupsY: numGroupsY,
+            numGroups: numGroups, numDcGroups: numDcGroups,
+            groupDim: groupDim),
+           total(greedy) < total(best) {
+            best = greedy
         }
         return EncodedSections(
-            groupSizeShift: groupSizeShift, sections: singleSections
+            groupSizeShift: groupSizeShift, sections: best
         )
     }
 
@@ -915,6 +926,126 @@ public enum SpecModularEncoder {
         return sets
     }
 
+    /// Assemble the multi-group section array for a given MA-tree + per-group
+    /// `(context, packed-residual)` routing: the tree + a shared per-context
+    /// post codebook live once in the DC-global section; every AC group
+    /// section routes its tokens through that codebook (Huffman inline per
+    /// group; rANS one fresh interleaved stream per group). The global
+    /// codebook is cost-gated Huffman-vs-rANS by assembling both fully and
+    /// keeping the smaller (sum of section bytes). `perGroupOrdered[g]` is
+    /// group `g`'s pairs in the decoder's per-group read order. Returns the
+    /// smaller candidate, or `nil` for a degenerate / unencodable routing.
+    /// Shared by the activity-split and greedy multi-property multi-group
+    /// paths (the analogue of `assembleMultiContextSection` for one section).
+    private static func assembleMultiGroupContextSections(
+        tree: ModularTree, numContexts n: Int,
+        perGroupOrdered: [[(ctx: Int, val: UInt32)]],
+        numDcGroups: Int, postCfg: HybridUintConfig
+    ) -> [Data]? {
+        let numGroups = perGroupOrdered.count
+        guard n >= 1, numGroups >= 1 else { return nil }
+        var histo = [[Int]](
+            repeating: [Int](repeating: 0, count: postCfg.maxToken + 1), count: n)
+        var maxTok = 0
+        for g in 0..<numGroups {
+            for (ctx, v) in perGroupOrdered[g] {
+                let tk = Int(postCfg.encode(v).token)
+                histo[ctx][tk] += 1
+                if tk > maxTok { maxTok = tk }
+            }
+        }
+        for c in 0..<n where histo[c].reduce(0, +) == 0 { return nil }
+        let alpha = maxTok + 1
+        guard let ctxMap = try? ContextMap(
+            numClusters: n, map: (0..<n).map { UInt8($0) }) else { return nil }
+        let cfgs = Array(repeating: postCfg, count: n)
+
+        func assemble(
+            _ h: EntropySectionHeader, _ c: MultiClusterCodebook
+        ) -> [Data]? {
+            var dcGlobal = BitWriter()
+            dcGlobal.writeBit(true)            // matrices_dc_default
+            dcGlobal.writeBit(true)            // has_tree
+            do {
+                try writeModularTreeSectionOnly(to: &dcGlobal, tree: tree)
+                try h.write(to: &dcGlobal, numContexts: n)
+                try c.write(to: &dcGlobal, header: h)
+                try GroupHeader.default.write(to: &dcGlobal)
+            } catch { return nil }
+            dcGlobal.alignToByte()
+            var sections = [Data]()
+            sections.reserveCapacity(2 + numDcGroups + numGroups)
+            sections.append(dcGlobal.finishToData())
+            for _ in 0..<numDcGroups { sections.append(Data()) }
+            sections.append(Data())            // AC global, empty
+            for g in 0..<numGroups {
+                var sec = BitWriter()
+                do {
+                    try GroupHeader.default.write(to: &sec)
+                    if h.usePrefixCode {
+                        let tw = TokenStreamWriter(header: h, codebook: c)
+                        for (ctx, v) in perGroupOrdered[g] {
+                            try tw.writeToken(context: ctx, value: v, to: &sec)
+                        }
+                    } else {
+                        var aw = try ANSTokenStreamWriter(header: h, codebook: c)
+                        for (ctx, v) in perGroupOrdered[g] {
+                            try aw.writeToken(context: ctx, value: v)
+                        }
+                        try aw.finish(to: &sec)
+                    }
+                } catch { return nil }
+                sec.alignToByte()
+                sections.append(sec.finishToData())
+            }
+            return sections
+        }
+
+        var results: [[Data]] = []
+        do {
+            let huffTables = try (0..<n).map { c in
+                try PrefixCodeTable(lengths: lengthLimitedCanonicalHuffman(
+                    counts: Array(histo[c][0..<alpha]), maxLength: 15,
+                    alphabetSize: alpha))
+            }
+            let huffCodebook = MultiClusterCodebook(
+                huffmanTables: huffTables, ansCounts: [],
+                alphabetSizes: Array(repeating: alpha, count: n))
+            let huffHeader = EntropySectionHeader(
+                lz77: .disabled, contextMap: ctxMap,
+                usePrefixCode: true, logAlphaSize: 15, uintConfigs: cfgs)
+            if let s = assemble(huffHeader, huffCodebook) { results.append(s) }
+        } catch { /* fall through to rANS */ }
+        var wires: [[Int32]] = []
+        var maxWire = 0
+        var ansOK = true
+        for c in 0..<n {
+            guard let dist = try? ANSDistribution(
+                rawFrequencies: histo[c][0..<alpha].map { UInt32(max(0, $0)) })
+            else { ansOK = false; break }
+            var scratch = BitWriter()
+            guard let wire = try? SpecANSDistribution.writeHistogram(
+                dist.frequencies.map { Int32($0) }, to: &scratch)
+            else { ansOK = false; break }
+            wires.append(wire); maxWire = max(maxWire, wire.count)
+        }
+        if ansOK {
+            var logAlpha = 5
+            while (1 << logAlpha) < maxWire && logAlpha < 8 { logAlpha += 1 }
+            if maxWire <= (1 << logAlpha) {
+                let ansHeader = EntropySectionHeader(
+                    lz77: .disabled, contextMap: ctxMap,
+                    usePrefixCode: false, logAlphaSize: logAlpha, uintConfigs: cfgs)
+                let ansCodebook = MultiClusterCodebook(
+                    huffmanTables: [], ansCounts: wires,
+                    alphabetSizes: wires.map { $0.count })
+                if let s = assemble(ansHeader, ansCodebook) { results.append(s) }
+            }
+        }
+        return results.min(by: {
+            $0.reduce(0) { $0 + $1.count } < $1.reduce(0) { $0 + $1.count } })
+    }
+
     /// Multi-context candidate for the multi-group path — the analogue of
     /// `buildSingleSectionMultiContext`, but the property-15 WP-activity
     /// tree + per-context codebook live once in the DC-global section and
@@ -987,129 +1118,20 @@ public enum SpecModularEncoder {
                          max(0, Int(Double(allProps.count) * p)))]
         }
 
-        // Assemble the full section array for a chosen codebook + tree,
-        // routing every group's tokens through `ctxOf`. Huffman writes
-        // inline per group; rANS emits one fresh interleaved stream per
-        // group — both share the single global codebook in DC global.
-        func assemble(
-            _ h: EntropySectionHeader, _ c: MultiClusterCodebook,
-            _ n: Int, _ tree: ModularTree, _ ctxOf: (Int32) -> Int
-        ) -> [Data]? {
-            var dcGlobal = BitWriter()
-            dcGlobal.writeBit(true)            // matrices_dc_default
-            dcGlobal.writeBit(true)            // has_tree
-            do {
-                try writeModularTreeSectionOnly(to: &dcGlobal, tree: tree)
-                try h.write(to: &dcGlobal, numContexts: n)
-                try c.write(to: &dcGlobal, header: h)
-                try GroupHeader.default.write(to: &dcGlobal)
-            } catch { return nil }
-            dcGlobal.alignToByte()
-            var sections = [Data]()
-            sections.reserveCapacity(2 + numDcGroups + numGroups)
-            sections.append(dcGlobal.finishToData())
-            for _ in 0..<numDcGroups { sections.append(Data()) }
-            sections.append(Data())            // AC global, empty
-            for g in 0..<numGroups {
-                var sec = BitWriter()
-                do {
-                    try GroupHeader.default.write(to: &sec)
-                    if h.usePrefixCode {
-                        let tw = TokenStreamWriter(header: h, codebook: c)
-                        for (wpProp, v) in perGroupPixels[g] {
-                            try tw.writeToken(
-                                context: ctxOf(wpProp), value: v, to: &sec)
-                        }
-                    } else {
-                        var aw = try ANSTokenStreamWriter(header: h, codebook: c)
-                        for (wpProp, v) in perGroupPixels[g] {
-                            try aw.writeToken(context: ctxOf(wpProp), value: v)
-                        }
-                        try aw.finish(to: &sec)
-                    }
-                } catch { return nil }
-                sec.alignToByte()
-                sections.append(sec.finishToData())
-            }
-            return sections
-        }
-
-        // Build the best section array for one N-bin activity split. Tree
-        // layout matches the single-section path exactly (decoder-fill
-        // order); only the codebook lives globally. Huffman vs rANS for
-        // that global codebook is cost-gated by assembling both fully.
+        // Build the best section array for one N-bin activity split: route
+        // each group's tokens through `ctxOf` to produce per-group
+        // (context, token) pairs, then let the shared assembler build the
+        // DC-global tree + codebook and the per-group sections (Huffman vs
+        // rANS cost-gated).
         func buildForThresholds(_ thr: [Int32]) -> [Data]? {
             guard let (n, ctxOf, tree) =
                 activitySplitTree(thresholds: thr) else { return nil }
-            // Per-context histograms pooled across all groups.
-            var histo = [[Int]](
-                repeating: [Int](repeating: 0, count: postCfg.maxToken + 1),
-                count: n)
-            var maxTok = 0
-            for g in 0..<numGroups {
-                for (wpProp, tok) in perGroupPixels[g] {
-                    let ctx = ctxOf(wpProp)
-                    let tk = Int(postCfg.encode(tok).token)
-                    histo[ctx][tk] += 1
-                    if tk > maxTok { maxTok = tk }
-                }
+            let perGroupOrdered = perGroupPixels.map { group in
+                group.map { (ctx: ctxOf($0.wpProp), val: $0.token) }
             }
-            for c in 0..<n where histo[c].reduce(0, +) == 0 { return nil }
-            let alpha = maxTok + 1
-            guard let ctxMap = try? ContextMap(
-                numClusters: n, map: (0..<n).map { UInt8($0) }) else { return nil }
-            let cfgs = Array(repeating: postCfg, count: n)
-
-            var results: [[Data]] = []
-            // Huffman candidate (one table per context).
-            do {
-                let huffTables = try (0..<n).map { c in
-                    try PrefixCodeTable(lengths: lengthLimitedCanonicalHuffman(
-                        counts: Array(histo[c][0..<alpha]), maxLength: 15,
-                        alphabetSize: alpha))
-                }
-                let huffCodebook = MultiClusterCodebook(
-                    huffmanTables: huffTables, ansCounts: [],
-                    alphabetSizes: Array(repeating: alpha, count: n))
-                let huffHeader = EntropySectionHeader(
-                    lz77: .disabled, contextMap: ctxMap,
-                    usePrefixCode: true, logAlphaSize: 15, uintConfigs: cfgs)
-                if let s = assemble(huffHeader, huffCodebook, n, tree, ctxOf) {
-                    results.append(s)
-                }
-            } catch { /* fall through to rANS */ }
-            // rANS candidate (one histogram per context).
-            var wires: [[Int32]] = []
-            var maxWire = 0
-            var ansOK = true
-            for c in 0..<n {
-                guard let dist = try? ANSDistribution(
-                    rawFrequencies: histo[c][0..<alpha].map { UInt32(max(0, $0)) })
-                else { ansOK = false; break }
-                var scratch = BitWriter()
-                guard let wire = try? SpecANSDistribution.writeHistogram(
-                    dist.frequencies.map { Int32($0) }, to: &scratch)
-                else { ansOK = false; break }
-                wires.append(wire); maxWire = max(maxWire, wire.count)
-            }
-            if ansOK {
-                var logAlpha = 5
-                while (1 << logAlpha) < maxWire && logAlpha < 8 { logAlpha += 1 }
-                if maxWire <= (1 << logAlpha) {
-                    let ansHeader = EntropySectionHeader(
-                        lz77: .disabled, contextMap: ctxMap,
-                        usePrefixCode: false, logAlphaSize: logAlpha,
-                        uintConfigs: cfgs)
-                    let ansCodebook = MultiClusterCodebook(
-                        huffmanTables: [], ansCounts: wires,
-                        alphabetSizes: wires.map { $0.count })
-                    if let s = assemble(ansHeader, ansCodebook, n, tree, ctxOf) {
-                        results.append(s)
-                    }
-                }
-            }
-            return results.min(by: {
-                $0.reduce(0) { $0 + $1.count } < $1.reduce(0) { $0 + $1.count } })
+            return assembleMultiGroupContextSections(
+                tree: tree, numContexts: n, perGroupOrdered: perGroupOrdered,
+                numDcGroups: numDcGroups, postCfg: postCfg)
         }
 
         // Try fixed 2-bin (median), 4-bin (quartile) and 8-bin (octile)
@@ -1141,6 +1163,128 @@ public enum SpecModularEncoder {
         }
         return candidates.min(by: {
             $0.reduce(0) { $0 + $1.count } < $1.reduce(0) { $0 + $1.count } })
+    }
+
+    /// Greedy multi-property MA-tree candidate for the **multi-group** path
+    /// — the analogue of `buildSingleSectionGreedyTree`. Runs WP fresh per
+    /// rect (matching the decoder's independent per-group decode), records
+    /// the djxl-verified property subset `{4,5,9,10,12,15}` + the WP token
+    /// per pixel (in per-group write order), **learns the tree from a
+    /// uniform subsample** (bounding the learner's cost on large images),
+    /// then routes every pixel through `ModularTree.walk` — the decoder's
+    /// exact walk — so contexts agree by construction. The tree lives once
+    /// in DC global; each AC group routes through the shared codebook.
+    /// Size-gated to bound the per-pixel property memory. Returns `nil` if
+    /// the image is too large or the learner finds no useful split.
+    private static func buildSectionsGreedyTree(
+        width: Int, height: Int,
+        channels: [[Int32]], sampleHi: Int32,
+        numGroupsX: Int, numGroupsY: Int,
+        numGroups: Int, numDcGroups: Int, groupDim: Int
+    ) -> [Data]? {
+        guard width > 0, height > 0, !channels.isEmpty else { return nil }
+        let n = width * height * channels.count
+        // Memory gate: 6 props/pixel are kept for routing. ≤ 4M px keeps
+        // that under ~100 MB; larger frames skip greedy (activity split
+        // still applies).
+        guard n <= 4_000_000 else { return nil }
+        let postCfg = HybridUintConfig.raw4
+        let propIndices: [Int32] = [4, 5, 9, 10, 12, 15]
+        let propCount = propIndices.count
+
+        var perGroupProps = [[Int32]](repeating: [], count: numGroups)
+        var perGroupTokens = [[UInt32]](repeating: [], count: numGroups)
+        // Uniform learning subsample (≤ ~256K pixels).
+        let sampleStride = max(1, n / 256_000)
+        var sampleProps: [Int32] = []
+        var sampleTok: [Int] = []
+        var sampleMaxTok = 0
+        var globalIdx = 0
+        var props16 = [Int32](repeating: 0, count: 16)
+
+        for (ci, pix) in channels.enumerated() {
+            for gy in 0..<numGroupsY {
+                for gx in 0..<numGroupsX {
+                    let rectX0 = gx * groupDim, rectY0 = gy * groupDim
+                    let rectW = min(groupDim, width - rectX0)
+                    let rectH = min(groupDim, height - rectY0)
+                    var rect = [Int32](repeating: 0, count: rectW * rectH)
+                    for ry in 0..<rectH {
+                        let s = (rectY0 + ry) * width + rectX0
+                        for rx in 0..<rectW { rect[ry * rectW + rx] = pix[s + rx] }
+                    }
+                    var wp = WeightedPredictor(
+                        header: .default, xsize: max(1, rectW))
+                    let gi = gy * numGroupsX + gx
+                    for ry in 0..<rectH {
+                        for rx in 0..<rectW {
+                            // Decoder per-rect edge fall-backs (rect-relative).
+                            let left: Int32 = rx > 0 ? rect[ry * rectW + rx - 1]
+                                : (ry > 0 ? rect[(ry - 1) * rectW + rx] : 0)
+                            let top: Int32 = ry > 0 ? rect[(ry - 1) * rectW + rx] : left
+                            let topLeft: Int32 = (rx > 0 && ry > 0)
+                                ? rect[(ry - 1) * rectW + rx - 1] : left
+                            let topRight: Int32 = (rx + 1 < rectW && ry > 0)
+                                ? rect[(ry - 1) * rectW + rx + 1] : top
+                            let leftLeft: Int32 = rx > 1 ? rect[ry * rectW + rx - 2] : left
+                            let topTop: Int32 = ry > 1 ? rect[(ry - 2) * rectW + rx] : top
+                            let wpProp = wp.propertyValue(x: rx, y: ry, xsize: rectW)
+                            fillModularProperties(
+                                into: &props16, staticChannel: Int32(ci), groupId: 0,
+                                x: Int32(rx), y: Int32(ry),
+                                top: top, left: left, topLeft: topLeft,
+                                topRight: topRight, leftLeft: leftLeft,
+                                topTop: topTop, wpProperty: wpProp)
+                            for k in 0..<propCount {
+                                perGroupProps[gi].append(props16[Int(propIndices[k])])
+                            }
+                            let pred = wp.predict(
+                                x: rx, y: ry, xsize: rectW,
+                                n: top, w: left, ne: topRight, nw: topLeft, nn: topTop)
+                            let actual = rect[ry * rectW + rx]
+                            let tok = ZigZag.pack(actual &- pred)
+                            perGroupTokens[gi].append(tok)
+                            let tk = Int(postCfg.encode(tok).token)
+                            if globalIdx % sampleStride == 0 {
+                                for k in 0..<propCount {
+                                    sampleProps.append(props16[Int(propIndices[k])])
+                                }
+                                sampleTok.append(tk)
+                                if tk > sampleMaxTok { sampleMaxTok = tk }
+                            }
+                            wp.update(actual: actual, x: rx, y: ry, xsize: rectW)
+                            globalIdx += 1
+                        }
+                    }
+                }
+            }
+        }
+        guard sampleTok.count >= 2 else { return nil }
+        guard let (tree, _, numCtx) = greedyTreeAndContexts(
+            propsFlat: sampleProps, tokBucket: sampleTok,
+            pixelCount: sampleTok.count, propIndices: propIndices,
+            maxTok: sampleMaxTok, maxLeaves: 8, minGain: 32.0),
+            numCtx >= 2 else { return nil }
+        // Route every pixel through the decoder's own walk → per-group
+        // (context, token) pairs in write order.
+        var perGroupOrdered = [[(ctx: Int, val: UInt32)]](
+            repeating: [], count: numGroups)
+        for g in 0..<numGroups {
+            let toks = perGroupTokens[g]
+            let props = perGroupProps[g]
+            var ordered = [(ctx: Int, val: UInt32)]()
+            ordered.reserveCapacity(toks.count)
+            for i in 0..<toks.count {
+                let base = i * propCount
+                for k in 0..<propCount { props16[Int(propIndices[k])] = props[base + k] }
+                guard let leaf = try? tree.walk(properties: props16) else { return nil }
+                ordered.append((leaf.leafId, toks[i]))
+            }
+            perGroupOrdered[g] = ordered
+        }
+        return assembleMultiGroupContextSections(
+            tree: tree, numContexts: numCtx, perGroupOrdered: perGroupOrdered,
+            numDcGroups: numDcGroups, postCfg: postCfg)
     }
 
     /// Write the global tree section + global post-tree codebook the

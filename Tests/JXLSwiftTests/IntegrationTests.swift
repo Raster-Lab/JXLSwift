@@ -13692,6 +13692,80 @@ extension FoundationTests {
         }
     }
 
+    /// Greedy **multi-property** MA-tree on the **multi-group** path: a
+    /// 1024² 16-bit image structured along two axes — a 4×4 grid of 256-px
+    /// cells where the row sets the noise amplitude (activity ⇒ property 15)
+    /// and the column sets a directional ramp (⇒ gradient properties). The
+    /// activity-only split separates rows but not columns; the greedy tree
+    /// branches on multiple properties and routes the 16 cells better. The
+    /// tree is learned from a subsample, lives once in DC global, and every
+    /// AC group routes through it via the decoder's own walk. Validated
+    /// byte-exact through **our decoder** and **`djxl`** — the regression
+    /// that fails if the multi-group greedy layout / routing is wrong.
+    func testSpecModularEncoder_GreedyMultiProperty_MultiGroup_DjxlRoundTrip()
+        throws {
+        let w = 1024, h = 1024
+        var pixels = [UInt16](repeating: 0, count: w * h)
+        var seed: UInt32 = 0x6c8e_9cf3
+        let amp: [Int32] = [2, 24, 160, 1024]    // by grid row
+        for y in 0..<h {
+            for x in 0..<w {
+                let gr = y / 256, gc = x / 256
+                let lx = Int32(x % 256), ly = Int32(y % 256)
+                seed = seed &* 1103515245 &+ 12345
+                let noise = Int32(truncatingIfNeeded: seed) % amp[gr]
+                var dir: Int32 = 0
+                if gc == 1 { dir = lx }
+                else if gc == 2 { dir = ly }
+                else if gc == 3 { dir = lx + ly }
+                var v = Int32(8192) + dir + noise
+                if v < 0 { v = 0 }
+                if v > 65535 { v = 65535 }
+                pixels[y * w + x] = UInt16(v)
+            }
+        }
+        let bytes = try SpecModularEncoder.encodeGrayscale16(
+            width: w, height: h, pixels: pixels)
+        let image = try JXLDecoder().decodeModular(bytes)
+        XCTAssertEqual(image.channels.count, 1, "expected 1 channel")
+        for i in 0..<(w * h) {
+            XCTAssertEqual(image.channels[0].pixels[i], Int32(pixels[i]),
+                "our-decoder pixel \(i)")
+        }
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("djxl not available at \(djxl)")
+        }
+        let tmp = NSTemporaryDirectory()
+        let inP = tmp + "jxlswift_greedy_mg.jxl"
+        let outP = tmp + "jxlswift_greedy_mg.pgm"
+        defer { try? FileManager.default.removeItem(atPath: inP)
+                try? FileManager.default.removeItem(atPath: outP) }
+        try bytes.write(to: URL(fileURLWithPath: inP))
+        let p = Process(); p.launchPath = djxl
+        p.arguments = [inP, outP]
+        let errPipe = Pipe()
+        p.standardOutput = Pipe(); p.standardError = errPipe
+        try p.run(); p.waitUntilExit()
+        let err = String(
+            data: errPipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8) ?? ""
+        XCTAssertEqual(p.terminationStatus, 0,
+            "djxl rejected our \(w)×\(h) multi-group greedy bytes; "
+            + "stderr: \(err)")
+        let pgm = try Data(contentsOf: URL(fileURLWithPath: outP))
+        var nl = 0, start = 0
+        for (i, b) in pgm.enumerated() where b == 0x0a {
+            nl += 1; if nl == 3 { start = i + 1; break }
+        }
+        for i in 0..<(w * h) {
+            let hi = UInt16(pgm[start + 2 * i])
+            let lo = UInt16(pgm[start + 2 * i + 1])
+            XCTAssertEqual((hi << 8) | lo, pixels[i],
+                "djxl 16-bit pixel \(i) mismatch")
+        }
+    }
+
     /// Greedy **multi-property** MA-tree (cjxl-style) on a single-section
     /// 512² 16-bit image whose structure varies along **two** independent
     /// axes: a 4×4 grid of 128-px cells where the row sets the noise
