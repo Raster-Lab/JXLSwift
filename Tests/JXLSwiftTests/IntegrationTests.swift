@@ -14433,6 +14433,124 @@ extension FoundationTests {
         }
     }
 
+    /// `encodeGrayscaleAlpha16` — the 2-channel (luma + alpha) gap
+    /// between the 1-channel grayscale and 3/4-channel RGB(A) encoders.
+    /// Validated byte-exact through **our decoder** (2 channels) and
+    /// **`djxl`** (16-bit `GRAYSCALE_ALPHA` PAM: 4 bytes/pixel,
+    /// big-endian gray then alpha).
+    func testSpecModularEncoder_GrayscaleAlpha16_DjxlRoundTrip() throws {
+        let w = 24, h = 20
+        var gray = [UInt16](repeating: 0, count: w * h)
+        var alpha = [UInt16](repeating: 0, count: w * h)
+        for y in 0..<h {
+            for x in 0..<w {
+                let i = y * w + x
+                gray[i] = UInt16((x * 2048 + y * 256) & 0xffff)
+                alpha[i] = UInt16((60000 &- (x * 1500 + y * 700)) & 0xffff)
+            }
+        }
+        let bytes = try SpecModularEncoder.encodeGrayscaleAlpha16(
+            width: w, height: h, gray: gray, alpha: alpha)
+        // Our decoder: 2 channels, byte-exact.
+        let image = try JXLDecoder().decodeModular(bytes)
+        XCTAssertEqual(image.channels.count, 2, "expected luma + alpha")
+        for i in 0..<(w * h) {
+            XCTAssertEqual(image.channels[0].pixels[i], Int32(gray[i]),
+                "our-decoder luma \(i)")
+            XCTAssertEqual(image.channels[1].pixels[i], Int32(alpha[i]),
+                "our-decoder alpha \(i)")
+        }
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("djxl not available at \(djxl)")
+        }
+        let tmp = NSTemporaryDirectory()
+        let inP = tmp + "jxlswift_ga16.jxl"
+        let outP = tmp + "jxlswift_ga16.pam"
+        defer { try? FileManager.default.removeItem(atPath: inP)
+                try? FileManager.default.removeItem(atPath: outP) }
+        try bytes.write(to: URL(fileURLWithPath: inP))
+        let p = Process(); p.launchPath = djxl
+        p.arguments = [inP, outP]
+        let errPipe = Pipe()
+        p.standardOutput = Pipe(); p.standardError = errPipe
+        try p.run(); p.waitUntilExit()
+        let err = String(
+            data: errPipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8) ?? ""
+        XCTAssertEqual(p.terminationStatus, 0,
+            "djxl rejected our \(w)×\(h) grayscale+alpha bytes; stderr: \(err)")
+        let pam = try Data(contentsOf: URL(fileURLWithPath: outP))
+        let endhdr = "ENDHDR\n".data(using: .utf8)!
+        guard let range = pam.range(of: endhdr) else {
+            XCTFail("djxl PAM output missing ENDHDR (\(pam.count) B)")
+            return
+        }
+        let s = range.upperBound
+        // 16-bit GRAYSCALE_ALPHA PAM: 4 bytes/pixel (gray hi,lo; alpha hi,lo).
+        for i in 0..<(w * h) {
+            let gHi = UInt16(pam[s + i * 4 + 0]), gLo = UInt16(pam[s + i * 4 + 1])
+            let aHi = UInt16(pam[s + i * 4 + 2]), aLo = UInt16(pam[s + i * 4 + 3])
+            XCTAssertEqual((gHi << 8) | gLo, gray[i], "djxl luma \(i)")
+            XCTAssertEqual((aHi << 8) | aLo, alpha[i], "djxl alpha \(i)")
+        }
+    }
+
+    /// `encodeGrayscaleAlpha8` — 8-bit luma + alpha. Validated byte-exact
+    /// through **our decoder** and **`djxl`** (8-bit `GRAYSCALE_ALPHA`
+    /// PAM: 2 bytes/pixel, gray then alpha).
+    func testSpecModularEncoder_GrayscaleAlpha8_DjxlRoundTrip() throws {
+        let w = 24, h = 20
+        var gray = [UInt8](repeating: 0, count: w * h)
+        var alpha = [UInt8](repeating: 0, count: w * h)
+        for y in 0..<h {
+            for x in 0..<w {
+                let i = y * w + x
+                gray[i] = UInt8((x * 8 + y * 4) & 0xff)
+                alpha[i] = UInt8((255 - ((x + y) * 5)) & 0xff)
+            }
+        }
+        let bytes = try SpecModularEncoder.encodeGrayscaleAlpha8(
+            width: w, height: h, gray: gray, alpha: alpha)
+        let image = try JXLDecoder().decodeModular(bytes)
+        XCTAssertEqual(image.channels.count, 2, "expected luma + alpha")
+        for i in 0..<(w * h) {
+            XCTAssertEqual(image.channels[0].pixels[i], Int32(gray[i]),
+                "our-decoder luma \(i)")
+            XCTAssertEqual(image.channels[1].pixels[i], Int32(alpha[i]),
+                "our-decoder alpha \(i)")
+        }
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("djxl not available at \(djxl)")
+        }
+        let tmp = NSTemporaryDirectory()
+        let inP = tmp + "jxlswift_ga8.jxl"
+        let outP = tmp + "jxlswift_ga8.pam"
+        defer { try? FileManager.default.removeItem(atPath: inP)
+                try? FileManager.default.removeItem(atPath: outP) }
+        try bytes.write(to: URL(fileURLWithPath: inP))
+        let p = Process(); p.launchPath = djxl
+        p.arguments = [inP, outP]
+        let errPipe = Pipe()
+        p.standardOutput = Pipe(); p.standardError = errPipe
+        try p.run(); p.waitUntilExit()
+        let err = String(
+            data: errPipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8) ?? ""
+        XCTAssertEqual(p.terminationStatus, 0,
+            "djxl rejected our \(w)×\(h) 8-bit grayscale+alpha; stderr: \(err)")
+        let pam = try Data(contentsOf: URL(fileURLWithPath: outP))
+        guard let range = pam.range(of: "ENDHDR\n".data(using: .utf8)!) else {
+            XCTFail("djxl PAM output missing ENDHDR"); return
+        }
+        let s = range.upperBound
+        for i in 0..<(w * h) {
+            XCTAssertEqual(pam[s + i * 2 + 0], gray[i], "djxl luma \(i)")
+            XCTAssertEqual(pam[s + i * 2 + 1], alpha[i], "djxl alpha \(i)")
+        }
+    }
+
     /// `TokenStreamWriter` ↔ `TokenStreamReader` round-trip via
     /// prefix codes. Build a 4-symbol prefix table by hand, write a
     /// known sequence of (ctx, value) tokens, then read them back.

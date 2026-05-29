@@ -396,6 +396,90 @@ public enum SpecModularEncoder {
         )
     }
 
+    /// Encode an 8-bit grayscale-with-alpha image (2 channels: luma + a
+    /// single alpha extra channel) into a naked JXL codestream that
+    /// round-trips through `djxl`. Fills the 2-channel gap between the
+    /// 1-channel grayscale and 3/4-channel RGB(A) encoders; the alpha
+    /// extra channel is coded as an ordinary modular channel alongside
+    /// luma, sharing the same per-image cost-gated tree + codebook.
+    ///
+    /// - Parameters:
+    ///   - width: Image width (≤ 16384, any dimension).
+    ///   - height: Image height (≤ 16384, any dimension).
+    ///   - gray/alpha: Row-major `UInt8` buffers of length `width*height`.
+    public static func encodeGrayscaleAlpha8(
+        width: Int, height: Int,
+        gray: [UInt8], alpha: [UInt8]
+    ) throws -> Data {
+        try validateSize(width: width, height: height)
+        let n = width * height
+        guard gray.count == n, alpha.count == n else {
+            throw SpecModularEncoderError.unsupportedFrame(
+                "grayscale+alpha pixel counts must each equal "
+                + "width*height (\(n))"
+            )
+        }
+        let alphaInfo = ExtraChannelInfo(
+            type: .alpha,
+            bitDepth: BitDepth(floatingPoint: false, bitsPerSample: 8),
+            dimShift: 0, name: "", alphaAssociated: false
+        )
+        let built = try buildSections(
+            width: width, height: height,
+            channels: [gray, alpha].map { $0.map { Int32($0) } },
+            sampleHi: 255
+        )
+        return try writeOuterCodestream(
+            width: width, height: height,
+            bitsPerSample: 8,
+            colorSpace: .grayscale, extraChannels: [alphaInfo], built: built
+        )
+    }
+
+    /// Encode a high-bit-depth grayscale-with-alpha image (9..16-bit luma
+    /// + a single alpha extra channel inheriting `bitsPerSample`). The
+    /// 16-bit analogue of `encodeGrayscaleAlpha8`; round-trips through
+    /// `djxl`.
+    ///
+    /// - Parameters:
+    ///   - width: Image width (≤ 16384, any dimension).
+    ///   - height: Image height (≤ 16384, any dimension).
+    ///   - bitsPerSample: 9..16. Sample range bound for both channels.
+    ///   - gray/alpha: Row-major `UInt16` buffers of length `width*height`.
+    public static func encodeGrayscaleAlpha16(
+        width: Int, height: Int,
+        bitsPerSample: UInt32 = 16,
+        gray: [UInt16], alpha: [UInt16]
+    ) throws -> Data {
+        try validateSize(width: width, height: height)
+        try validateHighBitDepth(bitsPerSample)
+        let n = width * height
+        guard gray.count == n, alpha.count == n else {
+            throw SpecModularEncoderError.unsupportedFrame(
+                "grayscale+alpha pixel counts must each equal "
+                + "width*height (\(n))"
+            )
+        }
+        let alphaInfo = ExtraChannelInfo(
+            type: .alpha,
+            bitDepth: BitDepth(
+                floatingPoint: false, bitsPerSample: bitsPerSample
+            ),
+            dimShift: 0, name: "", alphaAssociated: false
+        )
+        let sampleHi = Int32((Int64(1) << bitsPerSample) - 1)
+        let built = try buildSections(
+            width: width, height: height,
+            channels: [gray, alpha].map { $0.map { Int32($0) } },
+            sampleHi: sampleHi
+        )
+        return try writeOuterCodestream(
+            width: width, height: height,
+            bitsPerSample: bitsPerSample,
+            colorSpace: .grayscale, extraChannels: [alphaInfo], built: built
+        )
+    }
+
     /// Encode a high-bit-depth RGB image (9..16-bit per channel).
     /// Same pipeline as `encodeGrayscale16`, just three channels
     /// sharing one pooled-histogram Huffman codebook.

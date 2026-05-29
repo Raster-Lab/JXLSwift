@@ -11,6 +11,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0i12 — Grayscale-with-alpha encode (2-channel)
+
+Fills the 2-channel gap between the 1-channel grayscale and 3/4-channel
+RGB(A) encoders. `encodeGrayscaleAlpha8` / `encodeGrayscaleAlpha16` emit
+a grayscale frame with a single alpha extra channel (luma + alpha coded
+as ordinary modular channels sharing the per-image cost-gated tree +
+codebook), mirroring the existing `encodeRGBA*` extra-channel plumbing.
+Both validated byte-exact through our decoder (2 channels) and `djxl`
+(`GRAYSCALE_ALPHA` PAM). New
+`testSpecModularEncoder_GrayscaleAlpha{8,16}_DjxlRoundTrip`.
+Full suite: 683 tests.
+
 ### v0.12.0i11 — Larger dimensions: multi-DC-group coverage + 16384 cap
 
 Coverage for large medical frames. Two gaps closed, both `djxl`-validated:
