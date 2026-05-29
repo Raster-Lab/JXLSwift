@@ -11,6 +11,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0hz — Honest lossless/lossy CLI label (medical trust)
+
+The encoder falls back to the lossless Modular path for inputs the lossy
+VarDCT codec can't take (e.g. 16-bit grayscale), but `jxl-tool encode`
+labelled the result purely from the `--lossless` flag — so a 16-bit scan
+encoded *without* `--lossless` produced byte-identical (lossless) output
+mislabelled "lossy q90". Misleading for a medical user who must know
+whether data was altered. `CompressionStats` gains a `wasLossless` flag
+(default true; the lossy VarDCT path sets it false); the CLI now reports
+the mode that actually ran ("lossless — lossy VarDCT unavailable for this
+input" on fallback, vs "lossy qN" for a genuine lossy encode).
+
+### v0.12.0hy — Lossless Modular encode supports arbitrary (non-mult-8) dims
+
+The native lossless Modular encoder rejected dimensions that weren't
+multiples of 8 — a blocker for **arbitrary-size medical images** (the
+project's current lossless-only, medical-imaging focus). The constraint was
+purely conservative: Modular coding is pixel-based (no DCT block grid) and
+the group tiler already crops partial edge rects, so `validateSize` now
+allows `1 ≤ width,height ≤ 8192`. Validated byte-exact through **djxl** and
+our decoder across grayscale + RGB, 8- and 16-bit, at odd sizes (17×23,
+99×101, 521×383, 513×257, 1023×769) — including the core medical case
+(16-bit grayscale CT/MR-like) and sizes crossing the 512px group boundary.
+
 ### v0.12.0hx — Phase R confirmed complete: at-scale lossy-decode regression
 
 Audited the restoration-filter status and found **Phase R was already

@@ -27,14 +27,18 @@ GPU paths (land later, behind the proven scalar path).
 
 | | |
 |---|---|
-| **Version** | v0.12.0hw (Phase J line) |
-| **Tests** | 669 passing / 7 skipped / 0 failures (`swift test -c release`, ~50 s) |
+| **Version** | v0.12.0hz (Phase J line) |
+| **Tests** | 670 passing / 7 skipped / 0 failures (`swift test -c release`, ~50 s) |
 | **Dependencies** | `swift-argument-parser` (CLI only). Zero runtime deps. |
-| **Headline capability** | **Lossless JPEG ⇄ JXL transcoding is byte-identical in both directions**, with no `--source` needed — across baseline + progressive, all chroma, odd dims, grayscale, metadata, **and images of any size ≤ 2048 px per side (multi-AC-group)**. The forward path emits a full lossless-JPEG container that `djxl --jpeg` also reconstructs byte-for-byte. Forward file size is now **~1.03–1.05× of cjxl on real AC-rich content** (~1.3× on very smooth / synthetic high-detail); AC + DC/ACMetadata both rANS, with cost-gated AC cluster counts (≤ 64) and DC predictor (ClampedGradient vs Weighted). |
+| **Project focus** | **Lossless, for medical imaging.** Lossy *encode* (full VarDCT from pixels) is deferred to the very last phase. The lossy *decode* path is complete and `djxl`-matching, but new encoder work is lossless-first. |
+| **Headline capability** | **Two lossless encode paths, both `djxl`-validated:** (1) **lossless JPEG ⇄ JXL transcoding**, byte-identical both directions, no `--source` needed — baseline + progressive, all chroma, odd dims, grayscale, metadata, any size ≤ 2048 px/side (multi-AC-group); forward ~1.03–1.05× cjxl on real content. (2) **native lossless Modular encode** of raw pixels — 8- and 16-bit grayscale / RGB / RGBA, **arbitrary dimensions** (≤ 8192), byte-exact through `djxl` — covering the core medical case (16-bit grayscale CT/MR). |
 
 **What works end-to-end today**
 
 - `jxl-tool info <file>` — inspect JXL/JPEG structure.
+- `jxl-tool encode --lossless in.{pgm,ppm,pam} out.jxl` — **native lossless Modular** encode
+  (8/16-bit gray/RGB/RGBA, any size ≤ 8192), `djxl`-decodable byte-exact. Reports the mode
+  that actually ran (a lossy request that can't use VarDCT falls back to lossless and says so).
 - `jxl-tool transcode --mode reverse in.jxl out.jpg` — **byte-identical** JXL → JPEG,
   autonomous (reconstructs everything from the JXL alone).
 - `jxl-tool transcode --mode coefficient-bridge in.jpg out.jxl` — JPEG → JXL coefficient
@@ -71,7 +75,7 @@ Legend: ✅ done · 🟩 substantially done · ⏳ in progress · ⬜ not starte
 | **F** | Foundation (bitstream, container, signature, SizeHeader) | ✅ | read + write + round-trip |
 | **H** | Image headers (BitDepth, ColorEncoding, ExtraChannelInfo, ImageMetadata) | ✅ | read + write + round-trip |
 | **E** | Entropy (HybridUint, prefix codes, rANS, dist serialisation, context maps, LZ77) | ✅ | read + write incl. complex histograms and the full entropy-coded context-map path (both directions); LZ77 back-reference *encoding* still pending |
-| **M** | Modular sub-codec (lossless path) | 🟩 | predictors, RCT, channel decode, MA-tree all used by the VarDCT/bridge decode |
+| **M** | Modular sub-codec (lossless path) | ✅ | predictors, RCT, channel decode, MA-tree (decode); **`SpecModularEncoder` is a spec-compliant lossless *encoder*** — 8/16-bit gray/RGB/RGBA, **arbitrary dims ≤ 8192** (v0.12.0hy), multi-group, `djxl`-validated byte-exact. The primary lossless-for-medical path |
 | **V** | VarDCT | 🟩 | **decoder** decodes real cjxl frames (DC/AC groups, context maps, coeff orders, CFL, RAW quant, chroma subsampling, ICC); **encoder** writes coefficient-bridge frames |
 | **R** | Restoration filters (Gaborish, EPF) | ✅ | Gaborish (3×3 smoothing) + EPF (all 3 passes, sharpness/QF-driven sigma) implemented in `VarDCT/Gaborish.swift` + `VarDCT/EPF.swift` and wired into the lossy pixel decode. **Decode matches `djxl` per-pixel** at 256²/384² (max diff 1 vs the float-IDCT reference, v0.12.0hx). The JPEG bridge still disables them (`kSkipAdaptiveLFSmoothing`) as cjxl does for transcode |
 | **J** | JPEG ⇄ JXL transcoding | 🟩 | **both directions byte-identical** (baseline + progressive, all chroma, odd dims, grayscale, multi-AC-group ≤ 2048 px/side); forward emits a full lossless container, djxl-valid. AC + DC/ACMetadata both rANS, cost-gated clusters ≤ 64 → ~1.03–1.05× cjxl (real AC-rich), ~1.4× (very smooth). Remaining gap: DC tree + coeff orders (see §5) |
@@ -215,7 +219,7 @@ round-trip test.
 
 ```bash
 swift build -c release
-swift test  -c release            # 669 tests / 7 skipped, ~50 s
+swift test  -c release            # 670 tests / 7 skipped, ~50 s
 .build/release/jxl-tool --version
 
 # byte-identical reverse transcode (no source needed)
@@ -232,19 +236,20 @@ Test oracles (optional, dev-time): `cjxl` / `djxl` / `jxlinfo` / `brotli` / `cjp
 
 ## 9. Suggested next milestones (priority order)
 
-1. **Tighter forward size (deep diminishing returns)** — real AC-rich content is already
-   ~1.03–1.05× cjxl (AC + DC/ACMetadata rANS, cost-gated clusters ≤ 64 and DC predictor,
-   v0.12.0hq–hw). Coefficient-order optimisation was measured and found neutral-to-negative for
-   real content (§5.3), so it's off the table. The only remaining levers (richer DC-group tree;
-   tailored block context map — a map-size saving) target smooth / synthetic edge cases for
-   sub-kilobyte gains. **Forward size work is effectively complete** for real-world JPEGs.
-2. **Full lossy VarDCT *encode*** beyond the JPEG-bridge subset — pixels → lossy JXL with XYB
-   colour, adaptive quantisation, and an AC-strategy search. This is the largest genuinely-unbuilt
-   area: the lossy *decode* path is complete (Phase V decoder + Phase R filters; `djxl`-matching
-   per-pixel), but the encoder only emits coefficient-bridge frames, not a from-pixels lossy
-   stream. (Restoration filters, Phase R, are **done** — see §4.)
-3. **Brotli NTREES>1 / NBLTYPES>1** — only if a non-cjxl Brotli stream ever needs decoding
-   (cjxl jbrd payloads don't).
+**Project focus is lossless, for medical imaging (§2). Lossy *encode* is deferred to the very
+last phase.** Both lossless encode paths (JPEG transcode + native Modular) are complete and
+`djxl`-validated, so candidate lossless-first work:
+
+1. **Lossless hardening for medical inputs** — e.g. higher bit depths if needed beyond 16-bit,
+   >8192 px dimensions (the current cap), 1-/2-channel (gray+alpha) coverage at arbitrary dims,
+   and encode-effort/ratio tuning. Driven by the actual medical corpus.
+2. **Forward transcode size** is effectively complete (~1.03–1.05× cjxl on real content;
+   coefficient-order measured neutral-to-negative, §5.3) — only sub-kilobyte edge-case levers
+   remain (richer DC-group tree, block-context-map size).
+3. **Full lossy VarDCT *encode*** (pixels → lossy JXL: XYB, adaptive quant, AC-strategy search)
+   — the largest unbuilt area, but **deferred to the very last phase** per project focus. The
+   lossy *decode* path is already complete (Phase V decoder + Phase R filters, `djxl`-matching).
+4. **Brotli NTREES>1 / NBLTYPES>1** — only if a non-cjxl Brotli stream ever needs decoding.
 
 ---
 
