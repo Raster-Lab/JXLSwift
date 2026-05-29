@@ -11,6 +11,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0hx — Phase R confirmed complete: at-scale lossy-decode regression
+
+Audited the restoration-filter status and found **Phase R was already
+implemented and wired** (`Gaborish.swift` + `EPF.swift`, called in the
+decoder's pixel path) — the roadmap's "⬜ not started" was stale. Existing
+coverage only sanity-checked the mean RGB at 8/16/32².
+
+Added `testVarDCT_LossyDecode_AtScale_MatchesDjxlPerPixel`: decodes real
+cjxl `-d 1` frames at 256² (single group) and 384² (2×2 group grid) and
+compares **per-pixel** against the `djxl` reference, exercising the full
+pixel pipeline — multi-group AC, chroma upsampling, Gaborish, all EPF
+passes, inverse XYB. Both land at **max diff 1, mean ≈ 0.24** vs djxl
+(cross-decoder pixels aren't byte-exact — float IDCT + AdjustQuantBias —
+so the bound is max ≤ 6, mean ≤ 1). Roadmap corrected: Phase R is ✅; the
+next genuinely-unbuilt area is full lossy VarDCT *encode* (pixels → lossy
+JXL). Full suite: 669 tests, 7 skipped, 0 failures.
+
 ### v0.12.0hw — Cost-gated Weighted Predictor for the DC group
 
 ClampedGradient (libjxl predictor 5) **systematically under-predicts

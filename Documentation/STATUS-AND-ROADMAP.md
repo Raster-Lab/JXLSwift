@@ -1,6 +1,6 @@
 # JXLSwift — Status & Roadmap
 
-**A current-state knowledge map of the project.** Snapshot as of **v0.12.0hw** (2026-05-29).
+**A current-state knowledge map of the project.** Snapshot as of **v0.12.0hx** (2026-05-29).
 For the original project charter + constraints see [ROADMAP.md](../ROADMAP.md); for the
 load-bearing rules see [CLAUDE.md](../CLAUDE.md); for release-by-release detail see
 [CHANGELOG.md](../CHANGELOG.md).
@@ -28,7 +28,7 @@ GPU paths (land later, behind the proven scalar path).
 | | |
 |---|---|
 | **Version** | v0.12.0hw (Phase J line) |
-| **Tests** | 668 passing / 7 skipped / 0 failures (`swift test -c release`, ~50 s) |
+| **Tests** | 669 passing / 7 skipped / 0 failures (`swift test -c release`, ~50 s) |
 | **Dependencies** | `swift-argument-parser` (CLI only). Zero runtime deps. |
 | **Headline capability** | **Lossless JPEG ⇄ JXL transcoding is byte-identical in both directions**, with no `--source` needed — across baseline + progressive, all chroma, odd dims, grayscale, metadata, **and images of any size ≤ 2048 px per side (multi-AC-group)**. The forward path emits a full lossless-JPEG container that `djxl --jpeg` also reconstructs byte-for-byte. Forward file size is now **~1.03–1.05× of cjxl on real AC-rich content** (~1.3× on very smooth / synthetic high-detail); AC + DC/ACMetadata both rANS, with cost-gated AC cluster counts (≤ 64) and DC predictor (ClampedGradient vs Weighted). |
 
@@ -73,7 +73,7 @@ Legend: ✅ done · 🟩 substantially done · ⏳ in progress · ⬜ not starte
 | **E** | Entropy (HybridUint, prefix codes, rANS, dist serialisation, context maps, LZ77) | ✅ | read + write incl. complex histograms and the full entropy-coded context-map path (both directions); LZ77 back-reference *encoding* still pending |
 | **M** | Modular sub-codec (lossless path) | 🟩 | predictors, RCT, channel decode, MA-tree all used by the VarDCT/bridge decode |
 | **V** | VarDCT | 🟩 | **decoder** decodes real cjxl frames (DC/AC groups, context maps, coeff orders, CFL, RAW quant, chroma subsampling, ICC); **encoder** writes coefficient-bridge frames |
-| **R** | Restoration filters (Gaborish, EPF) | ⬜ | bridge frames disable them (`kSkipAdaptiveLFSmoothing`); pixel-path filters not yet implemented |
+| **R** | Restoration filters (Gaborish, EPF) | ✅ | Gaborish (3×3 smoothing) + EPF (all 3 passes, sharpness/QF-driven sigma) implemented in `VarDCT/Gaborish.swift` + `VarDCT/EPF.swift` and wired into the lossy pixel decode. **Decode matches `djxl` per-pixel** at 256²/384² (max diff 1 vs the float-IDCT reference, v0.12.0hx). The JPEG bridge still disables them (`kSkipAdaptiveLFSmoothing`) as cjxl does for transcode |
 | **J** | JPEG ⇄ JXL transcoding | 🟩 | **both directions byte-identical** (baseline + progressive, all chroma, odd dims, grayscale, multi-AC-group ≤ 2048 px/side); forward emits a full lossless container, djxl-valid. AC + DC/ACMetadata both rANS, cost-gated clusters ≤ 64 → ~1.03–1.05× cjxl (real AC-rich), ~1.4× (very smooth). Remaining gap: DC tree + coeff orders (see §5) |
 | **Brotli** | RFC 7932 decoder + uncompressed encoder | ✅ | decoder: meta-blocks, simple/complex prefix codes, distance ring buffer, **static dictionary + 121 transforms**; encoder: uncompressed meta-blocks (jbrd tail). Context-maps/multi-block-type (NTREES>1) not needed for jbrd payloads |
 
@@ -215,7 +215,7 @@ round-trip test.
 
 ```bash
 swift build -c release
-swift test  -c release            # 668 tests / 7 skipped, ~50 s
+swift test  -c release            # 669 tests / 7 skipped, ~50 s
 .build/release/jxl-tool --version
 
 # byte-identical reverse transcode (no source needed)
@@ -238,10 +238,12 @@ Test oracles (optional, dev-time): `cjxl` / `djxl` / `jxlinfo` / `brotli` / `cjp
    real content (§5.3), so it's off the table. The only remaining levers (richer DC-group tree;
    tailored block context map — a map-size saving) target smooth / synthetic edge cases for
    sub-kilobyte gains. **Forward size work is effectively complete** for real-world JPEGs.
-2. **Restoration filters (Phase R)** — Gaborish + EPF for the lossy pixel-decode path.
-3. **Full lossy VarDCT** beyond the JPEG-bridge subset (XYB colour, full AC-strategy search on
-   encode).
-4. **Brotli NTREES>1 / NBLTYPES>1** — only if a non-cjxl Brotli stream ever needs decoding
+2. **Full lossy VarDCT *encode*** beyond the JPEG-bridge subset — pixels → lossy JXL with XYB
+   colour, adaptive quantisation, and an AC-strategy search. This is the largest genuinely-unbuilt
+   area: the lossy *decode* path is complete (Phase V decoder + Phase R filters; `djxl`-matching
+   per-pixel), but the encoder only emits coefficient-bridge frames, not a from-pixels lossy
+   stream. (Restoration filters, Phase R, are **done** — see §4.)
+3. **Brotli NTREES>1 / NBLTYPES>1** — only if a non-cjxl Brotli stream ever needs decoding
    (cjxl jbrd payloads don't).
 
 ---
