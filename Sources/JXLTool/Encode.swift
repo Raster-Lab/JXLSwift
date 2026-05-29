@@ -159,9 +159,18 @@ struct Encode: ParsableCommand {
 
         let encSize = encoded.data.count
         let pct = Double(encSize) * 100 / Double(rawTotal)
-        let modeLabel = lossless
-            ? "lossless"
-            : "lossy q\(String(format: "%g", quality))"
+        // Report the mode that *actually* ran, not just what was asked.
+        // The encoder falls back to lossless Modular for inputs the lossy
+        // VarDCT codec can't take (e.g. 16-bit) — important for medical
+        // users not to see a lossless result mislabelled "lossy".
+        let modeLabel: String
+        if encoded.stats.wasLossless {
+            modeLabel = lossless
+                ? "lossless"
+                : "lossless — lossy VarDCT unavailable for this input"
+        } else {
+            modeLabel = "lossy q\(String(format: "%g", quality))"
+        }
         let first = frames[0]
         let frameLabel = frames.count == 1
             ? ""

@@ -117,7 +117,8 @@ public struct JXLEncoder: Sendable {
                     stats: CompressionStats(
                         originalSize: frame.data.count,
                         compressedSize: wrapped.count,
-                        encodingTime: Date().timeIntervalSince(start)
+                        encodingTime: Date().timeIntervalSince(start),
+                        wasLossless: false   // lossy VarDCT
                     )
                 )
             } catch is VarDCTBitstreamWriter.WriterError {

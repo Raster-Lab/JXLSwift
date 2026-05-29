@@ -244,16 +244,26 @@ public struct CompressionStats: Sendable {
     public let originalSize: Int
     public let compressedSize: Int
     public let encodingTime: TimeInterval
+    /// Whether the produced codestream is mathematically **lossless**.
+    /// The encoder falls back to the lossless Modular path for inputs the
+    /// lossy VarDCT codec can't take (e.g. 16-bit), so a lossy *request*
+    /// can still yield lossless output — callers (and the CLI label)
+    /// should report what actually happened, which matters for medical
+    /// use. Defaults to `true`: every path except the lossy VarDCT
+    /// encoder is lossless; that one path sets it `false` explicitly.
+    public let wasLossless: Bool
 
     public var compressionRatio: Double {
         guard compressedSize > 0 else { return 0 }
         return Double(originalSize) / Double(compressedSize)
     }
 
-    public init(originalSize: Int, compressedSize: Int, encodingTime: TimeInterval) {
+    public init(originalSize: Int, compressedSize: Int,
+                encodingTime: TimeInterval, wasLossless: Bool = true) {
         self.originalSize = originalSize
         self.compressedSize = compressedSize
         self.encodingTime = encodingTime
+        self.wasLossless = wasLossless
     }
 }
 
