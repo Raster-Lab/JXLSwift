@@ -965,7 +965,14 @@ public enum SpecModularEncoder {
         let sorted = pairs.sorted { $0.wpProp < $1.wpProp }
         let maxTok = postCfg.maxToken
         let toks = sorted.map { Int(postCfg.encode($0.token).token) }
-        func term(_ c: Int) -> Double { c <= 1 ? 0 : Double(c) * log2(Double(c)) }
+        // Memoise `c·log₂c` (0…n): the recursive sweep updates running
+        // Σ count·log₂count per pixel, so computing `log2` inline was hot.
+        // Identical values, so the chosen thresholds are unchanged.
+        var clogc = [Double](repeating: 0, count: n + 1)
+        for c in 2...max(2, n) where c <= n {
+            clogc[c] = Double(c) * log2(Double(c))
+        }
+        func term(_ c: Int) -> Double { clogc[c] }
         // Best entropy split of `sorted[lo..<hi]`: returns the first index
         // of the high side and the threshold (props ≤ it route low), or
         // `nil` if no interior split exists (singleton / all-equal range).
@@ -990,9 +997,8 @@ public enum SpecModularEncoder {
                     i += 1
                 }
                 if hiTotal > 0 {
-                    let loCost = loTotal <= 1 ? 0
-                        : Double(loTotal) * log2(Double(loTotal)) - loS
-                    let hiCost = Double(hiTotal) * log2(Double(hiTotal)) - hiS
+                    let loCost = loTotal <= 1 ? 0 : clogc[loTotal] - loS
+                    let hiCost = clogc[hiTotal] - hiS
                     let c = loCost + hiCost
                     if best == nil || c < best!.cost { best = (c, i, v) }
                 }
@@ -1823,12 +1829,21 @@ public enum SpecModularEncoder {
         let propCount = propIndices.count
         guard n >= 2, propCount >= 1 else { return nil }
 
-        func term(_ c: Int) -> Double { c <= 1 ? 0 : Double(c) * log2(Double(c)) }
+        // Memoise `c·log₂c` for every count that can occur (0…n). The
+        // best-first sweep updates running Σ count·log₂count millions of
+        // times; computing `log2` there dominated the encoder. Filling
+        // this table costs n `log2` calls once instead. Values are
+        // identical to `Double(c)*log2(Double(c))`, so output is unchanged.
+        var clogc = [Double](repeating: 0, count: n + 1)
+        for c in 2...max(2, n) where c <= n {
+            clogc[c] = Double(c) * log2(Double(c))
+        }
+        func term(_ c: Int) -> Double { clogc[c] }
         func histCost(_ h: [Int], _ total: Int) -> Double {
             if total <= 1 { return 0 }
             var s = 0.0
-            for c in h where c > 1 { s += term(c) }
-            return Double(total) * log2(Double(total)) - s
+            for c in h where c > 1 { s += clogc[c] }
+            return clogc[total] - s
         }
 
         final class GNode {
@@ -1856,8 +1871,19 @@ public enum SpecModularEncoder {
             var nodeS = 0.0
             for c in nodeHist where c > 1 { nodeS += term(c) }
             for k in 0..<propCount {
-                let sortedIdx = node.idxs.sorted {
-                    propsFlat[$0 * propCount + k] < propsFlat[$1 * propCount + k] }
+                // Pack each pixel's (property value, token bucket) into one
+                // Int64 — `key << 16 | tok` is monotonic in key for any
+                // Int32 — and sort `[Int64]` (Swift's closure-free integer
+                // sort, no per-comparison array indirection). Ties in key
+                // are processed together by the sweep, so the chosen split
+                // is identical to a key-only sort. This is the encoder's hot
+                // path; the pack+int-sort is ~3× the index/closure sort.
+                var packed = [Int64](repeating: 0, count: m)
+                for (i, idx) in node.idxs.enumerated() {
+                    packed[i] = (Int64(propsFlat[idx * propCount + k]) << 16)
+                        | Int64(tokBucket[idx])
+                }
+                packed.sort()
                 var hi = nodeHist
                 var hiTot = m
                 var hiS = nodeS
@@ -1866,20 +1892,20 @@ public enum SpecModularEncoder {
                 var loS = 0.0
                 var j = 0
                 while j < m {
-                    let v = propsFlat[sortedIdx[j] * propCount + k]
-                    while j < m && propsFlat[sortedIdx[j] * propCount + k] == v {
-                        let tk = tokBucket[sortedIdx[j]]
+                    let v = packed[j] >> 16
+                    while j < m && (packed[j] >> 16) == v {
+                        let tk = Int(packed[j] & 0xffff)
                         hiS -= term(hi[tk]); hi[tk] -= 1; hiS += term(hi[tk]); hiTot -= 1
                         loS -= term(lo[tk]); lo[tk] += 1; loS += term(lo[tk]); loTot += 1
                         j += 1
                     }
                     if hiTot > 0 {
-                        let loCost = loTot <= 1 ? 0
-                            : Double(loTot) * log2(Double(loTot)) - loS
-                        let hiCost = Double(hiTot) * log2(Double(hiTot)) - hiS
+                        let loCost = loTot <= 1 ? 0 : clogc[loTot] - loS
+                        let hiCost = clogc[hiTot] - hiS
                         let gain = nodeCost - (loCost + hiCost)
                         if gain > node.bestGain {
-                            node.bestGain = gain; node.bestK = k; node.bestSplit = v
+                            node.bestGain = gain; node.bestK = k
+                            node.bestSplit = Int32(v)
                         }
                     }
                 }

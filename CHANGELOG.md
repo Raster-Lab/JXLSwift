@@ -11,6 +11,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0i15 — Lossless encoder performance (byte-identical)
+
+Profiling the lossless Modular encoder (design priority #1 is speed)
+showed the greedy multi-property learner dominated — ~60 % of a full-
+effort 512² encode — split between per-property sorts and `log2` calls in
+the entropy sweep. Two scalar-Swift optimizations, both producing
+**bit-for-bit identical output** (verified by the suite's djxl byte-exact
+round-trips):
+- **Int-packed sort:** the learner's per-property index sort (closure +
+  double array indirection per comparison) is replaced by packing each
+  pixel's `(propertyValue, tokenBucket)` into one `Int64` (`key << 16 |
+  tok`, monotonic in key) and sorting `[Int64]` with Swift's closure-free
+  integer sort; the sweep reads the packed values directly. Ties in key
+  are processed together, so the chosen split is unchanged.
+- **`c·log₂c` memoisation:** the running Σ count·log₂count updates called
+  `log2` millions of times; precomputing a `clogc[0…n]` table once (in
+  both `greedyTreeAndContexts` and `learnedThresholdSets`) removes them
+  from the hot loops.
+
+Measured: full-effort 512² 16-bit 716 → 519 ms (**−27 %**), 1024² 1396 →
+1186 ms (−15 %); the greedy learner alone −43 %. Output unchanged.
+Full suite: 685 tests.
+
 ### v0.12.0i14 — Wire grayscale+alpha into the high-level encoder
 
 Closes a reachability gap from i12: `encodeGrayscaleAlpha8/16` existed
