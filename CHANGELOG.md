@@ -11,6 +11,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0i3 / i4 — Deeper-tree encode fix + 4-context WP-activity split
+
+**i3** fixes `ModularTree.encode`: it emitted nodes depth-first, but the
+decoder fills level-order (FIFO; a decision's children land at the current
+frontier end). The two coincide only for trivial / single-level trees — a
+balanced multi-level tree encoded DFS round-tripped to a *different*
+(left-leaning) structure, a silent corruption that had never bitten because
+only ≤3-node trees were ever encoded. Now BFS (enqueue left then right),
+matching the decoder. New `testModularTree_Encode_BalancedMultiLevel_RoundTrip`
+pins it (fails on DFS, passes now).
+
+**i4** uses that to generalise the multi-context lossless path to N bins:
+`buildSingleSectionMultiContext` runs the WP pass once, then tries a 2-bin
+(median) and a 4-bin (quartile) property-15 activity split, keeping the
+smaller; per-context Huffman/rANS is also cost-gated, and the caller
+cost-gates the whole thing against single-context. Validated byte-exact via
+djxl **and** our decoder; where chosen: 512² structured 1.35→1.31×, a
+high-entropy 16-bit case 1.99→1.61× (~19% smaller) cjxl. Single-section
+(≤512²) for now; multi-group stays single-context. Full suite: 672 tests.
+
 ### v0.12.0i2 — Multi-context lossless Modular (WP-activity split, 2 contexts)
 
 First multi-context path in the native lossless encoder. Splits residuals
