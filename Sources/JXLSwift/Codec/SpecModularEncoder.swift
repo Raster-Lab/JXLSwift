@@ -908,6 +908,220 @@ public enum SpecModularEncoder {
             try aw.finish(to: &sec)
         }
         sec.alignToByte()
+        let singleData = sec.finishToData()
+        // Multi-context candidate: split residuals by local activity (the
+        // WP-error property) into separate per-context histograms. Helps
+        // structured images (smooth + edges) where one global histogram
+        // is a poor fit. Cost-gated by full-section size; cheap to skip.
+        if let multiData = try? buildSingleSectionMultiContext(
+            width: width, height: height,
+            channels: channels, sampleHi: sampleHi),
+           multiData.count < singleData.count {
+            return multiData
+        }
+        return singleData
+    }
+
+    /// Write the tree section (6-context tree-token entropy section +
+    /// codebook + the encoded tree) for an arbitrary `ModularTree`. The
+    /// codebook is built from the **actual** tree tokens — the flat
+    /// 16-symbol shortcut the trivial single-leaf path uses can't
+    /// represent the larger tokens a property split + split-value
+    /// produce. All 6 tree-decode contexts share one histogram.
+    private static func writeModularTreeSectionOnly(
+        to w: inout BitWriter, tree: ModularTree
+    ) throws {
+        let treeUintCfg = HybridUintConfig(
+            splitExponent: 0, msbInToken: 0, lsbInToken: 0)
+        var histo = [Int](repeating: 0, count: treeUintCfg.maxToken + 1)
+        var maxTok = 0
+        try tree.encode { _, val in
+            let t = Int(treeUintCfg.encode(val).token)
+            histo[t] += 1
+            if t > maxTok { maxTok = t }
+        }
+        let alpha = max(2, maxTok + 1)
+        let lens = lengthLimitedCanonicalHuffman(
+            counts: Array(histo[0..<alpha]), maxLength: 15, alphabetSize: alpha)
+        let treeTable = try PrefixCodeTable(lengths: lens)
+        let treeCodebook = MultiClusterCodebook(
+            huffmanTables: [treeTable], ansCounts: [], alphabetSizes: [alpha])
+        let treeHeader = EntropySectionHeader(
+            lz77: .disabled, contextMap: ContextMap.trivial(numContexts: 6),
+            usePrefixCode: true, logAlphaSize: 15, uintConfigs: [treeUintCfg])
+        try treeHeader.write(to: &w, numContexts: 6)
+        try treeCodebook.write(to: &w, header: treeHeader)
+        let treeWriter = TokenStreamWriter(
+            header: treeHeader, codebook: treeCodebook)
+        try tree.encode { ctx, val in
+            try treeWriter.writeToken(context: ctx, value: val, to: &w)
+        }
+    }
+
+    /// Multi-context single-section candidate: split residuals by the
+    /// **WP-error property** (property 15 — local activity) into two
+    /// contexts, each with its own histogram. Flat regions (low error)
+    /// and active regions (high error) have very different residual
+    /// distributions, so separating them beats one pooled histogram.
+    /// Returns the full section bytes, or `nil` for a degenerate split.
+    ///
+    /// Both leaves use WP (rawPredictor 6); the property-15 decision node
+    /// makes the decoder run WP to compute the property and walk the tree,
+    /// so the encoder (which reuses the same `WeightedPredictor` +
+    /// `propertyValue` in the decoder's order) assigns identical contexts.
+    private static func buildSingleSectionMultiContext(
+        width: Int, height: Int, channels: [[Int32]], sampleHi: Int32
+    ) throws -> Data? {
+        guard width > 0, height > 0, !channels.isEmpty else { return nil }
+        let postCfg = HybridUintConfig.raw4
+        // Per channel: run WP, recording (wpProp, packed residual) per
+        // pixel in row-major order. `propertyValue` is read BEFORE
+        // `predict`, matching the decoder.
+        var perPixel: [(wpProp: Int32, token: UInt32)] = []
+        perPixel.reserveCapacity(width * height * channels.count)
+        for pix in channels {
+            var wp = WeightedPredictor(header: .default, xsize: max(1, width))
+            for y in 0..<height {
+                for x in 0..<width {
+                    let nbh = Neighbourhood(at: x, y, in: pix, width: width)
+                    let wpProp = wp.propertyValue(x: x, y: y, xsize: width)
+                    let pred = wp.predict(
+                        x: x, y: y, xsize: width,
+                        n: nbh.n, w: nbh.w, ne: nbh.ne, nw: nbh.nw, nn: nbh.nn)
+                    let actual = pix[y * width + x]
+                    perPixel.append((wpProp, ZigZag.pack(actual &- pred)))
+                    wp.update(actual: actual, x: x, y: y, xsize: width)
+                }
+            }
+        }
+        guard !perPixel.isEmpty else { return nil }
+        // Threshold = median WP error → a roughly balanced split.
+        let t = perPixel.map { $0.wpProp }.sorted()[perPixel.count / 2]
+        var histo: [[Int]] = [
+            [Int](repeating: 0, count: postCfg.maxToken + 1),
+            [Int](repeating: 0, count: postCfg.maxToken + 1),
+        ]
+        var ordered: [(ctx: Int, val: UInt32)] = []
+        ordered.reserveCapacity(perPixel.count)
+        var maxTok = 0
+        for (wpProp, tok) in perPixel {
+            // Matches the tree walk: property15 > splitVal → leftChild
+            // (leaf 0, high activity), else rightChild (leaf 1).
+            let ctx = wpProp > t ? 0 : 1
+            ordered.append((ctx, tok))
+            let tk = Int(postCfg.encode(tok).token)
+            histo[ctx][tk] += 1
+            if tk > maxTok { maxTok = tk }
+        }
+        guard histo[0].reduce(0, +) > 0, histo[1].reduce(0, +) > 0
+        else { return nil }   // degenerate split — keep single-context
+        let alpha = maxTok + 1
+        let ctxMap = try ContextMap(numClusters: 2, map: [0, 1])
+
+        func sectionBits(_ h: EntropySectionHeader, _ c: MultiClusterCodebook) -> Int {
+            var w = BitWriter()
+            do {
+                try h.write(to: &w, numContexts: 2)
+                try c.write(to: &w, header: h)
+                if h.usePrefixCode {
+                    let tw = TokenStreamWriter(header: h, codebook: c)
+                    for (ctx, v) in ordered {
+                        try tw.writeToken(context: ctx, value: v, to: &w)
+                    }
+                } else {
+                    var aw = try ANSTokenStreamWriter(header: h, codebook: c)
+                    for (ctx, v) in ordered { try aw.writeToken(context: ctx, value: v) }
+                    try aw.finish(to: &w)
+                }
+            } catch { return Int.max }
+            return w.bitCount
+        }
+        // Huffman 2-context candidate.
+        var huffTables: [PrefixCodeTable] = []
+        for c in 0..<2 {
+            let lens = lengthLimitedCanonicalHuffman(
+                counts: Array(histo[c][0..<alpha]), maxLength: 15,
+                alphabetSize: alpha)
+            huffTables.append(try PrefixCodeTable(lengths: lens))
+        }
+        let huffHeader = EntropySectionHeader(
+            lz77: .disabled, contextMap: ctxMap,
+            usePrefixCode: true, logAlphaSize: 15,
+            uintConfigs: [postCfg, postCfg])
+        let huffCodebook = MultiClusterCodebook(
+            huffmanTables: huffTables, ansCounts: [],
+            alphabetSizes: [alpha, alpha])
+        var best: (EntropySectionHeader, MultiClusterCodebook) =
+            (huffHeader, huffCodebook)
+        var bestBits = sectionBits(huffHeader, huffCodebook)
+        // rANS 2-context candidate.
+        var wires: [[Int32]] = []
+        var maxWire = 0
+        var ansOK = true
+        for c in 0..<2 {
+            guard let dist = try? ANSDistribution(
+                rawFrequencies: histo[c][0..<alpha].map { UInt32(max(0, $0)) })
+            else { ansOK = false; break }
+            var scratch = BitWriter()
+            guard let wire = try? SpecANSDistribution.writeHistogram(
+                dist.frequencies.map { Int32($0) }, to: &scratch)
+            else { ansOK = false; break }
+            wires.append(wire); maxWire = max(maxWire, wire.count)
+        }
+        if ansOK {
+            var logAlpha = 5
+            while (1 << logAlpha) < maxWire && logAlpha < 8 { logAlpha += 1 }
+            if maxWire <= (1 << logAlpha) {
+                let ansHeader = EntropySectionHeader(
+                    lz77: .disabled, contextMap: ctxMap,
+                    usePrefixCode: false, logAlphaSize: logAlpha,
+                    uintConfigs: [postCfg, postCfg])
+                let ansCodebook = MultiClusterCodebook(
+                    huffmanTables: [], ansCounts: wires,
+                    alphabetSizes: wires.map { $0.count })
+                let b = sectionBits(ansHeader, ansCodebook)
+                if b < bestBits { best = (ansHeader, ansCodebook); bestBits = b }
+            }
+        }
+        let (postHeader, postCodebook) = best
+
+        // Tree: property 15 > t → leaf 0 (high activity), else leaf 1.
+        let tree = ModularTree(nodes: [
+            ModularTreeNode(
+                property: 15, splitVal: t,
+                leftChildOrLeafId: 1, rightChild: 2,
+                predictor: .gradient, predictorOffset: 0,
+                multiplier: 1, rawPredictor: 6),
+            ModularTreeNode(
+                property: -1, splitVal: 0,
+                leftChildOrLeafId: 0, rightChild: 0,
+                predictor: .gradient, predictorOffset: 0,
+                multiplier: 1, rawPredictor: 6),
+            ModularTreeNode(
+                property: -1, splitVal: 0,
+                leftChildOrLeafId: 1, rightChild: 0,
+                predictor: .gradient, predictorOffset: 0,
+                multiplier: 1, rawPredictor: 6),
+        ])
+
+        var sec = BitWriter()
+        sec.writeBit(true)            // matrices_dc_default
+        sec.writeBit(true)            // has_tree
+        try writeModularTreeSectionOnly(to: &sec, tree: tree)
+        try postHeader.write(to: &sec, numContexts: 2)
+        try postCodebook.write(to: &sec, header: postHeader)
+        try GroupHeader.default.write(to: &sec)
+        if postHeader.usePrefixCode {
+            let tw = TokenStreamWriter(header: postHeader, codebook: postCodebook)
+            for (ctx, v) in ordered {
+                try tw.writeToken(context: ctx, value: v, to: &sec)
+            }
+        } else {
+            var aw = try ANSTokenStreamWriter(header: postHeader, codebook: postCodebook)
+            for (ctx, v) in ordered { try aw.writeToken(context: ctx, value: v) }
+            try aw.finish(to: &sec)
+        }
+        sec.alignToByte()
         return sec.finishToData()
     }
 
