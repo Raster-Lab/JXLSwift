@@ -366,6 +366,39 @@ These are added once a corresponding scalar Swift path is correct. The scalar pa
 - **Phase R** — output bit-exact to libjxl's reference decoder on the conformance corpus.
 - **Phase J** — JPEG → JXL → JPEG round-trip is bitwise-identical to the source JPEG.
 
+## Road to v1.0.0 (lossless-first)
+
+v1.0.0 is scoped to a **production-ready lossless codec** (the medical-imaging focus). Full
+lossy *encode* (pixels → lossy VarDCT) is the headline of **v2.0** — it is the single largest
+unbuilt subsystem (libjxl-scale) and should not gate a lossless 1.0. As of v0.12.0 the lossless
+encode + decode and the JPEG ⇄ JXL transcode are already comprehensive and `djxl`-validated; what
+remains for 1.0 is conformance, completeness, hardening, performance, and API stability. Ordered:
+
+1. **Conformance gate (do first) — v0.13.0.** Wire the official `jxl-conformance` vectors
+   (lossless subset) into the test harness ([Phase C](#phase-c--conformance--interop): "harness
+   exists; vectors not wired up"). Validates spec-compliance against the reference corpus beyond
+   our own `djxl` round-trips, and may surface issues that reshape later milestones — so it leads.
+2. **Lossless completeness — v0.14.0.** Resolve each deferred item with an explicit decision
+   (implement, or document as a 1.0 limitation): E5 **>8-cluster context-map `djxl` compliance**
+   (unblocks > 8 contexts); E4b **rANS full-mode** histogram serialisation; **forward-transcode
+   > 2048 px** (multi-DC-group on the transcode path); and **reconciling the
+   `fillModularProperties` formulas** (properties 6,7,8,11,13,14) with libjxl to widen the greedy
+   MA-tree property set.
+3. **Robustness hardening — v0.15.0.** A parameterised corpus sweep (dims × bit-depth × channels ×
+   content × effort, all `djxl` byte-exact) plus a decoder fuzz pass (malformed input must throw,
+   never trap). The v0.12.0i17 constant-image crash shows degenerate inputs still hide bugs.
+4. **Performance baseline — v0.16.0.** Profile the encode/decode hot paths and land the first
+   *measured* optimisation path (NEON / Accelerate), scalar Swift remaining the source of truth
+   (constraint 1 / [Phase O](#phase-o--optimisation-paths-independent-of-correctness)). Speed is
+   design priority #1, so 1.0 should ship a known baseline.
+5. **API freeze + family parity — v0.17.0 (release candidate).** Audit the public surface against
+   J2KSwift ([FAMILY-API-PARITY.md](Documentation/FAMILY-API-PARITY.md)), finalise it, and commit
+   to stability. Docs + examples.
+
+**v1.0.0** = all of the above, green on the lossless conformance corpus, with a frozen public API.
+The VarDCT lossy *decoder* ships as-is (preview); its `d = 2/5/10` byte-equality close-out tracks
+with the v2.0 lossy work, not lossless 1.0.
+
 ## Development principles
 
 1. **Spec-driven.** Every byte emitted by the codec traces to a section in ISO/IEC 18181-1 or 18181-2. Comments cite section numbers.
