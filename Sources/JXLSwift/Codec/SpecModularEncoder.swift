@@ -832,6 +832,62 @@ public enum SpecModularEncoder {
         }
     }
 
+    /// Choose the WP-error threshold for a 2-context split that minimises
+    /// the summed residual-token entropy of the two sides — a cheap, exact
+    /// proxy for coded size that needs no trial encode. This is the
+    /// "learned" split point (the activity distribution's real low/high
+    /// boundary) versus the fixed median the percentile path uses, which
+    /// is a poor fit when the smooth/active mix is skewed (e.g. a mostly
+    /// flat scan with a small dense region). Sweeps the activity-sorted
+    /// pixels once, moving each into the low side and maintaining each
+    /// side's running Σ count·log₂count incrementally, so every candidate
+    /// boundary is scored in O(1). Returns the best threshold (all props
+    /// ≤ it route low), or `nil` if no interior split exists.
+    private static func learnedSplitThreshold(
+        pairs: [(wpProp: Int32, token: UInt32)],
+        postCfg: HybridUintConfig
+    ) -> Int32? {
+        let n = pairs.count
+        guard n >= 2 else { return nil }
+        let sorted = pairs.sorted { $0.wpProp < $1.wpProp }
+        let maxTok = postCfg.maxToken
+        let toks = sorted.map { Int(postCfg.encode($0.token).token) }
+        func term(_ c: Int) -> Double { c <= 1 ? 0 : Double(c) * log2(Double(c)) }
+        // Start with every pixel on the high side; move to low as the
+        // threshold rises past each distinct activity value. `S` tracks
+        // Σ count·log₂count so a group's H·count is total·log₂total − S.
+        var hiCount = [Int](repeating: 0, count: maxTok + 1)
+        var hiTotal = n
+        var hiS = 0.0
+        for t in toks { hiCount[t] += 1 }
+        for c in hiCount where c > 1 { hiS += term(c) }
+        var loCount = [Int](repeating: 0, count: maxTok + 1)
+        var loTotal = 0
+        var loS = 0.0
+        var bestCost = Double.greatestFiniteMagnitude
+        var bestThr: Int32? = nil
+        var i = 0
+        while i < n {
+            let v = sorted[i].wpProp
+            while i < n && sorted[i].wpProp == v {
+                let tk = toks[i]
+                hiS -= term(hiCount[tk]); hiCount[tk] -= 1; hiS += term(hiCount[tk])
+                hiTotal -= 1
+                loS -= term(loCount[tk]); loCount[tk] += 1; loS += term(loCount[tk])
+                loTotal += 1
+                i += 1
+            }
+            if hiTotal > 0 {
+                let loCost = loTotal <= 1 ? 0
+                    : Double(loTotal) * log2(Double(loTotal)) - loS
+                let hiCost = Double(hiTotal) * log2(Double(hiTotal)) - hiS
+                let c = loCost + hiCost
+                if c < bestCost { bestCost = c; bestThr = v }
+            }
+        }
+        return bestThr
+    }
+
     /// Multi-context candidate for the multi-group path — the analogue of
     /// `buildSingleSectionMultiContext`, but the property-15 WP-activity
     /// tree + per-context codebook live once in the DC-global section and
@@ -1029,12 +1085,14 @@ public enum SpecModularEncoder {
                 $0.reduce(0) { $0 + $1.count } < $1.reduce(0) { $0 + $1.count } })
         }
 
-        // Try 2-bin (median), 4-bin (quartile) and 8-bin (octile) splits;
-        // keep the smallest. The caller cost-gates the winner against
-        // single-context. Each split is only attempted when its thresholds
-        // are strictly increasing (else the tree is degenerate).
+        // Try fixed 2-bin (median), 4-bin (quartile) and 8-bin (octile)
+        // splits plus a learned 2-bin split; keep the smallest. The caller
+        // cost-gates the winner against single-context. Fixed splits are
+        // only attempted when their thresholds are strictly increasing
+        // (else the tree is degenerate).
         var candidates: [[Data]] = []
-        if let d = buildForThresholds([pct(0.5)]) { candidates.append(d) }
+        let median = pct(0.5)
+        if let d = buildForThresholds([median]) { candidates.append(d) }
         let q1 = pct(0.25), q2 = pct(0.5), q3 = pct(0.75)
         if q1 < q2, q2 < q3, let d = buildForThresholds([q1, q2, q3]) {
             candidates.append(d)
@@ -1042,6 +1100,14 @@ public enum SpecModularEncoder {
         let oct = (1...7).map { pct(Double($0) / 8.0) }
         if zip(oct, oct.dropFirst()).allSatisfy({ $0 < $1 }),
            let d = buildForThresholds(oct) {
+            candidates.append(d)
+        }
+        // Learned 2-bin: the entropy-minimising split point, which beats
+        // the fixed median when the activity mix is skewed. Skip if it
+        // coincides with the median (already tried above).
+        if let lt = learnedSplitThreshold(
+            pairs: perGroupPixels.flatMap { $0 }, postCfg: postCfg),
+           lt != median, let d = buildForThresholds([lt]) {
             candidates.append(d)
         }
         return candidates.min(by: {
@@ -1413,12 +1479,14 @@ public enum SpecModularEncoder {
             return sec.finishToData()
         }
 
-        // Try 2-bin (median), 4-bin (quartile) and 8-bin (octile)
-        // WP-activity splits; keep whichever is smallest. The caller
-        // cost-gates against the single-context section. Each split is
-        // only attempted when its thresholds are strictly increasing.
+        // Try fixed 2-bin (median), 4-bin (quartile) and 8-bin (octile)
+        // WP-activity splits plus a learned 2-bin split; keep whichever is
+        // smallest. The caller cost-gates against the single-context
+        // section. Fixed splits are only attempted when their thresholds
+        // are strictly increasing.
         var candidates: [Data] = []
-        if let d = buildForThresholds([pct(0.5)]) { candidates.append(d) }
+        let median = pct(0.5)
+        if let d = buildForThresholds([median]) { candidates.append(d) }
         let q1 = pct(0.25), q2 = pct(0.5), q3 = pct(0.75)
         if q1 < q2, q2 < q3, let d = buildForThresholds([q1, q2, q3]) {
             candidates.append(d)
@@ -1426,6 +1494,13 @@ public enum SpecModularEncoder {
         let oct = (1...7).map { pct(Double($0) / 8.0) }
         if zip(oct, oct.dropFirst()).allSatisfy({ $0 < $1 }),
            let d = buildForThresholds(oct) {
+            candidates.append(d)
+        }
+        // Learned 2-bin: the entropy-minimising split point, which beats
+        // the fixed median when the activity mix is skewed. Skip if it
+        // coincides with the median (already tried above).
+        if let lt = learnedSplitThreshold(pairs: perPixel, postCfg: postCfg),
+           lt != median, let d = buildForThresholds([lt]) {
             candidates.append(d)
         }
         return candidates.min(by: { $0.count < $1.count })

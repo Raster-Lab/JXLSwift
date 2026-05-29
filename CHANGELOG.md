@@ -11,6 +11,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0i7 — Learned 2-bin WP-activity threshold
+
+The WP-activity splits so far used **fixed** percentile thresholds
+(median / quartile / octile). When the smooth/active mix is skewed —
+common in medical scans (a mostly flat field with a small dense region)
+— the median is a poor boundary. This adds a **learned** 2-bin split:
+`learnedSplitThreshold` sweeps the activity-sorted pixels once and picks
+the threshold that minimises the summed residual-token entropy of the
+two sides (an exact, trial-encode-free proxy for coded size), tracking
+each side's running Σ count·log₂count incrementally so every candidate
+boundary is scored in O(1). It is added as one more cost-gated candidate
+(deduped against the median) on both the single-section and multi-group
+paths — kept only when it actually encodes smallest. On a 1024² 16-bit
+image that is ~85% smooth with a ~15% dense strip, the learned split
+(threshold 1109, vs a median of −1) beats the fixed median 2-bin
+(383811 vs 386373 B) while the degenerate fixed quartile/octile splits
+are correctly skipped — so the learned split is what wins; byte-exact
+through `djxl` and our decoder. New
+`testSpecModularEncoder_LearnedThreshold_MultiGroup_DjxlRoundTrip`.
+Full suite: 676 tests.
+
 ### v0.12.0i6 — 8-context (octile) WP-activity split + shared tree helper
 
 Adds an **8-bin (octile)** WP-activity split on top of the 2-bin / 4-bin
