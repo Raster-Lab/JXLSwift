@@ -11,6 +11,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0hw — Cost-gated Weighted Predictor for the DC group
+
+ClampedGradient (libjxl predictor 5) **systematically under-predicts
+monotonic gradients** — it caps at `max(W, N)` but a 2D ramp exceeds both
+— so smooth-image DC residuals weren't near-zero (a smooth 512² DC group
+was ~5.6 KB). The adaptive **Weighted Predictor** (predictor 6) tracks
+local structure.
+
+`generateBridgeDCGroupTokens` gains a WP path that **reuses the exact
+`WeightedPredictor` struct the decoder runs**, with `Neighbourhood`'s edge
+rules (which match the decoder's WP neighbour fall-backs) — so encode and
+decode agree by construction (and thus `djxl` too). `buildBridgePostCodebook`
+now cost-gates **both** the predictor (gradient vs WP) **and** the entropy
+coder (Huffman vs rANS), keeping the smallest of the four; the chosen
+`useWP` flag is threaded to the LfGlobal tree leaf (rawPredictor 5 vs 6)
+and the DC-group writer (single- and multi-section).
+
+Results (vs cjxl, all reverse + djxl byte-identical; predictor picked
+per-image): smooth 512² **1.437× → 1.296×** (WP); natural content (4:4:4,
+grayscale, 256²) picks WP for a small further gain; noisy / synthetic
+(big 512², g1024) keep Gradient. Multi-group WP verified byte-identical.
+Full suite: 668 tests, 7 skipped, 0 failures.
+
 ### v0.12.0hv — Raise AC cluster cap (cost-gated 32 / 64) — broad AC-rich win
 
 Tracing the AC-rich gap (e.g. a 512² noisy fixture, ours 63 KB vs cjxl
