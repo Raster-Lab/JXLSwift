@@ -11,6 +11,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0i6 — 8-context (octile) WP-activity split + shared tree helper
+
+Adds an **8-bin (octile)** WP-activity split on top of the 2-bin / 4-bin
+levels, on both the single-section and multi-group paths. The
+property-15 tree construction (previously duplicated across the two
+multi-context paths) is consolidated into one `activitySplitTree` helper
+that lays out a balanced binary-heap tree (node `i` → children `2i+1`,
+`2i+2`) for `thr.count` ∈ {1, 3, 7} — 2 / 4 / 8 leaves — using the
+deeper-tree capability i3 unlocked. The 8-bin candidate is cost-gated
+like the others (only attempted when its octile thresholds are strictly
+increasing; kept only when it actually encodes smallest). On a 1024²
+16-bit image with eight geometrically-spaced activity bands the octile
+split is selected and beats 4-bin (819140 vs 855731 B, ~4.3% smaller;
+~11% under 2-bin), byte-exact through `djxl` **and** our decoder. New
+`testModularTree_Encode_Balanced8Leaf_RoundTrip` (pins the 15-node heap
+layout against the decoder's level-order fill) and
+`testSpecModularEncoder_MultiContext_8Bin_MultiGroup_DjxlRoundTrip`.
+Full suite: 675 tests.
+
 ### v0.12.0i5 — Multi-context lossless Modular on the multi-group path
 
 Extends the WP-activity split (previously single-section ≤512² only) to

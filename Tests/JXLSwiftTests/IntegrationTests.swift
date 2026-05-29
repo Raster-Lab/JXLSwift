@@ -13620,6 +13620,77 @@ extension FoundationTests {
         }
     }
 
+    /// Multi-group lossless Modular where the **8-bin (octile)**
+    /// WP-activity split wins: a 1024² 16-bit image in eight horizontal
+    /// bands of geometrically-increasing noise amplitude over a gentle
+    /// base, so the local-activity (property 15) distribution has eight
+    /// well-separated modes. The octile thresholds land between them, so
+    /// the deepest (depth-3, 15-node) split is selected — exercising the
+    /// v0.12.0i6 octile path end-to-end. Validated byte-exact through
+    /// **our decoder** and **`djxl`**; this is the regression that fails
+    /// if the 8-leaf heap layout or its `ctxOf` is wrong.
+    func testSpecModularEncoder_MultiContext_8Bin_MultiGroup_DjxlRoundTrip()
+        throws {
+        let w = 1024, h = 1024
+        var pixels = [UInt16](repeating: 0, count: w * h)
+        var seed: UInt32 = 0x9e37_79b9
+        for y in 0..<h {
+            let band = (y * 8) / h                 // 0..7
+            let amp = Int32(1 << (band + 1))       // 2,4,8,…,256
+            for x in 0..<w {
+                seed = seed &* 1103515245 &+ 12345
+                let noise = Int32(truncatingIfNeeded: seed) % amp
+                let base = Int32(2048 + ((x + y) & 0x01ff))
+                var v = base + noise
+                if v < 0 { v = 0 }
+                if v > 65535 { v = 65535 }
+                pixels[y * w + x] = UInt16(v)
+            }
+        }
+        let bytes = try SpecModularEncoder.encodeGrayscale16(
+            width: w, height: h, pixels: pixels)
+        // Our decoder: byte-exact.
+        let image = try JXLDecoder().decodeModular(bytes)
+        XCTAssertEqual(image.channels.count, 1, "expected 1 channel")
+        for i in 0..<(w * h) {
+            XCTAssertEqual(image.channels[0].pixels[i], Int32(pixels[i]),
+                "our-decoder pixel \(i)")
+        }
+        // djxl: byte-exact (16-bit big-endian PGM).
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("djxl not available at \(djxl)")
+        }
+        let tmp = NSTemporaryDirectory()
+        let inP = tmp + "jxlswift_8bin_mg.jxl"
+        let outP = tmp + "jxlswift_8bin_mg.pgm"
+        defer { try? FileManager.default.removeItem(atPath: inP)
+                try? FileManager.default.removeItem(atPath: outP) }
+        try bytes.write(to: URL(fileURLWithPath: inP))
+        let p = Process(); p.launchPath = djxl
+        p.arguments = [inP, outP]
+        let errPipe = Pipe()
+        p.standardOutput = Pipe(); p.standardError = errPipe
+        try p.run(); p.waitUntilExit()
+        let err = String(
+            data: errPipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8) ?? ""
+        XCTAssertEqual(p.terminationStatus, 0,
+            "djxl rejected our \(w)×\(h) 8-bin multi-group bytes; "
+            + "stderr: \(err)")
+        let pgm = try Data(contentsOf: URL(fileURLWithPath: outP))
+        var nl = 0, start = 0
+        for (i, b) in pgm.enumerated() where b == 0x0a {
+            nl += 1; if nl == 3 { start = i + 1; break }
+        }
+        for i in 0..<(w * h) {
+            let hi = UInt16(pgm[start + 2 * i])
+            let lo = UInt16(pgm[start + 2 * i + 1])
+            XCTAssertEqual((hi << 8) | lo, pixels[i],
+                "djxl 16-bit pixel \(i) mismatch")
+        }
+    }
+
     /// `encodeGrayscale16` round-trips arbitrary 16-bit grayscale
     /// content through our decoder. Covers a wide-amplitude ramp and
     /// LCG noise — the latter exercises the larger residual-token
@@ -14081,6 +14152,72 @@ extension FoundationTests {
                     "node \(i) leafId")
                 XCTAssertEqual(recovered.nodes[i].rawPredictor,
                     tree.nodes[i].rawPredictor, "node \(i) rawPredictor")
+            } else {
+                XCTAssertEqual(recovered.nodes[i].splitVal,
+                    tree.nodes[i].splitVal, "node \(i) splitVal")
+                XCTAssertEqual(recovered.nodes[i].leftChild,
+                    tree.nodes[i].leftChild, "node \(i) leftChild")
+                XCTAssertEqual(recovered.nodes[i].rightChild,
+                    tree.nodes[i].rightChild, "node \(i) rightChild")
+            }
+        }
+    }
+
+    /// `ModularTree.encode` round-trip for the depth-3 balanced **8-leaf
+    /// (15-node)** property-15 tree the v0.12.0i6 octile WP-activity split
+    /// emits. Pins the binary-heap layout (node `i` → children `2i+1`,
+    /// `2i+2`; leaves 0..7 at nodes 7..14) against the decoder's
+    /// level-order fill — every node must round-trip identically, and the
+    /// eight leaves must take leafIds 0..7 in encounter order so the
+    /// encoder's `ctxOf` lines up with the contexts the decoder assigns.
+    /// Extends the i3 4-leaf coverage one level deeper.
+    func testModularTree_Encode_Balanced8Leaf_RoundTrip() throws {
+        func dec(_ split: Int32, _ l: Int, _ r: Int) -> ModularTreeNode {
+            ModularTreeNode(
+                property: 15, splitVal: split,
+                leftChildOrLeafId: l, rightChild: r,
+                predictor: .gradient, predictorOffset: 0,
+                multiplier: 1, rawPredictor: 6)
+        }
+        func leaf(_ id: Int) -> ModularTreeNode {
+            ModularTreeNode(
+                property: -1, splitVal: 0,
+                leftChildOrLeafId: id, rightChild: 0,
+                predictor: .gradient, predictorOffset: 0,
+                multiplier: 1, rawPredictor: 6)
+        }
+        // t1..t7 = 1..7 placed in the helper's heap layout. Small split
+        // values keep every tree token inside the flat 16-symbol alphabet.
+        let tree = ModularTree(nodes: [
+            dec(4, 1, 2), dec(6, 3, 4), dec(2, 5, 6),
+            dec(7, 7, 8), dec(5, 9, 10), dec(3, 11, 12), dec(1, 13, 14),
+            leaf(0), leaf(1), leaf(2), leaf(3),
+            leaf(4), leaf(5), leaf(6), leaf(7),
+        ])
+        let cfg = HybridUintConfig(splitExponent: 0, msbInToken: 0, lsbInToken: 0)
+        let table = try PrefixCodeTable(lengths: Array(repeating: 4, count: 16))
+        let codebook = MultiClusterCodebook(
+            huffmanTables: [table], ansCounts: [], alphabetSizes: [16])
+        let header = EntropySectionHeader(
+            lz77: .disabled, contextMap: ContextMap.trivial(numContexts: 6),
+            usePrefixCode: true, logAlphaSize: 15, uintConfigs: [cfg])
+        var w = BitWriter()
+        let writer = TokenStreamWriter(header: header, codebook: codebook)
+        try tree.encode { ctx, val in
+            try writer.writeToken(context: ctx, value: val, to: &w)
+        }
+        var r = BitReader(w.finishToData())
+        var reader = TokenStreamReader(header: header, codebook: codebook)
+        let recovered = try ModularTree.decode(from: &r, stream: &reader)
+        XCTAssertEqual(recovered.nodes.count, 15)
+        for i in 0..<15 {
+            XCTAssertEqual(recovered.nodes[i].property, tree.nodes[i].property,
+                "node \(i) property")
+            XCTAssertEqual(recovered.nodes[i].isLeaf, tree.nodes[i].isLeaf,
+                "node \(i) isLeaf")
+            if tree.nodes[i].isLeaf {
+                XCTAssertEqual(recovered.nodes[i].leafId, tree.nodes[i].leafId,
+                    "node \(i) leafId")
             } else {
                 XCTAssertEqual(recovered.nodes[i].splitVal,
                     tree.nodes[i].splitVal, "node \(i) splitVal")

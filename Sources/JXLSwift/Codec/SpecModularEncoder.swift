@@ -771,6 +771,67 @@ public enum SpecModularEncoder {
         )
     }
 
+    /// Build a balanced property-15 (WP-error / local-activity) decision
+    /// tree for an N-bin activity split from sorted, strictly-increasing
+    /// thresholds: `thr.count` 1 → 2 bins, 3 → 4 bins, 7 → 8 bins.
+    /// Returns the leaf count, a per-pixel context map mirroring the tree
+    /// walk (property > split → leftChild), and the tree in the decoder's
+    /// level-order fill layout (standard binary-heap indices: node `i`'s
+    /// children at `2i+1`, `2i+2`). Leaf `k` = number of thresholds the
+    /// value is ≤ (0 = highest activity). All leaves use WP (rawPredictor
+    /// 6) since the property-15 split requires WP to be run. Returns `nil`
+    /// for an unsupported `thr.count`. Shared by the single-section and
+    /// multi-group multi-context paths so the layout lives in one place.
+    private static func activitySplitTree(thresholds thr: [Int32])
+        -> (n: Int, ctxOf: (Int32) -> Int, tree: ModularTree)? {
+        func leaf(_ id: Int) -> ModularTreeNode {
+            ModularTreeNode(property: -1, splitVal: 0,
+                leftChildOrLeafId: id, rightChild: 0,
+                predictor: .gradient, predictorOffset: 0,
+                multiplier: 1, rawPredictor: 6)
+        }
+        func dec(_ s: Int32, _ l: Int, _ r: Int) -> ModularTreeNode {
+            ModularTreeNode(property: 15, splitVal: s,
+                leftChildOrLeafId: l, rightChild: r,
+                predictor: .gradient, predictorOffset: 0,
+                multiplier: 1, rawPredictor: 6)
+        }
+        switch thr.count {
+        case 1:
+            let t = thr[0]
+            return (2, { $0 > t ? 0 : 1 },
+                    ModularTree(nodes: [dec(t, 1, 2), leaf(0), leaf(1)]))
+        case 3:
+            let q1 = thr[0], q2 = thr[1], q3 = thr[2]
+            return (4, { p in p > q2 ? (p > q3 ? 0 : 1) : (p > q1 ? 2 : 3) },
+                    ModularTree(nodes: [
+                        dec(q2, 1, 2), dec(q3, 3, 4), dec(q1, 5, 6),
+                        leaf(0), leaf(1), leaf(2), leaf(3)]))
+        case 7:
+            let t1 = thr[0], t2 = thr[1], t3 = thr[2], t4 = thr[3]
+            let t5 = thr[4], t6 = thr[5], t7 = thr[6]
+            // Depth-3 balanced BST over t1<…<t7. Root splits on the
+            // median t4; each subtree's decision threshold is its own
+            // sub-range median, so the heap-ordered walk lands on the
+            // right leaf for any value.
+            let nodes = [
+                dec(t4, 1, 2), dec(t6, 3, 4), dec(t2, 5, 6),
+                dec(t7, 7, 8), dec(t5, 9, 10), dec(t3, 11, 12), dec(t1, 13, 14),
+                leaf(0), leaf(1), leaf(2), leaf(3),
+                leaf(4), leaf(5), leaf(6), leaf(7)]
+            let ctxOf: (Int32) -> Int = { p in
+                if p > t4 {
+                    return p > t6 ? (p > t7 ? 0 : 1) : (p > t5 ? 2 : 3)
+                } else {
+                    return p > t2 ? (p > t3 ? 4 : 5) : (p > t1 ? 6 : 7)
+                }
+            }
+            return (8, ctxOf, ModularTree(nodes: nodes))
+        default:
+            return nil
+        }
+    }
+
     /// Multi-context candidate for the multi-group path — the analogue of
     /// `buildSingleSectionMultiContext`, but the property-15 WP-activity
     /// tree + per-context codebook live once in the DC-global section and
@@ -895,34 +956,8 @@ public enum SpecModularEncoder {
         // order); only the codebook lives globally. Huffman vs rANS for
         // that global codebook is cost-gated by assembling both fully.
         func buildForThresholds(_ thr: [Int32]) -> [Data]? {
-            func leafNode(_ id: Int) -> ModularTreeNode {
-                ModularTreeNode(property: -1, splitVal: 0,
-                    leftChildOrLeafId: id, rightChild: 0,
-                    predictor: .gradient, predictorOffset: 0,
-                    multiplier: 1, rawPredictor: 6)
-            }
-            func decNode(_ s: Int32, _ l: Int, _ r: Int) -> ModularTreeNode {
-                ModularTreeNode(property: 15, splitVal: s,
-                    leftChildOrLeafId: l, rightChild: r,
-                    predictor: .gradient, predictorOffset: 0,
-                    multiplier: 1, rawPredictor: 6)
-            }
-            let n: Int
-            let ctxOf: (Int32) -> Int
-            let nodes: [ModularTreeNode]
-            switch thr.count {
-            case 1:
-                let t = thr[0]; n = 2
-                ctxOf = { $0 > t ? 0 : 1 }
-                nodes = [decNode(t, 1, 2), leafNode(0), leafNode(1)]
-            case 3:
-                let q1 = thr[0], q2 = thr[1], q3 = thr[2]; n = 4
-                ctxOf = { p in p > q2 ? (p > q3 ? 0 : 1) : (p > q1 ? 2 : 3) }
-                nodes = [decNode(q2, 1, 2), decNode(q3, 3, 4), decNode(q1, 5, 6),
-                         leafNode(0), leafNode(1), leafNode(2), leafNode(3)]
-            default:
-                return nil
-            }
+            guard let (n, ctxOf, tree) =
+                activitySplitTree(thresholds: thr) else { return nil }
             // Per-context histograms pooled across all groups.
             var histo = [[Int]](
                 repeating: [Int](repeating: 0, count: postCfg.maxToken + 1),
@@ -941,7 +976,6 @@ public enum SpecModularEncoder {
             guard let ctxMap = try? ContextMap(
                 numClusters: n, map: (0..<n).map { UInt8($0) }) else { return nil }
             let cfgs = Array(repeating: postCfg, count: n)
-            let tree = ModularTree(nodes: nodes)
 
             var results: [[Data]] = []
             // Huffman candidate (one table per context).
@@ -995,12 +1029,19 @@ public enum SpecModularEncoder {
                 $0.reduce(0) { $0 + $1.count } < $1.reduce(0) { $0 + $1.count } })
         }
 
-        // Try a 2-bin (median) and a 4-bin (quartile) split; keep the
-        // smaller. The caller cost-gates the winner against single-context.
+        // Try 2-bin (median), 4-bin (quartile) and 8-bin (octile) splits;
+        // keep the smallest. The caller cost-gates the winner against
+        // single-context. Each split is only attempted when its thresholds
+        // are strictly increasing (else the tree is degenerate).
         var candidates: [[Data]] = []
         if let d = buildForThresholds([pct(0.5)]) { candidates.append(d) }
         let q1 = pct(0.25), q2 = pct(0.5), q3 = pct(0.75)
         if q1 < q2, q2 < q3, let d = buildForThresholds([q1, q2, q3]) {
+            candidates.append(d)
+        }
+        let oct = (1...7).map { pct(Double($0) / 8.0) }
+        if zip(oct, oct.dropFirst()).allSatisfy({ $0 < $1 }),
+           let d = buildForThresholds(oct) {
             candidates.append(d)
         }
         return candidates.min(by: {
@@ -1260,35 +1301,8 @@ public enum SpecModularEncoder {
         // fill layout; the per-pixel context mirrors the tree walk
         // (property > split → leftChild).
         func buildForThresholds(_ thr: [Int32]) -> Data? {
-            func leafNode(_ id: Int) -> ModularTreeNode {
-                ModularTreeNode(property: -1, splitVal: 0,
-                    leftChildOrLeafId: id, rightChild: 0,
-                    predictor: .gradient, predictorOffset: 0,
-                    multiplier: 1, rawPredictor: 6)
-            }
-            func decNode(_ s: Int32, _ l: Int, _ r: Int) -> ModularTreeNode {
-                ModularTreeNode(property: 15, splitVal: s,
-                    leftChildOrLeafId: l, rightChild: r,
-                    predictor: .gradient, predictorOffset: 0,
-                    multiplier: 1, rawPredictor: 6)
-            }
-            let n: Int
-            let ctxOf: (Int32) -> Int
-            let nodes: [ModularTreeNode]
-            switch thr.count {
-            case 1:
-                let t = thr[0]; n = 2
-                ctxOf = { $0 > t ? 0 : 1 }
-                nodes = [decNode(t, 1, 2), leafNode(0), leafNode(1)]
-            case 3:
-                let q1 = thr[0], q2 = thr[1], q3 = thr[2]; n = 4
-                // leafId = #thresholds the value is ≤ (0 = highest activity).
-                ctxOf = { p in p > q2 ? (p > q3 ? 0 : 1) : (p > q1 ? 2 : 3) }
-                nodes = [decNode(q2, 1, 2), decNode(q3, 3, 4), decNode(q1, 5, 6),
-                         leafNode(0), leafNode(1), leafNode(2), leafNode(3)]
-            default:
-                return nil
-            }
+            guard let (n, ctxOf, tree) =
+                activitySplitTree(thresholds: thr) else { return nil }
             var histo = [[Int]](
                 repeating: [Int](repeating: 0, count: postCfg.maxToken + 1),
                 count: n)
@@ -1376,7 +1390,6 @@ public enum SpecModularEncoder {
                 }
             }
             let (postHeader, postCodebook) = best
-            let tree = ModularTree(nodes: nodes)
             var sec = BitWriter()
             sec.writeBit(true)            // matrices_dc_default
             sec.writeBit(true)            // has_tree
@@ -1400,13 +1413,19 @@ public enum SpecModularEncoder {
             return sec.finishToData()
         }
 
-        // Try a 2-bin (median) and a 4-bin (quartile) WP-activity split;
-        // keep whichever is smaller. The caller cost-gates against the
-        // single-context section.
+        // Try 2-bin (median), 4-bin (quartile) and 8-bin (octile)
+        // WP-activity splits; keep whichever is smallest. The caller
+        // cost-gates against the single-context section. Each split is
+        // only attempted when its thresholds are strictly increasing.
         var candidates: [Data] = []
         if let d = buildForThresholds([pct(0.5)]) { candidates.append(d) }
         let q1 = pct(0.25), q2 = pct(0.5), q3 = pct(0.75)
         if q1 < q2, q2 < q3, let d = buildForThresholds([q1, q2, q3]) {
+            candidates.append(d)
+        }
+        let oct = (1...7).map { pct(Double($0) / 8.0) }
+        if zip(oct, oct.dropFirst()).allSatisfy({ $0 < $1 }),
+           let d = buildForThresholds(oct) {
             candidates.append(d)
         }
         return candidates.min(by: { $0.count < $1.count })
