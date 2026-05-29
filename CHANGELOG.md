@@ -11,6 +11,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0i13 — Lossless encode-effort knob (ratio ↔ speed)
+
+The lossless Modular encoder had grown to run *many* cost-gated
+candidates per image (single-context + activity 2/4/8 fixed+learned +
+greedy multi-property, on both single- and multi-group) — great for
+ratio (design priority #2) but costly in encode time, and **speed is
+design priority #1**. `EncodingEffort` (the existing 1–9 enum) now gates
+the candidates: **≤ 3** ships the single-context baseline only, **≥ 4**
+adds the activity split, **≥ 7** adds the greedy multi-property tree.
+Threaded through `buildSections` / `buildSingleSection`, the eight
+`encode*` entry points (default 9 = full), and `JXLEncoder` (passes
+`options.effort.rawValue`). The default (`.squirrel` = 7) is unchanged,
+so existing output is bit-for-bit identical; lower efforts trade ratio
+for speed and remain fully lossless. New
+`testSpecModularEncoder_EffortKnob_MonotonicAndLossless` (size monotonic
+in effort; every level byte-exact through our decoder + `djxl`).
+Full suite: 684 tests.
+
 ### v0.12.0i12 — Grayscale-with-alpha encode (2-channel)
 
 Fills the 2-channel gap between the 1-channel grayscale and 3/4-channel

@@ -333,7 +333,8 @@ public enum SpecModularEncoder {
     ///   - height: Image height (8..256, multiple of 8).
     ///   - pixels: Row-major pixel buffer of length `width * height`.
     public static func encodeGrayscale8(
-        width: Int, height: Int, pixels: [UInt8]
+        width: Int, height: Int, pixels: [UInt8],
+        effort: Int = 9
     ) throws -> Data {
         try validateSize(width: width, height: height)
         guard pixels.count == width * height else {
@@ -345,7 +346,7 @@ public enum SpecModularEncoder {
         let built = try buildSections(
             width: width, height: height,
             channels: [pixels.map { Int32($0) }],
-            sampleHi: 255
+            sampleHi: 255, effort: effort
         )
         return try writeOuterCodestream(
             width: width, height: height,
@@ -373,7 +374,8 @@ public enum SpecModularEncoder {
     public static func encodeGrayscale16(
         width: Int, height: Int,
         bitsPerSample: UInt32 = 16,
-        pixels: [UInt16]
+        pixels: [UInt16],
+        effort: Int = 9
     ) throws -> Data {
         try validateSize(width: width, height: height)
         try validateHighBitDepth(bitsPerSample)
@@ -387,7 +389,7 @@ public enum SpecModularEncoder {
         let built = try buildSections(
             width: width, height: height,
             channels: [pixels.map { Int32($0) }],
-            sampleHi: sampleHi
+            sampleHi: sampleHi, effort: effort
         )
         return try writeOuterCodestream(
             width: width, height: height,
@@ -409,7 +411,8 @@ public enum SpecModularEncoder {
     ///   - gray/alpha: Row-major `UInt8` buffers of length `width*height`.
     public static func encodeGrayscaleAlpha8(
         width: Int, height: Int,
-        gray: [UInt8], alpha: [UInt8]
+        gray: [UInt8], alpha: [UInt8],
+        effort: Int = 9
     ) throws -> Data {
         try validateSize(width: width, height: height)
         let n = width * height
@@ -427,7 +430,7 @@ public enum SpecModularEncoder {
         let built = try buildSections(
             width: width, height: height,
             channels: [gray, alpha].map { $0.map { Int32($0) } },
-            sampleHi: 255
+            sampleHi: 255, effort: effort
         )
         return try writeOuterCodestream(
             width: width, height: height,
@@ -449,7 +452,8 @@ public enum SpecModularEncoder {
     public static func encodeGrayscaleAlpha16(
         width: Int, height: Int,
         bitsPerSample: UInt32 = 16,
-        gray: [UInt16], alpha: [UInt16]
+        gray: [UInt16], alpha: [UInt16],
+        effort: Int = 9
     ) throws -> Data {
         try validateSize(width: width, height: height)
         try validateHighBitDepth(bitsPerSample)
@@ -471,7 +475,7 @@ public enum SpecModularEncoder {
         let built = try buildSections(
             width: width, height: height,
             channels: [gray, alpha].map { $0.map { Int32($0) } },
-            sampleHi: sampleHi
+            sampleHi: sampleHi, effort: effort
         )
         return try writeOuterCodestream(
             width: width, height: height,
@@ -493,7 +497,8 @@ public enum SpecModularEncoder {
     public static func encodeRGB16(
         width: Int, height: Int,
         bitsPerSample: UInt32 = 16,
-        r: [UInt16], g: [UInt16], b: [UInt16]
+        r: [UInt16], g: [UInt16], b: [UInt16],
+        effort: Int = 9
     ) throws -> Data {
         try validateSize(width: width, height: height)
         try validateHighBitDepth(bitsPerSample)
@@ -507,7 +512,7 @@ public enum SpecModularEncoder {
         let built = try buildSections(
             width: width, height: height,
             channels: [r, g, b].map { $0.map { Int32($0) } },
-            sampleHi: sampleHi
+            sampleHi: sampleHi, effort: effort
         )
         return try writeOuterCodestream(
             width: width, height: height,
@@ -521,7 +526,8 @@ public enum SpecModularEncoder {
     public static func encodeRGBA16(
         width: Int, height: Int,
         bitsPerSample: UInt32 = 16,
-        r: [UInt16], g: [UInt16], b: [UInt16], a: [UInt16]
+        r: [UInt16], g: [UInt16], b: [UInt16], a: [UInt16],
+        effort: Int = 9
     ) throws -> Data {
         try validateSize(width: width, height: height)
         try validateHighBitDepth(bitsPerSample)
@@ -547,7 +553,7 @@ public enum SpecModularEncoder {
         let built = try buildSections(
             width: width, height: height,
             channels: [r, g, b, a].map { $0.map { Int32($0) } },
-            sampleHi: sampleHi
+            sampleHi: sampleHi, effort: effort
         )
         return try writeOuterCodestream(
             width: width, height: height,
@@ -584,7 +590,8 @@ public enum SpecModularEncoder {
     ///     `width * height`.
     public static func encodeRGB8(
         width: Int, height: Int,
-        r: [UInt8], g: [UInt8], b: [UInt8]
+        r: [UInt8], g: [UInt8], b: [UInt8],
+        effort: Int = 9
     ) throws -> Data {
         try validateSize(width: width, height: height)
         let n = width * height
@@ -596,7 +603,7 @@ public enum SpecModularEncoder {
         let built = try buildSections(
             width: width, height: height,
             channels: [r, g, b].map { $0.map { Int32($0) } },
-            sampleHi: 255
+            sampleHi: 255, effort: effort
         )
         return try writeOuterCodestream(
             width: width, height: height,
@@ -617,7 +624,8 @@ public enum SpecModularEncoder {
     ///     height`. `a == 255` is fully opaque.
     public static func encodeRGBA8(
         width: Int, height: Int,
-        r: [UInt8], g: [UInt8], b: [UInt8], a: [UInt8]
+        r: [UInt8], g: [UInt8], b: [UInt8], a: [UInt8],
+        effort: Int = 9
     ) throws -> Data {
         try validateSize(width: width, height: height)
         let n = width * height
@@ -633,7 +641,7 @@ public enum SpecModularEncoder {
         let built = try buildSections(
             width: width, height: height,
             channels: [r, g, b, a].map { $0.map { Int32($0) } },
-            sampleHi: 255
+            sampleHi: 255, effort: effort
         )
         return try writeOuterCodestream(
             width: width, height: height,
@@ -662,7 +670,8 @@ public enum SpecModularEncoder {
     /// 255 for 8-bit, 65535 for 16-bit.
     private static func buildSections(
         width: Int, height: Int,
-        channels: [[Int32]], sampleHi: Int32
+        channels: [[Int32]], sampleHi: Int32,
+        effort: Int = 9
     ) throws -> EncodedSections {
         let groupSizeShift: UInt32 = 2
         let groupDim = 128 << Int(groupSizeShift)   // 512
@@ -680,7 +689,7 @@ public enum SpecModularEncoder {
         if numGroups == 1 {
             let sec0 = try buildSingleSection(
                 width: width, height: height,
-                channels: channels, sampleHi: sampleHi
+                channels: channels, sampleHi: sampleHi, effort: effort
             )
             return EncodedSections(
                 groupSizeShift: groupSizeShift, sections: [sec0]
@@ -844,7 +853,10 @@ public enum SpecModularEncoder {
         //    djxl-verified properties best separates residuals.
         func total(_ s: [Data]) -> Int { s.reduce(0) { $0 + $1.count } }
         var best = singleSections
-        if let multi = try? buildSectionsMultiContext(
+        // Effort gates the extra cost-gated candidates (each is a full
+        // encode): activity split at effort ≥ 4, greedy multi-property at
+        // effort ≥ 7. effort ≤ 3 ships the single-context baseline only.
+        if effort >= 4, let multi = try? buildSectionsMultiContext(
             width: width, height: height,
             channels: channels, sampleHi: sampleHi,
             numGroupsX: numGroupsX, numGroupsY: numGroupsY,
@@ -853,7 +865,7 @@ public enum SpecModularEncoder {
            total(multi) < total(best) {
             best = multi
         }
-        if let greedy = buildSectionsGreedyTree(
+        if effort >= 7, let greedy = buildSectionsGreedyTree(
             width: width, height: height,
             channels: channels, sampleHi: sampleHi,
             numGroupsX: numGroupsX, numGroupsY: numGroupsY,
@@ -1431,7 +1443,8 @@ public enum SpecModularEncoder {
     /// passed through for symmetry.
     private static func buildSingleSection(
         width: Int, height: Int,
-        channels: [[Int32]], sampleHi: Int32
+        channels: [[Int32]], sampleHi: Int32,
+        effort: Int = 9
     ) throws -> Data {
         let postCfg = HybridUintConfig.raw4
         // Cost-gate the predictor (ClampedGradient=5 vs Weighted
@@ -1527,19 +1540,19 @@ public enum SpecModularEncoder {
         }
         sec.alignToByte()
         // Candidates, smallest wins (all byte-exact through djxl):
-        //  • single-context (above),
-        //  • activity split — property-15 WP-activity bins (fixed + learned),
-        //  • greedy multi-property MA-tree — branches on whichever of the
-        //    12 neighbour-derived properties best separates residuals.
-        // Each is cost-gated by actual section bytes; cheap to skip.
+        //  • single-context (above) — always,
+        //  • activity split — property-15 WP-activity bins (effort ≥ 4),
+        //  • greedy multi-property MA-tree (effort ≥ 7).
+        // The extra candidates are full encodes, so `effort` gates them;
+        // each is cost-gated by actual section bytes.
         var best = sec.finishToData()
-        if let multiData = try? buildSingleSectionMultiContext(
+        if effort >= 4, let multiData = try? buildSingleSectionMultiContext(
             width: width, height: height,
             channels: channels, sampleHi: sampleHi),
            multiData.count < best.count {
             best = multiData
         }
-        if let greedyData = buildSingleSectionGreedyTree(
+        if effort >= 7, let greedyData = buildSingleSectionGreedyTree(
             width: width, height: height,
             channels: channels, sampleHi: sampleHi),
            greedyData.count < best.count {

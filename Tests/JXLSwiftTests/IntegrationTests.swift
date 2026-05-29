@@ -14433,6 +14433,84 @@ extension FoundationTests {
         }
     }
 
+    /// Encode-effort knob: `effort` gates the cost-gated candidates
+    /// (≤3 single-context, ≥4 + activity split, ≥7 + greedy multi-property)
+    /// so callers can trade ratio for encode speed (design priority #1).
+    /// On a 512² 16-bit image structured to benefit from multi-context,
+    /// output is **monotonic non-increasing** in effort and the low-effort
+    /// result is strictly larger than the full-effort one (the gating has
+    /// an effect). **Every** effort level is still lossless: validated
+    /// byte-exact through our decoder at 1/4/9 and through `djxl` at the
+    /// extremes (1 and 9).
+    func testSpecModularEncoder_EffortKnob_MonotonicAndLossless() throws {
+        let w = 512, h = 512
+        var pixels = [UInt16](repeating: 0, count: w * h)
+        var seed: UInt32 = 0x4d2e_88a1
+        let amp: [Int32] = [2, 24, 160, 1024]
+        for y in 0..<h {
+            for x in 0..<w {
+                let gr = y / 128, gc = x / 128
+                let lx = Int32(x % 128), ly = Int32(y % 128)
+                seed = seed &* 1103515245 &+ 12345
+                let noise = Int32(truncatingIfNeeded: seed) % amp[gr]
+                var dir: Int32 = 0
+                if gc == 1 { dir = lx } else if gc == 2 { dir = ly }
+                else if gc == 3 { dir = lx + ly }
+                var v = Int32(8192) + dir + noise
+                if v < 0 { v = 0 }; if v > 65535 { v = 65535 }
+                pixels[y * w + x] = UInt16(v)
+            }
+        }
+        func enc(_ e: Int) throws -> Data {
+            try SpecModularEncoder.encodeGrayscale16(
+                width: w, height: h, pixels: pixels, effort: e)
+        }
+        let e1 = try enc(1), e4 = try enc(4), e9 = try enc(9)
+        // Monotonic non-increasing (higher effort tries a superset of
+        // cost-gated candidates, so it can only match or beat).
+        XCTAssertGreaterThanOrEqual(e1.count, e4.count, "effort 1 vs 4")
+        XCTAssertGreaterThanOrEqual(e4.count, e9.count, "effort 4 vs 9")
+        // The knob actually does something on this content.
+        XCTAssertGreaterThan(e1.count, e9.count,
+            "low effort (\(e1.count) B) should exceed full effort "
+            + "(\(e9.count) B)")
+        // Every effort is lossless (our decoder, byte-exact).
+        for (e, data) in [(1, e1), (4, e4), (9, e9)] {
+            let img = try JXLDecoder().decodeModular(data)
+            for i in 0..<(w * h) {
+                XCTAssertEqual(img.channels[0].pixels[i], Int32(pixels[i]),
+                    "effort \(e) our-decoder pixel \(i)")
+            }
+        }
+        // djxl byte-exact at the extremes.
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("djxl not available at \(djxl)")
+        }
+        let tmp = NSTemporaryDirectory()
+        for (e, data) in [(1, e1), (9, e9)] {
+            let inP = tmp + "jxlswift_eff\(e).jxl"
+            let outP = tmp + "jxlswift_eff\(e).pgm"
+            defer { try? FileManager.default.removeItem(atPath: inP)
+                    try? FileManager.default.removeItem(atPath: outP) }
+            try data.write(to: URL(fileURLWithPath: inP))
+            let p = Process(); p.launchPath = djxl
+            p.arguments = [inP, outP]
+            p.standardOutput = Pipe(); p.standardError = Pipe()
+            try p.run(); p.waitUntilExit()
+            XCTAssertEqual(p.terminationStatus, 0, "djxl rejected effort \(e)")
+            let pgm = try Data(contentsOf: URL(fileURLWithPath: outP))
+            var nl = 0, start = 0
+            for (i, b) in pgm.enumerated() where b == 0x0a {
+                nl += 1; if nl == 3 { start = i + 1; break }
+            }
+            for i in 0..<(w * h) {
+                let v = (UInt16(pgm[start + 2 * i]) << 8) | UInt16(pgm[start + 2 * i + 1])
+                XCTAssertEqual(v, pixels[i], "effort \(e) djxl pixel \(i)")
+            }
+        }
+    }
+
     /// `encodeGrayscaleAlpha16` — the 2-channel (luma + alpha) gap
     /// between the 1-channel grayscale and 3/4-channel RGB(A) encoders.
     /// Validated byte-exact through **our decoder** (2 channels) and

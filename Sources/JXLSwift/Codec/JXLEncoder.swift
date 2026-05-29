@@ -141,7 +141,7 @@ public struct JXLEncoder: Sendable {
             bytes = try wrapModular {
                 try SpecModularEncoder.encodeGrayscale8(
                     width: frame.width, height: frame.height,
-                    pixels: frame.data
+                    pixels: frame.data, effort: options.effort.rawValue
                 )
             }
         case (.uint16, 1, 0):
@@ -149,7 +149,7 @@ public struct JXLEncoder: Sendable {
             bytes = try wrapModular {
                 try SpecModularEncoder.encodeGrayscale16(
                     width: frame.width, height: frame.height,
-                    pixels: pixels
+                    pixels: pixels, effort: options.effort.rawValue
                 )
             }
         case (.uint8, 3, 0):
@@ -157,7 +157,7 @@ public struct JXLEncoder: Sendable {
             bytes = try wrapModular {
                 try SpecModularEncoder.encodeRGB8(
                     width: frame.width, height: frame.height,
-                    r: r, g: g, b: b
+                    r: r, g: g, b: b, effort: options.effort.rawValue
                 )
             }
         case (.uint16, 3, 0):
@@ -167,7 +167,7 @@ public struct JXLEncoder: Sendable {
             bytes = try wrapModular {
                 try SpecModularEncoder.encodeRGB16(
                     width: frame.width, height: frame.height,
-                    r: r, g: g, b: b
+                    r: r, g: g, b: b, effort: options.effort.rawValue
                 )
             }
         case (.uint8, 4, 1):
@@ -175,7 +175,7 @@ public struct JXLEncoder: Sendable {
             bytes = try wrapModular {
                 try SpecModularEncoder.encodeRGBA8(
                     width: frame.width, height: frame.height,
-                    r: r, g: g, b: b, a: a
+                    r: r, g: g, b: b, a: a, effort: options.effort.rawValue
                 )
             }
         case (.uint16, 4, 1):
@@ -186,7 +186,7 @@ public struct JXLEncoder: Sendable {
             bytes = try wrapModular {
                 try SpecModularEncoder.encodeRGBA16(
                     width: frame.width, height: frame.height,
-                    r: r, g: g, b: b, a: a
+                    r: r, g: g, b: b, a: a, effort: options.effort.rawValue
                 )
             }
         default:
