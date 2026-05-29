@@ -718,7 +718,8 @@ public enum VarDCTBitstreamWriter {
     static func writeModularTreeSection(
         to w: inout BitWriter,
         postHeader: EntropySectionHeader,
-        postCodebook: MultiClusterCodebook
+        postCodebook: MultiClusterCodebook,
+        useWP: Bool = false
     ) throws {
         let treeUintCfg = HybridUintConfig(
             splitExponent: 0, msbInToken: 0, lsbInToken: 0)
@@ -734,13 +735,17 @@ public enum VarDCTBitstreamWriter {
             uintConfigs: [treeUintCfg])
         try treeHeader.write(to: &w, numContexts: 6)
         try treeCodebook.write(to: &w, header: treeHeader)
+        // Single-leaf tree. rawPredictor 5 = ClampedGradient, 6 =
+        // Weighted Predictor; the decoder dispatches on rawPredictor
+        // (the `predictor` enum field is unused on the wire, as the
+        // enum has no WP case).
         let tree = ModularTree(nodes: [
             ModularTreeNode(
                 property: -1, splitVal: 0,
                 leftChildOrLeafId: 0, rightChild: 0,
                 predictor: .gradient,
                 predictorOffset: 0, multiplier: 1,
-                rawPredictor: 5),
+                rawPredictor: useWP ? 6 : 5),
         ])
         let treeWriter = TokenStreamWriter(
             header: treeHeader, codebook: treeCodebook)
@@ -912,6 +917,7 @@ public enum VarDCTBitstreamWriter {
         state: JXLBridgeEncoderState,
         postHeader: EntropySectionHeader,
         postCodebook: MultiClusterCodebook,
+        useWP: Bool = false,
         to w: inout BitWriter
     ) throws {
         // 1. DequantMatricesDC — custom values per JXL channel.
@@ -991,7 +997,7 @@ public enum VarDCTBitstreamWriter {
         // available to the DC group section's `TokenStreamWriter`.
         try writeModularTreeSection(
             to: &w, postHeader: postHeader,
-            postCodebook: postCodebook)
+            postCodebook: postCodebook, useWP: useWP)
         // 6. No gi modular sub-image (bridge frames have no alpha).
     }
 
@@ -1033,9 +1039,9 @@ public enum VarDCTBitstreamWriter {
     /// per libjxl `AddVarDCTDC`'s XOR remap; our `dcPerChannel` is in
     /// [X, Y, B] remap order, so we iterate [1, 0, 2]. (v0.12.0fx/ft.)
     static func generateBridgeDCGroupTokens(
-        state: JXLBridgeEncoderState
+        state: JXLBridgeEncoderState,
+        useWP: Bool = false
     ) -> (dc: [UInt32], acMetaZeros: Int) {
-        let predictor: Predictor = .gradient
         let dcChannelOrder: [Int] = state.planes.channelCount == 3
             ? [1, 0, 2] : Array(0..<state.planes.channelCount)
         var dc: [UInt32] = []
@@ -1044,11 +1050,36 @@ public enum VarDCTBitstreamWriter {
             let cbx = state.planes.blocksPerChannel[ch].blocksX
             let cby = state.planes.blocksPerChannel[ch].blocksY
             dc.reserveCapacity(dc.count + cbx * cby)
+            // WP path: stateful per-channel weighted predictor (libjxl
+            // predictor 6). Reuses the exact `WeightedPredictor` struct
+            // the decoder runs, with `Neighbourhood`'s edge rules (which
+            // match the decoder's WP neighbour fall-backs), so encode and
+            // decode agree by construction. ClampedGradient (predictor 5)
+            // systematically under-predicts monotonic gradients — it caps
+            // at max(W, N) — whereas WP adapts.
+            if useWP {
+                var wp = WeightedPredictor(header: .default, xsize: max(1, cbx))
+                for by in 0..<cby {
+                    for bx in 0..<cbx {
+                        let nbh = Neighbourhood(
+                            at: bx, by, in: plane, width: cbx)
+                        let wpPred = wp.predict(
+                            x: bx, y: by, xsize: cbx,
+                            n: nbh.n, w: nbh.w,
+                            ne: nbh.ne, nw: nbh.nw, nn: nbh.nn)
+                        let actual = plane[by * cbx + bx]
+                        dc.append(ZigZag.pack(actual &- wpPred))
+                        wp.update(actual: actual, x: bx, y: by, xsize: cbx)
+                    }
+                }
+                continue
+            }
+            // ClampedGradient path (libjxl predictor 5).
             for by in 0..<cby {
                 for bx in 0..<cbx {
                     let nbh = Neighbourhood(
                         at: bx, by, in: plane, width: cbx)
-                    let pred = predictor.apply(to: nbh)
+                    let pred = Predictor.gradient.apply(to: nbh)
                     let residual = plane[by * cbx + bx] &- pred
                     dc.append(ZigZag.pack(residual))
                 }
@@ -1098,13 +1129,15 @@ public enum VarDCTBitstreamWriter {
         return w.bitCount
     }
 
-    static func buildBridgePostCodebook(
-        state: JXLBridgeEncoderState
-    ) throws -> (EntropySectionHeader, MultiClusterCodebook) {
-        let cfg = HybridUintConfig.raw4
-        let (dcVals, acMetaZeros) = generateBridgeDCGroupTokens(state: state)
-        // Pool the DC residuals + ACMetadata zeros into one histogram
-        // (both sub-images share the single-leaf tree → context 0).
+    /// Build the best (Huffman-or-rANS) post codebook for one DC-token
+    /// set, returning the chosen `(header, codebook)` and its measured
+    /// section bit cost. Shared by `buildBridgePostCodebook`'s gradient
+    /// and WP passes.
+    private static func bestBridgePostCandidate(
+        dcVals: [UInt32], acMetaZeros: Int, cfg: HybridUintConfig
+    ) throws -> (EntropySectionHeader, MultiClusterCodebook, Int) {
+        // Pool DC residuals + ACMetadata zeros into one histogram (both
+        // sub-images share the single-leaf tree → context 0).
         var histo = [Int](repeating: 0, count: cfg.maxToken + 1)
         var maxTok = 0
         for v in dcVals {
@@ -1113,16 +1146,11 @@ public enum VarDCTBitstreamWriter {
             if t > maxTok { maxTok = t }
         }
         histo[0] += acMetaZeros          // ACMetadata is all zeros.
-        // Canonical-Huffman builder is undefined for a 1-symbol
-        // alphabet; pad to at least 2.
         var alphabet = maxTok + 1
         var counts = Array(histo[0..<alphabet])
-        if alphabet < 2 {
-            alphabet = 2
-            counts.append(1)
-        }
+        if alphabet < 2 { alphabet = 2; counts.append(1) }
 
-        // --- Candidate A: single-cluster prefix (Huffman) -----------
+        // Candidate A: single-cluster prefix (Huffman).
         let lengths = lengthLimitedCanonicalHuffman(
             counts: counts, maxLength: 15, alphabetSize: alphabet)
         let huffTable = try PrefixCodeTable(lengths: lengths)
@@ -1132,15 +1160,9 @@ public enum VarDCTBitstreamWriter {
         let huffHeader = EntropySectionHeader(
             lz77: .disabled,
             contextMap: ContextMap.trivial(numContexts: 1),
-            usePrefixCode: true, logAlphaSize: 15,
-            uintConfigs: [cfg])
+            usePrefixCode: true, logAlphaSize: 15, uintConfigs: [cfg])
 
-        // --- Candidate B: single-cluster rANS -----------------------
-        // Removes Huffman's ≥1 bit/symbol floor — decisive for the
-        // bridge's all-zero ACMetadata (≈ 6 × blockCount tokens) and the
-        // skewed DC-residual distribution. The frequency table is the
-        // on-wire quantised distribution so the encoder's alias tables
-        // match what the decoder reconstructs.
+        // Candidate B: single-cluster rANS (on-wire quantised dist).
         var ansCandidate: (EntropySectionHeader, MultiClusterCodebook)?
         do {
             let dist = try ANSDistribution(
@@ -1150,41 +1172,60 @@ public enum VarDCTBitstreamWriter {
             let wire = try SpecANSDistribution.writeHistogram(
                 normalised, to: &scratch)
             var logAlpha = 5
-            while (1 << logAlpha) < wire.count && logAlpha < 8 {
-                logAlpha += 1
-            }
+            while (1 << logAlpha) < wire.count && logAlpha < 8 { logAlpha += 1 }
             if wire.count <= (1 << logAlpha) {
-                let ansCodebook = MultiClusterCodebook(
-                    huffmanTables: [], ansCounts: [wire],
-                    alphabetSizes: [wire.count])
-                let ansHeader = EntropySectionHeader(
-                    lz77: .disabled,
-                    contextMap: ContextMap.trivial(numContexts: 1),
-                    usePrefixCode: false, logAlphaSize: logAlpha,
-                    uintConfigs: [cfg])
-                ansCandidate = (ansHeader, ansCodebook)
+                ansCandidate = (
+                    EntropySectionHeader(
+                        lz77: .disabled,
+                        contextMap: ContextMap.trivial(numContexts: 1),
+                        usePrefixCode: false, logAlphaSize: logAlpha,
+                        uintConfigs: [cfg]),
+                    MultiClusterCodebook(
+                        huffmanTables: [], ansCounts: [wire],
+                        alphabetSizes: [wire.count]))
             }
-        } catch {
-            ansCandidate = nil
-        }
+        } catch { ansCandidate = nil }
 
-        // --- Pick the smaller by actually encoding both -------------
-        guard let cand = ansCandidate else {
-            return (huffHeader, huffCodebook)
-        }
         let huffBits = (try? estimateBridgePostSectionBits(
             header: huffHeader, codebook: huffCodebook,
             dc: dcVals, acMetaZeros: acMetaZeros)) ?? Int.max
+        guard let cand = ansCandidate else {
+            return (huffHeader, huffCodebook, huffBits)
+        }
         let ansBits = (try? estimateBridgePostSectionBits(
             header: cand.0, codebook: cand.1,
             dc: dcVals, acMetaZeros: acMetaZeros)) ?? Int.max
+        return ansBits < huffBits
+            ? (cand.0, cand.1, ansBits)
+            : (huffHeader, huffCodebook, huffBits)
+    }
+
+    /// Build the post (DC + ACMetadata) codebook the bridge's LfGlobal +
+    /// DC group share, picking both the **DC predictor** (ClampedGradient
+    /// vs the adaptive Weighted Predictor) and the entropy coder
+    /// (Huffman vs rANS) by actually encoding each and keeping the
+    /// smallest. WP adapts to local structure where ClampedGradient
+    /// systematically under-predicts (it caps at max(W, N)), so it wins
+    /// on smooth / natural DC; the returned `useWP` flag is threaded to
+    /// the LfGlobal tree (rawPredictor 5 vs 6) and the DC-group writer.
+    static func buildBridgePostCodebook(
+        state: JXLBridgeEncoderState
+    ) throws -> (EntropySectionHeader, MultiClusterCodebook, Bool) {
+        let cfg = HybridUintConfig.raw4
+        let grad = generateBridgeDCGroupTokens(state: state, useWP: false)
+        let gradBest = try bestBridgePostCandidate(
+            dcVals: grad.dc, acMetaZeros: grad.acMetaZeros, cfg: cfg)
+        let wpTokens = generateBridgeDCGroupTokens(state: state, useWP: true)
+        let wpBest = try bestBridgePostCandidate(
+            dcVals: wpTokens.dc, acMetaZeros: wpTokens.acMetaZeros, cfg: cfg)
+        let useWP = wpBest.2 < gradBest.2
         if ProcessInfo.processInfo.environment["JXL_TRACE"] != nil {
             FileHandle.standardError.write(Data(
-                ("TRACE bridge post (DC/ACMeta) entropy: huffman="
-                 + "\(huffBits)b ans=\(ansBits)b → "
-                 + "\(ansBits < huffBits ? "ANS" : "Huffman")\n").utf8))
+                ("TRACE bridge post (DC/ACMeta): gradient=\(gradBest.2)b "
+                 + "wp=\(wpBest.2)b → \(useWP ? "WP" : "Gradient")\n").utf8))
         }
-        return ansBits < huffBits ? cand : (huffHeader, huffCodebook)
+        let chosen = useWP ? wpBest : gradBest
+        return (chosen.0, chosen.1, useWP)
     }
 
     /// Build the AC codebook the bridge's HfGlobal + ACGroup share.
@@ -1544,6 +1585,7 @@ public enum VarDCTBitstreamWriter {
         state: JXLBridgeEncoderState,
         postHeader: EntropySectionHeader,
         postCodebook: MultiClusterCodebook,
+        useWP: Bool = false,
         to w: inout BitWriter
     ) throws {
         // DC residual + ACMetadata tokens (the single source of truth
@@ -1552,7 +1594,8 @@ public enum VarDCTBitstreamWriter {
         // `postHeader.usePrefixCode` picks Huffman (inline bits) vs rANS
         // (a fresh interleaved stream per sub-image, matching the
         // decoder's two separate `TokenStreamReader`s).
-        let (dcVals, acMetaZeros) = generateBridgeDCGroupTokens(state: state)
+        let (dcVals, acMetaZeros) = generateBridgeDCGroupTokens(
+            state: state, useWP: useWP)
         let blockCount = state.planes.blocksX * state.planes.blocksY
 
         // 1. dc_extra_precision = 0 (2 bits).

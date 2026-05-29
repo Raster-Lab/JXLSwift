@@ -165,12 +165,13 @@ public enum JXLBridgeEncoder {
 
         let postHeader: EntropySectionHeader
         let postCodebook: MultiClusterCodebook
+        let postUseWP: Bool
         let acHeader: EntropySectionHeader
         let acCodebook: MultiClusterCodebook
         let acContexts: Int
         let bctx = BlockCtxMap()
         do {
-            (postHeader, postCodebook) =
+            (postHeader, postCodebook, postUseWP) =
                 try VarDCTBitstreamWriter.buildBridgePostCodebook(
                     state: state)
             // Build the AC codebook over ALL groups' tokens (the codebook
@@ -203,10 +204,12 @@ public enum JXLBridgeEncoder {
             do {
                 try VarDCTBitstreamWriter.writeBridgeLfGlobal(
                     state: state, postHeader: postHeader,
-                    postCodebook: postCodebook, to: &combined)
+                    postCodebook: postCodebook, useWP: postUseWP,
+                    to: &combined)
                 try VarDCTBitstreamWriter.writeBridgeDCGroup(
                     state: state, postHeader: postHeader,
-                    postCodebook: postCodebook, to: &combined)
+                    postCodebook: postCodebook, useWP: postUseWP,
+                    to: &combined)
                 try VarDCTBitstreamWriter.writeBridgeHfGlobal(
                     state: state,
                     rawSlotOverrides: [0: state.rawQuantPayload],
@@ -247,14 +250,14 @@ public enum JXLBridgeEncoder {
                 var lfW = BitWriter()
                 try VarDCTBitstreamWriter.writeBridgeLfGlobal(
                     state: state, postHeader: postHeader,
-                    postCodebook: postCodebook, to: &lfW)
+                    postCodebook: postCodebook, useWP: postUseWP, to: &lfW)
                 lfW.alignToByte()
                 sections.append(lfW.finishToData())
 
                 var dcW = BitWriter()
                 try VarDCTBitstreamWriter.writeBridgeDCGroup(
                     state: state, postHeader: postHeader,
-                    postCodebook: postCodebook, to: &dcW)
+                    postCodebook: postCodebook, useWP: postUseWP, to: &dcW)
                 dcW.alignToByte()
                 sections.append(dcW.finishToData())
 

@@ -4208,9 +4208,9 @@ final class JPEGFoundationTests: XCTestCase {
                 tableId: 0, precision: .bits8,
                 zigZagValues: Array(repeating: 1, count: 64))])
         let state = try JXLBridgeEncoder.prepareFromJPEG(img)
-        let (header, codebook) = try VarDCTBitstreamWriter
+        let (header, codebook, _) = try VarDCTBitstreamWriter
             .buildBridgePostCodebook(state: state)
-        // Single context, single Huffman cluster.
+        // Single context, single cluster (Huffman or rANS — cost-gated).
         XCTAssertEqual(header.contextMap.numContexts, 1)
         XCTAssertEqual(codebook.alphabetSizes.count, 1)
         // Alphabet must cover token 0 (the ACMetadata zeros + the
@@ -4269,12 +4269,12 @@ final class JPEGFoundationTests: XCTestCase {
         let img = bridgeParamsFixture()
         let state = try JXLBridgeEncoder.prepareFromJPEG(
             img, colorTransform: .ycbcr)
-        let (postHeader, postCodebook) = try VarDCTBitstreamWriter
+        let (postHeader, postCodebook, postUseWP) = try VarDCTBitstreamWriter
             .buildBridgePostCodebook(state: state)
         var w = BitWriter()
         try VarDCTBitstreamWriter.writeBridgeLfGlobal(
             state: state, postHeader: postHeader,
-            postCodebook: postCodebook, to: &w)
+            postCodebook: postCodebook, useWP: postUseWP, to: &w)
         let bytes = w.finishToData()
         XCTAssertGreaterThan(bytes.count, 0)
         // Parse: DequantMatricesDC + QuantizerParams +
@@ -4341,12 +4341,12 @@ final class JPEGFoundationTests: XCTestCase {
             quantTables: [qt])
         let state = try JXLBridgeEncoder.prepareFromJPEG(
             img, colorTransform: .ycbcr)
-        let (postHeader, postCodebook) = try VarDCTBitstreamWriter
+        let (postHeader, postCodebook, postUseWP) = try VarDCTBitstreamWriter
             .buildBridgePostCodebook(state: state)
         var w = BitWriter()
         try VarDCTBitstreamWriter.writeBridgeLfGlobal(
             state: state, postHeader: postHeader,
-            postCodebook: postCodebook, to: &w)
+            postCodebook: postCodebook, useWP: postUseWP, to: &w)
         var r = BitReader(w.finishToData())
         _ = try DequantMatricesDC.read(from: &r)
         let qp = try QuantizerParams.read(from: &r)
