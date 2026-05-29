@@ -11,6 +11,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0hu — DC / ACMetadata modular sections → rANS — big low-AC win
+
+The DC group — gradient-predicted DC residuals + all-zero ACMetadata — was
+Huffman-coded and **dominated low-AC files**: a smooth 512² was ~10 KB DC
+vs ~0.5 KB AC. rANS removes Huffman's ≥1 bit/symbol floor, decisive for the
+~6 × blockCount all-zero ACMetadata tokens and the skewed DC distribution.
+
+| (vs cjxl) | ours before | ours after | cjxl | ratio |
+|---|---|---|---|---|
+| smooth 512² 4:4:4 | 11 541 B | **6 837 B** | 4 764 B | 2.42× → 1.44× |
+| smooth 512² 4:2:0 | 8 650 B | **4 756 B** | 3 395 B | 2.55× → 1.40× |
+| 256² 4:2:0 (real) | 29 529 B | **28 358 B** | 27 221 B | 1.085× → **1.042×** |
+| 512² 4:4:4 noisy | 67 031 B | **63 112 B** | 55 685 B | 1.20× → 1.13× |
+
+All reverse + `djxl` byte-identical.
+
+- `buildBridgePostCodebook` builds a Huffman **and** an rANS candidate and
+  keeps the smaller by actually encoding both
+  (`estimateBridgePostSectionBits`).
+- The DC residual + ACMetadata token pass is extracted into one shared
+  `generateBridgeDCGroupTokens` so the codebook builder and the writer
+  can't diverge token-for-token.
+- `writeBridgeDCGroup` branches on the chosen header's `usePrefixCode`:
+  Huffman writes inline; rANS writes the DC and ACMetadata as **two
+  separate fresh interleaved streams**, mirroring the decoder's two
+  `TokenStreamReader`s (they share the single-context post codebook). The
+  1-leaf MA tree and its tree codebook are unchanged.
+
+New `testEndToEnd_DCMetadataRANS_SmoothImage_ByteIdentical` locks in the
+DC-dominated path (single + multi-group). Full suite: 668 tests, 7 skipped,
+0 failures.
+
 ### v0.12.0ht — Forward bridge multi-AC-group support (> 256-px images)
 
 The forward bridge assembly hardcoded a single combined section + a
