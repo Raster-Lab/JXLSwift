@@ -233,8 +233,10 @@ public enum SpecModularEncoder {
         let sec0Data = sec.finishToData()
         let sec0Bytes = sec0Data.count
 
-        // 2. Build the outer codestream.
-        var w = BitWriter()
+        // 2. Build the outer codestream. Reserve ~the section size + a small
+        // header margin so the byte buffer doesn't repeatedly geometric-grow
+        // (semantically identical — reservation never changes emitted bytes).
+        var w = BitWriter(reservingBytes: sec0Bytes + 4096)
         // Signature 0xFF 0x0A.
         w.write(bits: 8, value: 0xFF)
         w.write(bits: 8, value: 0x0A)

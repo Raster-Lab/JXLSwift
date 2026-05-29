@@ -335,9 +335,12 @@ This is a distinguishing feature of JPEG XL and a stated project requirement. Th
 
 These are added once a corresponding scalar Swift path is correct. The scalar path is always the source of truth — vectorised paths must produce identical results.
 
-**Baseline + hot-path analysis (v0.13.0-dev, Apple Silicon arm64, release).** Measured via
-`scripts/benchmark-lossless.sh` (own throughput only; no codec comparison per the legal-exposure
-rule). On a natural 834×244 RGB image, lossless **decode** is ~1 Mpx/s and effort-independent;
+**Baseline + hot-path analysis (Apple Silicon arm64, release).** Full write-up in
+[Documentation/PERFORMANCE-ANALYSIS.md](Documentation/PERFORMANCE-ANALYSIS.md) — including the
+key finding that the codec is **entropy-coding + allocation bound** (vectorisable arithmetic is
+< 5 % of runtime, so SIMD has limited end-to-end leverage) and the prioritised optimisation
+roadmap. Measured via `scripts/benchmark-lossless.sh` (own throughput only; no codec comparison
+per the legal-exposure rule). On a natural 834×244 RGB image, lossless **decode** is ~1 Mpx/s and effort-independent;
 lossless **encode** climbs steeply with effort (≈0.4 Mpx/s at effort 3 → a few Mpx-seconds at
 effort 7–9) while the **ratio plateaus around effort 5** for natural content (efforts 5/7/9 here
 all land at 49.0%). The dominant encode cost is the high-effort **cost-gated MA-tree search**

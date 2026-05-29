@@ -1,50 +1,65 @@
 // BitWriter — LSB-first bit writer for JPEG XL bitstreams.
 //
-// Mirror of `BitReader`. Buffers a `Data` object; the producer pushes
-// values via `write(bits:value:)` and finalises with `finishToData()`
-// (or `flushByte()` if intermediate access is needed).
+// Mirror of `BitReader`. Buffers a `[UInt8]`; the producer pushes values via
+// `write(bits:value:)` and finalises with `finishToData()`.
 //
-// Spec: ISO/IEC 18181-1 §2.4. Each call appends `count` low-order bits
-// of `value`, with the LSB of the new value placed in the next free bit
-// of the current byte. Bits past the topmost in `value` are discarded.
+// Spec: ISO/IEC 18181-1 §2.4. Each call appends `count` low-order bits of
+// `value`, with the LSB of the new value placed in the next free bit of the
+// current byte. Bits past the topmost in `value` are discarded.
+//
+// **Implementation (v0.13.0):** a 64-bit accumulator. New bits are OR'd into
+// `acc` at the current sub-byte offset; complete bytes are flushed to `bytes`
+// in a tight loop. This avoids the per-bit-chunk `append` + bounds-checked
+// subscript of the previous implementation while emitting the **identical**
+// byte stream — the only state that differs is that the in-progress partial
+// byte lives in `acc` (not yet in `bytes`) until a byte completes or the
+// writer is aligned/finalised. `bitCount` and `partial` are preserved exactly,
+// so the cost-gating that measures candidate sizes via `bitCount` is
+// unaffected. (No caller reads `bytes` mid-stream.)
 
 import Foundation
 
 /// Bitwise writer producing a byte-aligned `Data` payload.
 public struct BitWriter: Sendable {
+    /// Completed bytes. The in-progress partial byte (if any) is held in `acc`
+    /// until it fills or the writer is aligned/finalised.
     public private(set) var bytes: [UInt8] = []
-    /// Bits already written *into* the current incomplete byte (0..<8).
-    /// `bytes.last` is the in-progress byte when `partial > 0`.
-    public private(set) var partial: Int = 0
+    /// Pending bits: the low `accBits` bits of `acc`, LSB-first.
+    private var acc: UInt64 = 0
+    /// Number of valid pending bits in `acc` (kept in 0..<8 after each call).
+    private var accBits: Int = 0
 
     public init() {}
 
+    /// Pre-reserve the backing byte buffer. Pure optimisation — semantically
+    /// identical to `init()`, it only avoids geometric-growth reallocations
+    /// when the eventual size is roughly known. Over-estimating is harmless;
+    /// reserving never changes the emitted bytes.
+    public init(reservingBytes n: Int) {
+        if n > 0 { bytes.reserveCapacity(n) }
+    }
+
+    /// Bits already written *into* the current incomplete byte (0..<8).
+    public var partial: Int { accBits }
+
     /// Total bits emitted so far.
-    public var bitCount: Int { bytes.count * 8 - (partial == 0 ? 0 : 8 - partial) }
+    public var bitCount: Int { bytes.count * 8 + accBits }
 
     /// Append `count` bits of `value` (LSB-first). 0 ≤ count ≤ 32.
     public mutating func write(bits count: Int, value: UInt32) {
         precondition(count >= 0 && count <= 32, "bit count must be 0...32")
         if count == 0 { return }
-        // Mask `value` to its low `count` bits. Compute via UInt64 to avoid
-        // the (1 << 32) corner case on UInt32 (which masks the shift count
-        // to 0 and produces 0 instead of 0xFFFFFFFF).
-        let mask: UInt32 = count == 32 ? .max : UInt32((UInt64(1) << UInt64(count)) - 1)
-        var v = value & mask
-        var remaining = count
-        while remaining > 0 {
-            if partial == 0 {
-                bytes.append(0)
-            }
-            let space = 8 - partial
-            let take = min(space, remaining)
-            let mask: UInt32 = (1 &<< UInt32(take)) - 1
-            let chunk = UInt8(v & mask)
-            // OR into the current byte at `partial` bit offset.
-            bytes[bytes.count - 1] |= chunk &<< UInt8(partial)
-            v &>>= UInt32(take)
-            partial = (partial + take) % 8
-            remaining -= take
+        // Mask `value` to its low `count` bits, then shift into place above the
+        // existing `accBits` pending bits. `accBits` ≤ 7 and `count` ≤ 32, so
+        // the result occupies < 40 bits — well within `UInt64`.
+        let mask: UInt64 = count == 32 ? 0xFFFF_FFFF
+            : (UInt64(1) << UInt64(count)) - 1
+        acc |= (UInt64(value) & mask) << UInt64(accBits)
+        accBits += count
+        while accBits >= 8 {
+            bytes.append(UInt8(acc & 0xFF))
+            acc &>>= 8
+            accBits -= 8
         }
     }
 
@@ -66,26 +81,33 @@ public struct BitWriter: Sendable {
 
     /// Pad the current byte with zero bits up to the next byte boundary.
     public mutating func alignToByte() {
-        if partial != 0 {
-            partial = 0
+        if accBits > 0 {
+            // Flush the partial byte; unused high bits are already 0.
+            bytes.append(UInt8(acc & 0xFF))
+            acc = 0
+            accBits = 0
         }
     }
 
     /// Append raw bytes — only valid when the writer is byte-aligned.
     public mutating func appendBytes(_ data: Data) {
-        precondition(partial == 0, "appendBytes requires byte alignment")
+        precondition(accBits == 0, "appendBytes requires byte alignment")
         bytes.append(contentsOf: data)
     }
 
     public mutating func appendBytes(_ data: [UInt8]) {
-        precondition(partial == 0, "appendBytes requires byte alignment")
+        precondition(accBits == 0, "appendBytes requires byte alignment")
         bytes.append(contentsOf: data)
     }
 
     /// Finalise the buffer — pads any trailing partial byte with zeros and
     /// returns the resulting `Data`.
     public mutating func finishToData() -> Data {
-        partial = 0
+        if accBits > 0 {
+            bytes.append(UInt8(acc & 0xFF))
+            acc = 0
+            accBits = 0
+        }
         return Data(bytes)
     }
 }
