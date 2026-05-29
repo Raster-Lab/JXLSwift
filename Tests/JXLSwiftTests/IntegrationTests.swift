@@ -6529,6 +6529,59 @@ extension FoundationTests {
         }
     }
 
+    /// **Cost-gated WP + rANS lossless (v0.12.0i0/i1).** The native
+    /// Modular encoder cost-gates predictor (ClampedGradient vs Weighted
+    /// Predictor) × entropy (Huffman vs rANS). A *smooth/structured*
+    /// 16-bit grayscale image (the common CT/MR case) favours WP; this
+    /// exercises that path at a single-group (512²) and a multi-group
+    /// (640×512) size and asserts byte-exact round-trip through **djxl**
+    /// and our decoder. WP runs per-rect in the multi-group path, so a
+    /// mismatch there (vs the decoder's per-group decode) would surface
+    /// as a djxl failure.
+    func testSpecModularEncoder_WP_StructuredGrayscale16_DjxlRoundTrip() throws {
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("djxl not available")
+        }
+        let tmp = NSTemporaryDirectory()
+        for (w, h) in [(512, 512), (640, 512)] {   // single- + multi-group
+            var px = [UInt16](repeating: 0, count: w * h)
+            for y in 0..<h {
+                for x in 0..<w {
+                    // Smooth bilinear gradient (12-bit data in 16-bit
+                    // container) — WP predicts this far better than the
+                    // clamped gradient, which caps at max(W, N).
+                    let v = ((x * 4095) / w + (y * 4095) / h) / 2
+                    px[y * w + x] = UInt16((v & 0xFFF) << 4)
+                }
+            }
+            let bytes = try SpecModularEncoder.encodeGrayscale16(
+                width: w, height: h, pixels: px)
+            let inP = tmp + "wp16_\(w)x\(h).jxl"
+            let outP = tmp + "wp16_\(w)x\(h).pgm"
+            defer { try? FileManager.default.removeItem(atPath: inP)
+                    try? FileManager.default.removeItem(atPath: outP) }
+            try bytes.write(to: URL(fileURLWithPath: inP))
+            let p = Process(); p.launchPath = djxl
+            p.arguments = [inP, outP]
+            p.standardOutput = Pipe(); p.standardError = Pipe()
+            try p.run(); p.waitUntilExit()
+            XCTAssertEqual(p.terminationStatus, 0,
+                "djxl rejected \(w)×\(h) WP/rANS lossless")
+            let pgm = try Data(contentsOf: URL(fileURLWithPath: outP))
+            var nl = 0, start = 0
+            for (i, b) in pgm.enumerated() where b == 0x0a {
+                nl += 1; if nl == 3 { start = i + 1; break }
+            }
+            for i in 0..<(w * h) {
+                let hi = UInt16(pgm[start + 2 * i])
+                let lo = UInt16(pgm[start + 2 * i + 1])
+                XCTAssertEqual((hi << 8) | lo, px[i],
+                    "\(w)×\(h) WP/rANS pixel \(i) mismatch")
+            }
+        }
+    }
+
     /// **Arbitrary (non-multiple-of-8) dimensions, lossless (v0.12.0hy).**
     /// The native Modular encoder used to reject dims that weren't
     /// multiples of 8 — a blocker for arbitrary-size medical images.
