@@ -153,14 +153,33 @@ public enum JXLBridgeEncoder {
             ((xsize + dcGroupDim - 1) / dcGroupDim)
             * ((ysize + dcGroupDim - 1) / dcGroupDim)
         // `writeBridgeDCGroup` emits the whole frame's DC + ACMetadata in
-        // one section, which is only valid when there is a single DC
-        // group (≤ 2048 px per side). Multi-DC-group needs per-group DC
-        // splitting — out of scope here.
+        // one section, which is only valid when there is a single DC group
+        // (≤ 2048 px per side).
+        //
+        // **v1.0 known limitation (deliberate).** Forward JPEG→JXL transcode
+        // of images > 2048 px per side is not yet supported. The lossless
+        // *Modular* path (the medical-imaging focus) handles all sizes
+        // ≤ 16384; this cap is specific to the JPEG-coefficient bridge.
+        // The concrete post-1.0 plan (validated against the already-working
+        // multi-DC-group *pixel* pipeline, which proves the byte layout):
+        //   1. `generateBridgeDCGroupTokens` → take a DC-group sub-rect
+        //      (256×256 blocks = 2048 px) per channel (honouring chroma
+        //      subsampling) and predict with a GROUP-LOCAL `Neighbourhood`
+        //      (sub-rect edges treated as image edges) + per-group WP reset.
+        //   2. `writeBridgeDCGroup` → take a `dcGroupIndex`; emit only that
+        //      sub-rect's DC residuals + ACMetadata, with the per-group block
+        //      count driving the ACMetadata `count` field's bit-width.
+        //   3. `buildBridgePostCodebook` → pool tokens across ALL DC groups
+        //      into one histogram (as `buildFrameSections` already does).
+        //   4. here → loop `for dcG in 0..<numDcGroups`, emitting one DC
+        //      section per group into the existing multi-section TOC slot.
+        // Gating criterion for shipping: `djxl(bridge(jpg))` byte-exact AND
+        // `reverse(bridge(jpg))` reproduces the source JPEG, at > 2048 px.
         guard numDcGroups == 1 else {
             throw JXLBridgeEncoderError.notImplemented(
                 "bridge: \(xsize)×\(ysize) needs \(numDcGroups) DC groups "
-                + "(> 2048 px per side); only single-DC-group frames are "
-                + "supported")
+                + "(> 2048 px per side); forward transcode of > 2048 px "
+                + "images is a documented v1.0 limitation — see comment above")
         }
 
         let postHeader: EntropySectionHeader

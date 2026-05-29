@@ -391,9 +391,13 @@ remains for 1.0 is conformance, completeness, hardening, performance, and API st
    - **E4b rANS full-mode histogram serialisation — ✅ already done.** The spec **complex** mode is
      implemented for read + write in `SpecANSDistribution` and is what every wide context-map
      histogram routes through; pinned by `testSpecANSDistribution_WriterHandlesComplex`.
-   - **Forward-transcode > 2048 px — engineering item.** Generalise the JPEG-bridge DC writer to
-     multi-DC-group (mirroring the already-working pixel pipeline's group-local DC prediction +
-     pooled codebook). `cjxl`/`djxl`-validated.
+   - **Forward-transcode > 2048 px — documented 1.0 limitation (will NOT block 1.0).** Generalising
+     the JPEG-bridge DC writer to multi-DC-group is a long, byte-exact debug cycle (group-local DC
+     prediction reset, chroma sub-rect alignment, per-group ACMetadata count widths) and is specific
+     to the JPEG-coefficient *bridge* — the lossless *Modular* path (the medical focus) already
+     handles all sizes ≤ 16384, and reverse transcode (JXL→JPEG) is unaffected. The concrete
+     implementation plan is recorded at the guard in `JXLBridgeEncoder.write` for a post-1.0 ticket;
+     shipping is gated on `djxl(bridge(jpg))` byte-exactness at > 2048 px.
    - **Reconcile `fillModularProperties` formulas (properties 6,7,8,11,13,14) — documented 1.0
      limitation (will NOT block 1.0).** This is a slot-ordering mismatch with libjxl, and libjxl
      source is intentionally absent (constraint 4), so the target formulas can only be
