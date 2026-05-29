@@ -276,9 +276,17 @@ public struct ModularTree: Sendable, Equatable {
         let kMultiplierBitsContext = 5
 
         precondition(!nodes.isEmpty, "cannot encode empty tree")
-        // Pre-order DFS.
-        var stack: [Int] = [0]
-        while let idx = stack.popLast() {
+        // Breadth-first (level-order) emission, matching the decoder's
+        // FIFO fill: `decode` appends nodes in queue order and places a
+        // decision's children at the current frontier end
+        // (`nodes.count + toDecode + 1/+2`). A DFS (stack) emission only
+        // round-trips trivial / single-level trees; balanced multi-level
+        // trees would reconstruct to a different shape.
+        var queue: [Int] = [0]
+        var head = 0
+        while head < queue.count {
+            let idx = queue[head]
+            head += 1
             guard idx >= 0 && idx < nodes.count else {
                 throw ModularTreeError.tokenReader(
                     .clusterOutOfRange(idx, max: nodes.count - 1)
@@ -311,9 +319,10 @@ public struct ModularTree: Sendable, Equatable {
             let prop = UInt32(node.property &+ 1)
             try emit(kPropertyContext, prop)
             try emit(kSplitValContext, ZigZag.pack(node.splitVal))
-            // Push right first so left is popped (and emitted) first.
-            stack.append(node.rightChild)
-            stack.append(node.leftChild)
+            // Enqueue left then right — the decoder reads/places the left
+            // child first (`leftIdx = nodes.count + toDecode + 1`).
+            queue.append(node.leftChild)
+            queue.append(node.rightChild)
         }
     }
 }

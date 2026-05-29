@@ -13953,6 +13953,70 @@ extension FoundationTests {
         XCTAssertEqual(recovered.nodes[0].multiplier, 1)
     }
 
+    /// **Balanced multi-level tree round-trip (v0.12.0i3).** A 4-leaf
+    /// balanced tree (node0→{1,2}, node1→{3,4}, node2→{5,6}) in the
+    /// decoder's fill layout. `ModularTree.encode` must emit in the
+    /// decoder's level-order (FIFO) order; the previous depth-first
+    /// emission round-tripped this shape to a *left-leaning* tree
+    /// (node0→{node1, leaf}, node1→{leaf, node2}…) — a silent corruption
+    /// that only bit trees deeper than one level. This pins the fix.
+    func testModularTree_Encode_BalancedMultiLevel_RoundTrip() throws {
+        func dec(_ split: Int32, _ l: Int, _ r: Int) -> ModularTreeNode {
+            ModularTreeNode(
+                property: 15, splitVal: split,
+                leftChildOrLeafId: l, rightChild: r,
+                predictor: .zero, predictorOffset: 0, multiplier: 1)
+        }
+        func leaf(_ id: Int, _ raw: UInt32) -> ModularTreeNode {
+            ModularTreeNode(
+                property: -1, splitVal: 0,
+                leftChildOrLeafId: id, rightChild: 0,
+                predictor: .gradient, predictorOffset: 0,
+                multiplier: 1, rawPredictor: raw)
+        }
+        let tree = ModularTree(nodes: [
+            dec(10, 1, 2), dec(5, 3, 4), dec(20, 5, 6),
+            leaf(0, 6), leaf(1, 5), leaf(2, 6), leaf(3, 5),
+        ])
+        // Tree tokens use splitExponent=0 (keeps property+1=16 and the
+        // packed split values to small tokens); flat 16-symbol code.
+        let cfg = HybridUintConfig(splitExponent: 0, msbInToken: 0, lsbInToken: 0)
+        let table = try PrefixCodeTable(lengths: Array(repeating: 4, count: 16))
+        let codebook = MultiClusterCodebook(
+            huffmanTables: [table], ansCounts: [], alphabetSizes: [16])
+        let header = EntropySectionHeader(
+            lz77: .disabled, contextMap: ContextMap.trivial(numContexts: 6),
+            usePrefixCode: true, logAlphaSize: 15, uintConfigs: [cfg])
+        var w = BitWriter()
+        let writer = TokenStreamWriter(header: header, codebook: codebook)
+        try tree.encode { ctx, val in
+            try writer.writeToken(context: ctx, value: val, to: &w)
+        }
+        var r = BitReader(w.finishToData())
+        var reader = TokenStreamReader(header: header, codebook: codebook)
+        let recovered = try ModularTree.decode(from: &r, stream: &reader)
+        XCTAssertEqual(recovered.nodes.count, 7)
+        for i in 0..<7 {
+            XCTAssertEqual(recovered.nodes[i].property, tree.nodes[i].property,
+                "node \(i) property")
+            XCTAssertEqual(recovered.nodes[i].isLeaf, tree.nodes[i].isLeaf,
+                "node \(i) isLeaf")
+            if tree.nodes[i].isLeaf {
+                XCTAssertEqual(recovered.nodes[i].leafId, tree.nodes[i].leafId,
+                    "node \(i) leafId")
+                XCTAssertEqual(recovered.nodes[i].rawPredictor,
+                    tree.nodes[i].rawPredictor, "node \(i) rawPredictor")
+            } else {
+                XCTAssertEqual(recovered.nodes[i].splitVal,
+                    tree.nodes[i].splitVal, "node \(i) splitVal")
+                XCTAssertEqual(recovered.nodes[i].leftChild,
+                    tree.nodes[i].leftChild, "node \(i) leftChild")
+                XCTAssertEqual(recovered.nodes[i].rightChild,
+                    tree.nodes[i].rightChild, "node \(i) rightChild")
+            }
+        }
+    }
+
     /// `ModularTree.encode` — single-leaf-Gradient tree. Verifies the
     /// emitted token stream matches the spec's expected per-context
     /// values (ctx 1 = 0 leaf marker, ctx 2 = predictor 5, ctx 3 = 0
