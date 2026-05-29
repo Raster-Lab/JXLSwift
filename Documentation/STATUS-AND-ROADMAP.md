@@ -152,13 +152,17 @@ ISOBMFF container — signature + `ftyp` + `jbrd` + `jxlc` — a true lossless-J
 - **DC predictor (v0.12.0hw)** — `buildBridgePostCodebook` cost-gates ClampedGradient vs the
   adaptive **Weighted Predictor** (reusing the decoder's `WeightedPredictor` struct, so byte-exact
   by construction) and picks per-image. Smooth 512² 1.437× → 1.296×; natural content prefers WP.
+- **Coefficient-order (`used_orders`) — measured, not worth it for real content (v0.12.0hw).**
+  A frequency-optimal DCT8 scan order was compared against natural zigzag (AC tokens re-encoded
+  through the full multi-cluster path): real JPEGs are **neutral-to-negative** (ctx 256² −62 b,
+  4:4:4 −12 b, big 512² −333 b, grayscale +777 b ≈ net 0 after the permutation cost). Natural
+  zigzag is already near-optimal for real content; only a pathological high-frequency synthetic
+  gained (~24 KB). So the encoder-side Lehmer-permutation writer is **not** pursued — the gain
+  doesn't justify it.
 - **Remaining size/scope work** (all lossless recodes, not correctness, diminishing returns):
-  (a) **coefficient-order** optimisation (`used_orders`) — cjxl reorders the AC scan per context to
-  tighten nnz/EOB-run modelling (it emits `used_orders=1` for these transcodes); we emit natural
-  zigzag. Needs an encoder-side Lehmer-permutation writer (we have the decoder). (b) richer
-  **DC-group tree** (>1 leaf → per-channel / per-property DC contexts). (c) tailored **block
-  context map** (cjxl's ~990-entry AC map vs our 7425 — mostly a map-size saving since clustering
-  already merges used contexts). (d) **multi-DC-group** for inputs > 2048 px per side.
+  (a) richer **DC-group tree** (>1 leaf → per-channel / per-property DC contexts). (b) tailored
+  **block context map** (cjxl's ~990-entry AC map vs our 7425 — mostly a map-size saving since
+  clustering already merges used contexts). (c) **multi-DC-group** for inputs > 2048 px per side.
 - Foundations in place: `SpecANSDistribution.writeComplex` (v0.12.0ho), `ANSTokenStreamWriter`
   (v0.12.0hp), and `ContextMap.writeFullPath` (v0.12.0hr).
 
@@ -228,11 +232,12 @@ Test oracles (optional, dev-time): `cjxl` / `djxl` / `jxlinfo` / `brotli` / `cjp
 
 ## 9. Suggested next milestones (priority order)
 
-1. **Tighter forward size (diminishing returns)** — real AC-rich content is already ~1.03–1.05×
-   cjxl (AC + DC/ACMetadata rANS, cost-gated clusters ≤ 64 and DC predictor, v0.12.0hq–hw). The
-   remaining gap is on smooth / high-detail images: **coefficient-order** optimisation
-   (`used_orders`, needs an encoder Lehmer-permutation writer) and a richer **DC-group tree** are
-   the next levers; a tailored block context map is mostly a context-map-size saving.
+1. **Tighter forward size (deep diminishing returns)** — real AC-rich content is already
+   ~1.03–1.05× cjxl (AC + DC/ACMetadata rANS, cost-gated clusters ≤ 64 and DC predictor,
+   v0.12.0hq–hw). Coefficient-order optimisation was measured and found neutral-to-negative for
+   real content (§5.3), so it's off the table. The only remaining levers (richer DC-group tree;
+   tailored block context map — a map-size saving) target smooth / synthetic edge cases for
+   sub-kilobyte gains. **Forward size work is effectively complete** for real-world JPEGs.
 2. **Restoration filters (Phase R)** — Gaborish + EPF for the lossy pixel-decode path.
 3. **Full lossy VarDCT** beyond the JPEG-bridge subset (XYB colour, full AC-strategy search on
    encode).
