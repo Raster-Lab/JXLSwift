@@ -11,6 +11,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0hv — Raise AC cluster cap (cost-gated 32 / 64) — broad AC-rich win
+
+Tracing the AC-rich gap (e.g. a 512² noisy fixture, ours 63 KB vs cjxl
+56 KB) showed the AC token body was the largest remaining gap (~4 KB) and
+that we were hitting the **16-cluster cap** while cjxl used ~24 — and
+detailed images keep gaining past that. `buildBridgeACCodebook` now builds
+**two** multi-cluster candidates (caps 32 and 64) and keeps whichever
+actually encodes smaller: detailed images keep gaining from more clusters
+(each clears the per-cluster overhead threshold), small images self-limit
+below the cap regardless, and the lower cap guards against the greedy
+threshold over-fragmenting.
+
+| (vs cjxl, all reverse + djxl byte-identical) | before | after |
+|---|---|---|
+| grayscale 256² | 1.134× | **1.030×** |
+| 4:4:4 256² | 1.064× | **1.046×** |
+| 512² 4:4:4 noisy | 1.133× | **1.118×** |
+| g300 (high detail) | 1.51× | **1.305×** |
+| g1024 (high detail) | ~1.63× | **1.346×** |
+
+Real-world AC-rich content is now **~1.03–1.05× of cjxl**. Full suite:
+668 tests, 7 skipped, 0 failures.
+
 ### v0.12.0hu — DC / ACMetadata modular sections → rANS — big low-AC win
 
 The DC group — gradient-predicted DC residuals + all-zero ACMetadata — was

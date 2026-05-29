@@ -1,6 +1,6 @@
 # JXLSwift — Status & Roadmap
 
-**A current-state knowledge map of the project.** Snapshot as of **v0.12.0hu** (2026-05-29).
+**A current-state knowledge map of the project.** Snapshot as of **v0.12.0hv** (2026-05-29).
 For the original project charter + constraints see [ROADMAP.md](../ROADMAP.md); for the
 load-bearing rules see [CLAUDE.md](../CLAUDE.md); for release-by-release detail see
 [CHANGELOG.md](../CHANGELOG.md).
@@ -27,10 +27,10 @@ GPU paths (land later, behind the proven scalar path).
 
 | | |
 |---|---|
-| **Version** | v0.12.0hu (Phase J line) |
+| **Version** | v0.12.0hv (Phase J line) |
 | **Tests** | 668 passing / 7 skipped / 0 failures (`swift test -c release`, ~50 s) |
 | **Dependencies** | `swift-argument-parser` (CLI only). Zero runtime deps. |
-| **Headline capability** | **Lossless JPEG ⇄ JXL transcoding is byte-identical in both directions**, with no `--source` needed — across baseline + progressive, all chroma, odd dims, grayscale, metadata, **and images of any size ≤ 2048 px per side (multi-AC-group)**. The forward path emits a full lossless-JPEG container that `djxl --jpeg` also reconstructs byte-for-byte. Forward file size is now **~1.04–1.13× of cjxl on AC-rich content and ~1.4× on very smooth images** (AC + DC/ACMetadata both rANS). |
+| **Headline capability** | **Lossless JPEG ⇄ JXL transcoding is byte-identical in both directions**, with no `--source` needed — across baseline + progressive, all chroma, odd dims, grayscale, metadata, **and images of any size ≤ 2048 px per side (multi-AC-group)**. The forward path emits a full lossless-JPEG container that `djxl --jpeg` also reconstructs byte-for-byte. Forward file size is now **~1.03–1.05× of cjxl on real AC-rich content** (~1.1–1.3× on synthetic high-detail, ~1.4× on very smooth); AC + DC/ACMetadata both rANS with cost-gated cluster counts up to 64. |
 
 **What works end-to-end today**
 
@@ -74,7 +74,7 @@ Legend: ✅ done · 🟩 substantially done · ⏳ in progress · ⬜ not starte
 | **M** | Modular sub-codec (lossless path) | 🟩 | predictors, RCT, channel decode, MA-tree all used by the VarDCT/bridge decode |
 | **V** | VarDCT | 🟩 | **decoder** decodes real cjxl frames (DC/AC groups, context maps, coeff orders, CFL, RAW quant, chroma subsampling, ICC); **encoder** writes coefficient-bridge frames |
 | **R** | Restoration filters (Gaborish, EPF) | ⬜ | bridge frames disable them (`kSkipAdaptiveLFSmoothing`); pixel-path filters not yet implemented |
-| **J** | JPEG ⇄ JXL transcoding | 🟩 | **both directions byte-identical** (baseline + progressive, all chroma, odd dims, grayscale, multi-AC-group ≤ 2048 px/side); forward emits a full lossless container, djxl-valid. AC + DC/ACMetadata both rANS → ~1.04–1.13× cjxl (AC-rich), ~1.4× (very smooth). Remaining gap: block context map + DC tree (see §5) |
+| **J** | JPEG ⇄ JXL transcoding | 🟩 | **both directions byte-identical** (baseline + progressive, all chroma, odd dims, grayscale, multi-AC-group ≤ 2048 px/side); forward emits a full lossless container, djxl-valid. AC + DC/ACMetadata both rANS, cost-gated clusters ≤ 64 → ~1.03–1.05× cjxl (real AC-rich), ~1.4× (very smooth). Remaining gap: DC tree + coeff orders (see §5) |
 | **Brotli** | RFC 7932 decoder + uncompressed encoder | ✅ | decoder: meta-blocks, simple/complex prefix codes, distance ring buffer, **static dictionary + 121 transforms**; encoder: uncompressed meta-blocks (jbrd tail). Context-maps/multi-block-type (NTREES>1) not needed for jbrd payloads |
 
 > The CLAUDE.md phase table predates the v0.12.0g–hj work and under-states **V** and **J**.
@@ -146,11 +146,16 @@ ISOBMFF container — signature + `ftyp` + `jbrd` + `jxlc` — a true lossless-J
   all-zero ACMetadata) were Huffman and dominated low-AC files; now cost-gated Huffman-vs-rANS,
   written as two fresh per-sub-image ANS streams sharing the single-context post codebook. Smooth
   512² dropped 2.42× → 1.44×; AC-rich 256² to ~1.04× cjxl. Byte-identical via reverse + djxl.
-- **Remaining size/scope work** (all lossless recodes, not correctness):
-  (a) reduce the **block context map** (cjxl drops `all_default` and tailors block contexts; we
-  use the 15-context default → a 7425-entry AC map vs cjxl's ~990). (b) richer **modular tree**
-  for the DC group (>1 leaf → per-channel / per-property DC contexts, closing the ~1.4× smooth
-  gap). (c) **multi-DC-group** for inputs > 2048 px per side.
+- **AC cluster count (v0.12.0hv)** — `buildBridgeACCodebook` builds two multi-cluster candidates
+  (caps 32 and 64) and keeps the smaller; detailed images now use up to 64 histograms (matching/
+  exceeding cjxl's ~24). Pushed real AC-rich content to ~1.03–1.05× cjxl.
+- **Remaining size/scope work** (all lossless recodes, not correctness, diminishing returns):
+  (a) richer **modular tree** for the DC group (>1 leaf → per-channel/per-property DC contexts +
+  a stronger predictor, for the ~1.4× smooth and part of the DC gap). (b) **coefficient-order**
+  optimisation (`used_orders`) — cjxl reorders the AC scan per context to tighten nnz/EOB-run
+  modelling; we emit natural zigzag. (c) tailored **block context map** (cjxl's ~990-entry AC map
+  vs our 7425 — mostly a context-map-size saving since clustering already merges used contexts).
+  (d) **multi-DC-group** for inputs > 2048 px per side.
 - Foundations in place: `SpecANSDistribution.writeComplex` (v0.12.0ho), `ANSTokenStreamWriter`
   (v0.12.0hp), and `ContextMap.writeFullPath` (v0.12.0hr).
 
@@ -220,10 +225,11 @@ Test oracles (optional, dev-time): `cjxl` / `djxl` / `jxlinfo` / `brotli` / `cjp
 
 ## 9. Suggested next milestones (priority order)
 
-1. **Tighter forward size** — close the remaining gap to cjxl: a richer DC-group modular tree
-   (>1 leaf → per-channel/per-property DC contexts, for the ~1.4× smooth case) and a tailored
-   **block context map** (cjxl's ~990-entry AC map vs our 7425). AC + DC/ACMetadata are now both
-   rANS (v0.12.0hq/hs/hu); AC-rich content is ~1.04–1.13× cjxl.
+1. **Tighter forward size (diminishing returns)** — real AC-rich content is already ~1.03–1.05×
+   cjxl (AC + DC/ACMetadata rANS, cost-gated clusters up to 64, v0.12.0hq–hv). The remaining gap
+   is on smooth (DC-dominated) and high-detail images: a richer **DC-group modular tree** (>1 leaf
+   + stronger predictor) and **coefficient-order** optimisation (`used_orders`) are the next
+   levers; a tailored block context map is mostly a context-map-size saving.
 2. **Restoration filters (Phase R)** — Gaborish + EPF for the lossy pixel-decode path.
 3. **Full lossy VarDCT** beyond the JPEG-bridge subset (XYB colour, full AC-strategy search on
    encode).
