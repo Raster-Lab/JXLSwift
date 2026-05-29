@@ -1554,17 +1554,28 @@ public enum SpecModularEncoder {
         // The extra candidates are full encodes, so `effort` gates them;
         // each is cost-gated by actual section bytes.
         var best = sec.finishToData()
-        if effort >= 4, let multiData = try? buildSingleSectionMultiContext(
-            width: width, height: height,
-            channels: channels, sampleHi: sampleHi),
-           multiData.count < best.count {
-            best = multiData
-        }
-        if effort >= 7, let greedyData = buildSingleSectionGreedyTree(
-            width: width, height: height,
-            channels: channels, sampleHi: sampleHi),
-           greedyData.count < best.count {
-            best = greedyData
+        // The activity-split (effort ≥ 4) and greedy (effort ≥ 7) candidates
+        // both need the same full-image WP per-pixel pass — compute it ONCE
+        // and share it, eliminating two redundant WP passes. Byte-identical:
+        // each builder consumes exactly the values it used to compute inline.
+        if effort >= 4 {
+            let wpShared = wpGreedyPerPixel(
+                width: width, height: height,
+                channels: channels, postCfg: postCfg)
+            if let multiData = try? buildSingleSectionMultiContext(
+                width: width, height: height,
+                channels: channels, sampleHi: sampleHi,
+                precomputed: (wpShared.propsFlat, wpShared.tokens)),
+               multiData.count < best.count {
+                best = multiData
+            }
+            if effort >= 7, let greedyData = buildSingleSectionGreedyTree(
+                width: width, height: height,
+                channels: channels, sampleHi: sampleHi,
+                precomputed: wpShared),
+               greedyData.count < best.count {
+                best = greedyData
+            }
         }
         return best
     }
@@ -1733,27 +1744,39 @@ public enum SpecModularEncoder {
     /// so the encoder (which reuses the same `WeightedPredictor` +
     /// `propertyValue` in the decoder's order) assigns identical contexts.
     private static func buildSingleSectionMultiContext(
-        width: Int, height: Int, channels: [[Int32]], sampleHi: Int32
+        width: Int, height: Int, channels: [[Int32]], sampleHi: Int32,
+        precomputed: (propsFlat: [Int32], tokens: [UInt32])? = nil
     ) throws -> Data? {
         guard width > 0, height > 0, !channels.isEmpty else { return nil }
         let postCfg = HybridUintConfig.raw4
-        // Per channel: run WP, recording (wpProp, packed residual) per
-        // pixel in row-major order. `propertyValue` is read BEFORE
-        // `predict`, matching the decoder.
+        // Per pixel (channel-major, row-major): the WP-activity property
+        // (property 15) and the WP residual token. When the caller already
+        // ran the shared WP pass (`wpGreedyPerPixel`, effort ≥ 4), reuse it —
+        // property 15 is slot 5 of the 6-property block; this is byte-exactly
+        // the same `(wpProp, token)` this builder used to compute inline.
         var perPixel: [(wpProp: Int32, token: UInt32)] = []
         perPixel.reserveCapacity(width * height * channels.count)
-        for pix in channels {
-            var wp = WeightedPredictor(header: .default, xsize: max(1, width))
-            for y in 0..<height {
-                for x in 0..<width {
-                    let nbh = Neighbourhood(at: x, y, in: pix, width: width)
-                    let wpProp = wp.propertyValue(x: x, y: y, xsize: width)
-                    let pred = wp.predict(
-                        x: x, y: y, xsize: width,
-                        n: nbh.n, w: nbh.w, ne: nbh.ne, nw: nbh.nw, nn: nbh.nn)
-                    let actual = pix[y * width + x]
-                    perPixel.append((wpProp, ZigZag.pack(actual &- pred)))
-                    wp.update(actual: actual, x: x, y: y, xsize: width)
+        if let pc = precomputed {
+            let count = pc.tokens.count
+            perPixel.reserveCapacity(count)
+            for i in 0..<count {
+                perPixel.append((pc.propsFlat[i * 6 + 5], pc.tokens[i]))
+            }
+        } else {
+            // `propertyValue` is read BEFORE `predict`, matching the decoder.
+            for pix in channels {
+                var wp = WeightedPredictor(header: .default, xsize: max(1, width))
+                for y in 0..<height {
+                    for x in 0..<width {
+                        let nbh = Neighbourhood(at: x, y, in: pix, width: width)
+                        let wpProp = wp.propertyValue(x: x, y: y, xsize: width)
+                        let pred = wp.predict(
+                            x: x, y: y, xsize: width,
+                            n: nbh.n, w: nbh.w, ne: nbh.ne, nw: nbh.nw, nn: nbh.nn)
+                        let actual = pix[y * width + x]
+                        perPixel.append((wpProp, ZigZag.pack(actual &- pred)))
+                        wp.update(actual: actual, x: x, y: y, xsize: width)
+                    }
                 }
             }
         }
@@ -1988,20 +2011,21 @@ public enum SpecModularEncoder {
     /// regardless of which properties the tree actually uses. Cost-gated by
     /// the caller against the single-context and activity-split candidates;
     /// `nil` when the learner finds no useful split.
-    private static func buildSingleSectionGreedyTree(
-        width: Int, height: Int, channels: [[Int32]], sampleHi: Int32
-    ) -> Data? {
-        guard width > 0, height > 0, !channels.isEmpty else { return nil }
-        let postCfg = HybridUintConfig.raw4
-        // Only properties whose `fillModularProperties` formula is verified
-        // byte-exact against `djxl`: |top|, |left|, the gradient-predictor
-        // input, two FFV1 directional gradients, and the WP-error property.
-        // (Properties 6,7,8,11,13,14 are intentionally excluded — some of
-        // those formulas diverge from libjxl, so a tree branching on them
-        // round-trips through our decoder but desyncs djxl. Widening this
-        // set means first reconciling `fillModularProperties` with libjxl.)
-        let propIndices: [Int32] = [4, 5, 9, 10, 12, 15]
-        let propCount = propIndices.count
+    /// The shared WP per-pixel pass: for each pixel (channel-major,
+    /// row-major) the 6 greedy MA-tree properties `[4,5,9,10,12,15]`, the
+    /// weighted-predictor residual token, its post-config token bucket, and
+    /// the max bucket. `buildSingleSection` computes this **once** at
+    /// effort ≥ 4 and hands it to both `buildSingleSectionMultiContext`
+    /// (WP-activity split — needs property 15 + the token) and
+    /// `buildSingleSectionGreedyTree` (needs all 6 + bucket), eliminating two
+    /// redundant full-image WP predictor passes per encode. Edge fall-backs +
+    /// `propertyValue`/`predict`/`update` order mirror the decoder exactly, so
+    /// the values (and hence the emitted bytes) are identical to each
+    /// builder's former inline loop.
+    static func wpGreedyPerPixel(
+        width: Int, height: Int, channels: [[Int32]], postCfg: HybridUintConfig
+    ) -> (propsFlat: [Int32], tokens: [UInt32], tokBucket: [Int], maxTok: Int) {
+        let propCount = 6
         let n = width * height * channels.count
         var propsFlat = [Int32](repeating: 0, count: n * propCount)
         var tokens = [UInt32](repeating: 0, count: n)
@@ -2015,8 +2039,6 @@ public enum SpecModularEncoder {
                 let prevRow = (y - 1) * width
                 let prev2Row = (y - 2) * width
                 for x in 0..<width {
-                    // Decoder edge fall-backs (ModularChannelDecoder) — used
-                    // for BOTH the properties and the WP prediction.
                     let left: Int32 = x > 0 ? pix[rowBase + x - 1]
                         : (y > 0 ? pix[prevRow + x] : 0)
                     let top: Int32 = y > 0 ? pix[prevRow + x] : left
@@ -2046,6 +2068,34 @@ public enum SpecModularEncoder {
                 }
             }
         }
+        return (propsFlat, tokens, tokBucket, maxTok)
+    }
+
+    private static func buildSingleSectionGreedyTree(
+        width: Int, height: Int, channels: [[Int32]], sampleHi: Int32,
+        precomputed: (propsFlat: [Int32], tokens: [UInt32],
+                      tokBucket: [Int], maxTok: Int)? = nil
+    ) -> Data? {
+        guard width > 0, height > 0, !channels.isEmpty else { return nil }
+        let postCfg = HybridUintConfig.raw4
+        // Only properties whose `fillModularProperties` formula is verified
+        // byte-exact against `djxl`: |top|, |left|, the gradient-predictor
+        // input, two FFV1 directional gradients, and the WP-error property.
+        // (Properties 6,7,8,11,13,14 are intentionally excluded — some of
+        // those formulas diverge from libjxl, so a tree branching on them
+        // round-trips through our decoder but desyncs djxl. Widening this
+        // set means first reconciling `fillModularProperties` with libjxl.)
+        let propIndices: [Int32] = [4, 5, 9, 10, 12, 15]
+        let propCount = propIndices.count
+        let n = width * height * channels.count
+        // Reuse the shared WP pass when the caller already ran it (effort ≥ 4
+        // path); otherwise compute it here so other callers/tests still work.
+        let shared = precomputed ?? wpGreedyPerPixel(
+            width: width, height: height, channels: channels, postCfg: postCfg)
+        let propsFlat = shared.propsFlat
+        let tokens = shared.tokens
+        let tokBucket = shared.tokBucket
+        let maxTok = shared.maxTok
         // Cap leaves at 8: that keeps the post entropy section at ≤ 8
         // contexts, where the context map uses the simple (≤3-bit-per-entry)
         // path djxl accepts. Trees with > 8 contexts need the full

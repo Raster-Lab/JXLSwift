@@ -72,11 +72,18 @@ entropy/allocation costs that dominate are addressed first.
 Every item must remain **byte-identical** to the current output (the djxl
 byte-exact suite + the 2 867-image medical DICOM validation are the gate).
 
-1. **Encoder allocation / writer pooling — the biggest remaining win.** The
-   effort-≥5 cost-gating constructs fresh `BitWriter` + `ANSTokenStreamWriter` +
-   `AliasTable` (4096-slot scan) per candidate. Pooling/reusing scratch across
-   candidates would cut the dominant ARC/malloc category. Structural, byte-
-   identical, medium effort.
+1. **Encoder allocation / redundant-work — partly done; the rest is the floor.**
+   The effort-≥5 cost-gating constructs fresh `BitWriter` + `ANSTokenStreamWriter`
+   + `AliasTable` (4096-slot scan) per candidate. **Done (applied below):** the
+   full-image WP per-pixel pass that the WP single-context, activity-split, and
+   greedy candidates each re-ran (~3×) is now computed once and shared. That gave
+   only **~2.8 %** at effort 7 — the key lesson: even eliminating the dominant
+   redundancy barely moves the needle, because the per-candidate **entropy
+   encoding itself** (each candidate tree → its own rANS stream over all tokens)
+   is the irreducible floor under byte-identity. **A larger win therefore needs**
+   either *fewer candidates* (changes the chosen output/ratio — not byte-identical)
+   or an *entropy-pipeline restructure* (pool/stream the rANS encode) — an
+   attended effort, not incremental pooling.
 2. **`ANSTokenStreamWriter.finish` tightening.** Pre-reserve `pending`
    (token count is known = w·h); shrink the per-token `Seg` buffer; emit
    extra-bits in tighter batches. Small, safe.
@@ -88,6 +95,13 @@ byte-exact suite + the 2 867-image medical DICOM validation are the gate).
 
 ## Applied in v0.13.0 (byte-identical, suite + medical-validation verified)
 
+- **Shared WP per-pixel pass (`wpGreedyPerPixel`).** The effort-≥4 activity-split
+  and effort-≥7 greedy candidates each re-ran the same full-image weighted-predictor
+  pass; it is now computed once in `buildSingleSection` and handed to both
+  (`precomputed:` params; default nil keeps other callers self-computing).
+  Byte-identical (full 695-test suite + CID22 + medical re-validation, 0
+  failures); **~2.8 % faster at effort 7** (controlled A/B, 512² 16-bit:
+  763 → 741 ms). Modest by design — see roadmap item 1 for why.
 - **`BitWriter` UInt64-accumulator rewrite.** Replaced the per-bit-chunk
   `append` + bounds-checked subscript with a 64-bit accumulator that flushes
   whole bytes into the byte buffer. Emits the **identical** stream (verified
