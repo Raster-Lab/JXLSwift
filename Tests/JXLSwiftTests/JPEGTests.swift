@@ -6331,6 +6331,101 @@ final class JXLToJPEGAdapterTests: XCTestCase {
         }
     }
 
+    /// **DC / ACMetadata rANS (v0.12.0hu).** On smooth / low-AC images
+    /// the DC group (gradient-predicted DC residuals + all-zero
+    /// ACMetadata) dominates the file. Converting those modular streams
+    /// from Huffman to rANS removes the ≥1 bit/symbol floor — decisive
+    /// for the ~6×blockCount all-zero ACMetadata tokens. This feeds a
+    /// **smooth gradient** (little AC, so the post section is the bulk)
+    /// through the forward bridge and asserts BOTH our reverse path and
+    /// the real `djxl` reconstruct byte-for-byte — the rANS post codebook
+    /// + the two fresh per-sub-image ANS streams are libjxl-valid.
+    func testEndToEnd_DCMetadataRANS_SmoothImage_ByteIdentical() throws {
+        let cjpeg = "/opt/homebrew/bin/cjpeg"
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: cjpeg),
+              FileManager.default.isExecutableFile(atPath: djxl)
+        else { throw XCTSkip("cjpeg + djxl required") }
+        struct V { let label: String; let w: Int; let h: Int
+                   let sample: String }
+        let variants: [V] = [
+            V(label: "256×256 smooth 4:4:4", w: 256, h: 256,
+              sample: "1x1,1x1,1x1"),
+            V(label: "384×384 smooth 4:2:0", w: 384, h: 384,
+              sample: "2x2,1x1,1x1"),       // multi-group + smooth
+        ]
+        var results: [String] = []
+        for v in variants {
+            let tmp = NSTemporaryDirectory()
+            let ppmP = tmp + "dcm-\(UUID().uuidString).ppm"
+            let jpgP = tmp + "dcm-\(UUID().uuidString).jpg"
+            let jxlP = tmp + "dcm-\(UUID().uuidString).jxl"
+            let outP = tmp + "dcm-\(UUID().uuidString).out.jpg"
+            defer {
+                for p in [ppmP, jpgP, jxlP, outP] {
+                    try? FileManager.default.removeItem(atPath: p)
+                }
+            }
+            // Smooth linear gradient — minimal AC, so the DC group is
+            // the bulk of the file.
+            var ppm = Data("P6\n\(v.w) \(v.h)\n255\n".utf8)
+            for y in 0..<v.h {
+                for x in 0..<v.w {
+                    ppm.append(UInt8((x * 255) / v.w))
+                    ppm.append(UInt8((y * 255) / v.h))
+                    ppm.append(UInt8(((x + y) * 255) / (v.w + v.h)))
+                }
+            }
+            try ppm.write(to: URL(fileURLWithPath: ppmP))
+            let p1 = Process()
+            p1.launchPath = cjpeg
+            p1.arguments = ["-outfile", jpgP, "-quality", "90",
+                "-baseline", "-sample", v.sample, ppmP]
+            p1.standardOutput = Pipe(); p1.standardError = Pipe()
+            try p1.run(); p1.waitUntilExit()
+            guard p1.terminationStatus == 0 else {
+                results.append("\(v.label): SKIP cjpeg"); continue
+            }
+            let jpgData = try Data(contentsOf: URL(fileURLWithPath: jpgP))
+            let container = try JXLEncoder().encodeLosslessJPEG(jpgData).data
+            try container.write(to: URL(fileURLWithPath: jxlP))
+            // (a) Our reverse path.
+            guard case .iso(let boxes) = try parseJXLContainer(container),
+                  let jbrdPayload = try extractJBRDBox(
+                    from: boxes, in: container)
+            else { results.append("\(v.label): no jbrd"); continue }
+            var r = BitReader(jbrdPayload)
+            var box = try JBRDBoxReader.read(from: &r)
+            let brotliStart = (r.position + 7) / 8
+            let brotli = jbrdPayload.suffix(from:
+                jbrdPayload.startIndex + brotliStart)
+            try box.distributeBrotliPayload(
+                BrotliDecoder.decode(Data(brotli)))
+            let bridge = try JXLDecoder().decodeJPEGBridgeData(container)
+            let rebuilt = try JXLToJPEGAdapter.reconstruct(
+                bridgeData: bridge, jbrd: box)
+            let ourOK = rebuilt == jpgData
+            // (b) The real djxl binary.
+            let p2 = Process()
+            p2.launchPath = djxl
+            p2.arguments = [jxlP, outP]
+            p2.standardOutput = Pipe(); p2.standardError = Pipe()
+            try p2.run(); p2.waitUntilExit()
+            let djxlOK = p2.terminationStatus == 0
+                && (try? Data(contentsOf: URL(fileURLWithPath: outP)))
+                    == jpgData
+            results.append(ourOK && djxlOK
+                ? "\(v.label): ✓ reverse + djxl byte-identical "
+                    + "(\(jpgData.count)B → \(container.count)B JXL)"
+                : "\(v.label): FAIL ours=\(ourOK) djxl=\(djxlOK)")
+        }
+        for line in results { print("[DC/ACMeta rANS] \(line)") }
+        for line in results
+            where !line.contains("✓") && !line.contains("SKIP") {
+            XCTFail("DC/ACMetadata rANS failed: \(line)")
+        }
+    }
+
     /// **Progressive forward transcode (v0.12.0hn).** The reverse
     /// direction already round-trips progressive JPEGs (cjxl stores
     /// the full coefficients; we re-derive each scan). This test

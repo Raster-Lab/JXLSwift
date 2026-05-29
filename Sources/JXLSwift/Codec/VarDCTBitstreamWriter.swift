@@ -1012,56 +1012,107 @@ public enum VarDCTBitstreamWriter {
     /// **Status (v0.12.0dd).** First histogram-derived bridge
     /// codebook. Replaces the v0.12.0y 1-symbol-on-zero placeholder,
     /// lifting the all-zero-DC-residual restriction.
-    static func buildBridgePostCodebook(
+    /// Generate the bridge DC group's two modular token streams — the
+    /// single source of truth shared by `buildBridgePostCodebook` (which
+    /// pools them into a histogram) and `writeBridgeDCGroup` (which emits
+    /// them). Both must agree token-for-token or the bitstream is
+    /// undecodable, so they call this rather than duplicating the pass.
+    ///
+    /// Returns the **DC residual** tokens (gradient-predicted, ZigZag-
+    /// packed, in libjxl storage order [Y, X, B]) and the **count** of
+    /// ACMetadata tokens. The bridge's ACMetadata is uniform (DCT8×8 +
+    /// QF=1 + no EPF) so every ACMetadata token is `ZigZag.pack(0) = 0`
+    /// — only the count matters. Both sub-images route through tree
+    /// leaf 0 (context 0).
+    ///
+    /// The DC predictor uses the full `Int32` clamp range (no `lo`/`hi`)
+    /// to match libjxl's `ClampedGradient` exactly: it clamps to
+    /// `[min(n, w), max(n, w)]` intrinsically, so a bit-depth clamp here
+    /// would diverge from the decoder for DC values outside `[0, 127]`
+    /// (bright pixels give Y DC of 200-500). Channel order is [Y, X, B]
+    /// per libjxl `AddVarDCTDC`'s XOR remap; our `dcPerChannel` is in
+    /// [X, Y, B] remap order, so we iterate [1, 0, 2]. (v0.12.0fx/ft.)
+    static func generateBridgeDCGroupTokens(
         state: JXLBridgeEncoderState
-    ) throws -> (EntropySectionHeader, MultiClusterCodebook) {
-        let cfg = HybridUintConfig.raw4
-        var histo = [Int](repeating: 0, count: cfg.maxToken + 1)
-        var maxTok = 0
-        let blocksX = state.planes.blocksX
-        let blocksY = state.planes.blocksY
-        let blockCount = blocksX * blocksY
+    ) -> (dc: [UInt32], acMetaZeros: Int) {
         let predictor: Predictor = .gradient
-        // **v0.12.0fx**: full Int32 range (no `lo`/`hi` clamp) —
-        // matches `writeBridgeDCGroup`'s fixed clamp range. See the
-        // comment block there for the multi-block-bug rationale.
-        // DC channels — gradient predict + pack + tokenise. **v0.12.0ft**:
-        // each channel walks its own block grid (`blocksPerChannel`)
-        // for chroma-subsampled inputs.
-        for ch in 0..<state.planes.channelCount {
+        let dcChannelOrder: [Int] = state.planes.channelCount == 3
+            ? [1, 0, 2] : Array(0..<state.planes.channelCount)
+        var dc: [UInt32] = []
+        for ch in dcChannelOrder {
             let plane = state.planes.dcPerChannel[ch]
             let cbx = state.planes.blocksPerChannel[ch].blocksX
             let cby = state.planes.blocksPerChannel[ch].blocksY
+            dc.reserveCapacity(dc.count + cbx * cby)
             for by in 0..<cby {
                 for bx in 0..<cbx {
                     let nbh = Neighbourhood(
                         at: bx, by, in: plane, width: cbx)
                     let pred = predictor.apply(to: nbh)
-                    let residual = plane[by * cbx + bx]
-                        &- pred
-                    let packed = ZigZag.pack(residual)
-                    let t = Int(cfg.encode(packed).token)
-                    histo[t] += 1
-                    if t > maxTok { maxTok = t }
+                    let residual = plane[by * cbx + bx] &- pred
+                    dc.append(ZigZag.pack(residual))
                 }
             }
         }
-        // ACMetadata — 4 channels of all-zero residuals (bridge
-        // uses uniform DCT8×8 + QF=1 + no EPF, so every value is
-        // zero, ZigZag.pack(0) = 0, cfg.encode(0).token = 0).
-        // Per-channel token counts (libjxl `dec_modular.cc::
-        // DecodeAcMetadata`):
-        //   YToX:       ((bx+7)/8) × ((by+7)/8)
-        //   YToB:       same
-        //   ACS+QF:     count × 2 = blockCount × 2
-        //   EPF:        blockCount
+        // ACMetadata token count (libjxl `dec_modular.cc::
+        // DecodeAcMetadata`): YToX + YToB (64-px CfL tiles) + ACS+QF
+        // (count × 2) + EPF (per block). All values are 0 for the bridge.
+        let blocksX = state.planes.blocksX
+        let blocksY = state.planes.blocksY
+        let blockCount = blocksX * blocksY
         let cflTilesX = (blocksX + 7) >> 3
         let cflTilesY = (blocksY + 7) >> 3
-        let acMetaZeros = cflTilesX * cflTilesY
-            + cflTilesX * cflTilesY
-            + blockCount * 2
-            + blockCount
-        histo[0] += acMetaZeros
+        let acMetaZeros = 2 * (cflTilesX * cflTilesY)
+            + blockCount * 2 + blockCount
+        return (dc, acMetaZeros)
+    }
+
+    /// Encode the post (DC + ACMetadata) section's codebook + both
+    /// modular token streams into a scratch `BitWriter` and return the
+    /// bit count — used to pick Huffman vs rANS for `buildBridgePostCodebook`.
+    /// rANS writes the DC and ACMetadata as **two separate streams**
+    /// (each a fresh `ANSTokenStreamWriter`, mirroring the decoder's two
+    /// `TokenStreamReader`s), so the per-stream init overhead is counted.
+    static func estimateBridgePostSectionBits(
+        header: EntropySectionHeader,
+        codebook: MultiClusterCodebook,
+        dc: [UInt32], acMetaZeros: Int
+    ) throws -> Int {
+        var w = BitWriter()
+        try header.write(to: &w, numContexts: 1)
+        try codebook.write(to: &w, header: header)
+        if header.usePrefixCode {
+            let tw = TokenStreamWriter(header: header, codebook: codebook)
+            for v in dc { try tw.writeToken(context: 0, value: v, to: &w) }
+            for _ in 0..<acMetaZeros {
+                try tw.writeToken(context: 0, value: 0, to: &w)
+            }
+        } else {
+            var dw = try ANSTokenStreamWriter(header: header, codebook: codebook)
+            for v in dc { try dw.writeToken(context: 0, value: v) }
+            try dw.finish(to: &w)
+            var aw = try ANSTokenStreamWriter(header: header, codebook: codebook)
+            for _ in 0..<acMetaZeros { try aw.writeToken(context: 0, value: 0) }
+            try aw.finish(to: &w)
+        }
+        return w.bitCount
+    }
+
+    static func buildBridgePostCodebook(
+        state: JXLBridgeEncoderState
+    ) throws -> (EntropySectionHeader, MultiClusterCodebook) {
+        let cfg = HybridUintConfig.raw4
+        let (dcVals, acMetaZeros) = generateBridgeDCGroupTokens(state: state)
+        // Pool the DC residuals + ACMetadata zeros into one histogram
+        // (both sub-images share the single-leaf tree → context 0).
+        var histo = [Int](repeating: 0, count: cfg.maxToken + 1)
+        var maxTok = 0
+        for v in dcVals {
+            let t = Int(cfg.encode(v).token)
+            histo[t] += 1
+            if t > maxTok { maxTok = t }
+        }
+        histo[0] += acMetaZeros          // ACMetadata is all zeros.
         // Canonical-Huffman builder is undefined for a 1-symbol
         // alphabet; pad to at least 2.
         var alphabet = maxTok + 1
@@ -1070,18 +1121,70 @@ public enum VarDCTBitstreamWriter {
             alphabet = 2
             counts.append(1)
         }
+
+        // --- Candidate A: single-cluster prefix (Huffman) -----------
         let lengths = lengthLimitedCanonicalHuffman(
             counts: counts, maxLength: 15, alphabetSize: alphabet)
-        let table = try PrefixCodeTable(lengths: lengths)
-        let codebook = MultiClusterCodebook(
-            huffmanTables: [table], ansCounts: [],
+        let huffTable = try PrefixCodeTable(lengths: lengths)
+        let huffCodebook = MultiClusterCodebook(
+            huffmanTables: [huffTable], ansCounts: [],
             alphabetSizes: [alphabet])
-        let header = EntropySectionHeader(
+        let huffHeader = EntropySectionHeader(
             lz77: .disabled,
             contextMap: ContextMap.trivial(numContexts: 1),
             usePrefixCode: true, logAlphaSize: 15,
             uintConfigs: [cfg])
-        return (header, codebook)
+
+        // --- Candidate B: single-cluster rANS -----------------------
+        // Removes Huffman's ≥1 bit/symbol floor — decisive for the
+        // bridge's all-zero ACMetadata (≈ 6 × blockCount tokens) and the
+        // skewed DC-residual distribution. The frequency table is the
+        // on-wire quantised distribution so the encoder's alias tables
+        // match what the decoder reconstructs.
+        var ansCandidate: (EntropySectionHeader, MultiClusterCodebook)?
+        do {
+            let dist = try ANSDistribution(
+                rawFrequencies: counts.map { UInt32(max(0, $0)) })
+            let normalised = dist.frequencies.map { Int32($0) }
+            var scratch = BitWriter()
+            let wire = try SpecANSDistribution.writeHistogram(
+                normalised, to: &scratch)
+            var logAlpha = 5
+            while (1 << logAlpha) < wire.count && logAlpha < 8 {
+                logAlpha += 1
+            }
+            if wire.count <= (1 << logAlpha) {
+                let ansCodebook = MultiClusterCodebook(
+                    huffmanTables: [], ansCounts: [wire],
+                    alphabetSizes: [wire.count])
+                let ansHeader = EntropySectionHeader(
+                    lz77: .disabled,
+                    contextMap: ContextMap.trivial(numContexts: 1),
+                    usePrefixCode: false, logAlphaSize: logAlpha,
+                    uintConfigs: [cfg])
+                ansCandidate = (ansHeader, ansCodebook)
+            }
+        } catch {
+            ansCandidate = nil
+        }
+
+        // --- Pick the smaller by actually encoding both -------------
+        guard let cand = ansCandidate else {
+            return (huffHeader, huffCodebook)
+        }
+        let huffBits = (try? estimateBridgePostSectionBits(
+            header: huffHeader, codebook: huffCodebook,
+            dc: dcVals, acMetaZeros: acMetaZeros)) ?? Int.max
+        let ansBits = (try? estimateBridgePostSectionBits(
+            header: cand.0, codebook: cand.1,
+            dc: dcVals, acMetaZeros: acMetaZeros)) ?? Int.max
+        if ProcessInfo.processInfo.environment["JXL_TRACE"] != nil {
+            FileHandle.standardError.write(Data(
+                ("TRACE bridge post (DC/ACMeta) entropy: huffman="
+                 + "\(huffBits)b ans=\(ansBits)b → "
+                 + "\(ansBits < huffBits ? "ANS" : "Huffman")\n").utf8))
+        }
+        return ansBits < huffBits ? cand : (huffHeader, huffCodebook)
     }
 
     /// Build the AC codebook the bridge's HfGlobal + ACGroup share.
@@ -1430,110 +1533,53 @@ public enum VarDCTBitstreamWriter {
         postCodebook: MultiClusterCodebook,
         to w: inout BitWriter
     ) throws {
+        // DC residual + ACMetadata tokens (the single source of truth
+        // shared with `buildBridgePostCodebook`). Both sub-images route
+        // through tree leaf 0 (context 0) and share the post codebook;
+        // `postHeader.usePrefixCode` picks Huffman (inline bits) vs rANS
+        // (a fresh interleaved stream per sub-image, matching the
+        // decoder's two separate `TokenStreamReader`s).
+        let (dcVals, acMetaZeros) = generateBridgeDCGroupTokens(state: state)
+        let blockCount = state.planes.blocksX * state.planes.blocksY
+
         // 1. dc_extra_precision = 0 (2 bits).
         w.write(bits: 2, value: 0)
-        // 2. DC modular sub-image: GroupHeader + per-channel
-        //    gradient-predicted residual tokens.
+        // 2. DC modular sub-image: GroupHeader + residual tokens.
         try GroupHeader.default.write(to: &w)
-        let dcWriter = TokenStreamWriter(
-            header: postHeader, codebook: postCodebook)
-        let blocksX = state.planes.blocksX
-        let blocksY = state.planes.blocksY
-        let predictor: Predictor = .gradient
-        // **v0.12.0fx — DC predictor clamp range fix.** Earlier this
-        // file passed `lo: 0, hi: 127` to `predictor.apply(...)`, on
-        // the assumption that "DC plane values are small JPEG DC
-        // integers (typically ±100)". That assumption breaks for any
-        // image with DC values outside `[0, 127]` — e.g. bright pixels
-        // give Y DC of 200-500, which the clamp truncates to 127. The
-        // encoder then writes a residual of `actual - 127`, but the
-        // decoder reconstructs with libjxl's `ClampedGradient` (which
-        // does NOT bit-depth-clamp) giving `actual` and decoded =
-        // `actual + (actual - 127)`. Result: blocks beyond `(0, 0)`
-        // decode with cumulative DC offsets (pre-fix: block (1,1) max
-        // diff ≈100 because gradient compounds W and N errors). The 8×8
-        // test trivially skipped this because single-block has no W/N/NW
-        // → pred=0 regardless of clamp. Fix: use the full `Int32` range
-        // so encoder and decoder predictions agree byte-for-byte.
-        // (libjxl `ClampedGradient` clamps to `[min(n, w), max(n, w)]`
-        // intrinsically — the wide outer range never fires.)
-        // **Channel order in the DC modular sub-image is [Y, X, B]**
-        // (libjxl `AddVarDCTDC`'s XOR remap: `image.channel[c < 2 ?
-        // c^1 : c]`). Our `state.planes.dcPerChannel` is in JpegOrder
-        // remap order [X, Y, B] (post-`remappedForJXLBridge`), so we
-        // iterate as [1, 0, 2] to land Y first on the wire.
-        // **Caveat for 1-channel grayscale**: a single channel is
-        // written as-is (the libjxl XOR only meaningfully swaps the
-        // first two channels of a 3-channel frame).
-        let dcChannelOrder: [Int]
-        if state.planes.channelCount == 3 {
-            dcChannelOrder = [1, 0, 2]
+        if postHeader.usePrefixCode {
+            let dcWriter = TokenStreamWriter(
+                header: postHeader, codebook: postCodebook)
+            for v in dcVals {
+                try dcWriter.writeToken(context: 0, value: v, to: &w)
+            }
         } else {
-            dcChannelOrder = Array(0..<state.planes.channelCount)
+            var dcWriter = try ANSTokenStreamWriter(
+                header: postHeader, codebook: postCodebook)
+            for v in dcVals { try dcWriter.writeToken(context: 0, value: v) }
+            try dcWriter.finish(to: &w)
         }
-        // **v0.12.0ft**: each channel walks its own block grid
-        // (`blocksPerChannel[ch]`) — chroma planes are smaller than
-        // luma under 4:2:0 / 4:2:2 subsampling.
-        for ch in dcChannelOrder {
-            let plane = state.planes.dcPerChannel[ch]
-            let cbx = state.planes.blocksPerChannel[ch].blocksX
-            let cby = state.planes.blocksPerChannel[ch].blocksY
-            for by in 0..<cby {
-                for bx in 0..<cbx {
-                    let nbh = Neighbourhood(
-                        at: bx, by, in: plane, width: cbx)
-                    let pred = predictor.apply(to: nbh)
-                    let residual = plane[by * cbx + bx]
-                        &- pred
-                    let packed = ZigZag.pack(residual)
-                    try dcWriter.writeToken(
-                        context: 0, value: packed, to: &w)
-                }
-            }
-        }
-        // 3. ACMetadata count = total block count (every block
-        //    is a first-block since the bridge uses all-DCT8×8).
-        let blockCount = blocksX * blocksY
-        let acMetaBits = Int(ceilLog2(
-            UInt32(max(1, blockCount))))
+        // 3. ACMetadata count = total block count (every block is a
+        //    first-block since the bridge uses all-DCT8×8).
+        let acMetaBits = Int(ceilLog2(UInt32(max(1, blockCount))))
         if acMetaBits > 0 {
-            // count - 1 stored.
-            w.write(bits: acMetaBits,
-                    value: UInt32(max(0, blockCount - 1)))
+            w.write(bits: acMetaBits, value: UInt32(max(0, blockCount - 1)))
         }
-        // 4. ACMetadata sub-image — GroupHeader + tokens.
-        //    Bridge ACMetadata is uniform (DCT8×8 strategy=0,
-        //    QF=1, no EPF), so all tokens are ZigZag.pack(0) = 0.
+        // 4. ACMetadata sub-image — GroupHeader + all-zero tokens
+        //    (uniform DCT8×8 + QF=1 + no EPF → every value 0).
         try GroupHeader.default.write(to: &w)
-        let acMetaWriter = TokenStreamWriter(
-            header: postHeader, codebook: postCodebook)
-        // **Per-channel dimensions** (libjxl `dec_modular.cc::
-        // DecodeAcMetadata`):
-        //   channel[0] (YToX):  ((bx+7)/8) × ((by+7)/8) — 64-px
-        //                       colour-correlation tiles.
-        //   channel[1] (YToB):  same as channel[0].
-        //   channel[2] (ACS+QF combined): count × 2 — **two
-        //                       rows**, row 0 = AC strategy codes,
-        //                       row 1 = QF deltas. The bridge uses
-        //                       uniform DCT8×8 + QF=1 so all are 0.
-        //   channel[3] (EPF sharpness): blocksX × blocksY — per-block.
-        // count was written above as the total first-block count
-        // for the AC-strategy plane (= blockCount when every block
-        // is DCT8×8). Every value is 0 → every gradient-predicted
-        // residual is 0 → every emitted token is `ZigZag.pack(0) = 0`.
-        let cflTilesX = (blocksX + 7) >> 3
-        let cflTilesY = (blocksY + 7) >> 3
-        let channelTokenCounts = [
-            cflTilesX * cflTilesY,    // YToX
-            cflTilesX * cflTilesY,    // YToB
-            blockCount * 2,           // ACS+QF (count × 2)
-            blocksX * blocksY,        // EPF sharpness
-        ]
-        for ch in 0..<4 {
-            for _ in 0..<channelTokenCounts[ch] {
-                try acMetaWriter.writeToken(
-                    context: 0, value: 0, to: &w)
+        if postHeader.usePrefixCode {
+            let acMetaWriter = TokenStreamWriter(
+                header: postHeader, codebook: postCodebook)
+            for _ in 0..<acMetaZeros {
+                try acMetaWriter.writeToken(context: 0, value: 0, to: &w)
             }
+        } else {
+            var acMetaWriter = try ANSTokenStreamWriter(
+                header: postHeader, codebook: postCodebook)
+            for _ in 0..<acMetaZeros {
+                try acMetaWriter.writeToken(context: 0, value: 0)
+            }
+            try acMetaWriter.finish(to: &w)
         }
     }
 
