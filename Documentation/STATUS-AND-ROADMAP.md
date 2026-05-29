@@ -1,6 +1,6 @@
 # JXLSwift — Status & Roadmap
 
-**A current-state knowledge map of the project.** Snapshot as of **v0.12.0i10** (2026-05-29).
+**A current-state knowledge map of the project.** Snapshot as of **v0.12.0i11** (2026-05-29).
 For the original project charter + constraints see [ROADMAP.md](../ROADMAP.md); for the
 load-bearing rules see [CLAUDE.md](../CLAUDE.md); for release-by-release detail see
 [CHANGELOG.md](../CHANGELOG.md).
@@ -27,11 +27,11 @@ GPU paths (land later, behind the proven scalar path).
 
 | | |
 |---|---|
-| **Version** | v0.12.0i10 (Phase J line) |
-| **Tests** | 679 passing / 7 skipped / 0 failures (`swift test -c release`, ~68 s) |
+| **Version** | v0.12.0i11 (Phase J line) |
+| **Tests** | 681 passing / 7 skipped / 0 failures (`swift test -c release`, ~70 s) |
 | **Dependencies** | `swift-argument-parser` (CLI only). Zero runtime deps. |
 | **Project focus** | **Lossless, for medical imaging.** Lossy *encode* (full VarDCT from pixels) is deferred to the very last phase. The lossy *decode* path is complete and `djxl`-matching, but new encoder work is lossless-first. |
-| **Headline capability** | **Two lossless encode paths, both `djxl`-validated:** (1) **lossless JPEG ⇄ JXL transcoding**, byte-identical both directions, no `--source` needed — baseline + progressive, all chroma, odd dims, grayscale, metadata, any size ≤ 2048 px/side (multi-AC-group); forward ~1.03–1.05× cjxl on real content. (2) **native lossless Modular encode** of raw pixels — 8- and 16-bit grayscale / RGB / RGBA, **arbitrary dimensions** (≤ 8192), byte-exact through `djxl` — covering the core medical case (16-bit grayscale CT/MR). |
+| **Headline capability** | **Two lossless encode paths, both `djxl`-validated:** (1) **lossless JPEG ⇄ JXL transcoding**, byte-identical both directions, no `--source` needed — baseline + progressive, all chroma, odd dims, grayscale, metadata, any size ≤ 2048 px/side (multi-AC-group); forward ~1.03–1.05× cjxl on real content. (2) **native lossless Modular encode** of raw pixels — 8- and 16-bit grayscale / RGB / RGBA, **arbitrary dimensions** (≤ 16384, incl. multi-DC-group > 4096 px), byte-exact through `djxl` — covering the core medical case (16-bit grayscale CT/MR). |
 
 **What works end-to-end today**
 
@@ -260,8 +260,10 @@ last phase.** Both lossless encode paths (JPEG transcode + native Modular) are c
    desync `djxl`) and must be reconciled against authoritative libjxl/spec formulas first (an
    attempt to fix property 8 to `left−|top|` did **not** sync djxl — see [CHANGELOG.md] / memory);
    and **> 8 contexts** needs the full entropy-coded context map made djxl-compliant.
-2. **Lossless coverage for medical inputs** — >8192 px dimensions (the current cap), bit depths
-   beyond 16, gray+alpha at arbitrary dims, encode-effort tuning. Driven by the actual corpus.
+2. **Lossless coverage for medical inputs** — the cap is now **16384** (v0.12.0i11, incl.
+   multi-DC-group > 4096 px, djxl-validated); remaining: dimensions beyond 16384 (needs the
+   SizeHeader's largest encoding verified + memory review), bit depths beyond 16, gray+alpha at
+   arbitrary dims, encode-effort tuning. Driven by the actual corpus.
 3. **Forward transcode size** is effectively complete (~1.03–1.05× cjxl on real content;
    coefficient-order measured neutral-to-negative, §5.3) — only sub-kilobyte edge-case levers
    remain (richer DC-group tree, block-context-map size).

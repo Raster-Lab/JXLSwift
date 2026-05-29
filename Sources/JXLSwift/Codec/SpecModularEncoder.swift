@@ -4,9 +4,10 @@
 // integer pixel layouts the project's primary use cases need:
 // 8-bit grayscale, 8-bit RGB, 8-bit RGBA, 9..16-bit grayscale,
 // 9..16-bit RGB, 9..16-bit RGBA. All round-trip through both OUR
-// decoder AND libjxl `djxl` 0.11.2 at any size up to 8192×8192
-// (multiple-of-8). Multi-group encoding lights up automatically
-// for >512² inputs. Wired through `JXLEncoder.encode(_:)` and
+// decoder AND libjxl `djxl` 0.11.2 at any size up to 16384×16384
+// (arbitrary dimensions). Multi-group encoding lights up automatically
+// for >512² inputs; >4096-px dimensions add multiple DC groups. Wired
+// through `JXLEncoder.encode(_:)` and
 // `jxl-tool encode`; the only remaining work is lossy VarDCT
 // (a separate multi-person-year project tracked in ROADMAP.md).
 //
@@ -360,8 +361,8 @@ public enum SpecModularEncoder {
     /// 16-bit CT — all flow through this entry point.
     ///
     /// - Parameters:
-    ///   - width: Image width in pixels (multiple of 8, ≤ 8192).
-    ///   - height: Image height (multiple of 8, ≤ 8192).
+    ///   - width: Image width in pixels (≤ 16384, any dimension).
+    ///   - height: Image height (≤ 16384, any dimension).
     ///   - bitsPerSample: 9..16. Pixels must lie in
     ///     `[0, 2^bitsPerSample - 1]`. The codestream's
     ///     `BitDepth.bitsPerSample` records this exactly so a
@@ -400,8 +401,8 @@ public enum SpecModularEncoder {
     /// sharing one pooled-histogram Huffman codebook.
     ///
     /// - Parameters:
-    ///   - width: Image width (multiple of 8, ≤ 8192).
-    ///   - height: Image height (multiple of 8, ≤ 8192).
+    ///   - width: Image width (≤ 16384, any dimension).
+    ///   - height: Image height (≤ 16384, any dimension).
     ///   - bitsPerSample: 9..16. Per-channel sample range bound.
     ///   - r/g/b: Row-major `UInt16` buffers of length
     ///     `width * height`.
@@ -2085,9 +2086,9 @@ public enum SpecModularEncoder {
         // Modular coding is pixel-based (no DCT block alignment), and the
         // group tiler crops partial edge rects — so arbitrary dimensions
         // are supported (essential for arbitrary-size medical images).
-        guard width <= 8192 && height <= 8192 else {
+        guard width <= 16384 && height <= 16384 else {
             throw SpecModularEncoderError.unsupportedFrame(
-                "encoder currently requires 1 ≤ width,height ≤ 8192"
+                "encoder currently requires 1 ≤ width,height ≤ 16384"
             )
         }
     }

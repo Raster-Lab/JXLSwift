@@ -11,6 +11,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0i11 — Larger dimensions: multi-DC-group coverage + 16384 cap
+
+Coverage for large medical frames. Two gaps closed, both `djxl`-validated:
+- **Multi-DC-group** (`numDcGroups > 1`): any dimension over the 4096-px
+  DC-group size produces multiple DC groups — a section-layout path (one
+  empty DC-group section *per* DC group, more TOC entries) that the
+  ≤ 1024-px multi-group tests never exercised, even though it was inside
+  the claimed support range. Now pinned by a 4100×80 round-trip (2 DC
+  groups, 9 AC groups).
+- **Dimension cap 8192 → 16384**: the old cap was conservative; the
+  SizeHeader large-dimension encoding + the multi-DC-group structure
+  handle bigger frames fine. Validated with a 16000×16 frame (4 DC groups
+  across, > 8192). The encoder still takes arbitrary (non-multiple-of-8)
+  dimensions; stale `multiple of 8, ≤ 8192` doc comments corrected.
+
+New `testSpecModularEncoder_MultiDcGroup_DjxlRoundTrip` and
+`testSpecModularEncoder_BeyondOldCap_DjxlRoundTrip`. Full suite: 681 tests.
+
 ### v0.12.0i10 — Greedy multi-property MA-tree on the multi-group path
 
 Extends the i9 greedy multi-property tree (single-section only) to the

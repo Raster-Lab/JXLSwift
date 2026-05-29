@@ -13766,6 +13766,131 @@ extension FoundationTests {
         }
     }
 
+    /// Multi-**DC-group** coverage: an image wider than the 4096-px DC
+    /// group dimension produces `numDcGroups > 1` — a section-layout path
+    /// (one empty DC-group section *per* DC group) that the ≤ 1024-px
+    /// multi-group tests never exercise, even though it's inside the
+    /// claimed ≤ 8192 support range. This 4100×80 16-bit grayscale frame
+    /// has 2 DC groups (and 9 AC groups). Validated byte-exact through
+    /// **our decoder** and **`djxl`** — the regression that fails if the
+    /// multi-DC-group TOC / section structure is wrong.
+    func testSpecModularEncoder_MultiDcGroup_DjxlRoundTrip() throws {
+        let w = 4100, h = 80
+        var pixels = [UInt16](repeating: 0, count: w * h)
+        var seed: UInt32 = 0x3b1f_2e57
+        for y in 0..<h {
+            for x in 0..<w {
+                let i = y * w + x
+                if x < 2048 {
+                    pixels[i] = UInt16(1000 + ((x + y) & 0x03ff))   // smooth
+                } else {
+                    seed = seed &* 1103515245 &+ 12345
+                    pixels[i] = UInt16(truncatingIfNeeded: seed)     // noise
+                }
+            }
+        }
+        let bytes = try SpecModularEncoder.encodeGrayscale16(
+            width: w, height: h, pixels: pixels)
+        let image = try JXLDecoder().decodeModular(bytes)
+        XCTAssertEqual(image.channels.count, 1, "expected 1 channel")
+        for i in 0..<(w * h) {
+            XCTAssertEqual(image.channels[0].pixels[i], Int32(pixels[i]),
+                "our-decoder pixel \(i)")
+        }
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("djxl not available at \(djxl)")
+        }
+        let tmp = NSTemporaryDirectory()
+        let inP = tmp + "jxlswift_mdcg.jxl"
+        let outP = tmp + "jxlswift_mdcg.pgm"
+        defer { try? FileManager.default.removeItem(atPath: inP)
+                try? FileManager.default.removeItem(atPath: outP) }
+        try bytes.write(to: URL(fileURLWithPath: inP))
+        let p = Process(); p.launchPath = djxl
+        p.arguments = [inP, outP]
+        let errPipe = Pipe()
+        p.standardOutput = Pipe(); p.standardError = errPipe
+        try p.run(); p.waitUntilExit()
+        let err = String(
+            data: errPipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8) ?? ""
+        XCTAssertEqual(p.terminationStatus, 0,
+            "djxl rejected our \(w)×\(h) multi-DC-group bytes; stderr: \(err)")
+        let pgm = try Data(contentsOf: URL(fileURLWithPath: outP))
+        var nl = 0, start = 0
+        for (i, b) in pgm.enumerated() where b == 0x0a {
+            nl += 1; if nl == 3 { start = i + 1; break }
+        }
+        for i in 0..<(w * h) {
+            let hi = UInt16(pgm[start + 2 * i])
+            let lo = UInt16(pgm[start + 2 * i + 1])
+            XCTAssertEqual((hi << 8) | lo, pixels[i],
+                "djxl 16-bit pixel \(i) mismatch")
+        }
+    }
+
+    /// Dimensions beyond the old 8192-px cap: a 16000×16 16-bit grayscale
+    /// frame (4 DC groups across, well past 8192) exercises the SizeHeader
+    /// large-dimension encoding + the multi-DC-group structure at the new
+    /// 16384 limit. Validated byte-exact through **our decoder** and
+    /// **`djxl`**. Kept a thin (16-row) area so the test stays fast.
+    func testSpecModularEncoder_BeyondOldCap_DjxlRoundTrip() throws {
+        let w = 16000, h = 16
+        var pixels = [UInt16](repeating: 0, count: w * h)
+        var seed: UInt32 = 0x1a2b_3c4d
+        for y in 0..<h {
+            for x in 0..<w {
+                let i = y * w + x
+                if (x / 1000) % 2 == 0 {
+                    pixels[i] = UInt16(2000 + ((x + y) & 0x01ff))
+                } else {
+                    seed = seed &* 1103515245 &+ 12345
+                    pixels[i] = UInt16(truncatingIfNeeded: seed)
+                }
+            }
+        }
+        let bytes = try SpecModularEncoder.encodeGrayscale16(
+            width: w, height: h, pixels: pixels)
+        let image = try JXLDecoder().decodeModular(bytes)
+        XCTAssertEqual(image.channels.count, 1, "expected 1 channel")
+        for i in 0..<(w * h) {
+            XCTAssertEqual(image.channels[0].pixels[i], Int32(pixels[i]),
+                "our-decoder pixel \(i)")
+        }
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("djxl not available at \(djxl)")
+        }
+        let tmp = NSTemporaryDirectory()
+        let inP = tmp + "jxlswift_bigdim.jxl"
+        let outP = tmp + "jxlswift_bigdim.pgm"
+        defer { try? FileManager.default.removeItem(atPath: inP)
+                try? FileManager.default.removeItem(atPath: outP) }
+        try bytes.write(to: URL(fileURLWithPath: inP))
+        let p = Process(); p.launchPath = djxl
+        p.arguments = [inP, outP]
+        let errPipe = Pipe()
+        p.standardOutput = Pipe(); p.standardError = errPipe
+        try p.run(); p.waitUntilExit()
+        let err = String(
+            data: errPipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8) ?? ""
+        XCTAssertEqual(p.terminationStatus, 0,
+            "djxl rejected our \(w)×\(h) beyond-8192 bytes; stderr: \(err)")
+        let pgm = try Data(contentsOf: URL(fileURLWithPath: outP))
+        var nl = 0, start = 0
+        for (i, b) in pgm.enumerated() where b == 0x0a {
+            nl += 1; if nl == 3 { start = i + 1; break }
+        }
+        for i in 0..<(w * h) {
+            let hi = UInt16(pgm[start + 2 * i])
+            let lo = UInt16(pgm[start + 2 * i + 1])
+            XCTAssertEqual((hi << 8) | lo, pixels[i],
+                "djxl 16-bit pixel \(i) mismatch")
+        }
+    }
+
     /// Greedy **multi-property** MA-tree (cjxl-style) on a single-section
     /// 512² 16-bit image whose structure varies along **two** independent
     /// axes: a 4×4 grid of 128-px cells where the row sets the noise
