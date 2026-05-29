@@ -1297,18 +1297,26 @@ public enum SpecModularEncoder {
             try aw.finish(to: &sec)
         }
         sec.alignToByte()
-        let singleData = sec.finishToData()
-        // Multi-context candidate: split residuals by local activity (the
-        // WP-error property) into separate per-context histograms. Helps
-        // structured images (smooth + edges) where one global histogram
-        // is a poor fit. Cost-gated by full-section size; cheap to skip.
+        // Candidates, smallest wins (all byte-exact through djxl):
+        //  • single-context (above),
+        //  • activity split — property-15 WP-activity bins (fixed + learned),
+        //  • greedy multi-property MA-tree — branches on whichever of the
+        //    12 neighbour-derived properties best separates residuals.
+        // Each is cost-gated by actual section bytes; cheap to skip.
+        var best = sec.finishToData()
         if let multiData = try? buildSingleSectionMultiContext(
             width: width, height: height,
             channels: channels, sampleHi: sampleHi),
-           multiData.count < singleData.count {
-            return multiData
+           multiData.count < best.count {
+            best = multiData
         }
-        return singleData
+        if let greedyData = buildSingleSectionGreedyTree(
+            width: width, height: height,
+            channels: channels, sampleHi: sampleHi),
+           greedyData.count < best.count {
+            best = greedyData
+        }
+        return best
     }
 
     /// Write the tree section (6-context tree-token entropy section +
@@ -1345,6 +1353,122 @@ public enum SpecModularEncoder {
         try tree.encode { ctx, val in
             try treeWriter.writeToken(context: ctx, value: val, to: &w)
         }
+    }
+
+    /// Assemble a complete single-section Modular body for a given MA-tree
+    /// and per-pixel `(context, residual-token)` routing: `matrices_dc` +
+    /// `has_tree` + the tree section + the post codebook (Huffman vs rANS,
+    /// cost-gated by encoding both) + `GroupHeader` + the context-routed
+    /// token stream. Shared by the activity-split and greedy multi-property
+    /// paths. Returns `nil` for a degenerate / unencodable routing (an
+    /// empty context, or a codebook that won't serialise).
+    private static func assembleMultiContextSection(
+        tree: ModularTree, numContexts n: Int,
+        ordered: [(ctx: Int, val: UInt32)], postCfg: HybridUintConfig
+    ) -> Data? {
+        guard n >= 1, !ordered.isEmpty else { return nil }
+        var histo = [[Int]](
+            repeating: [Int](repeating: 0, count: postCfg.maxToken + 1), count: n)
+        var maxTok = 0
+        for (ctx, v) in ordered {
+            let tk = Int(postCfg.encode(v).token)
+            histo[ctx][tk] += 1
+            if tk > maxTok { maxTok = tk }
+        }
+        for c in 0..<n where histo[c].reduce(0, +) == 0 { return nil }
+        let alpha = maxTok + 1
+        guard let ctxMap = try? ContextMap(
+            numClusters: n, map: (0..<n).map { UInt8($0) }) else { return nil }
+        let cfgs = Array(repeating: postCfg, count: n)
+        func sectionBits(
+            _ h: EntropySectionHeader, _ c: MultiClusterCodebook
+        ) -> Int {
+            var w = BitWriter()
+            do {
+                try h.write(to: &w, numContexts: n)
+                try c.write(to: &w, header: h)
+                if h.usePrefixCode {
+                    let tw = TokenStreamWriter(header: h, codebook: c)
+                    for (ctx, v) in ordered {
+                        try tw.writeToken(context: ctx, value: v, to: &w)
+                    }
+                } else {
+                    var aw = try ANSTokenStreamWriter(header: h, codebook: c)
+                    for (ctx, v) in ordered { try aw.writeToken(context: ctx, value: v) }
+                    try aw.finish(to: &w)
+                }
+            } catch { return Int.max }
+            return w.bitCount
+        }
+        // Huffman candidate (one table per context).
+        let huffTables: [PrefixCodeTable]
+        do {
+            huffTables = try (0..<n).map { c in
+                try PrefixCodeTable(lengths: lengthLimitedCanonicalHuffman(
+                    counts: Array(histo[c][0..<alpha]), maxLength: 15,
+                    alphabetSize: alpha))
+            }
+        } catch { return nil }
+        let huffCodebook = MultiClusterCodebook(
+            huffmanTables: huffTables, ansCounts: [],
+            alphabetSizes: Array(repeating: alpha, count: n))
+        let huffHeader = EntropySectionHeader(
+            lz77: .disabled, contextMap: ctxMap,
+            usePrefixCode: true, logAlphaSize: 15, uintConfigs: cfgs)
+        var best: (EntropySectionHeader, MultiClusterCodebook) =
+            (huffHeader, huffCodebook)
+        var bestBits = sectionBits(huffHeader, huffCodebook)
+        // rANS candidate (one histogram per context).
+        var wires: [[Int32]] = []
+        var maxWire = 0
+        var ansOK = true
+        for c in 0..<n {
+            guard let dist = try? ANSDistribution(
+                rawFrequencies: histo[c][0..<alpha].map { UInt32(max(0, $0)) })
+            else { ansOK = false; break }
+            var scratch = BitWriter()
+            guard let wire = try? SpecANSDistribution.writeHistogram(
+                dist.frequencies.map { Int32($0) }, to: &scratch)
+            else { ansOK = false; break }
+            wires.append(wire); maxWire = max(maxWire, wire.count)
+        }
+        if ansOK {
+            var logAlpha = 5
+            while (1 << logAlpha) < maxWire && logAlpha < 8 { logAlpha += 1 }
+            if maxWire <= (1 << logAlpha) {
+                let ansHeader = EntropySectionHeader(
+                    lz77: .disabled, contextMap: ctxMap,
+                    usePrefixCode: false, logAlphaSize: logAlpha,
+                    uintConfigs: cfgs)
+                let ansCodebook = MultiClusterCodebook(
+                    huffmanTables: [], ansCounts: wires,
+                    alphabetSizes: wires.map { $0.count })
+                let b = sectionBits(ansHeader, ansCodebook)
+                if b < bestBits { best = (ansHeader, ansCodebook); bestBits = b }
+            }
+        }
+        let (postHeader, postCodebook) = best
+        var sec = BitWriter()
+        sec.writeBit(true)            // matrices_dc_default
+        sec.writeBit(true)            // has_tree
+        do {
+            try writeModularTreeSectionOnly(to: &sec, tree: tree)
+            try postHeader.write(to: &sec, numContexts: n)
+            try postCodebook.write(to: &sec, header: postHeader)
+            try GroupHeader.default.write(to: &sec)
+            if postHeader.usePrefixCode {
+                let tw = TokenStreamWriter(header: postHeader, codebook: postCodebook)
+                for (ctx, v) in ordered {
+                    try tw.writeToken(context: ctx, value: v, to: &sec)
+                }
+            } else {
+                var aw = try ANSTokenStreamWriter(header: postHeader, codebook: postCodebook)
+                for (ctx, v) in ordered { try aw.writeToken(context: ctx, value: v) }
+                try aw.finish(to: &sec)
+            }
+        } catch { return nil }
+        sec.alignToByte()
+        return sec.finishToData()
     }
 
     /// Multi-context single-section candidate: split residuals by the
@@ -1398,114 +1522,11 @@ public enum SpecModularEncoder {
         func buildForThresholds(_ thr: [Int32]) -> Data? {
             guard let (n, ctxOf, tree) =
                 activitySplitTree(thresholds: thr) else { return nil }
-            var histo = [[Int]](
-                repeating: [Int](repeating: 0, count: postCfg.maxToken + 1),
-                count: n)
             var ordered: [(ctx: Int, val: UInt32)] = []
             ordered.reserveCapacity(perPixel.count)
-            var maxTok = 0
-            for (wpProp, tok) in perPixel {
-                let ctx = ctxOf(wpProp)
-                ordered.append((ctx, tok))
-                let tk = Int(postCfg.encode(tok).token)
-                histo[ctx][tk] += 1
-                if tk > maxTok { maxTok = tk }
-            }
-            for c in 0..<n where histo[c].reduce(0, +) == 0 { return nil }
-            let alpha = maxTok + 1
-            guard let ctxMap = try? ContextMap(
-                numClusters: n, map: (0..<n).map { UInt8($0) }) else { return nil }
-            let cfgs = Array(repeating: postCfg, count: n)
-
-            func sectionBits(
-                _ h: EntropySectionHeader, _ c: MultiClusterCodebook
-            ) -> Int {
-                var w = BitWriter()
-                do {
-                    try h.write(to: &w, numContexts: n)
-                    try c.write(to: &w, header: h)
-                    if h.usePrefixCode {
-                        let tw = TokenStreamWriter(header: h, codebook: c)
-                        for (ctx, v) in ordered {
-                            try tw.writeToken(context: ctx, value: v, to: &w)
-                        }
-                    } else {
-                        var aw = try ANSTokenStreamWriter(header: h, codebook: c)
-                        for (ctx, v) in ordered { try aw.writeToken(context: ctx, value: v) }
-                        try aw.finish(to: &w)
-                    }
-                } catch { return Int.max }
-                return w.bitCount
-            }
-            // Huffman candidate (one table per context).
-            let huffTables: [PrefixCodeTable]
-            do {
-                huffTables = try (0..<n).map { c in
-                    try PrefixCodeTable(lengths: lengthLimitedCanonicalHuffman(
-                        counts: Array(histo[c][0..<alpha]), maxLength: 15,
-                        alphabetSize: alpha))
-                }
-            } catch { return nil }
-            let huffCodebook = MultiClusterCodebook(
-                huffmanTables: huffTables, ansCounts: [],
-                alphabetSizes: Array(repeating: alpha, count: n))
-            let huffHeader = EntropySectionHeader(
-                lz77: .disabled, contextMap: ctxMap,
-                usePrefixCode: true, logAlphaSize: 15, uintConfigs: cfgs)
-            var best: (EntropySectionHeader, MultiClusterCodebook) =
-                (huffHeader, huffCodebook)
-            var bestBits = sectionBits(huffHeader, huffCodebook)
-            // rANS candidate (one histogram per context).
-            var wires: [[Int32]] = []
-            var maxWire = 0
-            var ansOK = true
-            for c in 0..<n {
-                guard let dist = try? ANSDistribution(
-                    rawFrequencies: histo[c][0..<alpha].map { UInt32(max(0, $0)) })
-                else { ansOK = false; break }
-                var scratch = BitWriter()
-                guard let wire = try? SpecANSDistribution.writeHistogram(
-                    dist.frequencies.map { Int32($0) }, to: &scratch)
-                else { ansOK = false; break }
-                wires.append(wire); maxWire = max(maxWire, wire.count)
-            }
-            if ansOK {
-                var logAlpha = 5
-                while (1 << logAlpha) < maxWire && logAlpha < 8 { logAlpha += 1 }
-                if maxWire <= (1 << logAlpha) {
-                    let ansHeader = EntropySectionHeader(
-                        lz77: .disabled, contextMap: ctxMap,
-                        usePrefixCode: false, logAlphaSize: logAlpha,
-                        uintConfigs: cfgs)
-                    let ansCodebook = MultiClusterCodebook(
-                        huffmanTables: [], ansCounts: wires,
-                        alphabetSizes: wires.map { $0.count })
-                    let b = sectionBits(ansHeader, ansCodebook)
-                    if b < bestBits { best = (ansHeader, ansCodebook); bestBits = b }
-                }
-            }
-            let (postHeader, postCodebook) = best
-            var sec = BitWriter()
-            sec.writeBit(true)            // matrices_dc_default
-            sec.writeBit(true)            // has_tree
-            do {
-                try writeModularTreeSectionOnly(to: &sec, tree: tree)
-                try postHeader.write(to: &sec, numContexts: n)
-                try postCodebook.write(to: &sec, header: postHeader)
-                try GroupHeader.default.write(to: &sec)
-                if postHeader.usePrefixCode {
-                    let tw = TokenStreamWriter(header: postHeader, codebook: postCodebook)
-                    for (ctx, v) in ordered {
-                        try tw.writeToken(context: ctx, value: v, to: &sec)
-                    }
-                } else {
-                    var aw = try ANSTokenStreamWriter(header: postHeader, codebook: postCodebook)
-                    for (ctx, v) in ordered { try aw.writeToken(context: ctx, value: v) }
-                    try aw.finish(to: &sec)
-                }
-            } catch { return nil }
-            sec.alignToByte()
-            return sec.finishToData()
+            for (wpProp, tok) in perPixel { ordered.append((ctxOf(wpProp), tok)) }
+            return assembleMultiContextSection(
+                tree: tree, numContexts: n, ordered: ordered, postCfg: postCfg)
         }
 
         // Try fixed 2-bin (median), 4-bin (quartile) and 8-bin (octile)
@@ -1536,6 +1557,241 @@ public enum SpecModularEncoder {
             if !isFixed, let d = buildForThresholds(l) { candidates.append(d) }
         }
         return candidates.min(by: { $0.count < $1.count })
+    }
+
+    /// Learn a greedy multi-property MA-tree (cjxl-style) from per-pixel
+    /// property vectors + residual-token buckets. **Best-first** splitting:
+    /// at each step the current leaf whose best `(property, threshold)`
+    /// split yields the largest residual-token-entropy reduction is split,
+    /// until the leaf budget is hit or no split clears `minGain`.
+    /// `propsFlat[i*propCount + k]` is pixel `i`'s value of property
+    /// `propIndices[k]` (an explicit, not-necessarily-contiguous list of
+    /// libjxl property indices). The emitted decision nodes record the
+    /// actual libjxl property index, and the per-pixel context mirrors
+    /// `ModularTree.walk` (`property > split → leftChild`); the tree is
+    /// linearised in the decoder's level-order (BFS) fill with leafIds in
+    /// encounter order, so the decoder — computing the same properties and
+    /// assigning leafIds the same way — agrees by construction. Returns
+    /// `nil` if no split clears `minGain` (i.e. a single context).
+    private static func greedyTreeAndContexts(
+        propsFlat: [Int32], tokBucket: [Int],
+        pixelCount n: Int, propIndices: [Int32],
+        maxTok: Int, maxLeaves: Int, minGain: Double
+    ) -> (tree: ModularTree, contexts: [Int], numContexts: Int)? {
+        let propCount = propIndices.count
+        guard n >= 2, propCount >= 1 else { return nil }
+
+        func term(_ c: Int) -> Double { c <= 1 ? 0 : Double(c) * log2(Double(c)) }
+        func histCost(_ h: [Int], _ total: Int) -> Double {
+            if total <= 1 { return 0 }
+            var s = 0.0
+            for c in h where c > 1 { s += term(c) }
+            return Double(total) * log2(Double(total)) - s
+        }
+
+        final class GNode {
+            var idxs: [Int]
+            var prop: Int32 = -1     // actual property index; -1 until split
+            var split: Int32 = 0
+            var left: GNode?
+            var right: GNode?
+            var bestK: Int = -1      // candidate position of best split prop
+            var bestSplit: Int32 = 0
+            var bestGain: Double = -1
+            init(_ i: [Int]) { idxs = i }
+        }
+
+        // Cache the best (property, threshold) split for `node` by sweeping
+        // each candidate property's activity-sorted order and tracking the
+        // running Σ count·log₂count of each side (O(1) per boundary).
+        func computeBest(_ node: GNode) {
+            node.bestGain = -1; node.bestK = -1
+            let m = node.idxs.count
+            if m < 2 { return }
+            var nodeHist = [Int](repeating: 0, count: maxTok + 1)
+            for i in node.idxs { nodeHist[tokBucket[i]] += 1 }
+            let nodeCost = histCost(nodeHist, m)
+            var nodeS = 0.0
+            for c in nodeHist where c > 1 { nodeS += term(c) }
+            for k in 0..<propCount {
+                let sortedIdx = node.idxs.sorted {
+                    propsFlat[$0 * propCount + k] < propsFlat[$1 * propCount + k] }
+                var hi = nodeHist
+                var hiTot = m
+                var hiS = nodeS
+                var lo = [Int](repeating: 0, count: maxTok + 1)
+                var loTot = 0
+                var loS = 0.0
+                var j = 0
+                while j < m {
+                    let v = propsFlat[sortedIdx[j] * propCount + k]
+                    while j < m && propsFlat[sortedIdx[j] * propCount + k] == v {
+                        let tk = tokBucket[sortedIdx[j]]
+                        hiS -= term(hi[tk]); hi[tk] -= 1; hiS += term(hi[tk]); hiTot -= 1
+                        loS -= term(lo[tk]); lo[tk] += 1; loS += term(lo[tk]); loTot += 1
+                        j += 1
+                    }
+                    if hiTot > 0 {
+                        let loCost = loTot <= 1 ? 0
+                            : Double(loTot) * log2(Double(loTot)) - loS
+                        let hiCost = Double(hiTot) * log2(Double(hiTot)) - hiS
+                        let gain = nodeCost - (loCost + hiCost)
+                        if gain > node.bestGain {
+                            node.bestGain = gain; node.bestK = k; node.bestSplit = v
+                        }
+                    }
+                }
+            }
+        }
+
+        let root = GNode(Array(0..<n))
+        computeBest(root)
+        var leaves: [GNode] = [root]
+        while leaves.count < maxLeaves {
+            var bi = -1
+            var bg = minGain
+            for (i, l) in leaves.enumerated() where l.bestGain > bg {
+                bg = l.bestGain; bi = i
+            }
+            if bi < 0 { break }
+            let node = leaves[bi]
+            let k = node.bestK
+            let s = node.bestSplit
+            var leftIdxs = [Int](); var rightIdxs = [Int]()
+            for i in node.idxs {
+                if propsFlat[i * propCount + k] > s { leftIdxs.append(i) }
+                else { rightIdxs.append(i) }
+            }
+            if leftIdxs.isEmpty || rightIdxs.isEmpty { node.bestGain = -1; continue }
+            node.prop = propIndices[k]
+            node.split = s
+            let L = GNode(leftIdxs); let R = GNode(rightIdxs)
+            node.left = L; node.right = R
+            node.idxs = []
+            computeBest(L); computeBest(R)
+            leaves.remove(at: bi)
+            leaves.append(L); leaves.append(R)
+        }
+        if leaves.count < 2 { return nil }
+
+        // Linearise BFS → ModularTree: array index = dequeue order, a
+        // decision's children take the next two slots, leafIds in BFS
+        // encounter order — exactly the decoder's fill. Fill the per-pixel
+        // context from each surviving leaf's pixel set.
+        var nodesOut = [ModularTreeNode]()
+        var contexts = [Int](repeating: 0, count: n)
+        var queue: [GNode] = [root]
+        var head = 0
+        var leafCounter = 0
+        while head < queue.count {
+            let g = queue[head]; head += 1
+            if g.left == nil {
+                let lid = leafCounter; leafCounter += 1
+                nodesOut.append(ModularTreeNode(
+                    property: -1, splitVal: 0,
+                    leftChildOrLeafId: lid, rightChild: 0,
+                    predictor: .gradient, predictorOffset: 0,
+                    multiplier: 1, rawPredictor: 6))
+                for i in g.idxs { contexts[i] = lid }
+            } else {
+                let leftIdx = queue.count
+                let rightIdx = queue.count + 1
+                queue.append(g.left!); queue.append(g.right!)
+                nodesOut.append(ModularTreeNode(
+                    property: g.prop, splitVal: g.split,
+                    leftChildOrLeafId: leftIdx, rightChild: rightIdx,
+                    predictor: .gradient, predictorOffset: 0,
+                    multiplier: 1, rawPredictor: 6))
+            }
+        }
+        return (ModularTree(nodes: nodesOut), contexts, leafCounter)
+    }
+
+    /// Greedy multi-property MA-tree candidate (cjxl-style) for the
+    /// single-section path. Computes a djxl-verified subset of the
+    /// neighbour-derived libjxl properties (|top|, |left|, gradient input,
+    /// two directional gradients, WP-error) per pixel — with the decoder's
+    /// exact edge fall-backs — plus the WP residual, learns a
+    /// tree that branches on whichever property best separates the residual
+    /// distribution at each node, and assembles the section. All leaves use
+    /// WP (rawPredictor 6), so the decoder runs WP and computes property 15
+    /// regardless of which properties the tree actually uses. Cost-gated by
+    /// the caller against the single-context and activity-split candidates;
+    /// `nil` when the learner finds no useful split.
+    private static func buildSingleSectionGreedyTree(
+        width: Int, height: Int, channels: [[Int32]], sampleHi: Int32
+    ) -> Data? {
+        guard width > 0, height > 0, !channels.isEmpty else { return nil }
+        let postCfg = HybridUintConfig.raw4
+        // Only properties whose `fillModularProperties` formula is verified
+        // byte-exact against `djxl`: |top|, |left|, the gradient-predictor
+        // input, two FFV1 directional gradients, and the WP-error property.
+        // (Properties 6,7,8,11,13,14 are intentionally excluded — some of
+        // those formulas diverge from libjxl, so a tree branching on them
+        // round-trips through our decoder but desyncs djxl. Widening this
+        // set means first reconciling `fillModularProperties` with libjxl.)
+        let propIndices: [Int32] = [4, 5, 9, 10, 12, 15]
+        let propCount = propIndices.count
+        let n = width * height * channels.count
+        var propsFlat = [Int32](repeating: 0, count: n * propCount)
+        var tokens = [UInt32](repeating: 0, count: n)
+        var tokBucket = [Int](repeating: 0, count: n)
+        var maxTok = 0
+        var pi = 0
+        for pix in channels {
+            var wp = WeightedPredictor(header: .default, xsize: max(1, width))
+            for y in 0..<height {
+                let rowBase = y * width
+                let prevRow = (y - 1) * width
+                let prev2Row = (y - 2) * width
+                for x in 0..<width {
+                    // Decoder edge fall-backs (ModularChannelDecoder) — used
+                    // for BOTH the properties and the WP prediction.
+                    let left: Int32 = x > 0 ? pix[rowBase + x - 1]
+                        : (y > 0 ? pix[prevRow + x] : 0)
+                    let top: Int32 = y > 0 ? pix[prevRow + x] : left
+                    let topLeft: Int32 = (x > 0 && y > 0) ? pix[prevRow + x - 1] : left
+                    let topRight: Int32 = (x + 1 < width && y > 0)
+                        ? pix[prevRow + x + 1] : top
+                    let topTop: Int32 = y > 1 ? pix[prev2Row + x] : top
+                    let wpProp = wp.propertyValue(x: x, y: y, xsize: width)
+                    let b = pi * propCount
+                    propsFlat[b + 0] = top < 0 ? (0 &- top) : top      // 4 |top|
+                    propsFlat[b + 1] = left < 0 ? (0 &- left) : left   // 5 |left|
+                    propsFlat[b + 2] = left &+ top &- topLeft           // 9
+                    propsFlat[b + 3] = left &- topLeft                  // 10
+                    propsFlat[b + 4] = top &- topRight                  // 12
+                    propsFlat[b + 5] = wpProp                           // 15
+                    let pred = wp.predict(
+                        x: x, y: y, xsize: width,
+                        n: top, w: left, ne: topRight, nw: topLeft, nn: topTop)
+                    let actual = pix[rowBase + x]
+                    let tok = ZigZag.pack(actual &- pred)
+                    tokens[pi] = tok
+                    let tk = Int(postCfg.encode(tok).token)
+                    tokBucket[pi] = tk
+                    if tk > maxTok { maxTok = tk }
+                    wp.update(actual: actual, x: x, y: y, xsize: width)
+                    pi += 1
+                }
+            }
+        }
+        // Cap leaves at 8: that keeps the post entropy section at ≤ 8
+        // contexts, where the context map uses the simple (≤3-bit-per-entry)
+        // path djxl accepts. Trees with > 8 contexts need the full
+        // entropy-coded context map, which our decoder round-trips but djxl
+        // currently rejects — supporting that is future work. The win here
+        // is multi-PROPERTY routing, not more contexts than the octile path.
+        guard let (tree, contexts, numCtx) = greedyTreeAndContexts(
+            propsFlat: propsFlat, tokBucket: tokBucket,
+            pixelCount: n, propIndices: propIndices,
+            maxTok: maxTok, maxLeaves: 8, minGain: 32.0),
+            numCtx >= 2 else { return nil }
+        var ordered: [(ctx: Int, val: UInt32)] = []
+        ordered.reserveCapacity(n)
+        for i in 0..<n { ordered.append((contexts[i], tokens[i])) }
+        return assembleMultiContextSection(
+            tree: tree, numContexts: numCtx, ordered: ordered, postCfg: postCfg)
     }
 
     /// Pick the smaller of a Huffman or rANS post codebook for one

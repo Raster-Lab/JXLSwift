@@ -13692,6 +13692,88 @@ extension FoundationTests {
         }
     }
 
+    /// Greedy **multi-property** MA-tree (cjxl-style) on a single-section
+    /// 512² 16-bit image whose structure varies along **two** independent
+    /// axes: a 4×4 grid of 128-px cells where the row sets the noise
+    /// amplitude (activity ⇒ WP-error / property 15) and the column sets a
+    /// directional ramp (⇒ left/top gradient properties). A single-property
+    /// (activity-only) split can separate the four rows but not the
+    /// columns; the greedy learner branches on whichever of the 12
+    /// neighbour-derived properties best separates residuals at each node,
+    /// so it routes the 16 cells into distinct contexts and wins. Validated
+    /// byte-exact through **our decoder** and **`djxl`** — the strongest
+    /// check that the general (possibly deep) tree's BFS layout, leafId
+    /// assignment and per-pixel routing all agree with the decoder.
+    func testSpecModularEncoder_GreedyMultiProperty_SingleSection_DjxlRoundTrip()
+        throws {
+        let w = 512, h = 512
+        var pixels = [UInt16](repeating: 0, count: w * h)
+        var seed: UInt32 = 0x7f4a_7c15
+        // Row sets a widely-spread noise amplitude (incl. a near-constant
+        // band ⇒ a nearly-free context) so a multi-context split decisively
+        // beats one pooled histogram; column adds a modest directional ramp
+        // so the learner also branches on gradient properties.
+        let amp: [Int32] = [1, 16, 256, 4096]    // by grid row
+        for y in 0..<h {
+            for x in 0..<w {
+                let gr = y / 128, gc = x / 128       // 0..3
+                let lx = Int32(x % 128), ly = Int32(y % 128)
+                seed = seed &* 1103515245 &+ 12345
+                let noise = Int32(truncatingIfNeeded: seed) % amp[gr]
+                var dir: Int32 = 0
+                if gc == 1 { dir = lx }                  // horizontal
+                else if gc == 2 { dir = ly }             // vertical
+                else if gc == 3 { dir = lx + ly }        // diagonal
+                var v = Int32(8192) + dir + noise
+                if v < 0 { v = 0 }
+                if v > 65535 { v = 65535 }
+                pixels[y * w + x] = UInt16(v)
+            }
+        }
+        let bytes = try SpecModularEncoder.encodeGrayscale16(
+            width: w, height: h, pixels: pixels)
+        // Our decoder: byte-exact (fails if tree layout / routing is wrong).
+        let image = try JXLDecoder().decodeModular(bytes)
+        XCTAssertEqual(image.channels.count, 1, "expected 1 channel")
+        for i in 0..<(w * h) {
+            XCTAssertEqual(image.channels[0].pixels[i], Int32(pixels[i]),
+                "our-decoder pixel \(i)")
+        }
+        // djxl: byte-exact (16-bit big-endian PGM).
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("djxl not available at \(djxl)")
+        }
+        let tmp = NSTemporaryDirectory()
+        let inP = tmp + "jxlswift_greedy_ss.jxl"
+        let outP = tmp + "jxlswift_greedy_ss.pgm"
+        defer { try? FileManager.default.removeItem(atPath: inP)
+                try? FileManager.default.removeItem(atPath: outP) }
+        try bytes.write(to: URL(fileURLWithPath: inP))
+        let p = Process(); p.launchPath = djxl
+        p.arguments = [inP, outP]
+        let errPipe = Pipe()
+        p.standardOutput = Pipe(); p.standardError = errPipe
+        try p.run(); p.waitUntilExit()
+        let err = String(
+            data: errPipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8) ?? ""
+        XCTAssertEqual(p.terminationStatus, 0,
+            "djxl rejected our \(w)×\(h) greedy multi-property bytes; "
+            + "stderr: \(err)")
+        let pgm = try Data(contentsOf: URL(fileURLWithPath: outP))
+        var nl = 0, start = 0
+        for (i, b) in pgm.enumerated() where b == 0x0a {
+            nl += 1; if nl == 3 { start = i + 1; break }
+        }
+        for i in 0..<(w * h) {
+            let hi = UInt16(pgm[start + 2 * i])
+            let lo = UInt16(pgm[start + 2 * i + 1])
+            XCTAssertEqual((hi << 8) | lo, pixels[i],
+                "djxl 16-bit pixel \(i) mismatch")
+        }
+    }
+
     /// Multi-group lossless Modular where a **learned multi-bin** split
     /// (4- or 8-bin with entropy-optimal thresholds) wins: a 1024² 16-bit
     /// image with four activity regions of **unequal size** — ~50% / ~25%

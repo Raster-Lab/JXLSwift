@@ -11,6 +11,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0i9 — Greedy multi-property MA-tree (cjxl-style)
+
+First **multi-property** lossless context model: a greedy (best-first)
+MA-tree learner that, at each node, branches on whichever neighbour-
+derived property best separates the residual distribution — not just the
+WP-error activity property the i2–i8 splits used. `greedyTreeAndContexts`
+sweeps each candidate property's activity-sorted order (tracking running
+Σ count·log₂count, O(1) per boundary), splits the highest-gain leaf until
+the budget or `minGain` is hit, then linearises the tree in the decoder's
+level-order (BFS) layout with leafIds in encounter order — so the
+decoder, computing the same properties and assigning leafIds the same
+way, routes every pixel identically. Added as a cost-gated single-section
+candidate alongside single-context and the activity split (the section
+assembler is factored into a shared `assembleMultiContextSection`).
+
+Two constraints, both validated against `djxl`: (1) the candidate
+property set is limited to `{4,5,9,10,12,15}` — the formulas in
+`fillModularProperties` proven byte-exact against `djxl`; branching on
+the others (e.g. 8/11) round-trips through our decoder but desyncs djxl,
+so reconciling those formulas with libjxl is future work. (2) leaves are
+capped at 8, keeping the post section at ≤ 8 contexts (the simple
+context-map path djxl accepts); > 8 needs the full entropy-coded context
+map, also future work. On a 512² 16-bit image structured along two axes
+(row → activity, column → directional gradient) the greedy tree branches
+on **property 10 *and* 15**, wins over both single-context and the
+activity octile (≈ 237.8 KB vs 258.8 / 248.1 KB), and is byte-exact
+through `djxl` and our decoder. New
+`testSpecModularEncoder_GreedyMultiProperty_SingleSection_DjxlRoundTrip`.
+Full suite: 678 tests.
+
 ### v0.12.0i8 — Learned 4-/8-bin WP-activity thresholds (recursive)
 
 Generalises the learned threshold (i7 did only 2-bin) to **4- and 8-bin**
