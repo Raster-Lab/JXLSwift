@@ -6230,6 +6230,107 @@ final class JXLToJPEGAdapterTests: XCTestCase {
         }
     }
 
+    /// **Multi-AC-group forward transcode (v0.12.0ht).** Images larger
+    /// than one 256-px group split into multiple AC groups, each its own
+    /// byte-aligned TOC section (LfGlobal, DC group, HfGlobal, then one
+    /// section per AC group). This sweeps sizes that produce 2×1 / 2×2
+    /// group grids — including non-256-multiple dims (partial edge
+    /// groups) and 4:2:0 chroma — and asserts BOTH our own reverse path
+    /// and the real `djxl` reconstruct the source JPEG byte-for-byte.
+    func testEndToEnd_MultiGroupForwardBridge_ByteIdentical() throws {
+        let cjpeg = "/opt/homebrew/bin/cjpeg"
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: cjpeg),
+              FileManager.default.isExecutableFile(atPath: djxl)
+        else { throw XCTSkip("cjpeg + djxl required") }
+        struct V { let label: String; let w: Int; let h: Int
+                   let sample: String }
+        let variants: [V] = [
+            V(label: "384×384 4:4:4", w: 384, h: 384,
+              sample: "1x1,1x1,1x1"),       // 2×2 groups
+            V(label: "384×384 4:2:0", w: 384, h: 384,
+              sample: "2x2,1x1,1x1"),       // 2×2 groups, subsampled
+            V(label: "300×260 4:4:4", w: 300, h: 260,
+              sample: "1x1,1x1,1x1"),       // 2×2 groups, partial edges
+            V(label: "520×200 4:2:0", w: 520, h: 200,
+              sample: "2x2,1x1,1x1"),       // 3×1 groups, partial + chroma
+        ]
+        var results: [String] = []
+        for v in variants {
+            let tmp = NSTemporaryDirectory()
+            let ppmP = tmp + "mg-\(UUID().uuidString).ppm"
+            let jpgP = tmp + "mg-\(UUID().uuidString).jpg"
+            let jxlP = tmp + "mg-\(UUID().uuidString).jxl"
+            let outP = tmp + "mg-\(UUID().uuidString).out.jpg"
+            defer {
+                for p in [ppmP, jpgP, jxlP, outP] {
+                    try? FileManager.default.removeItem(atPath: p)
+                }
+            }
+            var ppm = Data("P6\n\(v.w) \(v.h)\n255\n".utf8)
+            var seed: UInt32 = UInt32((v.w &* 31 &+ v.h) & 0xFFFF)
+            func rnd() -> Int { seed = seed &* 1103515245 &+ 12345
+                return Int((seed >> 16) & 0x3F) }
+            for y in 0..<v.h {
+                for x in 0..<v.w {
+                    ppm.append(UInt8((x * 7 + rnd()) % 256))
+                    ppm.append(UInt8((y * 5 + rnd()) % 256))
+                    ppm.append(UInt8(((x + y) * 3 + rnd()) % 256))
+                }
+            }
+            try ppm.write(to: URL(fileURLWithPath: ppmP))
+            let p1 = Process()
+            p1.launchPath = cjpeg
+            p1.arguments = ["-outfile", jpgP, "-quality", "85",
+                "-baseline", "-sample", v.sample, ppmP]
+            p1.standardOutput = Pipe(); p1.standardError = Pipe()
+            try p1.run(); p1.waitUntilExit()
+            guard p1.terminationStatus == 0 else {
+                results.append("\(v.label): SKIP cjpeg"); continue
+            }
+            let jpgData = try Data(contentsOf: URL(fileURLWithPath: jpgP))
+            let container = try JXLEncoder().encodeLosslessJPEG(jpgData).data
+            try container.write(to: URL(fileURLWithPath: jxlP))
+
+            // (a) Our own reverse path — reconstruct from the container.
+            guard case .iso(let boxes) = try parseJXLContainer(container),
+                  let jbrdPayload = try extractJBRDBox(
+                    from: boxes, in: container)
+            else { results.append("\(v.label): no jbrd"); continue }
+            var r = BitReader(jbrdPayload)
+            var box = try JBRDBoxReader.read(from: &r)
+            let brotliStart = (r.position + 7) / 8
+            let brotli = jbrdPayload.suffix(from:
+                jbrdPayload.startIndex + brotliStart)
+            try box.distributeBrotliPayload(
+                BrotliDecoder.decode(Data(brotli)))
+            let bridge = try JXLDecoder().decodeJPEGBridgeData(container)
+            let rebuilt = try JXLToJPEGAdapter.reconstruct(
+                bridgeData: bridge, jbrd: box)
+            let ourOK = rebuilt == jpgData
+
+            // (b) The real djxl binary — independent libjxl validation.
+            let p2 = Process()
+            p2.launchPath = djxl
+            p2.arguments = [jxlP, outP]
+            p2.standardOutput = Pipe(); p2.standardError = Pipe()
+            try p2.run(); p2.waitUntilExit()
+            let djxlOK = p2.terminationStatus == 0
+                && (try? Data(contentsOf: URL(fileURLWithPath: outP)))
+                    == jpgData
+
+            results.append(ourOK && djxlOK
+                ? "\(v.label): ✓ reverse + djxl byte-identical "
+                    + "(\(jpgData.count)B → \(container.count)B JXL)"
+                : "\(v.label): FAIL ours=\(ourOK) djxl=\(djxlOK)")
+        }
+        for line in results { print("[multi-group fwd] \(line)") }
+        for line in results
+            where !line.contains("✓") && !line.contains("SKIP") {
+            XCTFail("multi-group forward bridge failed: \(line)")
+        }
+    }
+
     /// **Progressive forward transcode (v0.12.0hn).** The reverse
     /// direction already round-trips progressive JPEGs (cjxl stores
     /// the full coefficients; we re-derive each scan). This test
