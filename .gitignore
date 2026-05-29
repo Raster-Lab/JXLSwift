@@ -38,6 +38,8 @@ test-results.xml
 .idea/
 *.xcworkspace
 *.jxl
+# …but the committed conformance vector fixtures are intentional test data.
+!Tests/Fixtures/conformance/**/input.jxl
 
 # Claude Code runtime state
 .claude/
