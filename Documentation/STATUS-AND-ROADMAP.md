@@ -1,6 +1,6 @@
 # JXLSwift — Status & Roadmap
 
-**A current-state knowledge map of the project.** Snapshot as of **v0.12.0hj** (2026-05-28).
+**A current-state knowledge map of the project.** Snapshot as of **v0.12.0hs** (2026-05-29).
 For the original project charter + constraints see [ROADMAP.md](../ROADMAP.md); for the
 load-bearing rules see [CLAUDE.md](../CLAUDE.md); for release-by-release detail see
 [CHANGELOG.md](../CHANGELOG.md).
@@ -27,10 +27,10 @@ GPU paths (land later, behind the proven scalar path).
 
 | | |
 |---|---|
-| **Version** | v0.12.0hj (Phase J line) |
-| **Tests** | 658 passing / 7 skipped / 0 failures (`swift test -c release`, ~48 s) |
+| **Version** | v0.12.0hs (Phase J line) |
+| **Tests** | 666 passing / 7 skipped / 0 failures (`swift test -c release`, ~49 s) |
 | **Dependencies** | `swift-argument-parser` (CLI only). Zero runtime deps. |
-| **Headline capability** | **Lossless JPEG ⇄ JXL transcoding is byte-identical in both directions**, with no `--source` needed — across baseline + progressive, all chroma, odd dims, grayscale, and metadata. The forward path emits a full lossless-JPEG container that `djxl --jpeg` also reconstructs byte-for-byte. One open gap: forward file size (entropy-coding optimisation, not correctness). |
+| **Headline capability** | **Lossless JPEG ⇄ JXL transcoding is byte-identical in both directions**, with no `--source` needed — across baseline + progressive, all chroma, odd dims, grayscale, and metadata. The forward path emits a full lossless-JPEG container that `djxl --jpeg` also reconstructs byte-for-byte. Forward file size is now within **~1.06–1.13× of cjxl** (multi-cluster rANS); the largest remaining gap is the single-AC-group limit (inputs > one 256-px group). |
 
 **What works end-to-end today**
 
@@ -70,7 +70,7 @@ Legend: ✅ done · 🟩 substantially done · ⏳ in progress · ⬜ not starte
 |---|---|---|---|
 | **F** | Foundation (bitstream, container, signature, SizeHeader) | ✅ | read + write + round-trip |
 | **H** | Image headers (BitDepth, ColorEncoding, ExtraChannelInfo, ImageMetadata) | ✅ | read + write + round-trip |
-| **E** | Entropy (HybridUint, prefix codes, rANS, dist serialisation, context maps, LZ77) | ✅ | simple + complex paths; full-mode rANS pending |
+| **E** | Entropy (HybridUint, prefix codes, rANS, dist serialisation, context maps, LZ77) | ✅ | read + write incl. complex histograms and the full entropy-coded context-map path (both directions); LZ77 back-reference *encoding* still pending |
 | **M** | Modular sub-codec (lossless path) | 🟩 | predictors, RCT, channel decode, MA-tree all used by the VarDCT/bridge decode |
 | **V** | VarDCT | 🟩 | **decoder** decodes real cjxl frames (DC/AC groups, context maps, coeff orders, CFL, RAW quant, chroma subsampling, ICC); **encoder** writes coefficient-bridge frames |
 | **R** | Restoration filters (Gaborish, EPF) | ⬜ | bridge frames disable them (`kSkipAdaptiveLFSmoothing`); pixel-path filters not yet implemented |
@@ -129,17 +129,23 @@ ISOBMFF container — signature + `ftyp` + `jbrd` + `jxlc` — a true lossless-J
 
 ### 5.3 What remains in Phase J
 
-- **Forward entropy-coding size.** The AC group now uses **rANS** (v0.12.0hq), closing most of
-  the gap: 256² 4:2:0 is ~42.7 KB (was ~54 KB Huffman; cjxl ~33.8 KB), 4:4:4 ~80 KB (was
-  ~108 KB; cjxl ~62 KB) — down from ~1.6–1.7× to ~1.26–1.29× cjxl. Both our reverse path and
-  `djxl` reconstruct byte-for-byte. **Remaining size work** (all lossless recodes, not
-  correctness): (a) **multi-cluster context modelling** for the AC group — needs the
-  entropy-coded (ANS) context-map *writer* so the 7425-entry map is cheap (the simple-path map
-  costs ~928 B, which kills clustering); (b) convert the **DC / ACMetadata modular** sections to
-  rANS (they share one codebook across sub-images → needs multi-sub-image stream handling).
-- Foundations now in place: `SpecANSDistribution.writeComplex` (general ANS histogram
-  serialiser, v0.12.0ho) and `ANSTokenStreamWriter` (interleaved, libjxl-compatible rANS token
-  encoder, v0.12.0hp).
+- **Forward entropy-coding size — now ~1.06–1.13× cjxl.** The AC group uses **rANS**
+  (v0.12.0hq) with **multi-cluster context modelling** (v0.12.0hs): 256² 4:2:0 is ~29.5 KB
+  (cjxl ~27.2 KB, 1.085×), 4:4:4 1.064×, 4:2:2 1.078×, progressive 1.085×, grayscale 1.134× —
+  down from ~1.27× single-cluster. The clusterer groups the *used* AC contexts (greedy
+  agglomerative, cap 16) and serialises the map via `ContextMap.writeFullPath`; the codebook
+  builder cost-gates Huffman / 1-cluster rANS / multi-cluster rANS and keeps the smallest. Both
+  our reverse path and `djxl` reconstruct byte-for-byte.
+- **Remaining size/scope work** (all lossless recodes, not correctness):
+  (a) **single-AC-group limit** — the forward bridge assembly (`JXLBridgeEncoder.write`)
+  hardcodes one group + one TOC entry, so inputs larger than one 256-px group only encode the
+  top-left group. Lifting this (multi-group TOC + per-group AC writes) is now the **largest**
+  forward gap. (b) convert the **DC / ACMetadata modular** sections to rANS (they share one
+  codebook across sub-images → needs multi-sub-image stream handling). (c) reduce the **block
+  context map** (cjxl drops `all_default` and tailors block contexts; we use the 15-context
+  default → a 7425-entry AC map vs cjxl's ~990).
+- Foundations in place: `SpecANSDistribution.writeComplex` (v0.12.0ho), `ANSTokenStreamWriter`
+  (v0.12.0hp), and `ContextMap.writeFullPath` (v0.12.0hr).
 
 ---
 
@@ -190,7 +196,7 @@ round-trip test.
 
 ```bash
 swift build -c release
-swift test  -c release            # 658 tests / 7 skipped, ~48 s
+swift test  -c release            # 666 tests / 7 skipped, ~49 s
 .build/release/jxl-tool --version
 
 # byte-identical reverse transcode (no source needed)
@@ -207,8 +213,10 @@ Test oracles (optional, dev-time): `cjxl` / `djxl` / `jxlinfo` / `brotli` / `cjp
 
 ## 9. Suggested next milestones (priority order)
 
-1. **Forward entropy-coding size** — rANS + multi-cluster histogram clustering in the VarDCT
-   bridge writer to match cjxl file sizes (the one open Phase J item; correctness is done).
+1. **Forward multi-AC-group support** — lift the single-group limit in `JXLBridgeEncoder.write`
+   (multi-entry TOC + per-group AC writes + `num_histograms`/HfGlobal handling) so inputs larger
+   than one 256-px group transcode correctly. This is now the largest forward gap; entropy-coding
+   size is otherwise within ~1.06–1.13× cjxl (rANS + multi-cluster, v0.12.0hq/hs).
 2. **Restoration filters (Phase R)** — Gaborish + EPF for the lossy pixel-decode path.
 3. **Full lossy VarDCT** beyond the JPEG-bridge subset (XYB colour, full AC-strategy search on
    encode).

@@ -11,6 +11,72 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0hs — 🎉 Multi-cluster AC modelling for the JPEG bridge — ~14% smaller
+
+The forward bridge coded every AC token against **one** global histogram.
+cjxl instead groups the AC contexts into histogram **clusters** so each
+token is coded against a distribution tuned to its context (coefficient
+band / nnz bucket / channel). Since the AC token body is ~90% of a
+lossless-JPEG JXL, this was the dominant remaining size lever.
+
+| 256² | ours (1 cluster) | ours (multi) | cjxl | ratio |
+|---|---|---|---|---|
+| 4:2:0 | 34.5 KB | **29.5 KB** | 27.2 KB | 1.085× |
+| 4:4:4 | (≈1.27×) | **62.1 KB** | 58.4 KB | 1.064× |
+| 4:2:2 | | **29.7 KB** | 27.6 KB | 1.078× |
+| progressive | | **29.4 KB** | 27.1 KB | 1.085× |
+| grayscale | | **24.1 KB** | 21.2 KB | 1.134× |
+
+Down from ~1.27× across the board. **Both** our reverse transcode and the
+real `djxl --jpeg` binary reconstruct the source JPEG **byte-for-byte**
+from the multi-cluster output (validated on 4:4:4 / 4:2:0 / 4:2:2 /
+grayscale / progressive / odd dimensions).
+
+- `buildBridgeMultiClusterACCandidate` clusters the **used** AC contexts
+  (the 7425-entry space is mostly empty for one image) with a greedy
+  agglomerative pass: each context joins the cluster whose merge raises
+  total entropy least, or seeds a new one when that increase exceeds the
+  per-cluster codebook overhead (cap 16, threshold 70 bits — swept).
+  Empty contexts route to cluster 0.
+- `buildBridgeACCodebook` now cost-gates three candidates — Huffman,
+  single-cluster rANS, multi-cluster rANS — by actually encoding each and
+  keeping the smallest. `ANSTokenStreamWriter` already routes tokens by
+  context→cluster via the header's `ContextMap`, so `writeBridgeACGroup`
+  is unchanged.
+- `ContextMap.write` now **cost-gates simple-vs-full** and picks the
+  cheaper (was simple-only, threw above 8 clusters): small maps stay on
+  the simple path, the bridge's large repetitive maps take the cheap
+  entropy-coded full path.
+
+Pre-existing and untouched: the forward bridge is single-AC-group only
+(the assembly hardcodes one group + one TOC entry), so inputs larger than
+one 256-px group are out of scope here. Full suite: 666 tests, 7 skipped,
+0 failures.
+
+### v0.12.0hr — ContextMap full entropy-coded writer (`writeFullPath`)
+
+Adds the full entropy-coded `ContextMap` writer (`is_simple = 0`) — the
+inverse of the long-standing `readFullPath`: it writes `use_mtf = 0`, an
+inner 1-context rANS entropy section, a single histogram over the cluster
+indices, and the interleaved rANS token stream (one token per context =
+its cluster). This is the keystone for cheap multi-cluster AC modelling
+(v0.12.0hs): the simple-path map caps at 3 bits/entry (≤8 clusters) and
+costs `numContexts × bits_per_entry`, which kills clustering for the
+bridge's 7425-entry map; the full path entropy-codes the indices so a
+large repetitive map costs a fraction of that.
+
+`readFullPath` was confirmed correct **empirically**: a real cjxl
+lossless-JPEG file whose AC context map uses the full path (990 contexts /
+16 clusters, rANS logAlpha=8) reverse-transcodes byte-identically — a
+bit-position desync would corrupt every downstream coefficient. The stale
+"cursor desync" debug comment was therefore never a correctness bug.
+
+No LZ77 in the inner stream (our token writer emits no back-references)
+and `use_mtf` stays 0 — both are further size levers, not correctness
+requirements. Tests: 16-cluster round-trip (simple path can't encode it),
+a 2…16 cluster sweep, and a 7425-entry map proving the full path is
+< half the simple path.
+
 ### v0.12.0hq — 🎉 Forward bridge AC group switches to rANS — ~21–25% smaller
 
 The forward JPEG→JXL bridge now entropy-codes the AC coefficient group
