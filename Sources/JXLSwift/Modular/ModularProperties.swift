@@ -24,14 +24,17 @@
 //   12 top − topright           (FFV1)
 //   13 top − toptop             (FFV1)
 //   14 left − leftleft          (FFV1)
-//   15 weighted predictor's property (kWPProp — NOT YET COMPUTED)
+//   15 weighted predictor's property (kWPProp)
 //
-// Property 15 (the weighted-predictor property) requires running
-// libjxl's stateful weighted predictor over the row — that's its
-// own machine. We currently emit 0 for property 15; a tree that
-// branches on it will pick the wrong leaf. Most cjxl-emitted trees
-// for typical content do NOT use property 15, so this is usually
-// harmless for read-only inspection of cjxl files.
+// Property 15 (the weighted-predictor error) requires libjxl's stateful
+// weighted predictor (`WeightedPredictor`). Callers pass its value via
+// `wpProperty`; the per-pixel decode loop sources it from
+// `WeightedPredictor.propertyValue(...)`, so trees branching on property
+// 15 decode correctly (the lossless encoder's activity-split and
+// multi-property MA-trees depend on it). Pass 0 only when no WP state is
+// active. NOTE: properties 8 and 11 (and the untested 6,7,13,14) have not
+// been reconciled byte-for-byte with libjxl — see `SpecModularEncoder`'s
+// greedy property whitelist `{4,5,9,10,12,15}`.
 
 import Foundation
 

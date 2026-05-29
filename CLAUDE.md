@@ -54,15 +54,14 @@ Sources/JXLSwift/Entropy/     HybridUint, PrefixCodeTable, ANSDistribution,
 Sources/JXLSwift/Modular/     Predictors (W/N/NW/NE/avgWN/gradient/MED),
                               Neighbourhood, ZigZag pack/unpack,
                               RCT (YCoCg-R reversible colour transform)
-Sources/JXLSwift/Codec/       JXLEncoder, JXLDecoder (currently stubs;
-                              JXLDecoder.inspect(_:) IS implemented),
-                              ImageFrame, EncodingOptions,
-                              MinimalLosslessCodec (M0 placeholder
-                              vertical slice with gradient prediction)
-Sources/JXLTool/              jxl-tool CLI (info works; encode/decode
-                              throw .notImplemented until the codec lands)
-Tests/JXLSwiftTests/          129 round-trip tests across foundation,
-                              headers, entropy, modular primitives, M0
+Sources/JXLSwift/Codec/       JXLEncoder + JXLDecoder (implemented:
+                              lossless Modular encode/decode, lossy
+                              VarDCT *decode*, JPEG⇄JXL transcode),
+                              SpecModularEncoder (the spec lossless
+                              encoder — the main lossless path),
+                              ImageFrame, EncodingOptions
+Sources/JXLTool/              jxl-tool CLI (info / encode / decode)
+Tests/JXLSwiftTests/          ~688 round-trip + `djxl` byte-exact tests
 Documentation/                ARCHITECTURE.md, SESSION-NOTES.md, legacy/
 ```
 
@@ -70,7 +69,7 @@ Documentation/                ARCHITECTURE.md, SESSION-NOTES.md, legacy/
 
 ```bash
 swift build -c release
-swift test  -c release           # 163 tests, ~50 ms
+swift test  -c release           # ~688 tests, ~70 s (many shell out to djxl)
 .build/release/jxl-tool --version
 ```
 
@@ -87,15 +86,15 @@ swift test  -c release           # 163 tests, ~50 ms
 | E3 | rANS (§C.6.3) | ✅ |
 | E4a | Prefix-code-table serialisation (§C.6.2.1) — simple + complex | ✅ |
 | E4b | rANS distribution serialisation (§C.6.3.2) — simple + flat shortcuts | ✅ (full mode pending) |
-| E5 | Histogram clustering / context maps (§C.6.4) — simple-bits-per-entry path | ✅ (full path pending) |
+| E5 | Histogram clustering / context maps (§C.6.4) | ✅ simple + full path (>8-cluster `djxl` compliance pending) |
 | E6 | LZ77 hybrid header (§C.6.5) | ✅ header only (back-references pending) |
 | M0 | Project-internal vertical slice via `MinimalLosslessCodec` | ✅ |
-| M  | Modular sub-codec (lossless path, real frame header §C.8.1) | ⏳ |
-| V  | VarDCT (lossy path) | ⏳ |
-| R  | Restoration filters | ⏳ |
-| J  | JPEG-XL ↔ JPEG reversible transcoding (no generational loss) | ⏳ |
+| M  | Modular sub-codec (lossless path, real frame header §C.8.1) | ✅ — `SpecModularEncoder`: 8/16-bit gray / gray+alpha / RGB / RGBA, arbitrary dims ≤ 16384 (multi-group + multi-DC-group), multi-property MA-trees + learned thresholds, effort knob, `djxl`-byte-exact |
+| V  | VarDCT (lossy path) | ✅ **decode** (`djxl`-matching, Phase R filters incl.); lossy *encode* deferred to the last phase (project focus is lossless) |
+| R  | Restoration filters (Gaborish + EPF) | ✅ (decode) |
+| J  | JPEG-XL ↔ JPEG reversible transcoding (no generational loss) | ✅ forward (JPEG→JXL, ~1.03–1.05× cjxl, ≤ 2048 px/side) + reverse (JXL→JPEG, byte-identical: baseline + progressive + ICC) |
 
-Tracking detail and methodology in [ROADMAP.md](ROADMAP.md).
+Tracking detail and methodology in [ROADMAP.md](ROADMAP.md). Release-by-release detail in [CHANGELOG.md](CHANGELOG.md); current-state map in [Documentation/STATUS-AND-ROADMAP.md](Documentation/STATUS-AND-ROADMAP.md).
 
 ## Conventions
 
