@@ -5381,13 +5381,22 @@ extension FoundationTests {
 
     /// Encoder rejects > 8 clusters (would need the full path which
     /// isn't implemented yet).
-    func testContextMap_RejectsTooManyClusters() throws {
+    /// > 8 clusters can't use the simple path (caps at 3 bits/entry),
+    /// so `write` routes them to the full entropy-coded path. The map
+    /// still round-trips through `read`.
+    func testContextMap_TooManyClustersUsesFullPath() throws {
         let map = (0..<16).map { UInt8($0) }
         let cm = try ContextMap(numClusters: 16, map: map)
         var w = BitWriter()
-        XCTAssertThrowsError(try cm.write(to: &w)) { err in
-            XCTAssertEqual(err as? ContextMapError, .fullPathNotImplemented)
-        }
+        try cm.write(to: &w)
+        var r = BitReader(w.finishToData())
+        // is_simple bit must be 0 (full path) for 16 clusters.
+        let isSimple = try r.readBit()
+        XCTAssertFalse(isSimple, "16-cluster map must use the full path")
+        r = BitReader(w.finishToData())
+        let parsed = try ContextMap.read(numContexts: map.count, from: &r)
+        XCTAssertEqual(parsed.numClusters, 16)
+        XCTAssertEqual(parsed.map, map)
     }
 
     /// Hand-derived bit pattern: 4-cluster map [0, 1, 2, 3] over 4
@@ -5470,13 +5479,18 @@ extension FoundationTests {
         let cm = try ContextMap(numClusters: 2, map: map)
         var wFull = BitWriter()
         try cm.writeFullPath(to: &wFull)
-        var wSimple = BitWriter()
-        try cm.write(to: &wSimple)   // simple: 1 + 2 + 7425 bits
+        // Simple path for this 2-cluster map costs is_simple(1) +
+        // bits_per_entry(2) + numContexts × 1 bit.
+        let simpleBits = 3 + map.count
         XCTAssertLessThan(
-            wFull.bitCount, wSimple.bitCount / 2,
+            wFull.bitCount, simpleBits / 2,
             "full path (\(wFull.bitCount)b) should be < half the "
-            + "simple path (\(wSimple.bitCount)b) for a large "
-            + "repetitive map")
+            + "simple path (\(simpleBits)b) for a large repetitive map")
+        // write() must now itself pick the cheaper full path.
+        var wAuto = BitWriter()
+        try cm.write(to: &wAuto)
+        XCTAssertEqual(wAuto.bitCount, wFull.bitCount,
+            "write() should select the full path for this large map")
         var r = BitReader(wFull.finishToData())
         let parsed = try ContextMap.read(numContexts: map.count, from: &r)
         XCTAssertEqual(parsed.map, map)

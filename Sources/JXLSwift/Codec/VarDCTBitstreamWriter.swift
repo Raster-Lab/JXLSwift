@@ -1173,29 +1173,48 @@ public enum VarDCTBitstreamWriter {
             ansCandidate = nil   // fall back to Huffman on any ANS issue
         }
 
-        // --- Pick the smaller by actually encoding both --------------
+        // --- Candidate C: multi-cluster rANS -----------------------
+        // Groups the AC contexts into histogram clusters so each token
+        // is coded against a context-tuned distribution — the dominant
+        // size lever (Candidates A/B code everything against ONE global
+        // histogram). Its many-cluster context map is serialised by
+        // `ContextMap.write`, which picks the cheap entropy-coded full
+        // path for this large, repetitive map.
+        let multiCandidate = buildBridgeMultiClusterACCandidate(
+            perGroup: perGroup, contexts: contexts, cfg: cfg)
+
+        // --- Pick the smallest by actually encoding each ------------
         // Encoding into scratch buffers is exact (no estimation error)
         // and cheap for a one-shot transcode. Clustering is a pure
         // lossless recode — the decoded coefficients never change.
-        guard let (ansHeader, ansCodebook) = ansCandidate else {
-            return (huffHeader, huffCodebook, contexts)
+        func sectionBits(
+            _ h: EntropySectionHeader, _ c: MultiClusterCodebook
+        ) -> Int {
+            (try? estimateBridgeACSectionBits(
+                header: h, codebook: c,
+                perGroup: perGroup, contexts: contexts)) ?? Int.max
         }
-        let huffBits = (try? estimateBridgeACSectionBits(
-            header: huffHeader, codebook: huffCodebook,
-            perGroup: perGroup, contexts: contexts)) ?? Int.max
-        let ansBits = (try? estimateBridgeACSectionBits(
-            header: ansHeader, codebook: ansCodebook,
-            perGroup: perGroup, contexts: contexts)) ?? Int.max
+        var best = (huffHeader, huffCodebook)
+        var bestBits = sectionBits(huffHeader, huffCodebook)
+        var pick = "Huffman"
+        if let cand = ansCandidate {
+            let b = sectionBits(cand.0, cand.1)
+            if b < bestBits { best = cand; bestBits = b; pick = "ANS-1cl" }
+        }
+        if let cand = multiCandidate {
+            let b = sectionBits(cand.0, cand.1)
+            if b < bestBits {
+                best = cand; bestBits = b
+                pick = "ANS-\(cand.0.numHistograms)cl"
+            }
+        }
         if ProcessInfo.processInfo.environment["JXL_TRACE"] != nil {
             FileHandle.standardError.write(Data(
-                ("TRACE bridge AC entropy: huffman=\(huffBits)b "
-                 + "ans=\(ansBits)b → "
-                 + "\(ansBits < huffBits ? "ANS" : "Huffman")\n").utf8))
+                ("TRACE bridge AC entropy: pick=\(pick) bits=\(bestBits)"
+                 + " (multi=\(multiCandidate?.0.numHistograms ?? 0)cl)\n")
+                .utf8))
         }
-        if ansBits < huffBits {
-            return (ansHeader, ansCodebook, contexts)
-        }
-        return (huffHeader, huffCodebook, contexts)
+        return (best.0, best.1, contexts)
     }
 
     /// Encode the AC section's codebook + token stream into a scratch
@@ -1229,6 +1248,144 @@ public enum VarDCTBitstreamWriter {
             try aw.finish(to: &w)
         }
         return w.bitCount
+    }
+
+    /// Build a **multi-cluster** rANS candidate for the bridge AC
+    /// section. The single-cluster path codes every token against one
+    /// global histogram; cjxl instead groups the AC contexts into a
+    /// handful of histogram clusters (per coefficient band / nnz bucket
+    /// / channel), so each token is coded against a distribution tuned
+    /// to its context — the dominant size lever (the AC token body is
+    /// ~90 % of a lossless-JPEG JXL).
+    ///
+    /// Clustering is a **greedy agglomerative pass** over the *used*
+    /// contexts (the 7425-entry space is mostly empty for one image):
+    /// each context joins the existing cluster whose merge raises total
+    /// entropy least, or seeds a new cluster when that increase exceeds
+    /// the per-cluster codebook overhead (and we're under the cap).
+    /// Empty contexts route to cluster 0. The resulting context map is
+    /// serialised via `ContextMap.writeFullPath` (cheap for this large,
+    /// repetitive map); `buildBridgeACCodebook` cost-gates the whole
+    /// candidate against the single-cluster ones and keeps the smallest.
+    ///
+    /// Returns `nil` when clustering collapses to a single cluster (no
+    /// benefit) or fewer than two contexts are used.
+    static func buildBridgeMultiClusterACCandidate(
+        perGroup: [[(context: Int, value: UInt32)]],
+        contexts: Int,
+        cfg: HybridUintConfig,
+        maxClusters: Int = 16,
+        overheadBits: Double = 70
+    ) -> (EntropySectionHeader, MultiClusterCodebook)? {
+        guard contexts > 1 else { return nil }
+        let alphabetCap = cfg.maxToken + 1
+
+        // 1. Per-context token histograms (sparse — only used contexts).
+        var ctxHisto = [Int: [Int]]()
+        for grp in perGroup {
+            for tok in grp {
+                let t = Int(cfg.encode(tok.value).token)
+                if ctxHisto[tok.context] == nil {
+                    ctxHisto[tok.context] =
+                        [Int](repeating: 0, count: alphabetCap)
+                }
+                ctxHisto[tok.context]![t] += 1
+            }
+        }
+        guard ctxHisto.count >= 2 else { return nil }
+
+        // Entropy (in bits) of a token histogram.
+        func histCost(_ h: [Int]) -> Double {
+            var total = 0
+            for c in h { total += c }
+            if total == 0 { return 0 }
+            let lgT = log2(Double(total))
+            var bits = 0.0
+            for c in h where c > 0 {
+                bits += Double(c) * (lgT - log2(Double(c)))
+            }
+            return bits
+        }
+
+        // 2. Greedy agglomerative clustering. Seed high-volume contexts
+        //    first for a stable result.
+        let totalOf = { (h: [Int]) -> Int in h.reduce(0, +) }
+        let sortedCtx = ctxHisto.keys.sorted {
+            totalOf(ctxHisto[$0]!) > totalOf(ctxHisto[$1]!)
+        }
+        var clusterHist: [[Int]] = []
+        var clusterCost: [Double] = []
+        var clusterOfContext = [Int: Int]()
+        for ctx in sortedCtx {
+            let h = ctxHisto[ctx]!
+            let cH = histCost(h)
+            var best = -1
+            var bestDelta = Double.greatestFiniteMagnitude
+            var bestMergedCost = 0.0
+            for k in 0..<clusterHist.count {
+                var m = clusterHist[k]
+                for i in 0..<m.count { m[i] += h[i] }
+                let mc = histCost(m)
+                let delta = mc - clusterCost[k] - cH
+                if delta < bestDelta {
+                    bestDelta = delta; best = k; bestMergedCost = mc
+                }
+            }
+            if best >= 0
+                && (bestDelta < overheadBits
+                    || clusterHist.count >= maxClusters) {
+                for i in 0..<clusterHist[best].count {
+                    clusterHist[best][i] += h[i]
+                }
+                clusterCost[best] = bestMergedCost
+                clusterOfContext[ctx] = best
+            } else {
+                clusterHist.append(h)
+                clusterCost.append(cH)
+                clusterOfContext[ctx] = clusterHist.count - 1
+            }
+        }
+        let k = clusterHist.count
+        guard k >= 2 else { return nil }   // collapsed to one cluster
+
+        // 3. Context map: used contexts → their cluster, empty → 0
+        //    (cluster 0 always has ≥1 used context — it was seeded
+        //    first — so every cluster index appears, satisfying
+        //    VerifyContextMap).
+        var map = [UInt8](repeating: 0, count: contexts)
+        for (ctx, cl) in clusterOfContext { map[ctx] = UInt8(cl) }
+
+        // 4. Per-cluster on-wire histograms (the quantised distributions
+        //    the decoder reconstructs — so the encoder's alias tables
+        //    match).
+        var ansCounts: [[Int32]] = []
+        ansCounts.reserveCapacity(k)
+        var maxWireLen = 0
+        for ci in 0..<k {
+            let raw = clusterHist[ci].map { UInt32(max(0, $0)) }
+            guard let dist = try? ANSDistribution(rawFrequencies: raw)
+            else { return nil }
+            let normalised = dist.frequencies.map { Int32($0) }
+            var scratch = BitWriter()
+            guard let wire = try? SpecANSDistribution.writeHistogram(
+                normalised, to: &scratch) else { return nil }
+            ansCounts.append(wire)
+            maxWireLen = max(maxWireLen, wire.count)
+        }
+        var logAlpha = 5
+        while (1 << logAlpha) < maxWireLen && logAlpha < 8 { logAlpha += 1 }
+        guard maxWireLen <= (1 << logAlpha) else { return nil }
+
+        guard let cm = try? ContextMap(
+            numClusters: k, useMTF: false, map: map) else { return nil }
+        let header = EntropySectionHeader(
+            lz77: .disabled, contextMap: cm,
+            usePrefixCode: false, logAlphaSize: logAlpha,
+            uintConfigs: Array(repeating: cfg, count: k))
+        let codebook = MultiClusterCodebook(
+            huffmanTables: [], ansCounts: ansCounts,
+            alphabetSizes: ansCounts.map { $0.count })
+        return (header, codebook)
     }
 
     /// Write the bridge frame's DC group section body. Mirrors

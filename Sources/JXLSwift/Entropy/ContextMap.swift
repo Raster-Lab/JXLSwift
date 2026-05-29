@@ -139,26 +139,59 @@ public struct ContextMap: Sendable, Equatable {
 
 extension ContextMap {
 
-    /// Serialise this context map. The caller is expected to skip
-    /// calling `write` entirely when `numContexts <= 1` — the surrounding
-    /// header carries the count, and an empty/single-entry map is
-    /// implicit.
+    /// Serialise this context map, picking the cheaper of the two
+    /// libjxl-defined encodings. The caller is expected to skip calling
+    /// `write` entirely when `numContexts <= 1` — the surrounding header
+    /// carries the count, and an empty/single-entry map is implicit.
+    ///
+    /// **Simple path** (`is_simple == 1`): `bits_per_entry ∈ {0,1,2,3}`
+    /// then one `u(bits_per_entry)` per context. Compact for small maps;
+    /// costs `numContexts × bits_per_entry`, so it dominates for large
+    /// maps and caps at 8 clusters (3 bits).
+    ///
+    /// **Full path** (`is_simple == 0`, see `writeFullPath`):
+    /// entropy-codes the cluster indices. Required above 8 clusters and
+    /// far cheaper for the bridge's large, repetitive maps.
+    ///
+    /// Both encode the *same* map; `read` dispatches on the `is_simple`
+    /// bit, so the choice here is purely a size optimisation.
     public func write(to w: inout BitWriter) throws {
         if numContexts <= 1 {
             // Defensive: caller should not call us in this case.
             return
         }
-        // Simple path: is_simple = 1, bits_per_entry, then entries.
-        w.writeBit(true)
         let bitsNeeded = Int(ceilLog2(UInt32(numClusters)))
-        // bits_per_entry ∈ {0, 1, 2, 3}; 0 means "all entries 0".
-        guard bitsNeeded <= 3 else {
+        // Simple-path cost (only representable for ≤ 3 bits/entry):
+        // is_simple(1) + bits_per_entry(2) + entries.
+        var simpleBits = Int.max
+        if bitsNeeded <= 3 {
+            simpleBits = 3 + (bitsNeeded == 0 ? 0 : numContexts * bitsNeeded)
+        }
+        // Full-path cost (encode to scratch — exact, no estimation).
+        var fullBits = Int.max
+        var fullScratch = BitWriter()
+        if (try? writeFullPath(to: &fullScratch)) != nil {
+            fullBits = fullScratch.bitCount
+        }
+        guard min(simpleBits, fullBits) < Int.max else {
+            // > 8 clusters and the full path failed — genuinely
+            // unencodable.
             throw ContextMapError.fullPathNotImplemented
         }
+        if simpleBits <= fullBits {
+            writeSimplePath(to: &w, bitsNeeded: bitsNeeded)
+        } else {
+            try writeFullPath(to: &w)
+        }
+    }
+
+    /// Simple `is_simple == 1` encoding. `bitsNeeded` must be ≤ 3.
+    private func writeSimplePath(to w: inout BitWriter, bitsNeeded: Int) {
+        w.writeBit(true)
         w.write(bits: 2, value: UInt32(bitsNeeded))
         if bitsNeeded == 0 {
-            // Trivial map: every context routes to cluster 0. Nothing
-            // more to emit — `bits_per_entry == 0` is the shortcut.
+            // Trivial map: every context routes to cluster 0 — the
+            // `bits_per_entry == 0` shortcut emits nothing further.
             return
         }
         for c in map {
