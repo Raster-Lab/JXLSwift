@@ -5430,6 +5430,58 @@ extension FoundationTests {
         XCTAssertEqual(parsed.numClusters, 1)
         XCTAssertEqual(parsed.map, cm.map)
     }
+
+    /// Full entropy-coded path: a 16-cluster map (which the simple
+    /// path cannot encode — it caps at 3 bits/entry) round-trips
+    /// through `writeFullPath` → `read`.
+    func testContextMap_FullPath_RoundTrip_16Clusters() throws {
+        let map = (0..<200).map { UInt8($0 % 16) }
+        let cm = try ContextMap(numClusters: 16, map: map)
+        var w = BitWriter()
+        try cm.writeFullPath(to: &w)
+        var r = BitReader(w.finishToData())
+        let parsed = try ContextMap.read(numContexts: map.count, from: &r)
+        XCTAssertEqual(parsed.numClusters, 16)
+        XCTAssertEqual(parsed.map, map)
+    }
+
+    /// Full path sweep across every cluster count the AC block-context
+    /// map can produce (2…16). Each round-trips byte-for-byte.
+    func testContextMap_FullPath_RoundTrip_AllClusterCounts() throws {
+        for k in 2...16 {
+            let map = (0..<(k * 13)).map { UInt8($0 % k) }
+            let cm = try ContextMap(numClusters: k, map: map)
+            var w = BitWriter()
+            try cm.writeFullPath(to: &w)
+            var r = BitReader(w.finishToData())
+            let parsed = try ContextMap.read(numContexts: map.count, from: &r)
+            XCTAssertEqual(parsed.map, map, "k=\(k) map mismatch")
+            XCTAssertEqual(parsed.numClusters, k, "k=\(k) cluster mismatch")
+        }
+    }
+
+    /// The bridge's case: a large (7425-entry) context map with few
+    /// clusters and long runs. Round-trips, and crucially the full
+    /// entropy path is far cheaper than the simple path's
+    /// `numContexts × bits_per_entry`.
+    func testContextMap_FullPath_CheaperThanSimple_ForLargeMaps() throws {
+        var map = [UInt8](repeating: 0, count: 7425)
+        for i in 4000..<4100 { map[i] = 1 }
+        let cm = try ContextMap(numClusters: 2, map: map)
+        var wFull = BitWriter()
+        try cm.writeFullPath(to: &wFull)
+        var wSimple = BitWriter()
+        try cm.write(to: &wSimple)   // simple: 1 + 2 + 7425 bits
+        XCTAssertLessThan(
+            wFull.bitCount, wSimple.bitCount / 2,
+            "full path (\(wFull.bitCount)b) should be < half the "
+            + "simple path (\(wSimple.bitCount)b) for a large "
+            + "repetitive map")
+        var r = BitReader(wFull.finishToData())
+        let parsed = try ContextMap.read(numContexts: map.count, from: &r)
+        XCTAssertEqual(parsed.map, map)
+        XCTAssertEqual(parsed.numClusters, 2)
+    }
 }
 
 // MARK: - ModularProperties (16 standard pixel-context features)

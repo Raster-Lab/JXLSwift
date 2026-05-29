@@ -52,6 +52,12 @@ public indirect enum ContextMapError: Error, Sendable, Equatable {
     /// Reading a context-map symbol from the inner ANS / prefix
     /// stream failed.
     case innerToken(TokenStreamReaderError)
+    /// Building the inner ANS distribution for the full-path *writer*
+    /// failed (e.g. an empty/zero histogram).
+    case innerDistribution(ANSError)
+    /// Emitting an inner context-map token via the full-path *writer*
+    /// failed.
+    case innerWrite(ANSTokenStreamWriterError)
     /// VerifyContextMap: not every cluster index in [0, numClusters)
     /// appears in the decoded map. libjxl rejects this as malformed.
     case incompleteMap
@@ -72,7 +78,9 @@ public indirect enum ContextMapError: Error, Sendable, Equatable {
             return true
         case (.innerHeader, .innerHeader),
              (.innerCodebook, .innerCodebook),
-             (.innerToken, .innerToken):
+             (.innerToken, .innerToken),
+             (.innerDistribution, .innerDistribution),
+             (.innerWrite, .innerWrite):
             // Inner cases compare type-only — the wrapped errors don't
             // all carry Equatable conformance.
             return true
@@ -155,6 +163,88 @@ extension ContextMap {
         }
         for c in map {
             w.write(bits: bitsNeeded, value: UInt32(c))
+        }
+    }
+
+    /// Serialise via the **full entropy-coded path** (`is_simple == 0`).
+    /// Writes the complete encoding *including* the `is_simple` bit, so
+    /// it is a drop-in alternative to `write(to:)` — `read` parses
+    /// either form. This is the path libjxl `DecodeContextMap` consumes
+    /// for maps with more than 8 clusters (the simple path caps at 3
+    /// bits/entry), and the cheap path for large context counts with
+    /// few distinct clusters (where the simple path's
+    /// `numContexts × bits_per_entry` is dominated by entropy coding).
+    ///
+    /// Layout (inverse of `readFullPath`):
+    ///
+    ///     is_simple    u(1) = 0
+    ///     use_mtf      u(1) = 0
+    ///     inner EntropySectionHeader (num_contexts = 1, rANS, no LZ77)
+    ///     inner histogram (one cluster, over the cluster indices)
+    ///     inner rANS token stream: one token per context = its cluster
+    ///
+    /// `use_mtf` is always emitted as 0 — the forward move-to-front
+    /// transform is a further size lever, not required for
+    /// correctness. The inner stream uses no LZ77 back-references (our
+    /// token writer emits none); the cluster indices are entropy-coded
+    /// only, which is already far cheaper than the simple path for the
+    /// bridge's large, repetitive maps.
+    public func writeFullPath(to w: inout BitWriter) throws {
+        // is_simple = 0  →  full entropy-coded path.
+        w.writeBit(false)
+        // use_mtf = 0.
+        w.writeBit(false)
+
+        // Cluster indices are in [0, numClusters). A split exponent that
+        // keeps them all below the literal threshold means each token
+        // equals its value with zero extra bits.
+        let alphabet = max(2, numClusters)
+        let split = max(1, Int(ceilLog2(UInt32(alphabet))))
+        let innerConfig = HybridUintConfig(
+            splitExponent: split, msbInToken: 0, lsbInToken: 0)
+        // log_alpha_size ∈ [5, 8]; must cover the token alphabet.
+        var logAlpha = 5
+        while (1 << logAlpha) < alphabet && logAlpha < 8 { logAlpha += 1 }
+
+        let innerHeader = EntropySectionHeader(
+            lz77: .disabled,
+            contextMap: ContextMap.trivial(numContexts: 1),
+            usePrefixCode: false,
+            logAlphaSize: logAlpha,
+            uintConfigs: [innerConfig])
+        do {
+            try innerHeader.write(to: &w, numContexts: 1)
+        } catch let e as EntropySectionHeaderError {
+            throw ContextMapError.innerHeader(e)
+        }
+
+        // Histogram over the cluster indices (== tokens for this config).
+        var raw = [UInt32](repeating: 0, count: alphabet)
+        for c in map { raw[Int(c)] &+= 1 }
+        let wire: [Int32]
+        do {
+            let dist = try ANSDistribution(rawFrequencies: raw)
+            let normalised = dist.frequencies.map { Int32($0) }
+            wire = try SpecANSDistribution.writeHistogram(normalised, to: &w)
+        } catch let e as ANSError {
+            throw ContextMapError.innerDistribution(e)
+        } catch let e as SpecANSDistributionError {
+            throw ContextMapError.innerCodebook(.ans(e))
+        }
+
+        let innerCodebook = MultiClusterCodebook(
+            huffmanTables: [], ansCounts: [wire],
+            alphabetSizes: [wire.count])
+
+        do {
+            var tw = try ANSTokenStreamWriter(
+                header: innerHeader, codebook: innerCodebook)
+            for c in map {
+                try tw.writeToken(context: 0, value: UInt32(c))
+            }
+            try tw.finish(to: &w)
+        } catch let e as ANSTokenStreamWriterError {
+            throw ContextMapError.innerWrite(e)
         }
     }
 
