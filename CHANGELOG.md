@@ -11,6 +11,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0i14 — Wire grayscale+alpha into the high-level encoder
+
+Closes a reachability gap from i12: `encodeGrayscaleAlpha8/16` existed
+but `JXLEncoder.encode(_:)` — the main frame entry point — had no route
+for a 2-channel frame (its `default` case threw `.notImplemented`). Added
+`(.uint8/.uint16, channels 2, alpha 1)` cases (+ a `deinterleave2`
+helper) that forward to the gray+alpha encoders with `options.effort`.
+So every channel layout the spec encoder supports (1 / 2 / 3 / 4) is now
+reachable from the high-level API. New
+`testJXLEncoder_GrayscaleAlphaFrame_RoutesToModular`.
+Full suite: 685 tests.
+
 ### v0.12.0i13 — Lossless encode-effort knob (ratio ↔ speed)
 
 The lossless Modular encoder had grown to run *many* cost-gated

@@ -152,6 +152,23 @@ public struct JXLEncoder: Sendable {
                     pixels: pixels, effort: options.effort.rawValue
                 )
             }
+        case (.uint8, 2, 1):
+            let (gray, alpha) = deinterleave2(frame: frame)
+            bytes = try wrapModular {
+                try SpecModularEncoder.encodeGrayscaleAlpha8(
+                    width: frame.width, height: frame.height,
+                    gray: gray, alpha: alpha, effort: options.effort.rawValue
+                )
+            }
+        case (.uint16, 2, 1):
+            let gray = unpackUInt16(from: frame, channelCount: 2, channel: 0)
+            let alpha = unpackUInt16(from: frame, channelCount: 2, channel: 1)
+            bytes = try wrapModular {
+                try SpecModularEncoder.encodeGrayscaleAlpha16(
+                    width: frame.width, height: frame.height,
+                    gray: gray, alpha: alpha, effort: options.effort.rawValue
+                )
+            }
         case (.uint8, 3, 0):
             let (r, g, b) = deinterleave3(frame: frame)
             bytes = try wrapModular {
@@ -566,6 +583,19 @@ public struct JXLEncoder: Sendable {
 /// Split a 3-channel interleaved uint8 `ImageFrame` into per-channel
 /// row-major buffers. Operates on `frame.data` directly; one full
 /// allocation per channel.
+private func deinterleave2(
+    frame: ImageFrame
+) -> (gray: [UInt8], alpha: [UInt8]) {
+    let n = frame.width * frame.height
+    var gray = [UInt8](repeating: 0, count: n)
+    var alpha = [UInt8](repeating: 0, count: n)
+    for i in 0..<n {
+        gray[i] = frame.data[i * 2 + 0]
+        alpha[i] = frame.data[i * 2 + 1]
+    }
+    return (gray, alpha)
+}
+
 private func deinterleave3(
     frame: ImageFrame
 ) -> (r: [UInt8], g: [UInt8], b: [UInt8]) {

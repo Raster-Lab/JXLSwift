@@ -14629,6 +14629,33 @@ extension FoundationTests {
         }
     }
 
+    /// High-level `JXLEncoder.encode(_:)` routes a 2-channel
+    /// (grayscale + alpha) `ImageFrame` to `encodeGrayscaleAlpha*` —
+    /// closing the gap where that 2-channel encoder existed but was
+    /// unreachable from the main entry point. Lossless, naked codestream,
+    /// round-tripped through our decoder (2 channels, byte-exact).
+    func testJXLEncoder_GrayscaleAlphaFrame_RoutesToModular() throws {
+        let w = 18, h = 14
+        var frame = ImageFrame(
+            width: w, height: h, channels: 2,
+            pixelType: .uint8, alphaChannels: 1)
+        for i in 0..<(w * h) {
+            frame.data[i * 2 + 0] = UInt8((i * 5) & 0xff)
+            frame.data[i * 2 + 1] = UInt8((200 &- i * 3) & 0xff)
+        }
+        let opts = EncodingOptions(mode: .lossless, containerWrap: false)
+        let encoded = try JXLEncoder(options: opts).encode(frame)
+        XCTAssertTrue(encoded.stats.wasLossless, "lossless mode")
+        let img = try JXLDecoder().decodeModular(encoded.data)
+        XCTAssertEqual(img.channels.count, 2, "luma + alpha")
+        for i in 0..<(w * h) {
+            XCTAssertEqual(img.channels[0].pixels[i],
+                Int32(frame.data[i * 2 + 0]), "luma \(i)")
+            XCTAssertEqual(img.channels[1].pixels[i],
+                Int32(frame.data[i * 2 + 1]), "alpha \(i)")
+        }
+    }
+
     /// `TokenStreamWriter` ↔ `TokenStreamReader` round-trip via
     /// prefix codes. Build a 4-symbol prefix table by hand, write a
     /// known sequence of (ctx, value) tokens, then read them back.
