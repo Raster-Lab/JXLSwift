@@ -908,11 +908,12 @@ public enum SpecModularEncoder {
     /// large images into multiple groups.
     private static func validateSize(width: Int, height: Int) throws {
         precondition(width > 0 && height > 0)
-        guard width <= 8192 && height <= 8192
-              && width % 8 == 0 && height % 8 == 0 else {
+        // Modular coding is pixel-based (no DCT block alignment), and the
+        // group tiler crops partial edge rects — so arbitrary dimensions
+        // are supported (essential for arbitrary-size medical images).
+        guard width <= 8192 && height <= 8192 else {
             throw SpecModularEncoderError.unsupportedFrame(
-                "encoder currently requires 8 ≤ width,height ≤ 8192 "
-                + "and both multiples of 8"
+                "encoder currently requires 1 ≤ width,height ≤ 8192"
             )
         }
     }

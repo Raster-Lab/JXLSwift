@@ -6529,6 +6529,95 @@ extension FoundationTests {
         }
     }
 
+    /// **Arbitrary (non-multiple-of-8) dimensions, lossless (v0.12.0hy).**
+    /// The native Modular encoder used to reject dims that weren't
+    /// multiples of 8 — a blocker for arbitrary-size medical images.
+    /// Modular coding is pixel-based (no DCT block grid) and the group
+    /// tiler crops partial edge rects, so arbitrary dims round-trip.
+    /// Covers the core medical case (16-bit grayscale) plus 8-bit RGB at
+    /// odd sizes, validated **byte-exact through `djxl`** and our decoder.
+    func testSpecModularEncoder_ArbitraryDims_Lossless_DjxlRoundTrip() throws {
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("djxl not available")
+        }
+        let tmp = NSTemporaryDirectory()
+        // 16-bit grayscale at odd sizes (CT/MR-like), incl. one < a
+        // single group and one that crosses the 512px group boundary.
+        for (w, h) in [(17, 23), (101, 99), (521, 383)] {
+            var px = [UInt16](repeating: 0, count: w * h)
+            var seed: UInt32 = UInt32(w * 31 + h)
+            for i in 0..<px.count {
+                seed = seed &* 1103515245 &+ 12345
+                px[i] = UInt16(truncatingIfNeeded: (seed >> 12) & 0xFFFF)
+            }
+            let bytes = try SpecModularEncoder.encodeGrayscale16(
+                width: w, height: h, pixels: px)
+            let inP = tmp + "arbg16_\(w)x\(h).jxl"
+            let outP = tmp + "arbg16_\(w)x\(h).pgm"
+            defer { try? FileManager.default.removeItem(atPath: inP)
+                    try? FileManager.default.removeItem(atPath: outP) }
+            try bytes.write(to: URL(fileURLWithPath: inP))
+            let p = Process(); p.launchPath = djxl
+            p.arguments = [inP, outP]
+            p.standardOutput = Pipe(); p.standardError = Pipe()
+            try p.run(); p.waitUntilExit()
+            XCTAssertEqual(p.terminationStatus, 0,
+                "djxl rejected \(w)×\(h) 16-bit grayscale")
+            // Parse 16-bit PGM (P5, big-endian samples) past the header.
+            let pgm = try Data(contentsOf: URL(fileURLWithPath: outP))
+            var nl = 0, start = 0
+            for (i, b) in pgm.enumerated() where b == 0x0a {
+                nl += 1; if nl == 3 { start = i + 1; break }
+            }
+            for i in 0..<(w * h) {
+                let hi = UInt16(pgm[start + 2 * i])
+                let lo = UInt16(pgm[start + 2 * i + 1])
+                XCTAssertEqual((hi << 8) | lo, px[i],
+                    "\(w)×\(h) 16-bit pixel \(i) mismatch")
+            }
+        }
+        // 8-bit RGB at an odd size — RCT + 3 channels, partial groups.
+        let (rw, rh) = (99, 101)
+        var rr = [UInt8](repeating: 0, count: rw * rh)
+        var gg = rr, bb = rr
+        for y in 0..<rh {
+            for x in 0..<rw {
+                let o = y * rw + x
+                rr[o] = UInt8((x * 7) & 0xff)
+                gg[o] = UInt8((y * 5) & 0xff)
+                bb[o] = UInt8((x ^ y) & 0xff)
+            }
+        }
+        let rgbBytes = try SpecModularEncoder.encodeRGB8(
+            width: rw, height: rh, r: rr, g: gg, b: bb)
+        let inP = tmp + "arbrgb_\(rw)x\(rh).jxl"
+        let outP = tmp + "arbrgb_\(rw)x\(rh).ppm"
+        defer { try? FileManager.default.removeItem(atPath: inP)
+                try? FileManager.default.removeItem(atPath: outP) }
+        try rgbBytes.write(to: URL(fileURLWithPath: inP))
+        let p = Process(); p.launchPath = djxl
+        p.arguments = [inP, outP]
+        p.standardOutput = Pipe(); p.standardError = Pipe()
+        try p.run(); p.waitUntilExit()
+        XCTAssertEqual(p.terminationStatus, 0,
+            "djxl rejected \(rw)×\(rh) 8-bit RGB")
+        let ppm = try Data(contentsOf: URL(fileURLWithPath: outP))
+        var nl = 0, start = 0
+        for (i, b) in ppm.enumerated() where b == 0x0a {
+            nl += 1; if nl == 3 { start = i + 1; break }
+        }
+        // djxl writes interleaved RGB; our source is planar.
+        for i in 0..<(rw * rh) {
+            XCTAssertEqual(ppm[start + 3 * i], rr[i],
+                "\(rw)×\(rh) RGB R[\(i)] mismatch")
+            XCTAssertEqual(ppm[start + 3 * i + 1], gg[i],
+                "\(rw)×\(rh) RGB G[\(i)] mismatch")
+            XCTAssertEqual(ppm[start + 3 * i + 2], bb[i],
+                "\(rw)×\(rh) RGB B[\(i)] mismatch")
+        }
+    }
+
     /// Multi-group encode round-trip: 1024×512 grayscale → 2 groups
     /// (groupDim=512, 2×1 layout). Forces the encoder's multi-section
     /// path. Round-trip target is OUR decoder, which already handles
