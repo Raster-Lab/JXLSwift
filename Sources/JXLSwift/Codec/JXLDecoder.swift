@@ -3671,12 +3671,19 @@ extension JXLDecoder {
         )
         let bytesPerSample = pixelType.bytesPerSample
         let stride = outChannels * bytesPerSample
+        // Decoded samples are clamped to the declared sample range
+        // [0, 2^bps − 1] on output, matching libjxl. For a valid in-range
+        // lossless stream this is a no-op; it only bites when an inverse
+        // transform (e.g. YCoCg-R RCT) reconstructs an out-of-gamut value
+        // for a sub-container bit depth — e.g. a 9-bit image stored in a
+        // 16-bit container must clamp to 511, not merely mask to 16 bits.
+        let sampleMax = UInt32((1 << bps) - 1)
         // Helper to write one Int32 sample at the right byte offset.
         let writeSample: (Int, Int32) -> Void = { dstByte, value in
-            let clamped = UInt32(max(0, value))
+            let clamped = min(UInt32(max(0, value)), sampleMax)
             switch bytesPerSample {
             case 1:
-                frame.data[dstByte] = UInt8(min(clamped, 255))
+                frame.data[dstByte] = UInt8(clamped)
             default:
                 frame.data[dstByte] = UInt8(clamped & 0xff)
                 frame.data[dstByte + 1] = UInt8((clamped >> 8) & 0xff)

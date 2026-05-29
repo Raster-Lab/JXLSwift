@@ -349,8 +349,8 @@ These are added once a corresponding scalar Swift path is correct. The scalar pa
 | Item | Status |
 |---|---|
 | Foundation tests (212) | ✅ |
-| Conformance test vectors (jxl-conformance repo) | ⏳ harness exists; vectors not wired up |
-| Cross-codec round-trip (encode → libjxl `djxl` decode) | ⏳ requires Phase E4-6 + M at minimum |
+| Conformance test vectors (jxl-conformance repo) | ✅ wired (`Tests/JXLSwiftTests/ConformanceTests.swift`): env-gated `JXL_CONFORMANCE_DIR` + a committed lossless subset, `djxl` as the pixel oracle. **Lossless gate green** on `lz77_flower` (RGB8 + LZ77) and `alpha_triangles` (9-bit RGBA) — both byte-exact to `djxl`. Triage of the full lossless/near-lossless set classifies the rest as feature-gaps (Squeeze, delta-Palette, Float32, Patches, EXIF orientation, upsampling, CMYK-layers, SpotColor) deferred to v0.14.0; lossy VarDCT vectors are out of the lossless gate. See `scripts/fetch-conformance.sh`. |
+| Cross-codec round-trip (encode → libjxl `djxl` decode) | ✅ extensive (`SpecModularEncoder` lossless + JPEG-bridge transcode are `djxl`-byte-validated across dims/depths/channels) |
 | Cross-codec round-trip (libjxl `cjxl` → JXLDecoder) | ⏳ requires Phase E4-6 + M at minimum |
 | Performance baseline (NEON / Accelerate / Metal) | ⏳ once a working path exists |
 
@@ -374,10 +374,14 @@ unbuilt subsystem (libjxl-scale) and should not gate a lossless 1.0. As of v0.12
 encode + decode and the JPEG ⇄ JXL transcode are already comprehensive and `djxl`-validated; what
 remains for 1.0 is conformance, completeness, hardening, performance, and API stability. Ordered:
 
-1. **Conformance gate (do first) — v0.13.0.** Wire the official `jxl-conformance` vectors
-   (lossless subset) into the test harness ([Phase C](#phase-c--conformance--interop): "harness
-   exists; vectors not wired up"). Validates spec-compliance against the reference corpus beyond
-   our own `djxl` round-trips, and may surface issues that reshape later milestones — so it leads.
+1. **Conformance gate — ✅ wired (v0.13.0).** The official `jxl-conformance` vectors are wired into
+   the harness (`Tests/JXLSwiftTests/ConformanceTests.swift`): env-gated `JXL_CONFORMANCE_DIR` for
+   the full corpus + a committed lossless subset so the gate runs green by default, with `djxl` as
+   the pixel oracle. The lossless gate is green on `lz77_flower` and `alpha_triangles`. As predicted,
+   it surfaced a real decode bug — samples weren't clamped to the declared bit depth, so 9-bit RGBA
+   reconstructed out-of-gamut values (511→767); fixed in `JXLDecoder.assembleImageFrame`. The
+   triage classified the rest of the lossless set as feature-gaps feeding milestone 2/the v0.14.0
+   decoder work; lossy VarDCT vectors are out of the lossless gate (preview decoder).
 2. **Lossless completeness — v0.14.0.** Each deferred item, resolved with an explicit decision:
    - **E5 >8-cluster context-map `djxl` compliance — ✅ already done.** The full entropy-coded
      path (`ContextMap.writeFullPath` / `readFullPath`) is implemented and `djxl`-byte-verified for
