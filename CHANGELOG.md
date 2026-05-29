@@ -11,6 +11,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0ht — Forward bridge multi-AC-group support (> 256-px images)
+
+The forward bridge assembly hardcoded a single combined section + a
+one-entry TOC, so any image larger than one 256-px group only encoded the
+top-left group — the rest was silently dropped, breaking both our reverse
+path and `djxl`. `JXLBridgeEncoder.write` now branches:
+
+- **≤ 256 px** keeps the single-section *small-image* fast path (the four
+  sub-sections flow as continuous bits in one TOC entry).
+- **larger** writes each sub-section as its own **byte-aligned TOC
+  section** in libjxl's natural order — LfGlobal, DC group, HfGlobal, then
+  one section per AC group (AC group `g` at TOC entry `2 + numDcGroups + g`,
+  matching the decoder). `num_histograms` stays 1, so each AC group is a
+  fresh rANS stream with no selector prefix; the multi-cluster AC codebook
+  is built **once over all groups' tokens** and shared. Group geometry is
+  computed exactly as the decoder does, from the prelude's frame pixel size.
+
+Single-DC-group only (≤ 2048 px per side); multi-DC-group throws a clear
+`.notImplemented` (it needs per-group DC splitting). Validated
+byte-identical via **both** our reverse path and the real `djxl` on
+384×384 4:4:4 / 4:2:0, 300×260 (partial edge groups), 520×200 (3×1 +
+chroma), 512×512, 600×400, 513×257 and 1024×768. New
+`testEndToEnd_MultiGroupForwardBridge_ByteIdentical` locks in four of these.
+Full suite: 667 tests, 7 skipped, 0 failures.
+
+> Note: on smooth / low-AC images the DC group (DC residuals + ACMetadata,
+> still Huffman) dominates the file — e.g. a smooth 512² is ~10 KB DC vs
+> ~0.5 KB AC. Converting those modular sections to rANS is the next
+> file-size lever, independent of this multi-group work.
+
 ### v0.12.0hs — 🎉 Multi-cluster AC modelling for the JPEG bridge — ~14% smaller
 
 The forward bridge coded every AC token against **one** global histogram.

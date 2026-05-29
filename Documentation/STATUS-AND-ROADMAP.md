@@ -1,6 +1,6 @@
 # JXLSwift — Status & Roadmap
 
-**A current-state knowledge map of the project.** Snapshot as of **v0.12.0hs** (2026-05-29).
+**A current-state knowledge map of the project.** Snapshot as of **v0.12.0ht** (2026-05-29).
 For the original project charter + constraints see [ROADMAP.md](../ROADMAP.md); for the
 load-bearing rules see [CLAUDE.md](../CLAUDE.md); for release-by-release detail see
 [CHANGELOG.md](../CHANGELOG.md).
@@ -27,10 +27,10 @@ GPU paths (land later, behind the proven scalar path).
 
 | | |
 |---|---|
-| **Version** | v0.12.0hs (Phase J line) |
-| **Tests** | 666 passing / 7 skipped / 0 failures (`swift test -c release`, ~49 s) |
+| **Version** | v0.12.0ht (Phase J line) |
+| **Tests** | 667 passing / 7 skipped / 0 failures (`swift test -c release`, ~49 s) |
 | **Dependencies** | `swift-argument-parser` (CLI only). Zero runtime deps. |
-| **Headline capability** | **Lossless JPEG ⇄ JXL transcoding is byte-identical in both directions**, with no `--source` needed — across baseline + progressive, all chroma, odd dims, grayscale, and metadata. The forward path emits a full lossless-JPEG container that `djxl --jpeg` also reconstructs byte-for-byte. Forward file size is now within **~1.06–1.13× of cjxl** (multi-cluster rANS); the largest remaining gap is the single-AC-group limit (inputs > one 256-px group). |
+| **Headline capability** | **Lossless JPEG ⇄ JXL transcoding is byte-identical in both directions**, with no `--source` needed — across baseline + progressive, all chroma, odd dims, grayscale, metadata, **and now images of any size ≤ 2048 px per side (multi-AC-group)**. The forward path emits a full lossless-JPEG container that `djxl --jpeg` also reconstructs byte-for-byte. Forward file size on AC-rich content is within **~1.06–1.13× of cjxl** (multi-cluster rANS). |
 
 **What works end-to-end today**
 
@@ -74,7 +74,7 @@ Legend: ✅ done · 🟩 substantially done · ⏳ in progress · ⬜ not starte
 | **M** | Modular sub-codec (lossless path) | 🟩 | predictors, RCT, channel decode, MA-tree all used by the VarDCT/bridge decode |
 | **V** | VarDCT | 🟩 | **decoder** decodes real cjxl frames (DC/AC groups, context maps, coeff orders, CFL, RAW quant, chroma subsampling, ICC); **encoder** writes coefficient-bridge frames |
 | **R** | Restoration filters (Gaborish, EPF) | ⬜ | bridge frames disable them (`kSkipAdaptiveLFSmoothing`); pixel-path filters not yet implemented |
-| **J** | JPEG ⇄ JXL transcoding | 🟩 | **both directions byte-identical** (baseline + progressive, all chroma, odd dims, grayscale); forward emits a full lossless container, djxl-valid. Open gap: forward file size (see §5) |
+| **J** | JPEG ⇄ JXL transcoding | 🟩 | **both directions byte-identical** (baseline + progressive, all chroma, odd dims, grayscale, multi-AC-group ≤ 2048 px/side); forward emits a full lossless container, djxl-valid. Open gap: forward file size on low-AC images (DC/ACMetadata still Huffman — see §5) |
 | **Brotli** | RFC 7932 decoder + uncompressed encoder | ✅ | decoder: meta-blocks, simple/complex prefix codes, distance ring buffer, **static dictionary + 121 transforms**; encoder: uncompressed meta-blocks (jbrd tail). Context-maps/multi-block-type (NTREES>1) not needed for jbrd payloads |
 
 > The CLAUDE.md phase table predates the v0.12.0g–hj work and under-states **V** and **J**.
@@ -123,9 +123,10 @@ ISOBMFF container — signature + `ftyp` + `jbrd` + `jxlc` — a true lossless-J
 - **Brotli encoder** (`BrotliEncoder.encodeUncompressed`) carries the jbrd tail as
   uncompressed RFC 7932 meta-blocks.
 - **Input coverage:** baseline (SOF0), **progressive (SOF2 — all four entropy modes)**,
-  extended-sequential; 4:4:4 / 4:2:2 / 4:2:0; odd dimensions; grayscale. The pure-Swift
-  progressive scan decoder (`JPEGScanDecoder.decodeProgressive`) folds the full multi-scan
-  coefficient state during `decodeToCoefficients`.
+  extended-sequential; 4:4:4 / 4:2:2 / 4:2:0; odd dimensions; grayscale; **multi-AC-group
+  (any size ≤ 2048 px per side — v0.12.0ht)**. The pure-Swift progressive scan decoder
+  (`JPEGScanDecoder.decodeProgressive`) folds the full multi-scan coefficient state during
+  `decodeToCoefficients`.
 
 ### 5.3 What remains in Phase J
 
@@ -136,14 +137,18 @@ ISOBMFF container — signature + `ftyp` + `jbrd` + `jxlc` — a true lossless-J
   agglomerative, cap 16) and serialises the map via `ContextMap.writeFullPath`; the codebook
   builder cost-gates Huffman / 1-cluster rANS / multi-cluster rANS and keeps the smallest. Both
   our reverse path and `djxl` reconstruct byte-for-byte.
+- **Multi-AC-group forward (v0.12.0ht)** — the forward bridge now writes images larger than one
+  256-px group as a multi-section frame (LfGlobal, DC group, HfGlobal, then one byte-aligned TOC
+  section per AC group; the AC codebook is built once over all groups). Byte-identical via both
+  our reverse path and `djxl` up to 1024×768. **Single DC group only** (≤ 2048 px per side);
+  multi-DC-group (per-group DC splitting) throws `.notImplemented`.
 - **Remaining size/scope work** (all lossless recodes, not correctness):
-  (a) **single-AC-group limit** — the forward bridge assembly (`JXLBridgeEncoder.write`)
-  hardcodes one group + one TOC entry, so inputs larger than one 256-px group only encode the
-  top-left group. Lifting this (multi-group TOC + per-group AC writes) is now the **largest**
-  forward gap. (b) convert the **DC / ACMetadata modular** sections to rANS (they share one
-  codebook across sub-images → needs multi-sub-image stream handling). (c) reduce the **block
-  context map** (cjxl drops `all_default` and tailors block contexts; we use the 15-context
-  default → a 7425-entry AC map vs cjxl's ~990).
+  (a) convert the **DC / ACMetadata modular** sections to rANS — they're still Huffman and
+  *dominate* low-AC images (a smooth 512² is ~10 KB DC vs ~0.5 KB AC). They share one codebook
+  across sub-images → needs multi-sub-image stream handling. This is now the **largest** forward
+  size lever. (b) reduce the **block context map** (cjxl drops `all_default` and tailors block
+  contexts; we use the 15-context default → a 7425-entry AC map vs cjxl's ~990).
+  (c) **multi-DC-group** for inputs > 2048 px per side.
 - Foundations in place: `SpecANSDistribution.writeComplex` (v0.12.0ho), `ANSTokenStreamWriter`
   (v0.12.0hp), and `ContextMap.writeFullPath` (v0.12.0hr).
 
@@ -196,7 +201,7 @@ round-trip test.
 
 ```bash
 swift build -c release
-swift test  -c release            # 666 tests / 7 skipped, ~49 s
+swift test  -c release            # 667 tests / 7 skipped, ~49 s
 .build/release/jxl-tool --version
 
 # byte-identical reverse transcode (no source needed)
@@ -213,10 +218,10 @@ Test oracles (optional, dev-time): `cjxl` / `djxl` / `jxlinfo` / `brotli` / `cjp
 
 ## 9. Suggested next milestones (priority order)
 
-1. **Forward multi-AC-group support** — lift the single-group limit in `JXLBridgeEncoder.write`
-   (multi-entry TOC + per-group AC writes + `num_histograms`/HfGlobal handling) so inputs larger
-   than one 256-px group transcode correctly. This is now the largest forward gap; entropy-coding
-   size is otherwise within ~1.06–1.13× cjxl (rANS + multi-cluster, v0.12.0hq/hs).
+1. **DC / ACMetadata sections → rANS** — these modular sub-images are still Huffman and dominate
+   low-AC images (smooth 512² ≈ 10 KB DC vs 0.5 KB AC). They share one codebook across multiple
+   sub-images, so this needs multi-sub-image shared-codebook stream handling. Now the largest
+   forward size lever (multi-AC-group landed in v0.12.0ht; AC-rich content is already ~1.06–1.13×).
 2. **Restoration filters (Phase R)** — Gaborish + EPF for the lossy pixel-decode path.
 3. **Full lossy VarDCT** beyond the JPEG-bridge subset (XYB colour, full AC-strategy search on
    encode).
