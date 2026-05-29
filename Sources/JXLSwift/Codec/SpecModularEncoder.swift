@@ -995,134 +995,168 @@ public enum SpecModularEncoder {
             }
         }
         guard !perPixel.isEmpty else { return nil }
-        // Threshold = median WP error → a roughly balanced split.
-        let t = perPixel.map { $0.wpProp }.sorted()[perPixel.count / 2]
-        var histo: [[Int]] = [
-            [Int](repeating: 0, count: postCfg.maxToken + 1),
-            [Int](repeating: 0, count: postCfg.maxToken + 1),
-        ]
-        var ordered: [(ctx: Int, val: UInt32)] = []
-        ordered.reserveCapacity(perPixel.count)
-        var maxTok = 0
-        for (wpProp, tok) in perPixel {
-            // Matches the tree walk: property15 > splitVal → leftChild
-            // (leaf 0, high activity), else rightChild (leaf 1).
-            let ctx = wpProp > t ? 0 : 1
-            ordered.append((ctx, tok))
-            let tk = Int(postCfg.encode(tok).token)
-            histo[ctx][tk] += 1
-            if tk > maxTok { maxTok = tk }
+        let sortedProps = perPixel.map { $0.wpProp }.sorted()
+        func pct(_ p: Double) -> Int32 {
+            sortedProps[min(sortedProps.count - 1,
+                            max(0, Int(Double(sortedProps.count) * p)))]
         }
-        guard histo[0].reduce(0, +) > 0, histo[1].reduce(0, +) > 0
-        else { return nil }   // degenerate split — keep single-context
-        let alpha = maxTok + 1
-        let ctxMap = try ContextMap(numClusters: 2, map: [0, 1])
 
-        func sectionBits(_ h: EntropySectionHeader, _ c: MultiClusterCodebook) -> Int {
-            var w = BitWriter()
+        // Build a full section for an N-bin WP-activity split (N = 2 or 4),
+        // returning its bytes, or nil if degenerate / not encodable. The
+        // tree is a balanced property-15 decision tree in the decoder's
+        // fill layout; the per-pixel context mirrors the tree walk
+        // (property > split → leftChild).
+        func buildForThresholds(_ thr: [Int32]) -> Data? {
+            func leafNode(_ id: Int) -> ModularTreeNode {
+                ModularTreeNode(property: -1, splitVal: 0,
+                    leftChildOrLeafId: id, rightChild: 0,
+                    predictor: .gradient, predictorOffset: 0,
+                    multiplier: 1, rawPredictor: 6)
+            }
+            func decNode(_ s: Int32, _ l: Int, _ r: Int) -> ModularTreeNode {
+                ModularTreeNode(property: 15, splitVal: s,
+                    leftChildOrLeafId: l, rightChild: r,
+                    predictor: .gradient, predictorOffset: 0,
+                    multiplier: 1, rawPredictor: 6)
+            }
+            let n: Int
+            let ctxOf: (Int32) -> Int
+            let nodes: [ModularTreeNode]
+            switch thr.count {
+            case 1:
+                let t = thr[0]; n = 2
+                ctxOf = { $0 > t ? 0 : 1 }
+                nodes = [decNode(t, 1, 2), leafNode(0), leafNode(1)]
+            case 3:
+                let q1 = thr[0], q2 = thr[1], q3 = thr[2]; n = 4
+                // leafId = #thresholds the value is ≤ (0 = highest activity).
+                ctxOf = { p in p > q2 ? (p > q3 ? 0 : 1) : (p > q1 ? 2 : 3) }
+                nodes = [decNode(q2, 1, 2), decNode(q3, 3, 4), decNode(q1, 5, 6),
+                         leafNode(0), leafNode(1), leafNode(2), leafNode(3)]
+            default:
+                return nil
+            }
+            var histo = [[Int]](
+                repeating: [Int](repeating: 0, count: postCfg.maxToken + 1),
+                count: n)
+            var ordered: [(ctx: Int, val: UInt32)] = []
+            ordered.reserveCapacity(perPixel.count)
+            var maxTok = 0
+            for (wpProp, tok) in perPixel {
+                let ctx = ctxOf(wpProp)
+                ordered.append((ctx, tok))
+                let tk = Int(postCfg.encode(tok).token)
+                histo[ctx][tk] += 1
+                if tk > maxTok { maxTok = tk }
+            }
+            for c in 0..<n where histo[c].reduce(0, +) == 0 { return nil }
+            let alpha = maxTok + 1
+            guard let ctxMap = try? ContextMap(
+                numClusters: n, map: (0..<n).map { UInt8($0) }) else { return nil }
+            let cfgs = Array(repeating: postCfg, count: n)
+
+            func sectionBits(
+                _ h: EntropySectionHeader, _ c: MultiClusterCodebook
+            ) -> Int {
+                var w = BitWriter()
+                do {
+                    try h.write(to: &w, numContexts: n)
+                    try c.write(to: &w, header: h)
+                    if h.usePrefixCode {
+                        let tw = TokenStreamWriter(header: h, codebook: c)
+                        for (ctx, v) in ordered {
+                            try tw.writeToken(context: ctx, value: v, to: &w)
+                        }
+                    } else {
+                        var aw = try ANSTokenStreamWriter(header: h, codebook: c)
+                        for (ctx, v) in ordered { try aw.writeToken(context: ctx, value: v) }
+                        try aw.finish(to: &w)
+                    }
+                } catch { return Int.max }
+                return w.bitCount
+            }
+            // Huffman candidate (one table per context).
+            let huffTables: [PrefixCodeTable]
             do {
-                try h.write(to: &w, numContexts: 2)
-                try c.write(to: &w, header: h)
-                if h.usePrefixCode {
-                    let tw = TokenStreamWriter(header: h, codebook: c)
+                huffTables = try (0..<n).map { c in
+                    try PrefixCodeTable(lengths: lengthLimitedCanonicalHuffman(
+                        counts: Array(histo[c][0..<alpha]), maxLength: 15,
+                        alphabetSize: alpha))
+                }
+            } catch { return nil }
+            let huffCodebook = MultiClusterCodebook(
+                huffmanTables: huffTables, ansCounts: [],
+                alphabetSizes: Array(repeating: alpha, count: n))
+            let huffHeader = EntropySectionHeader(
+                lz77: .disabled, contextMap: ctxMap,
+                usePrefixCode: true, logAlphaSize: 15, uintConfigs: cfgs)
+            var best: (EntropySectionHeader, MultiClusterCodebook) =
+                (huffHeader, huffCodebook)
+            var bestBits = sectionBits(huffHeader, huffCodebook)
+            // rANS candidate (one histogram per context).
+            var wires: [[Int32]] = []
+            var maxWire = 0
+            var ansOK = true
+            for c in 0..<n {
+                guard let dist = try? ANSDistribution(
+                    rawFrequencies: histo[c][0..<alpha].map { UInt32(max(0, $0)) })
+                else { ansOK = false; break }
+                var scratch = BitWriter()
+                guard let wire = try? SpecANSDistribution.writeHistogram(
+                    dist.frequencies.map { Int32($0) }, to: &scratch)
+                else { ansOK = false; break }
+                wires.append(wire); maxWire = max(maxWire, wire.count)
+            }
+            if ansOK {
+                var logAlpha = 5
+                while (1 << logAlpha) < maxWire && logAlpha < 8 { logAlpha += 1 }
+                if maxWire <= (1 << logAlpha) {
+                    let ansHeader = EntropySectionHeader(
+                        lz77: .disabled, contextMap: ctxMap,
+                        usePrefixCode: false, logAlphaSize: logAlpha,
+                        uintConfigs: cfgs)
+                    let ansCodebook = MultiClusterCodebook(
+                        huffmanTables: [], ansCounts: wires,
+                        alphabetSizes: wires.map { $0.count })
+                    let b = sectionBits(ansHeader, ansCodebook)
+                    if b < bestBits { best = (ansHeader, ansCodebook); bestBits = b }
+                }
+            }
+            let (postHeader, postCodebook) = best
+            let tree = ModularTree(nodes: nodes)
+            var sec = BitWriter()
+            sec.writeBit(true)            // matrices_dc_default
+            sec.writeBit(true)            // has_tree
+            do {
+                try writeModularTreeSectionOnly(to: &sec, tree: tree)
+                try postHeader.write(to: &sec, numContexts: n)
+                try postCodebook.write(to: &sec, header: postHeader)
+                try GroupHeader.default.write(to: &sec)
+                if postHeader.usePrefixCode {
+                    let tw = TokenStreamWriter(header: postHeader, codebook: postCodebook)
                     for (ctx, v) in ordered {
-                        try tw.writeToken(context: ctx, value: v, to: &w)
+                        try tw.writeToken(context: ctx, value: v, to: &sec)
                     }
                 } else {
-                    var aw = try ANSTokenStreamWriter(header: h, codebook: c)
+                    var aw = try ANSTokenStreamWriter(header: postHeader, codebook: postCodebook)
                     for (ctx, v) in ordered { try aw.writeToken(context: ctx, value: v) }
-                    try aw.finish(to: &w)
+                    try aw.finish(to: &sec)
                 }
-            } catch { return Int.max }
-            return w.bitCount
+            } catch { return nil }
+            sec.alignToByte()
+            return sec.finishToData()
         }
-        // Huffman 2-context candidate.
-        var huffTables: [PrefixCodeTable] = []
-        for c in 0..<2 {
-            let lens = lengthLimitedCanonicalHuffman(
-                counts: Array(histo[c][0..<alpha]), maxLength: 15,
-                alphabetSize: alpha)
-            huffTables.append(try PrefixCodeTable(lengths: lens))
-        }
-        let huffHeader = EntropySectionHeader(
-            lz77: .disabled, contextMap: ctxMap,
-            usePrefixCode: true, logAlphaSize: 15,
-            uintConfigs: [postCfg, postCfg])
-        let huffCodebook = MultiClusterCodebook(
-            huffmanTables: huffTables, ansCounts: [],
-            alphabetSizes: [alpha, alpha])
-        var best: (EntropySectionHeader, MultiClusterCodebook) =
-            (huffHeader, huffCodebook)
-        var bestBits = sectionBits(huffHeader, huffCodebook)
-        // rANS 2-context candidate.
-        var wires: [[Int32]] = []
-        var maxWire = 0
-        var ansOK = true
-        for c in 0..<2 {
-            guard let dist = try? ANSDistribution(
-                rawFrequencies: histo[c][0..<alpha].map { UInt32(max(0, $0)) })
-            else { ansOK = false; break }
-            var scratch = BitWriter()
-            guard let wire = try? SpecANSDistribution.writeHistogram(
-                dist.frequencies.map { Int32($0) }, to: &scratch)
-            else { ansOK = false; break }
-            wires.append(wire); maxWire = max(maxWire, wire.count)
-        }
-        if ansOK {
-            var logAlpha = 5
-            while (1 << logAlpha) < maxWire && logAlpha < 8 { logAlpha += 1 }
-            if maxWire <= (1 << logAlpha) {
-                let ansHeader = EntropySectionHeader(
-                    lz77: .disabled, contextMap: ctxMap,
-                    usePrefixCode: false, logAlphaSize: logAlpha,
-                    uintConfigs: [postCfg, postCfg])
-                let ansCodebook = MultiClusterCodebook(
-                    huffmanTables: [], ansCounts: wires,
-                    alphabetSizes: wires.map { $0.count })
-                let b = sectionBits(ansHeader, ansCodebook)
-                if b < bestBits { best = (ansHeader, ansCodebook); bestBits = b }
-            }
-        }
-        let (postHeader, postCodebook) = best
 
-        // Tree: property 15 > t → leaf 0 (high activity), else leaf 1.
-        let tree = ModularTree(nodes: [
-            ModularTreeNode(
-                property: 15, splitVal: t,
-                leftChildOrLeafId: 1, rightChild: 2,
-                predictor: .gradient, predictorOffset: 0,
-                multiplier: 1, rawPredictor: 6),
-            ModularTreeNode(
-                property: -1, splitVal: 0,
-                leftChildOrLeafId: 0, rightChild: 0,
-                predictor: .gradient, predictorOffset: 0,
-                multiplier: 1, rawPredictor: 6),
-            ModularTreeNode(
-                property: -1, splitVal: 0,
-                leftChildOrLeafId: 1, rightChild: 0,
-                predictor: .gradient, predictorOffset: 0,
-                multiplier: 1, rawPredictor: 6),
-        ])
-
-        var sec = BitWriter()
-        sec.writeBit(true)            // matrices_dc_default
-        sec.writeBit(true)            // has_tree
-        try writeModularTreeSectionOnly(to: &sec, tree: tree)
-        try postHeader.write(to: &sec, numContexts: 2)
-        try postCodebook.write(to: &sec, header: postHeader)
-        try GroupHeader.default.write(to: &sec)
-        if postHeader.usePrefixCode {
-            let tw = TokenStreamWriter(header: postHeader, codebook: postCodebook)
-            for (ctx, v) in ordered {
-                try tw.writeToken(context: ctx, value: v, to: &sec)
-            }
-        } else {
-            var aw = try ANSTokenStreamWriter(header: postHeader, codebook: postCodebook)
-            for (ctx, v) in ordered { try aw.writeToken(context: ctx, value: v) }
-            try aw.finish(to: &sec)
+        // Try a 2-bin (median) and a 4-bin (quartile) WP-activity split;
+        // keep whichever is smaller. The caller cost-gates against the
+        // single-context section.
+        var candidates: [Data] = []
+        if let d = buildForThresholds([pct(0.5)]) { candidates.append(d) }
+        let q1 = pct(0.25), q2 = pct(0.5), q3 = pct(0.75)
+        if q1 < q2, q2 < q3, let d = buildForThresholds([q1, q2, q3]) {
+            candidates.append(d)
         }
-        sec.alignToByte()
-        return sec.finishToData()
+        return candidates.min(by: { $0.count < $1.count })
     }
 
     /// Pick the smaller of a Huffman or rANS post codebook for one
