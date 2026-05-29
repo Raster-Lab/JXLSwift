@@ -45,6 +45,9 @@ struct Benchmark: ParsableCommand {
     @Option(name: .long, help: "Benchmark mode: m0 / lossy / lossless. Default: lossy.")
     var mode: BenchmarkMode = .lossy
 
+    @Option(name: .customLong("effort"), help: "Encoder effort 1–9 (lossless mode; 1=fastest, 9=best ratio). Default: 7.")
+    var encodeEffort: Int = 7
+
     func run() throws {
         let url = URL(fileURLWithPath: input)
         let pnmData: Data
@@ -123,7 +126,7 @@ struct Benchmark: ParsableCommand {
         case .m0: modeLabel = "M0 placeholder (effort: " +
                               (fast ? "fast" : "balanced") + ")"
         case .lossy: modeLabel = "VarDCT lossy"
-        case .lossless: modeLabel = "Modular lossless"
+        case .lossless: modeLabel = "Modular lossless (effort \(max(1, min(encodeEffort, 9))))"
         }
         print("""
 
@@ -155,8 +158,9 @@ struct Benchmark: ParsableCommand {
             return try JXLEncoder(options: EncodingOptions(
                 mode: .lossy(quality: 90))).encode(frame).data
         case .lossless:
+            let level = EncodingEffort(rawValue: max(1, min(self.encodeEffort, 9))) ?? .squirrel
             return try JXLEncoder(options: EncodingOptions(
-                mode: .lossless)).encode(frame).data
+                mode: .lossless, effort: level)).encode(frame).data
         }
     }
 

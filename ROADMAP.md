@@ -335,9 +335,21 @@ This is a distinguishing feature of JPEG XL and a stated project requirement. Th
 
 These are added once a corresponding scalar Swift path is correct. The scalar path is always the source of truth — vectorised paths must produce identical results.
 
+**Baseline + hot-path analysis (v0.13.0-dev, Apple Silicon arm64, release).** Measured via
+`scripts/benchmark-lossless.sh` (own throughput only; no codec comparison per the legal-exposure
+rule). On a natural 834×244 RGB image, lossless **decode** is ~1 Mpx/s and effort-independent;
+lossless **encode** climbs steeply with effort (≈0.4 Mpx/s at effort 3 → a few Mpx-seconds at
+effort 7–9) while the **ratio plateaus around effort 5** for natural content (efforts 5/7/9 here
+all land at 49.0%). The dominant encode cost is the high-effort **cost-gated MA-tree search**
+(which literally re-encodes each candidate); the i15 work already optimised that learner
+(Int64-packed sort + `c·log c` memoisation), and the decode loop already shortcuts single-leaf
+trees and skips the weighted predictor when unused. The remaining algorithmic levers are taken, so
+the next wins are **vectorisation** of the per-pixel predictor/RCT inner loops and the ANS
+renormalisation — a dedicated, byte-identical-verified SIMD effort (below), not a scalar tweak.
+
 | Path | Status | Notes |
 |---|---|---|
-| ARM NEON / Swift SIMD types | ⏳ | primary optimisation target on Apple Silicon |
+| ARM NEON / Swift SIMD types | ⏳ next | primary target: vectorise the per-pixel predictor + RCT + ANS-renorm inner loops; scalar stays the reference, byte-identical verification via the existing `djxl` round-trip + robustness suites |
 | Apple Accelerate (vDSP / vImage) | ⏳ | for vectorisable transforms (DCT, colour conversions) |
 | C/C++ hot-path layer | ⏳ | permitted (CLAUDE.md constraint 1, amended 2026-05) for measured hot paths, behind a clean SwiftPM target boundary; scalar Swift stays the reference |
 | Metal GPU compute | ⏳ | optional, for large-scale parallel workloads |
@@ -412,10 +424,14 @@ remains for 1.0 is conformance, completeness, hardening, performance, and API st
    cells (tiny gray+alpha, constant RGBA at a group boundary, random gray16/RGBA16). Plus a decoder
    fuzz pass (truncation + byte mutation across three seed codestreams) proving graceful
    degradation — **0 traps across 1,812 malformed inputs** (each is cleanly thrown or decoded).
-4. **Performance baseline — v0.16.0.** Profile the encode/decode hot paths and land the first
-   *measured* optimisation path (NEON / Accelerate), scalar Swift remaining the source of truth
-   (constraint 1 / [Phase O](#phase-o--optimisation-paths-independent-of-correctness)). Speed is
-   design priority #1, so 1.0 should ship a known baseline.
+4. **Performance baseline — baseline + plan done; SIMD path is scoped follow-up (v0.16.0).** The
+   known baseline is established and runnable: `jxl-tool benchmark --mode lossless --effort N` +
+   `scripts/benchmark-lossless.sh` sweep the speed↔ratio ladder, and the hot-path analysis is in
+   [Phase O](#phase-o--optimisation-paths-independent-of-correctness) (encode dominated by
+   high-effort cost-gated MA-tree search — already algorithmically optimised in i15; decode already
+   shortcuts the common cases). The remaining lever is **vectorising the per-pixel predictor / RCT /
+   ANS-renorm inner loops** (NEON/Accelerate, scalar source of truth per constraint 1) — a
+   dedicated byte-identical-verified effort, deliberately not rushed against the byte-exact invariant.
 5. **API freeze + family parity — in progress (v0.17.0 RC).** Audit + align the public surface vs
    J2KSwift ([FAMILY-API-PARITY.md](Documentation/FAMILY-API-PARITY.md)). Done: the `convert`
    subcommand landed (closing the last common-set CLI gap — PNM ↔ JXL, JPEG → PNM/JXL,
