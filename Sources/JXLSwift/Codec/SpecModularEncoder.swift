@@ -2102,11 +2102,20 @@ public enum SpecModularEncoder {
     /// sub-image both ways (exact, no estimation). Shared by the
     /// single-section and (future) multi-group Modular paths.
     private static func bestModularPostCodebook(
-        histo: [Int], alphabetSize: Int, postCfg: HybridUintConfig,
-        tokensPerChannel: [[UInt32]]
+        histo histoIn: [Int], alphabetSize alphabetSizeIn: Int,
+        postCfg: HybridUintConfig, tokensPerChannel: [[UInt32]]
     ) throws -> (header: EntropySectionHeader,
                  codebook: MultiClusterCodebook,
                  usePrefix: Bool, bits: Int) {
+        // A constant / single-token sub-image (e.g. a 1×1 frame, or any
+        // all-equal region) yields a 1-symbol histogram. A 1-symbol
+        // *alphabet* can't carry a complete prefix code (the Huffman pad
+        // needs a second slot), so widen to ≥ 2 — the extra symbol has
+        // count 0 and is never emitted, but makes the code Kraft-complete
+        // and djxl-valid.
+        let alphabetSize = max(2, alphabetSizeIn)
+        let histo = histoIn.count >= alphabetSize ? histoIn
+            : histoIn + [Int](repeating: 0, count: alphabetSize - histoIn.count)
         // Huffman candidate.
         let huffLengths = lengthLimitedCanonicalHuffman(
             counts: histo, maxLength: 15, alphabetSize: alphabetSize)

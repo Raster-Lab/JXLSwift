@@ -620,7 +620,10 @@ func lengthLimitedCanonicalHuffman(
         // so we have 2 symbols both at length 1 — Kraft balanced.
         lengths[used[0]] = 1
         let padIdx = (used[0] == 0) ? 1 : 0
-        lengths[padIdx] = 1
+        // A 1-symbol *alphabet* (alphabetSize == 1) has no room for the
+        // pad; callers must size the alphabet ≥ 2 for a complete code.
+        // Guard the index so a degenerate alphabet can't trap here.
+        if padIdx < alphabetSize { lengths[padIdx] = 1 }
         return lengths
     }
     if used.count == 2 {

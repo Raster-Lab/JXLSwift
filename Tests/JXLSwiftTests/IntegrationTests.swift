@@ -14629,6 +14629,88 @@ extension FoundationTests {
         }
     }
 
+    /// Robustness at **degenerate / tiny dimensions** — 1×1, 1×N, N×1,
+    /// 2×2, small odd — across grayscale / gray+alpha / RGB at 8- and
+    /// 16-bit. These exercise the WP, neighbour edge fall-backs and group
+    /// tiler where most rows/columns are absent (the normal tests bottom
+    /// out at 17×23). All must encode without trapping and round-trip
+    /// byte-exact through our decoder; a couple are cross-checked with
+    /// `djxl`. The encoder claims "arbitrary dimensions" — this pins the
+    /// boundary.
+    func testSpecModularEncoder_EdgeDimensions_RoundTrip() throws {
+        let dims = [(1, 1), (1, 5), (5, 1), (2, 2), (3, 2), (2, 3), (1, 17)]
+        for (w, h) in dims {
+            let n = w * h
+            func ramp(_ mul: Int, _ mod: Int) -> [UInt16] {
+                (0..<n).map { UInt16(($0 * mul) % mod) }
+            }
+            // 8-bit grayscale.
+            let g8 = (0..<n).map { UInt8(($0 * 17) & 0xff) }
+            let dg8 = try JXLDecoder().decodeModular(
+                SpecModularEncoder.encodeGrayscale8(width: w, height: h, pixels: g8))
+            for i in 0..<n {
+                XCTAssertEqual(dg8.channels[0].pixels[i], Int32(g8[i]),
+                    "\(w)×\(h) gray8 \(i)")
+            }
+            // 16-bit grayscale.
+            let g16 = ramp(2053, 65535)
+            let dg16 = try JXLDecoder().decodeModular(
+                SpecModularEncoder.encodeGrayscale16(width: w, height: h, pixels: g16))
+            for i in 0..<n {
+                XCTAssertEqual(dg16.channels[0].pixels[i], Int32(g16[i]),
+                    "\(w)×\(h) gray16 \(i)")
+            }
+            // 16-bit grayscale + alpha.
+            let a16 = ramp(811, 65535)
+            let dga = try JXLDecoder().decodeModular(
+                SpecModularEncoder.encodeGrayscaleAlpha16(
+                    width: w, height: h, gray: g16, alpha: a16))
+            XCTAssertEqual(dga.channels.count, 2, "\(w)×\(h) gray+alpha channels")
+            for i in 0..<n {
+                XCTAssertEqual(dga.channels[0].pixels[i], Int32(g16[i]), "\(w)×\(h) ga luma \(i)")
+                XCTAssertEqual(dga.channels[1].pixels[i], Int32(a16[i]), "\(w)×\(h) ga alpha \(i)")
+            }
+            // 8-bit RGB.
+            let rr = g8, gg = (0..<n).map { UInt8(($0 * 5) & 0xff) },
+                bb = (0..<n).map { UInt8(($0 * 3) & 0xff) }
+            let drgb = try JXLDecoder().decodeModular(
+                SpecModularEncoder.encodeRGB8(width: w, height: h, r: rr, g: gg, b: bb))
+            XCTAssertEqual(drgb.channels.count, 3, "\(w)×\(h) rgb channels")
+            for i in 0..<n {
+                XCTAssertEqual(drgb.channels[0].pixels[i], Int32(rr[i]), "\(w)×\(h) R \(i)")
+            }
+        }
+        // djxl cross-check at two tiny sizes (spec-compliance at the boundary).
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("djxl not available at \(djxl)")
+        }
+        let tmp = NSTemporaryDirectory()
+        for (w, h) in [(1, 1), (3, 2)] {
+            let px = (0..<(w * h)).map { UInt16(($0 * 9000 + 1234) & 0xffff) }
+            let bytes = try SpecModularEncoder.encodeGrayscale16(
+                width: w, height: h, pixels: px)
+            let inP = tmp + "edge_\(w)x\(h).jxl", outP = tmp + "edge_\(w)x\(h).pgm"
+            defer { try? FileManager.default.removeItem(atPath: inP)
+                    try? FileManager.default.removeItem(atPath: outP) }
+            try bytes.write(to: URL(fileURLWithPath: inP))
+            let p = Process(); p.launchPath = djxl
+            p.arguments = [inP, outP]
+            p.standardOutput = Pipe(); p.standardError = Pipe()
+            try p.run(); p.waitUntilExit()
+            XCTAssertEqual(p.terminationStatus, 0, "djxl rejected \(w)×\(h)")
+            let pgm = try Data(contentsOf: URL(fileURLWithPath: outP))
+            var nl = 0, s = 0
+            for (i, bch) in pgm.enumerated() where bch == 0x0a {
+                nl += 1; if nl == 3 { s = i + 1; break }
+            }
+            for i in 0..<(w * h) {
+                let v = (UInt16(pgm[s + i * 2]) << 8) | UInt16(pgm[s + i * 2 + 1])
+                XCTAssertEqual(v, px[i], "\(w)×\(h) djxl \(i)")
+            }
+        }
+    }
+
     /// Exercises the **subsampled** single-section greedy learner: a 512²
     /// RGB 16-bit frame is 786 432 pixels (> the 256K subsample target →
     /// stride 3), so the greedy candidate learns its tree from a sample and

@@ -11,6 +11,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [0.12.0] — in progress (Phase J transcoding)
 
+### v0.12.0i17 — Fix crash on degenerate / constant images
+
+A robustness sweep over tiny dimensions surfaced a real crash:
+`lengthLimitedCanonicalHuffman` padded a single-symbol histogram by
+writing `lengths[1]`, which **traps** when the alphabet itself has only
+one symbol — i.e. any sub-image whose residuals are all the *same* token:
+a 1×1 frame, or **any fully-constant image** encoded via the normal
+`encodeGrayscale/RGB*` path (not just `encodeConstantGrayscale`). Two
+fixes: the Huffman builder now bounds-checks the pad (defensive), and
+`bestModularPostCodebook` widens a 1-symbol alphabet to 2 (the extra
+symbol has count 0 and is never emitted, but makes the prefix code
+Kraft-complete and `djxl`-valid). New
+`testSpecModularEncoder_EdgeDimensions_RoundTrip` sweeps 1×1, 1×N, N×1,
+2×2 and small odd sizes across grayscale / gray+alpha / RGB at 8- and
+16-bit, byte-exact through our decoder (+ `djxl` at two sizes) — pinning
+the "arbitrary dimensions" claim at the boundary. Full suite: 687 tests.
+
 ### v0.12.0i16 — Subsample the single-section greedy learner
 
 The single-section greedy multi-property learner trained on *every*
