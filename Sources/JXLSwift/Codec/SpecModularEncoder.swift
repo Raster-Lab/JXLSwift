@@ -795,56 +795,33 @@ public enum SpecModularEncoder {
         width: Int, height: Int,
         channels: [[Int32]], sampleHi: Int32
     ) throws -> Data {
-        let predictor: Predictor = .gradient
-        // libjxl raw predictor ID for ClampedGradient (5) — see
-        // `LibjxlPredictor.swift`. Differs from our internal
-        // `PredictorID.gradient.rawValue` (4), which is libjxl
-        // "Select".
-        let rawPredictor: UInt32 = 5
         let postCfg = HybridUintConfig.raw4
-        // Compute residuals + pooled histogram across channels.
-        var packedPerChannel = [[UInt32]]()
-        packedPerChannel.reserveCapacity(channels.count)
-        var fullHisto = [Int](repeating: 0, count: postCfg.maxToken + 1)
-        var maxUsedToken = 0
-        for pix32 in channels {
-            var packed = [UInt32]()
-            packed.reserveCapacity(width * height)
-            for y in 0..<height {
-                for x in 0..<width {
-                    let nbh = Neighbourhood(
-                        at: x, y, in: pix32, width: width
-                    )
-                    let predicted = predictor.apply(
-                        to: nbh, lo: 0, hi: sampleHi
-                    )
-                    let residual = pix32[y * width + x] &- predicted
-                    let p = ZigZag.pack(residual)
-                    let exp = postCfg.encode(p)
-                    let t = Int(exp.token)
-                    fullHisto[t] += 1
-                    if t > maxUsedToken { maxUsedToken = t }
-                    packed.append(p)
-                }
-            }
-            packedPerChannel.append(packed)
-        }
-        let alphabetSize = maxUsedToken + 1
-        let histo = Array(fullHisto[0..<alphabetSize])
-        let postLengths = lengthLimitedCanonicalHuffman(
-            counts: histo, maxLength: 15, alphabetSize: alphabetSize
-        )
-        let postLeafTable = try PrefixCodeTable(lengths: postLengths)
-        let postCodebook = MultiClusterCodebook(
-            huffmanTables: [postLeafTable], ansCounts: [],
-            alphabetSizes: [alphabetSize]
-        )
-        let postHeader = EntropySectionHeader(
-            lz77: .disabled,
-            contextMap: ContextMap.trivial(numContexts: 1),
-            usePrefixCode: true, logAlphaSize: 15,
-            uintConfigs: [postCfg]
-        )
+        // Cost-gate the predictor (ClampedGradient=5 vs Weighted
+        // Predictor=6) AND the entropy coder (Huffman vs rANS), picking
+        // the combination that actually encodes smallest. WP adapts to
+        // local structure where ClampedGradient under-predicts; rANS
+        // lifts the ≥1 bit/symbol Huffman floor. Both are decisive for
+        // the lossless ratio on structured medical data.
+        let grad = computeModularResiduals(
+            width: width, height: height, channels: channels,
+            sampleHi: sampleHi, postCfg: postCfg, useWP: false)
+        let gradBest = try bestModularPostCodebook(
+            histo: grad.histo, alphabetSize: grad.alphabetSize,
+            postCfg: postCfg, tokensPerChannel: grad.packedPerChannel)
+        let wp = computeModularResiduals(
+            width: width, height: height, channels: channels,
+            sampleHi: sampleHi, postCfg: postCfg, useWP: true)
+        let wpBest = try bestModularPostCodebook(
+            histo: wp.histo, alphabetSize: wp.alphabetSize,
+            postCfg: postCfg, tokensPerChannel: wp.packedPerChannel)
+        let useWP = wpBest.bits < gradBest.bits
+        let chosen = useWP ? wpBest : gradBest
+        let postHeader = chosen.header
+        let postCodebook = chosen.codebook
+        let postUsePrefix = chosen.usePrefix
+        let packedPerChannel = useWP
+            ? wp.packedPerChannel : grad.packedPerChannel
+        let rawPredictor: UInt32 = useWP ? 6 : 5
 
         var sec = BitWriter()
         sec.writeBit(true)            // matrices_dc_default
@@ -874,7 +851,7 @@ public enum SpecModularEncoder {
             ModularTreeNode(
                 property: -1, splitVal: 0,
                 leftChildOrLeafId: 0, rightChild: 0,
-                predictor: predictor,
+                predictor: .gradient,   // enum field unused on wire
                 predictorOffset: 0,
                 multiplier: 1,
                 rawPredictor: rawPredictor
@@ -889,18 +866,168 @@ public enum SpecModularEncoder {
         try postHeader.write(to: &sec, numContexts: 1)
         try postCodebook.write(to: &sec, header: postHeader)
         try GroupHeader.default.write(to: &sec)
-        let postWriter = TokenStreamWriter(
-            header: postHeader, codebook: postCodebook
-        )
-        for packed in packedPerChannel {
-            for v in packed {
-                try postWriter.writeToken(
-                    context: 0, value: v, to: &sec
-                )
+        // All channels' residuals route through tree leaf 0 (context 0)
+        // and share the post codebook. Huffman writes inline; rANS
+        // buffers the whole sub-image and emits one interleaved stream —
+        // matching the decoder's single `TokenStreamReader` for the
+        // modular sub-image.
+        if postUsePrefix {
+            let postWriter = TokenStreamWriter(
+                header: postHeader, codebook: postCodebook)
+            for packed in packedPerChannel {
+                for v in packed {
+                    try postWriter.writeToken(context: 0, value: v, to: &sec)
+                }
             }
+        } else {
+            var aw = try ANSTokenStreamWriter(
+                header: postHeader, codebook: postCodebook)
+            for packed in packedPerChannel {
+                for v in packed { try aw.writeToken(context: 0, value: v) }
+            }
+            try aw.finish(to: &sec)
         }
         sec.alignToByte()
         return sec.finishToData()
+    }
+
+    /// Pick the smaller of a Huffman or rANS post codebook for one
+    /// pooled residual histogram + its token streams, returning
+    /// `(header, codebook, usePrefixCode)`. rANS lifts the ≥1 bit/symbol
+    /// Huffman floor; the choice is made by actually encoding the whole
+    /// sub-image both ways (exact, no estimation). Shared by the
+    /// single-section and (future) multi-group Modular paths.
+    private static func bestModularPostCodebook(
+        histo: [Int], alphabetSize: Int, postCfg: HybridUintConfig,
+        tokensPerChannel: [[UInt32]]
+    ) throws -> (header: EntropySectionHeader,
+                 codebook: MultiClusterCodebook,
+                 usePrefix: Bool, bits: Int) {
+        // Huffman candidate.
+        let huffLengths = lengthLimitedCanonicalHuffman(
+            counts: histo, maxLength: 15, alphabetSize: alphabetSize)
+        let huffTable = try PrefixCodeTable(lengths: huffLengths)
+        let huffCodebook = MultiClusterCodebook(
+            huffmanTables: [huffTable], ansCounts: [],
+            alphabetSizes: [alphabetSize])
+        let huffHeader = EntropySectionHeader(
+            lz77: .disabled, contextMap: ContextMap.trivial(numContexts: 1),
+            usePrefixCode: true, logAlphaSize: 15, uintConfigs: [postCfg])
+
+        // rANS candidate (on-wire quantised distribution).
+        var ansCand: (EntropySectionHeader, MultiClusterCodebook)?
+        if let dist = try? ANSDistribution(
+            rawFrequencies: histo.map { UInt32(max(0, $0)) }) {
+            let normalised = dist.frequencies.map { Int32($0) }
+            var scratch = BitWriter()
+            if let wire = try? SpecANSDistribution.writeHistogram(
+                normalised, to: &scratch) {
+                var logAlpha = 5
+                while (1 << logAlpha) < wire.count && logAlpha < 8 {
+                    logAlpha += 1
+                }
+                if wire.count <= (1 << logAlpha) {
+                    ansCand = (
+                        EntropySectionHeader(
+                            lz77: .disabled,
+                            contextMap: ContextMap.trivial(numContexts: 1),
+                            usePrefixCode: false, logAlphaSize: logAlpha,
+                            uintConfigs: [postCfg]),
+                        MultiClusterCodebook(
+                            huffmanTables: [], ansCounts: [wire],
+                            alphabetSizes: [wire.count]))
+                }
+            }
+        }
+
+        func sectionBits(
+            _ h: EntropySectionHeader, _ c: MultiClusterCodebook
+        ) -> Int {
+            var w = BitWriter()
+            do {
+                try h.write(to: &w, numContexts: 1)
+                try c.write(to: &w, header: h)
+                if h.usePrefixCode {
+                    let tw = TokenStreamWriter(header: h, codebook: c)
+                    for pk in tokensPerChannel {
+                        for v in pk {
+                            try tw.writeToken(context: 0, value: v, to: &w)
+                        }
+                    }
+                } else {
+                    var aw = try ANSTokenStreamWriter(header: h, codebook: c)
+                    for pk in tokensPerChannel {
+                        for v in pk { try aw.writeToken(context: 0, value: v) }
+                    }
+                    try aw.finish(to: &w)
+                }
+            } catch { return Int.max }
+            return w.bitCount
+        }
+
+        let huffBits = sectionBits(huffHeader, huffCodebook)
+        guard let cand = ansCand else {
+            return (huffHeader, huffCodebook, true, huffBits)
+        }
+        let ansBits = sectionBits(cand.0, cand.1)
+        return ansBits < huffBits
+            ? (cand.0, cand.1, false, ansBits)
+            : (huffHeader, huffCodebook, true, huffBits)
+    }
+
+    /// Compute packed (ZigZag) prediction residuals for every channel of
+    /// a single-section Modular sub-image, plus the pooled token
+    /// histogram. `useWP` selects libjxl's adaptive Weighted Predictor
+    /// (rawPredictor 6, reusing the decoder's `WeightedPredictor` struct
+    /// so encode/decode agree by construction) over ClampedGradient
+    /// (rawPredictor 5). All channels share tree leaf 0.
+    private static func computeModularResiduals(
+        width: Int, height: Int, channels: [[Int32]], sampleHi: Int32,
+        postCfg: HybridUintConfig, useWP: Bool
+    ) -> (packedPerChannel: [[UInt32]], histo: [Int], alphabetSize: Int) {
+        var packedPerChannel = [[UInt32]]()
+        packedPerChannel.reserveCapacity(channels.count)
+        var fullHisto = [Int](repeating: 0, count: postCfg.maxToken + 1)
+        var maxUsedToken = 0
+        for pix32 in channels {
+            var packed = [UInt32]()
+            packed.reserveCapacity(width * height)
+            if useWP {
+                var wp = WeightedPredictor(
+                    header: .default, xsize: max(1, width))
+                for y in 0..<height {
+                    for x in 0..<width {
+                        let nbh = Neighbourhood(at: x, y, in: pix32, width: width)
+                        let pred = wp.predict(
+                            x: x, y: y, xsize: width,
+                            n: nbh.n, w: nbh.w, ne: nbh.ne, nw: nbh.nw, nn: nbh.nn)
+                        let actual = pix32[y * width + x]
+                        let p = ZigZag.pack(actual &- pred)
+                        let t = Int(postCfg.encode(p).token)
+                        fullHisto[t] += 1
+                        if t > maxUsedToken { maxUsedToken = t }
+                        packed.append(p)
+                        wp.update(actual: actual, x: x, y: y, xsize: width)
+                    }
+                }
+            } else {
+                for y in 0..<height {
+                    for x in 0..<width {
+                        let nbh = Neighbourhood(at: x, y, in: pix32, width: width)
+                        let pred = Predictor.gradient.apply(
+                            to: nbh, lo: 0, hi: sampleHi)
+                        let p = ZigZag.pack(pix32[y * width + x] &- pred)
+                        let t = Int(postCfg.encode(p).token)
+                        fullHisto[t] += 1
+                        if t > maxUsedToken { maxUsedToken = t }
+                        packed.append(p)
+                    }
+                }
+            }
+            packedPerChannel.append(packed)
+        }
+        return (packedPerChannel, Array(fullHisto[0..<(maxUsedToken + 1)]),
+                maxUsedToken + 1)
     }
 
     /// Reject sizes outside the supported encoder range. Lifted from
