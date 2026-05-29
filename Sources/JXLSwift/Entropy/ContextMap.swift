@@ -25,18 +25,26 @@
 //     else:
 //         use_mtf : u(1)
 //         entropy-coded entries via DecodeHistograms + ANS
-//         (see libjxl dec_context_map.cc — NOT YET IMPLEMENTED HERE)
+//         (see libjxl dec_context_map.cc — implemented here, see
+//          `writeFullPath` / `readFullPath`)
 //
 // `num_clusters` is derived from the decoded map (`max(map) + 1`),
 // not transmitted as a separate field. Earlier project-internal
 // versions of this file emitted `num_clusters - 1` as a `u(8)` prefix
 // — that drifted bits relative to a real codestream.
 //
-// **Caveats:** the simple-bits-per-entry path covers num_clusters in
-// {1, 2, 4, 8} (i.e. up to 3 bits per entry). Anything wider needs
-// the full entropy-coded path with the inverse move-to-front transform
-// — not yet implemented. Callers requiring it get
-// `.fullPathNotImplemented`.
+// **Both paths are implemented.** The simple-bits-per-entry path
+// covers num_clusters in {1, 2, 4, 8} (up to 3 bits per entry);
+// anything wider uses the full entropy-coded path (`writeFullPath` /
+// `readFullPath`, with the inverse move-to-front transform on the read
+// side). `write(to:)` emits whichever encoding is smaller. The full
+// path is djxl-byte-verified for 16/18/26-cluster maps via the
+// JPEG-bridge round-trip test (`testEndToEnd_MultiGroupForwardBridge_ByteIdentical`);
+// the standalone E5 test (`testContextMap_FullPath_ManyClusters_RoundTrip`)
+// pins encode↔decode self-consistency for 9/16/26/64-cluster maps.
+// `.fullPathNotImplemented` is now thrown only when a map is genuinely
+// unencodable by *either* path; it predates the full path and keeps
+// its name for API stability.
 
 import Foundation
 

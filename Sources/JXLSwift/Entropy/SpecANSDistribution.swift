@@ -16,13 +16,19 @@
 //   • **Complex** (`u(1, 0) = 0, 0`): a `shift` field, then per-
 //     position log-counts via a hard-coded 7-bit lookup table, then
 //     RLE for symbol 17 (zero-run), then per-position bit-count
-//     packing for the actual frequencies. **NOT YET IMPLEMENTED** —
-//     the caller gets `.complexPathNotImplemented` for now.
+//     packing for the actual frequencies. **Implemented** for both
+//     read (`readComplex`) and write (`writeComplex`); the writer
+//     quantises non-flat, > 2-symbol histograms onto the representable
+//     grid and `readHistogram` reconstructs that on-wire distribution
+//     exactly. djxl-byte-verified indirectly (every > 8-cluster context
+//     map routes its cluster histogram through this path) and pinned by
+//     `testSpecANSDistribution_WriterHandlesComplex`.
 //
-// The simple+flat paths cover ~80 % of cjxl-emitted small-alphabet
-// histograms (e.g. the Modular tree's 6-context section often uses
-// flat distributions for low-entropy contexts). Full coverage of
-// the complex path is the next milestone in this chain.
+// All three shapes are covered. The simple+flat shortcuts handle the
+// small-alphabet, low-entropy histograms (e.g. the Modular tree's
+// few-context sections); the complex path handles everything else.
+// The legacy `.complexPathNotImplemented` error case is retained for
+// API stability but is no longer thrown by the production path.
 //
 // Result: a fully-populated `[Int32]` count array summing to
 // `range = 1 << precisionBits`.

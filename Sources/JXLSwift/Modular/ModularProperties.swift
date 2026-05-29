@@ -35,6 +35,16 @@
 // active. NOTE: properties 8 and 11 (and the untested 6,7,13,14) have not
 // been reconciled byte-for-byte with libjxl — see `SpecModularEncoder`'s
 // greedy property whitelist `{4,5,9,10,12,15}`.
+//
+// **v1.0 decision (deliberate limitation):** widening that whitelist is a
+// *ratio* lever, not a correctness gap — the verified set already yields a
+// complete, `djxl`-byte-exact lossless encoder. Reconciling the remaining
+// slots requires matching libjxl's exact property emission ORDER (a
+// slot-ordering mismatch, not a per-slot arithmetic tweak — a prior
+// `p[8] = left − |top|` experiment desynced `djxl` and was reverted), and
+// libjxl source is intentionally absent (CLAUDE.md constraint 4), so the
+// target formulas can only be reverse-engineered empirically via `djxl`.
+// Deferred to a post-1.0 ticket; it does NOT block v1.0.0.
 
 import Foundation
 

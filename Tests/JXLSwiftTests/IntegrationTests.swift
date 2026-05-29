@@ -5379,8 +5379,6 @@ extension FoundationTests {
         }
     }
 
-    /// Encoder rejects > 8 clusters (would need the full path which
-    /// isn't implemented yet).
     /// > 8 clusters can't use the simple path (caps at 3 bits/entry),
     /// so `write` routes them to the full entropy-coded path. The map
     /// still round-trips through `read`.
@@ -5463,6 +5461,33 @@ extension FoundationTests {
             var w = BitWriter()
             try cm.writeFullPath(to: &w)
             var r = BitReader(w.finishToData())
+            let parsed = try ContextMap.read(numContexts: map.count, from: &r)
+            XCTAssertEqual(parsed.map, map, "k=\(k) map mismatch")
+            XCTAssertEqual(parsed.numClusters, k, "k=\(k) cluster mismatch")
+        }
+    }
+
+    /// Full-path round-trip at the higher cluster counts the JPEG bridge
+    /// actually emits — the AC block-context map reaches up to 64 clusters,
+    /// beyond the 2…16 swept above. Pins encode↔decode self-consistency for
+    /// 9/16/26/64-cluster maps; the standalone E5 companion to the
+    /// `djxl`-byte-exact bridge test
+    /// `testEndToEnd_MultiGroupForwardBridge_ByteIdentical`.
+    func testContextMap_FullPath_ManyClusters_RoundTrip() throws {
+        for k in [9, 16, 26, 64] {
+            // i % k guarantees every cluster index in [0, k) is present
+            // (so read's max(map)+1 derives k); the extra skew toward
+            // clusters 0/1 makes the inner histogram non-flat.
+            var map = (0..<(k * 17)).map { UInt8($0 % k) }
+            map.append(contentsOf: [UInt8](repeating: 0, count: 30))
+            map.append(contentsOf: [UInt8](repeating: 1, count: 12))
+            let cm = try ContextMap(numClusters: k, map: map)
+            var w = BitWriter()
+            try cm.writeFullPath(to: &w)
+            var r = BitReader(w.finishToData())
+            // is_simple must be 0 (full path) for k > 8.
+            XCTAssertFalse(try r.readBit(), "k=\(k): expected the full path")
+            r = BitReader(w.finishToData())
             let parsed = try ContextMap.read(numContexts: map.count, from: &r)
             XCTAssertEqual(parsed.map, map, "k=\(k) map mismatch")
             XCTAssertEqual(parsed.numClusters, k, "k=\(k) cluster mismatch")

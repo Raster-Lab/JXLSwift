@@ -184,9 +184,9 @@ public struct MultiClusterCodebook: Sendable {
     ///
     /// **rANS-distribution path** (per cluster, in order):
     ///   • `SpecANSDistribution.writeHistogram(counts)` — the
-    ///     simple-1, simple-2, and flat shortcuts are supported
-    ///     today; full custom histograms throw
-    ///     `complexPathNotImplemented`.
+    ///     simple-1, simple-2, and flat shortcuts plus the full
+    ///     **complex** path (general per-symbol histograms) are all
+    ///     supported, so any cluster histogram serialises.
     public func write(
         to w: inout BitWriter, header: EntropySectionHeader
     ) throws {
