@@ -22,19 +22,19 @@
 
 import Foundation
 
-public let kLog2NumQuantModes: Int = 3
-public let kNumPredefinedTables: Int = 1
-public let kCeilLog2NumPredefinedTables: Int = 0
-public let kLog2MaxDistanceBands: Int = 4
-public let kMaxDistanceBands: Int = 1 + (1 << kLog2MaxDistanceBands)  // 17
-public let kNumQuantTables: Int = 17
+package let kLog2NumQuantModes: Int = 3
+package let kNumPredefinedTables: Int = 1
+package let kCeilLog2NumPredefinedTables: Int = 0
+package let kLog2MaxDistanceBands: Int = 4
+package let kMaxDistanceBands: Int = 1 + (1 << kLog2MaxDistanceBands)  // 17
+package let kNumQuantTables: Int = 17
 
 /// libjxl's `required_size_x`/`required_size_y` per quant table.
 /// Pre-multiplied by 8 inside `getQuantWeights`; we store the
 /// raw cell-grid size so the test/spec layout maps directly.
-public let kRequiredSizeX: [Int] =
+package let kRequiredSizeX: [Int] =
     [1, 1, 1, 1, 2, 4, 1, 1, 2, 1, 1, 8, 4, 16, 8, 32, 16]
-public let kRequiredSizeY: [Int] =
+package let kRequiredSizeY: [Int] =
     [1, 1, 1, 1, 2, 4, 2, 4, 4, 1, 1, 8, 8, 16, 16, 32, 32]
 
 /// One of libjxl's 8 quant modes. Stored alongside the per-mode
@@ -54,7 +54,7 @@ public let kRequiredSizeY: [Int] =
 /// v0.12.0s+ bridge encoder writing actual non-default mode
 /// bits, the latent inconsistency would surface; fix is a
 /// pre-emptive correction.
-public enum QuantMode: UInt8, Sendable, Equatable {
+package enum QuantMode: UInt8, Sendable, Equatable {
     case library  = 0
     case id       = 1
     case dct2     = 2
@@ -70,10 +70,10 @@ public enum QuantMode: UInt8, Sendable, Equatable {
 /// in `[1, kMaxDistanceBands]`; per channel there are
 /// `numDistanceBands` F16 floats with the seed (index 0)
 /// post-multiplied by 64 to match libjxl `DecodeDctParams`.
-public struct DctParams: Sendable {
-    public var distanceBands: [[Float]]   // [3][numDistanceBands]
+package struct DctParams: Sendable {
+    package var distanceBands: [[Float]]   // [3][numDistanceBands]
 
-    public static func read(from r: inout BitReader) throws -> DctParams {
+    package static func read(from r: inout BitReader) throws -> DctParams {
         let nMinus1: UInt32
         do {
             nMinus1 = try r.read(bits: kLog2MaxDistanceBands)
@@ -107,33 +107,33 @@ public struct DctParams: Sendable {
 }
 
 /// Decoded `QuantEncoding` for one AC strategy.
-public struct QuantEncoding: Sendable {
-    public let mode: QuantMode
+package struct QuantEncoding: Sendable {
+    package let mode: QuantMode
     /// Library mode: predefined table index (always 0 today —
     /// libjxl's `kNumPredefinedTables == 1`).
-    public let predefined: UInt32?
+    package let predefined: UInt32?
     /// ID mode: 3 channels × 3 F16 weights, each ×64.
-    public let idWeights: [[Float]]?
+    package let idWeights: [[Float]]?
     /// DCT2 mode: 3 channels × 6 F16 weights, each ×64.
-    public let dct2Weights: [[Float]]?
+    package let dct2Weights: [[Float]]?
     /// DCT4 mode: 3 channels × 2 F16 multipliers.
-    public let dct4Multipliers: [[Float]]?
+    package let dct4Multipliers: [[Float]]?
     /// DCT4X8 mode: 3 F16 multipliers (one per channel).
-    public let dct4x8Multipliers: [Float]?
+    package let dct4x8Multipliers: [Float]?
     /// AFV mode: 3 channels × 9 F16 weights (first 6 × 64).
-    public let afvWeights: [[Float]]?
+    package let afvWeights: [[Float]]?
     /// DCT/DCT4/DCT4X8/AFV mode: distance bands.
-    public let dctParams: DctParams?
+    package let dctParams: DctParams?
     /// AFV mode: a second set of distance bands for the inner
     /// 4×4 sub-block.
-    public let dctParamsAfv4x4: DctParams?
+    package let dctParamsAfv4x4: DctParams?
     /// RAW mode: the raw integer quant-table values, laid out
     /// channel-major in JXL transposed coordinates — `qtable[c * 64
     /// + (x * 8 + y)]` reads the value for channel `c` at position
     /// (x, y). Captured by the RAW decode so downstream CFL inverse
     /// math can recover the per-position scaling. Non-RAW modes
     /// leave this `nil`.
-    public let rawQtable: [Int32]?
+    package let rawQtable: [Int32]?
     /// RAW mode: the F16-decoded `qtable_den` denominator. libjxl's
     /// JPEG-transcode RAW slot uses `1 / (8 × 255) ≈ 0.000490`;
     /// other RAW slots may use different denominators. We retain
@@ -141,11 +141,11 @@ public struct QuantEncoding: Sendable {
     /// JPEG-compatible RAW slot" via the value comparison libjxl
     /// uses (`abs(qtable_den - 1 / (8 × 255)) < 1e-8`). Non-RAW
     /// modes leave this `nil`.
-    public let rawQtableDen: Float?
+    package let rawQtableDen: Float?
 
     /// Memberwise init that defaults the RAW-only fields to `nil`,
     /// so non-RAW call sites don't need to spell them out.
-    public init(
+    package init(
         mode: QuantMode,
         predefined: UInt32?,
         idWeights: [[Float]]?,
@@ -172,7 +172,7 @@ public struct QuantEncoding: Sendable {
     }
 }
 
-public enum QuantEncodingError: Error, Sendable {
+package enum QuantEncodingError: Error, Sendable {
     case bitstream(BitstreamError)
     case invalidMode(UInt32)
     case invalidPredefined(UInt32)
@@ -197,7 +197,7 @@ extension QuantEncoding {
     /// modular global info; passing them in unlocks RAW-mode
     /// parsing (the modular sub-image quant table). For the other
     /// modes they're unused.
-    public static func read(
+    package static func read(
         from r: inout BitReader,
         requiredSizeX: Int, requiredSizeY: Int,
         globalTree: ModularTree? = nil,

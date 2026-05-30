@@ -32,7 +32,7 @@
 
 import Foundation
 
-public enum ANSTokenStreamWriterError: Error, Sendable {
+package enum ANSTokenStreamWriterError: Error, Sendable {
     case notANSSection
     case lz77NotSupported
     case contextOutOfRange(Int, max: Int)
@@ -44,9 +44,9 @@ public enum ANSTokenStreamWriterError: Error, Sendable {
 /// Buffers context-routed integer tokens and emits them as one
 /// interleaved rANS bitstream (init + refill words + HybridUint extra
 /// bits) matching `TokenStreamReader`'s ANS path.
-public struct ANSTokenStreamWriter {
-    public let header: EntropySectionHeader
-    public let codebook: MultiClusterCodebook
+package struct ANSTokenStreamWriter {
+    package let header: EntropySectionHeader
+    package let codebook: MultiClusterCodebook
 
     /// Per-cluster encode state derived from the on-wire frequencies.
     private struct ClusterEnc {
@@ -60,7 +60,7 @@ public struct ANSTokenStreamWriter {
     private var pending: [(cluster: Int, symbol: UInt32,
                            extraBits: UInt32, extraNBits: Int)] = []
 
-    public init(
+    package init(
         header: EntropySectionHeader,
         codebook: MultiClusterCodebook
     ) throws {
@@ -113,7 +113,7 @@ public struct ANSTokenStreamWriter {
 
     /// Buffer one token at context `ctx`. Order matters — tokens are
     /// emitted (and the decoder reads them) in this call order.
-    public mutating func writeToken(
+    package mutating func writeToken(
         context ctx: Int, value: UInt32
     ) throws {
         guard ctx >= 0 && ctx < header.contextMap.numContexts else {
@@ -132,7 +132,7 @@ public struct ANSTokenStreamWriter {
     /// Emit the buffered tokens as the interleaved rANS bitstream into
     /// `w` (continuing the same bit position — the decoder reads the
     /// 32-bit state init immediately after the per-cluster codebook).
-    public mutating func finish(to w: inout BitWriter) throws {
+    package mutating func finish(to w: inout BitWriter) throws {
         let range = UInt32(ANSConstants.tabSize)
         // Per-token forward segment: an optional 16-bit refill word
         // followed by the token's extra bits.
@@ -187,5 +187,5 @@ public struct ANSTokenStreamWriter {
     }
 
     /// Number of buffered tokens.
-    public var tokenCount: Int { pending.count }
+    package var tokenCount: Int { pending.count }
 }

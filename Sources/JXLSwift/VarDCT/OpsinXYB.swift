@@ -20,7 +20,7 @@
 
 import Foundation
 
-public enum OpsinXYB {
+package enum OpsinXYB {
 
     // 3×3 opsin absorbance matrix from libjxl
     // `cms/opsin_params.h::kOpsinAbsorbanceMatrix`. Acts on a
@@ -51,15 +51,15 @@ public enum OpsinXYB {
 
     /// Bias added to absorbance before the cube root, then
     /// subtracted after. Same value for all three channels.
-    public static let opsinBias: Float = 0.0037930732552754493
+    package static let opsinBias: Float = 0.0037930732552754493
     /// `cbrt(opsinBias)` — pre-subtracted on the forward path.
-    public static let cbrtOpsinBias: Float =
+    package static let cbrtOpsinBias: Float =
         0.155954200549248618403228789114857601840543746948242  // ≈ ∛0.003793
 
     /// Forward: linear-RGB sample triple → XYB triple.
     /// Both vectors are length-3.
     @inline(__always)
-    public static func forward(
+    package static func forward(
         _ rgb: (Float, Float, Float)
     ) -> (X: Float, Y: Float, B: Float) {
         let r = max(rgb.0, 0)
@@ -83,7 +83,7 @@ public enum OpsinXYB {
 
     /// Inverse: XYB triple → linear-RGB triple.
     @inline(__always)
-    public static func inverse(
+    package static func inverse(
         _ xyb: (X: Float, Y: Float, B: Float)
     ) -> (R: Float, G: Float, B: Float) {
         // 1. Recover the cube-rooted absorbances.

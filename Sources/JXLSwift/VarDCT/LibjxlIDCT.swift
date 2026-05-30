@@ -27,7 +27,7 @@
 
 import Foundation
 
-public enum LibjxlIDCT {
+package enum LibjxlIDCT {
 
     @inline(__always)
     private static func alpha(_ u: Int) -> Float {
@@ -43,7 +43,7 @@ public enum LibjxlIDCT {
     /// The 1-D matrix `M_inv[u, y] = α(y) · cos((u+0.5)yπ/N) · √2`
     /// is rebuilt on every call (matches libjxl's reference; an
     /// optimised version would cache per-N).
-    public static func idct1D(
+    package static func idct1D(
         N: Int, M: Int, input: [Float]
     ) -> [Float] {
         precondition(input.count == N * M)
@@ -76,7 +76,7 @@ public enum LibjxlIDCT {
     /// libjxl `dct_for_test.h::IDCTSlow<N>` — 2-D N×N IDCT applied
     /// in-place to `block` (row-major, length N*N). Inverts libjxl's
     /// scaled forward DCT byte-for-byte.
-    public static func idct2D(_ block: inout [Float], size N: Int) {
+    package static func idct2D(_ block: inout [Float], size N: Int) {
         idct2D(&block, rows: N, cols: N)
     }
 
@@ -85,7 +85,7 @@ public enum LibjxlIDCT {
     /// axis. `block` is row-major `rows * cols` floats; output is
     /// row-major in the same shape (each pass is a 1-D IDCT along
     /// one axis, with a transpose between passes).
-    public static func idct2D(
+    package static func idct2D(
         _ block: inout [Float], rows R: Int, cols C: Int
     ) {
         precondition(block.count == R * C)
@@ -125,7 +125,7 @@ public enum LibjxlIDCT {
 /// libjxl `dct_for_test.h::DCTSlow<N>` — direct port of libjxl's
 /// reference forward DCT, used here only for tests / round-trip
 /// verification of `LibjxlIDCT`.
-public enum LibjxlDCT {
+package enum LibjxlDCT {
 
     @inline(__always)
     private static func alpha(_ u: Int) -> Float {
@@ -134,7 +134,7 @@ public enum LibjxlDCT {
 
     /// libjxl `dct_for_test.h::DCT1D<N, M>` — apply 1-D forward
     /// DCT-N to M parallel columns. Same layout as `LibjxlIDCT.idct1D`.
-    public static func dct1D(
+    package static func dct1D(
         N: Int, M: Int, input: [Float]
     ) -> [Float] {
         precondition(input.count == N * M)
@@ -161,12 +161,12 @@ public enum LibjxlDCT {
     }
 
     /// 2-D forward DCT in libjxl's "scaled DCT" convention.
-    public static func dct2D(_ block: inout [Float], size N: Int) {
+    package static func dct2D(_ block: inout [Float], size N: Int) {
         dct2D(&block, rows: N, cols: N)
     }
 
     /// Asymmetric forward DCT — same axis layout as `LibjxlIDCT.idct2D`.
-    public static func dct2D(
+    package static func dct2D(
         _ block: inout [Float], rows R: Int, cols C: Int
     ) {
         precondition(block.count == R * C)

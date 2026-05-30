@@ -18,7 +18,7 @@ extension BitReader {
     ///
     /// `distributions` is a 4-element array of `(constant, extra_bits)`
     /// pairs. Selector `i` returns `constant_i + read(extra_bits_i)`.
-    public mutating func readU32(_ distributions: (
+    package mutating func readU32(_ distributions: (
         UInt32Distribution, UInt32Distribution, UInt32Distribution, UInt32Distribution
     )) throws -> UInt32 {
         let selector = try read(bits: 2)
@@ -41,7 +41,7 @@ extension BitReader {
     ///   2 → 17 + read(8 bits)
     ///   3 → read(12 bits) + chunks of (read(1)? read(8) shift up : stop)
     ///         until the continuation bit is zero.
-    public mutating func readU64() throws -> UInt64 {
+    package mutating func readU64() throws -> UInt64 {
         let selector = try read(bits: 2)
         switch selector {
         case 0: return 0
@@ -75,7 +75,7 @@ extension BitReader {
     ///
     /// This is what carries values like TransferFunction.HLG (=18) and
     /// .DCI-P3 (=17) which a `1+u(4)` distribution cannot reach.
-    public mutating func readEnum() throws -> UInt32 {
+    package mutating func readEnum() throws -> UInt32 {
         try readU32((
             .literal(0), .literal(1),
             .offset(constant: 2, extraBits: 4),
@@ -89,7 +89,7 @@ extension BitWriter {
     /// Encode a `U32(d0, d1, d2, d3)` value. Picks the lowest selector
     /// whose distribution can represent `value` exactly; throws if no
     /// distribution can.
-    public mutating func writeU32(
+    package mutating func writeU32(
         _ value: UInt32,
         distributions: (UInt32Distribution, UInt32Distribution, UInt32Distribution, UInt32Distribution)
     ) throws {
@@ -108,7 +108,7 @@ extension BitWriter {
     /// 18181-1 §C.2.6 — see also libjxl `Visitor::Enum`):
     /// `U32(0, 1, 2+u(4), 18+u(6))`. Reachable range is 0..81. Throws
     /// `BitstreamError.malformedValue` for values outside that range.
-    public mutating func writeEnum(_ value: UInt32) throws {
+    package mutating func writeEnum(_ value: UInt32) throws {
         try writeU32(value, distributions: (
             .literal(0), .literal(1),
             .offset(constant: 2, extraBits: 4),
@@ -117,7 +117,7 @@ extension BitWriter {
     }
 
     /// Encode a `U64()` value (ISO/IEC 18181-1 §C.2.5).
-    public mutating func writeU64(_ value: UInt64) {
+    package mutating func writeU64(_ value: UInt64) {
         if value == 0 {
             write(bits: 2, value: 0)
         } else if value >= 1 && value <= 16 {
@@ -144,22 +144,22 @@ extension BitWriter {
 }
 
 /// One of the four distributions in a `U32(d0, d1, d2, d3)` field.
-public struct UInt32Distribution: Sendable, Equatable {
+package struct UInt32Distribution: Sendable, Equatable {
     /// Base constant added to `extraBits` of variable.
-    public let constant: UInt32
+    package let constant: UInt32
     /// Number of additional bits read (0 → `value == constant`).
-    public let extraBits: Int
+    package let extraBits: Int
 
     /// Produce a fixed-value distribution (no extra bits).
-    public static func literal(_ value: UInt32) -> Self {
+    package static func literal(_ value: UInt32) -> Self {
         Self(constant: value, extraBits: 0)
     }
     /// Distribution emitting `constant + read(extraBits)`.
-    public static func offset(constant: UInt32, extraBits: Int) -> Self {
+    package static func offset(constant: UInt32, extraBits: Int) -> Self {
         Self(constant: constant, extraBits: extraBits)
     }
     /// Distribution emitting `read(bits)` directly (no offset).
-    public static func bits(_ count: Int) -> Self {
+    package static func bits(_ count: Int) -> Self {
         Self(constant: 0, extraBits: count)
     }
 

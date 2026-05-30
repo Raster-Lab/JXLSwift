@@ -34,13 +34,13 @@ import Foundation
 /// `GroupHeaderError` etc. so a caller can tell "the embedded
 /// sub-image is malformed" from "this frame's group header is
 /// malformed".
-public enum ModularSubImageError: Error, Sendable, Equatable,
+package enum ModularSubImageError: Error, Sendable, Equatable,
                                   LocalizedError {
     case invalidInput(String)
     case truncated
     case malformed(String)
 
-    public var errorDescription: String? {
+    package var errorDescription: String? {
         switch self {
         case .invalidInput(let m): return "ModularSubImage: \(m)"
         case .truncated:           return "ModularSubImage: truncated"
@@ -49,7 +49,7 @@ public enum ModularSubImageError: Error, Sendable, Equatable,
     }
 }
 
-public enum ModularSubImage {
+package enum ModularSubImage {
 
     /// Write an embedded modular sub-image. All channels must be
     /// the same dimensions; predictor is `Gradient` (libjxl raw
@@ -62,7 +62,7 @@ public enum ModularSubImage {
     ///   - bitsPerSample: precision hint (informational; the
     ///     residual encoding is bit-depth-agnostic via HybridUint).
     ///   - w: target BitWriter (caller's bitstream).
-    public static func write(
+    package static func write(
         channels: [[Int32]],
         width: Int, height: Int,
         bitsPerSample: Int,
@@ -194,7 +194,7 @@ public enum ModularSubImage {
     ///     image format doesn't carry these — caller supplies).
     ///   - bitsPerSample: precision (for the predictor's clamp).
     ///   - channelCount: how many channels are expected.
-    public static func read(
+    package static func read(
         from r: inout BitReader,
         width: Int, height: Int,
         bitsPerSample: Int, channelCount: Int

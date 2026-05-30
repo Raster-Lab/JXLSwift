@@ -19,7 +19,7 @@ import Foundation
 /// Element precision of a JPEG quantisation table — controls
 /// whether each entry is stored as one byte (8-bit) or two bytes
 /// (16-bit big-endian) in the DQT payload.
-public enum JPEGQuantPrecision: Int, Sendable, Equatable {
+package enum JPEGQuantPrecision: Int, Sendable, Equatable {
     case bits8 = 0
     case bits16 = 1
 }
@@ -27,16 +27,16 @@ public enum JPEGQuantPrecision: Int, Sendable, Equatable {
 /// One JPEG quantisation table — 64 values in **zig-zag** order
 /// (the same order they appear in the DQT payload). The
 /// transcoder will need to un-zig-zag them before applying.
-public struct JPEGQuantTable: Sendable, Equatable {
+package struct JPEGQuantTable: Sendable, Equatable {
     /// Destination identifier 0..3. The SOS scan header references
     /// these IDs to bind a component to a particular table.
-    public let tableId: Int
+    package let tableId: Int
     /// 8-bit or 16-bit storage in the source DQT payload.
-    public let precision: JPEGQuantPrecision
+    package let precision: JPEGQuantPrecision
     /// 64 quantisation factors, in zig-zag order. Stored as
     /// `UInt16` regardless of source precision so callers don't
     /// need to switch on the storage width.
-    public let zigZagValues: [UInt16]
+    package let zigZagValues: [UInt16]
 }
 
 extension JPEGQuantTable {
@@ -44,7 +44,7 @@ extension JPEGQuantTable {
     /// `JPEGParseError.invalidSegmentLength` if the byte budget
     /// doesn't line up with a clean sequence of (header + 64×Pq
     /// bytes) tables.
-    public static func parse(
+    package static func parse(
         dqtPayload p: Data
     ) throws -> [JPEGQuantTable] {
         var out: [JPEGQuantTable] = []
@@ -100,7 +100,7 @@ extension JPEGStructure {
     /// concatenated list of `JPEGQuantTable`s. Same input the
     /// segment walker expects (full JPEG file starting with SOI).
     /// Throws `JPEGParseError` for malformed input.
-    public static func quantTables(
+    package static func quantTables(
         in data: Data
     ) throws -> [JPEGQuantTable] {
         var reader = JPEGSegmentReader(data)

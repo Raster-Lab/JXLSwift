@@ -10,16 +10,16 @@
 
 import Foundation
 
-public struct QuantizerParams: Sendable, Equatable {
+package struct QuantizerParams: Sendable, Equatable {
     /// libjxl `global_scale`, a per-frame integer scaler that
     /// modulates every dequant weight uniformly. Range typically
     /// 1..2^16; default 1.
-    public var globalScale: UInt32
+    package var globalScale: UInt32
     /// `quant_dc`, the DC-coefficient-specific quantiser. Default
     /// 16 (libjxl's `Val(16)` first selector).
-    public var quantDC: UInt32
+    package var quantDC: UInt32
 
-    public init(globalScale: UInt32 = 1, quantDC: UInt32 = 16) {
+    package init(globalScale: UInt32 = 1, quantDC: UInt32 = 16) {
         self.globalScale = globalScale
         self.quantDC = quantDC
     }
@@ -28,7 +28,7 @@ public struct QuantizerParams: Sendable, Equatable {
     /// Mirrors libjxl `QuantizerParams::VisitFields` byte-for-byte:
     ///   • `global_scale` U32(1+u(11), 2049+u(11), 4097+u(12), 8193+u(16))
     ///   • `quant_dc`     U32(16, 1+u(5), 1+u(8), 1+u(16))
-    public static func read(from r: inout BitReader) throws -> QuantizerParams {
+    package static func read(from r: inout BitReader) throws -> QuantizerParams {
         let gs: UInt32
         let qdc: UInt32
         do {
@@ -50,7 +50,7 @@ public struct QuantizerParams: Sendable, Equatable {
         return QuantizerParams(globalScale: gs, quantDC: qdc)
     }
 
-    public func write(to w: inout BitWriter) throws {
+    package func write(to w: inout BitWriter) throws {
         do {
             try w.writeU32(globalScale, distributions: (
                 .offset(constant: 1, extraBits: 11),
@@ -70,6 +70,6 @@ public struct QuantizerParams: Sendable, Equatable {
     }
 }
 
-public enum QuantizerParamsError: Error, Sendable {
+package enum QuantizerParamsError: Error, Sendable {
     case bitstream(BitstreamError)
 }

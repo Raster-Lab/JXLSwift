@@ -26,7 +26,7 @@ import Foundation
 /// marker / segment-length level. The reader is forgiving about
 /// unknown marker codes (it preserves them and skips by length)
 /// but strict about structural integrity.
-public enum JPEGParseError: Error, Sendable, Equatable,
+package enum JPEGParseError: Error, Sendable, Equatable,
                             LocalizedError {
     /// File didn't start with a `0xFF 0xD8` SOI marker.
     case missingSOI
@@ -42,7 +42,7 @@ public enum JPEGParseError: Error, Sendable, Equatable,
     /// Saw a non-0xFF byte where a marker should start.
     case expectedMarkerPrefix(at: Int, found: UInt8)
 
-    public var errorDescription: String? {
+    package var errorDescription: String? {
         switch self {
         case .missingSOI:
             return "not a JPEG file: missing 0xFF 0xD8 SOI marker"
@@ -67,11 +67,11 @@ public enum JPEGParseError: Error, Sendable, Equatable,
 /// — i.e. `Ls − 2` bytes, exactly as the SOFn / DQT / DHT / SOS
 /// parsers want them. `byteOffset` is the offset of the leading
 /// 0xFF in the original file, useful for diagnostics.
-public struct JPEGSegment: Sendable {
-    public let kind: JPEGMarkerKind
-    public let markerByte: UInt8
-    public let payload: Data
-    public let byteOffset: Int
+package struct JPEGSegment: Sendable {
+    package let kind: JPEGMarkerKind
+    package let markerByte: UInt8
+    package let payload: Data
+    package let byteOffset: Int
 }
 
 /// Forward-only walker over a JPEG byte stream. Use either the
@@ -82,22 +82,22 @@ public struct JPEGSegment: Sendable {
 /// returned as a segment — call `entropyDataBetween(...)` against
 /// the raw input bytes if a caller (eventually the transcoder)
 /// needs it. The structural-info layer doesn't.
-public struct JPEGSegmentReader {
+package struct JPEGSegmentReader {
     private let data: Data
     private var position: Int
 
-    public init(_ data: Data) {
+    package init(_ data: Data) {
         self.data = data
         self.position = 0
     }
 
     /// Current byte position. Settable so a caller can re-anchor
     /// the reader after manually consuming entropy data.
-    public var byteOffset: Int { position }
+    package var byteOffset: Int { position }
 
     /// Read the next marker + payload. Returns `nil` after EOI.
     /// Throws `JPEGParseError` if the stream is malformed.
-    public mutating func next() throws -> JPEGSegment? {
+    package mutating func next() throws -> JPEGSegment? {
         if position == 0 {
             try expectSOI()
         }
@@ -163,7 +163,7 @@ public struct JPEGSegmentReader {
     }
 
     /// Collect every segment up to and including EOI.
-    public mutating func readAll() throws -> [JPEGSegment] {
+    package mutating func readAll() throws -> [JPEGSegment] {
         var out: [JPEGSegment] = []
         while let seg = try next() {
             out.append(seg)
@@ -262,7 +262,7 @@ extension JPEGSegmentReader {
     /// Quick magic-byte detector — returns `true` iff `data`
     /// starts with the JPEG SOI marker (`0xFF 0xD8`). Useful for
     /// CLI input-type routing before constructing a reader.
-    public static func looksLikeJPEG(_ data: Data) -> Bool {
+    package static func looksLikeJPEG(_ data: Data) -> Bool {
         return data.count >= 2 && data[0] == 0xFF && data[1] == 0xD8
     }
 }

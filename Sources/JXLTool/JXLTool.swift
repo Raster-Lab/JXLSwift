@@ -30,7 +30,7 @@ struct JXLTool: ParsableCommand {
     )
 }
 
-let JXLToolVersion = "0.14.0"
+let JXLToolVersion = "1.0.0"
 
 enum JXLExitCode: Int32, Error {
     case generalError = 1

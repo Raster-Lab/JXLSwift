@@ -46,31 +46,31 @@ import Foundation
 
 /// Brotli stream header. Carries the window-size and the boundary
 /// between the header and the first meta-block.
-public struct BrotliStreamHeader: Sendable, Equatable {
+package struct BrotliStreamHeader: Sendable, Equatable {
     /// Window bits — `WBITS` from RFC 7932 §9.1. Valid range:
     /// 10..24 (the small-window 16 case + extended).
-    public let windowBits: Int
+    package let windowBits: Int
     /// Byte position after the WBITS field — every meta-block's
     /// bit reader starts here.
-    public let bitsConsumed: Int
+    package let bitsConsumed: Int
 }
 
 /// Per-meta-block header. Carries the kind of block (compressed,
 /// last/empty, uncompressed) and its uncompressed payload size.
-public struct BrotliMetaBlockHeader: Sendable, Equatable {
+package struct BrotliMetaBlockHeader: Sendable, Equatable {
     /// True if this is the final meta-block in the stream.
-    public let isLast: Bool
+    package let isLast: Bool
     /// True if `isLast` is set and the empty bit is also set —
     /// signals end-of-stream with no payload.
-    public let isLastEmpty: Bool
+    package let isLastEmpty: Bool
     /// True if the meta-block is uncompressed (literal byte run).
-    public let isUncompressed: Bool
+    package let isUncompressed: Bool
     /// Uncompressed payload size in bytes (MLEN + 1). Zero for
     /// `isLastEmpty == true`.
-    public let payloadSize: Int
+    package let payloadSize: Int
 }
 
-public enum BrotliMetaBlockReader {
+package enum BrotliMetaBlockReader {
 
     /// RFC 7932 §9.1 — read the stream header (`WBITS`). Returns
     /// the window size and the bit position after it.
@@ -96,7 +96,7 @@ public enum BrotliMetaBlockReader {
     ///   N=16     ⇒ 0x00
     ///   N=17     ⇒ 0x01
     ///   N=18..24 ⇒ 0x03, 0x05, 0x07, 0x09, 0x0B, 0x0D, 0x0F
-    public static func readStreamHeader(
+    package static func readStreamHeader(
         from r: inout BitReader
     ) throws -> BrotliStreamHeader {
         let startBit = r.position
@@ -143,7 +143,7 @@ public enum BrotliMetaBlockReader {
     /// For uncompressed meta-blocks the bit reader is **byte-aligned**
     /// after this call; callers should then read `payloadSize` bytes
     /// directly from the data buffer.
-    public static func readMetaBlockHeader(
+    package static func readMetaBlockHeader(
         from r: inout BitReader
     ) throws -> BrotliMetaBlockHeader {
         let isLast: Bool

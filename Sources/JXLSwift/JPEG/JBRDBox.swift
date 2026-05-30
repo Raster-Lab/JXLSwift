@@ -37,7 +37,7 @@
 import Foundation
 
 /// Errors specific to `jbrd` parsing.
-public enum JBRDError: Error, Sendable {
+package enum JBRDError: Error, Sendable {
     /// Wrapper around a bit-reader error.
     case bitstream(BitstreamError)
     /// Marker order exceeded the libjxl-imposed 16384-entry cap.
@@ -79,19 +79,19 @@ public enum JBRDError: Error, Sendable {
 /// to libjxl's `JPEGQuantTable`. `values` are the unpacked 64-element
 /// natural-order matrix; the Brotli-compressed payload carries the
 /// actual integer values (this struct just records the metadata).
-public struct JBRDQuantTable: Sendable, Equatable {
+package struct JBRDQuantTable: Sendable, Equatable {
     /// Precision flag: 0 = 8-bit table, 1 = 16-bit. We accept only
     /// precision=0 per libjxl's transcode restriction.
-    public var precision: UInt32
+    package var precision: UInt32
     /// Slot index 0..3.
-    public var index: UInt32
+    package var index: UInt32
     /// True if this is the last table in its DQT marker.
-    public var isLast: Bool
+    package var isLast: Bool
     /// 64 natural-order coefficients (decoded from the JPEG DQT
     /// payload, not stored in the jbrd Bundle itself — the bridge
     /// fills these from the JXL frame's quant matrices).
-    public var values: [Int32]
-    public init(
+    package var values: [Int32]
+    package init(
         precision: UInt32 = 0, index: UInt32 = 0,
         isLast: Bool = true, values: [Int32] = []
     ) {
@@ -104,18 +104,18 @@ public struct JBRDQuantTable: Sendable, Equatable {
 
 /// One Huffman table entry from the jbrd Bundle. Maps to libjxl's
 /// `JPEGHuffmanCode`.
-public struct JBRDHuffmanCode: Sendable, Equatable {
+package struct JBRDHuffmanCode: Sendable, Equatable {
     /// Length histogram: counts[i] is the number of codes of bit
     /// length `i` (i ∈ 0..16). counts[0] is always 0.
-    public var counts: [UInt32]
+    package var counts: [UInt32]
     /// Symbol values sorted by ascending bit length.
-    public var values: [UInt32]
+    package var values: [UInt32]
     /// Slot id: high nibble = AC flag (1=AC, 0=DC), low nibble =
     /// slot index 0..3.
-    public var slotId: Int
+    package var slotId: Int
     /// True if this is the last table in its DHT marker.
-    public var isLast: Bool
-    public init(
+    package var isLast: Bool
+    package init(
         counts: [UInt32] = Array(repeating: 0, count: 17),
         values: [UInt32] = [],
         slotId: Int = 0, isLast: Bool = true
@@ -128,17 +128,17 @@ public struct JBRDHuffmanCode: Sendable, Equatable {
 }
 
 /// Per-scan info (SOS marker contents + progressive-mode state).
-public struct JBRDScanInfo: Sendable, Equatable {
-    public var ss: UInt32        // Spectral start (Ss)
-    public var se: UInt32        // Spectral end (Se)
-    public var ah: UInt32        // Approximation high
-    public var al: UInt32        // Approximation low
-    public var numComponents: UInt32
-    public var components: [JBRDScanComponent]
-    public var lastNeededPass: UInt32
-    public var resetPoints: [UInt32]
-    public var extraZeroRuns: [JBRDExtraZeroRun]
-    public init(
+package struct JBRDScanInfo: Sendable, Equatable {
+    package var ss: UInt32        // Spectral start (Ss)
+    package var se: UInt32        // Spectral end (Se)
+    package var ah: UInt32        // Approximation high
+    package var al: UInt32        // Approximation low
+    package var numComponents: UInt32
+    package var components: [JBRDScanComponent]
+    package var lastNeededPass: UInt32
+    package var resetPoints: [UInt32]
+    package var extraZeroRuns: [JBRDExtraZeroRun]
+    package init(
         ss: UInt32 = 0, se: UInt32 = 63,
         ah: UInt32 = 0, al: UInt32 = 0,
         numComponents: UInt32 = 1,
@@ -157,11 +157,11 @@ public struct JBRDScanInfo: Sendable, Equatable {
     }
 }
 
-public struct JBRDScanComponent: Sendable, Equatable {
-    public var compIdx: UInt32
-    public var dcTblIdx: UInt32
-    public var acTblIdx: UInt32
-    public init(
+package struct JBRDScanComponent: Sendable, Equatable {
+    package var compIdx: UInt32
+    package var dcTblIdx: UInt32
+    package var acTblIdx: UInt32
+    package init(
         compIdx: UInt32 = 0, dcTblIdx: UInt32 = 0,
         acTblIdx: UInt32 = 0
     ) {
@@ -171,17 +171,17 @@ public struct JBRDScanComponent: Sendable, Equatable {
     }
 }
 
-public struct JBRDExtraZeroRun: Sendable, Equatable {
-    public var blockIdx: UInt32
-    public var numExtraZeroRuns: UInt32
-    public init(blockIdx: UInt32 = 0, numExtraZeroRuns: UInt32 = 1) {
+package struct JBRDExtraZeroRun: Sendable, Equatable {
+    package var blockIdx: UInt32
+    package var numExtraZeroRuns: UInt32
+    package init(blockIdx: UInt32 = 0, numExtraZeroRuns: UInt32 = 1) {
         self.blockIdx = blockIdx
         self.numExtraZeroRuns = numExtraZeroRuns
     }
 }
 
 /// App-marker classification (libjxl `AppMarkerType`).
-public enum JBRDAppMarkerType: UInt32, Sendable, Equatable {
+package enum JBRDAppMarkerType: UInt32, Sendable, Equatable {
     case unknown = 0
     case icc = 1
     case exif = 2
@@ -189,14 +189,14 @@ public enum JBRDAppMarkerType: UInt32, Sendable, Equatable {
 }
 
 /// One JPEG component (id + sampling factors + quant table).
-public struct JBRDComponent: Sendable, Equatable {
-    public var id: UInt32             // 1-byte component id
-    public var hSampFactor: Int       // horizontal sampling factor
-    public var vSampFactor: Int       // vertical sampling factor
-    public var quantIdx: UInt32       // quant table 0..3
-    public var widthInBlocks: UInt32
-    public var heightInBlocks: UInt32
-    public init(
+package struct JBRDComponent: Sendable, Equatable {
+    package var id: UInt32             // 1-byte component id
+    package var hSampFactor: Int       // horizontal sampling factor
+    package var vSampFactor: Int       // vertical sampling factor
+    package var quantIdx: UInt32       // quant table 0..3
+    package var widthInBlocks: UInt32
+    package var heightInBlocks: UInt32
+    package init(
         id: UInt32 = 0,
         hSampFactor: Int = 1, vSampFactor: Int = 1,
         quantIdx: UInt32 = 0,
@@ -213,24 +213,24 @@ public struct JBRDComponent: Sendable, Equatable {
 
 /// Full jbrd-Bundle payload. Mirrors libjxl's `JPEGData` struct at
 /// the field level; reading + writing is via `JBRDBox.read`/`write`.
-public struct JBRDBox: Sendable, Equatable {
-    public var width: Int
-    public var height: Int
-    public var restartInterval: UInt32
-    public var appData: [Data]
-    public var appMarkerType: [JBRDAppMarkerType]
-    public var comData: [Data]
-    public var quant: [JBRDQuantTable]
-    public var huffmanCode: [JBRDHuffmanCode]
-    public var components: [JBRDComponent]
-    public var scanInfo: [JBRDScanInfo]
-    public var markerOrder: [UInt8]
-    public var interMarkerData: [Data]
-    public var tailData: Data
-    public var hasZeroPaddingBit: Bool
-    public var paddingBits: [UInt8]
+package struct JBRDBox: Sendable, Equatable {
+    package var width: Int
+    package var height: Int
+    package var restartInterval: UInt32
+    package var appData: [Data]
+    package var appMarkerType: [JBRDAppMarkerType]
+    package var comData: [Data]
+    package var quant: [JBRDQuantTable]
+    package var huffmanCode: [JBRDHuffmanCode]
+    package var components: [JBRDComponent]
+    package var scanInfo: [JBRDScanInfo]
+    package var markerOrder: [UInt8]
+    package var interMarkerData: [Data]
+    package var tailData: Data
+    package var hasZeroPaddingBit: Bool
+    package var paddingBits: [UInt8]
 
-    public init(
+    package init(
         width: Int = 0, height: Int = 0,
         restartInterval: UInt32 = 0,
         appData: [Data] = [],
@@ -268,7 +268,7 @@ public struct JBRDBox: Sendable, Equatable {
 /// The Brotli-compressed payload that follows the Bundle is read
 /// separately by `JBRDBox.readBrotliPayload(:)` once the Brotli
 /// decoder ships (phase J step 5g).
-public enum JBRDBoxReader {
+package enum JBRDBoxReader {
 
     /// Read a jbrd Bundle. Stops at the byte boundary after the
     /// Bundle's `padding_bits` field; the caller continues with
@@ -281,7 +281,7 @@ public enum JBRDBoxReader {
     /// component type + ids + quant_idx. The Huffman-code,
     /// scan-info, restart-interval, intermarker, tail, padding-bits,
     /// and final cross-check sections are the next bite.
-    public static func read(
+    package static func read(
         from r: inout BitReader
     ) throws -> JBRDBox {
         var box = JBRDBox()
@@ -786,11 +786,11 @@ extension JBRDBox {
     ///   total count at byte 16 (set after all kICC markers are
     ///   sized). The ICC payload fragment at each marker fills bytes
     ///   17 onwards.
-    public struct ExternalMetadata: Sendable {
-        public var exif: Data?
-        public var xmp: Data?
-        public var icc: Data?
-        public init(
+    package struct ExternalMetadata: Sendable {
+        package var exif: Data?
+        package var xmp: Data?
+        package var icc: Data?
+        package init(
             exif: Data? = nil, xmp: Data? = nil, icc: Data? = nil
         ) {
             self.exif = exif; self.xmp = xmp; self.icc = icc
@@ -825,7 +825,7 @@ extension JBRDBox {
     ///   metadata boxes).
     /// - `com_data`, `inter_marker_data`, `tail_data` — full payload
     ///   from Brotli.
-    public mutating func distributeBrotliPayload(
+    package mutating func distributeBrotliPayload(
         _ decoded: Data,
         external: ExternalMetadata = ExternalMetadata()
     ) throws {
@@ -1023,12 +1023,12 @@ extension JBRDBox {
 ///
 /// **Status (v0.12.0g9)**. Full Bundle walk implemented — exact
 /// inverse of the reader, verified via round-trip test.
-public enum JBRDBoxWriter {
+package enum JBRDBoxWriter {
 
     /// Write a jbrd Bundle. The Brotli-compressed payload follows
     /// at byte boundary — written separately by callers (gated on
     /// the Brotli encoder, not yet shipped).
-    public static func write(
+    package static func write(
         _ box: JBRDBox, to w: inout BitWriter
     ) throws {
         do {

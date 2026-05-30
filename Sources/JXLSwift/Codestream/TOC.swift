@@ -36,7 +36,7 @@
 
 import Foundation
 
-public enum TOCError: Error, Sendable, Equatable {
+package enum TOCError: Error, Sendable, Equatable {
     case bitstream(BitstreamError)
     case permutationNotImplemented
     case permutation(TOCPermutationError)
@@ -44,19 +44,19 @@ public enum TOCError: Error, Sendable, Equatable {
     case overflow
 }
 
-public struct TOC: Sendable, Equatable {
+package struct TOC: Sendable, Equatable {
     /// True if the frame's groups are emitted in a permuted order.
-    public let hasPermutation: Bool
+    package let hasPermutation: Bool
     /// Per-entry byte size, in **logical** order (after applying any
     /// permutation). `entrySizes[i]` is the byte size of the i-th
     /// logical section the caller will iterate.
-    public let entrySizes: [UInt32]
+    package let entrySizes: [UInt32]
     /// Cumulative byte offsets into the post-TOC group section, in
     /// **logical** order. `offsets[i]` is the byte offset of the
     /// i-th logical section.
-    public let offsets: [UInt64]
+    package let offsets: [UInt64]
 
-    public init(hasPermutation: Bool, entrySizes: [UInt32], offsets: [UInt64]) {
+    package init(hasPermutation: Bool, entrySizes: [UInt32], offsets: [UInt64]) {
         self.hasPermutation = hasPermutation
         self.entrySizes = entrySizes
         self.offsets = offsets
@@ -65,7 +65,7 @@ public struct TOC: Sendable, Equatable {
     /// libjxl's per-entry U32 distribution — `(Bits(10), 1024+u(14),
     /// 17408+u(22), 4211712+u(30))` — sized so encoders can patch
     /// TOC after the rest of the frame is encoded.
-    public static let entryDistribution: (UInt32Distribution,
+    package static let entryDistribution: (UInt32Distribution,
                                           UInt32Distribution,
                                           UInt32Distribution,
                                           UInt32Distribution) = (
@@ -78,7 +78,7 @@ public struct TOC: Sendable, Equatable {
     /// Compute `num_toc_entries` per libjxl `NumTocEntries`. For a
     /// single-group single-pass frame this is 1; otherwise the count
     /// includes a permutation entry per pass per group plus DC.
-    public static func numEntries(
+    package static func numEntries(
         numGroups: Int, numDcGroups: Int, numPasses: Int
     ) -> Int {
         if numGroups == 1 && numPasses == 1 { return 1 }
@@ -89,7 +89,7 @@ public struct TOC: Sendable, Equatable {
     }
 
     /// Read a TOC with `numEntries` entries.
-    public static func read(
+    package static func read(
         from r: inout BitReader, numEntries: Int
     ) throws -> TOC {
         guard numEntries > 0 else {
@@ -161,7 +161,7 @@ public struct TOC: Sendable, Equatable {
     /// Write a TOC. Caller is responsible for ensuring
     /// `entrySizes.count == numEntries`. We don't yet emit
     /// permutations.
-    public func write(to w: inout BitWriter) throws {
+    package func write(to w: inout BitWriter) throws {
         if hasPermutation {
             throw TOCError.permutationNotImplemented
         }

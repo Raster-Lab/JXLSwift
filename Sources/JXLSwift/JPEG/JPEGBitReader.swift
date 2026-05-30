@@ -27,7 +27,7 @@ import Foundation
 /// Errors raised by the JPEG bit reader. Distinct from
 /// `JPEGParseError` (which covers structural / marker-level
 /// problems) — these are bit-stream-level surprises.
-public enum JPEGBitReaderError: Error, Sendable, Equatable,
+package enum JPEGBitReaderError: Error, Sendable, Equatable,
                                 LocalizedError {
     /// Ran off the end of the entropy data without finding the
     /// expected marker terminator.
@@ -38,7 +38,7 @@ public enum JPEGBitReaderError: Error, Sendable, Equatable,
     /// `0xFF 0x00` byte-stuffing was malformed.
     case invalidStuffing
 
-    public var errorDescription: String? {
+    package var errorDescription: String? {
         switch self {
         case .truncated:
             return "JPEG entropy stream truncated"
@@ -55,28 +55,28 @@ public enum JPEGBitReaderError: Error, Sendable, Equatable,
 /// bytes. Tracks the source byte cursor so a caller can split a
 /// scan across multiple bit-reader instances (e.g. one per
 /// restart interval).
-public struct JPEGBitReader {
+package struct JPEGBitReader {
     private let data: Data
     private var byteOffset: Int
     private var currentByte: UInt8 = 0
     private var bitsRemainingInByte: Int = 0
     /// Set when an RST or non-RST marker was encountered. Caller
     /// inspects + clears as appropriate.
-    public private(set) var markerSeen: UInt8? = nil
+    package private(set) var markerSeen: UInt8? = nil
 
-    public init(_ data: Data, startingAt offset: Int = 0) {
+    package init(_ data: Data, startingAt offset: Int = 0) {
         self.data = data
         self.byteOffset = data.startIndex + offset
     }
 
     /// Current byte cursor — moves forward as bits are consumed.
-    public var sourceByteOffset: Int { byteOffset }
+    package var sourceByteOffset: Int { byteOffset }
 
     /// Read one bit (returns 0 or 1). Throws on truncation or
     /// when a non-RST marker is encountered. RST markers
     /// (0xFF D0..D7) are silently skipped and `markerSeen` is
     /// set so the caller can drive DC-differential reset.
-    public mutating func readBit() throws -> Int {
+    package mutating func readBit() throws -> Int {
         if bitsRemainingInByte == 0 {
             try fillByte()
         }
@@ -86,7 +86,7 @@ public struct JPEGBitReader {
 
     /// Read N bits (1..32) as an MSB-first unsigned integer.
     /// Convenience over a loop of `readBit()`.
-    public mutating func readBits(_ n: Int) throws -> UInt32 {
+    package mutating func readBits(_ n: Int) throws -> UInt32 {
         precondition(n >= 0 && n <= 32,
                      "JPEGBitReader.readBits: n must be 0...32")
         var v: UInt32 = 0
@@ -99,7 +99,7 @@ public struct JPEGBitReader {
     /// Throw away enough bits to land on a byte boundary. JPEG
     /// scans don't pad-align internally but some callers (RST
     /// resync) want this.
-    public mutating func alignToByte() {
+    package mutating func alignToByte() {
         bitsRemainingInByte = 0
     }
 

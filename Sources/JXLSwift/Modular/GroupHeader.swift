@@ -27,7 +27,7 @@
 
 import Foundation
 
-public enum GroupHeaderError: Error, Sendable {
+package enum GroupHeaderError: Error, Sendable {
     case bitstream(BitstreamError)
     case unsupportedTransform(UInt32)
     case invalidRCTType(UInt32)
@@ -37,18 +37,18 @@ public enum GroupHeaderError: Error, Sendable {
 /// single `all_default = 1` bit. Custom forms read 7 × u(5) values
 /// (p1C, p2C, p3Ca, p3Cb, p3Cc, p3Cd, p3Ce) plus 4 × u(4) values
 /// (the per-predictor weights w[0..3]).
-public struct WeightedPredictorHeader: Sendable, Equatable {
-    public let allDefault: Bool
-    public let p1C: UInt32
-    public let p2C: UInt32
-    public let p3Ca: UInt32
-    public let p3Cb: UInt32
-    public let p3Cc: UInt32
-    public let p3Cd: UInt32
-    public let p3Ce: UInt32
-    public let weights: (UInt32, UInt32, UInt32, UInt32)
+package struct WeightedPredictorHeader: Sendable, Equatable {
+    package let allDefault: Bool
+    package let p1C: UInt32
+    package let p2C: UInt32
+    package let p3Ca: UInt32
+    package let p3Cb: UInt32
+    package let p3Cc: UInt32
+    package let p3Cd: UInt32
+    package let p3Ce: UInt32
+    package let weights: (UInt32, UInt32, UInt32, UInt32)
 
-    public init(
+    package init(
         allDefault: Bool = true,
         p1C: UInt32 = 16, p2C: UInt32 = 10,
         p3Ca: UInt32 = 7, p3Cb: UInt32 = 7, p3Cc: UInt32 = 7,
@@ -62,9 +62,9 @@ public struct WeightedPredictorHeader: Sendable, Equatable {
         self.weights = weights
     }
 
-    public static let `default` = WeightedPredictorHeader()
+    package static let `default` = WeightedPredictorHeader()
 
-    public static func == (lhs: WeightedPredictorHeader, rhs: WeightedPredictorHeader) -> Bool {
+    package static func == (lhs: WeightedPredictorHeader, rhs: WeightedPredictorHeader) -> Bool {
         return lhs.allDefault == rhs.allDefault
             && lhs.p1C == rhs.p1C && lhs.p2C == rhs.p2C
             && lhs.p3Ca == rhs.p3Ca && lhs.p3Cb == rhs.p3Cb
@@ -79,7 +79,7 @@ public struct WeightedPredictorHeader: Sendable, Equatable {
     /// Inverse of `read`. The all-default form is a single `1` bit;
     /// a custom form emits the seven `u(5)` parameters and four
     /// `u(4)` weights.
-    public func write(to w: inout BitWriter) throws {
+    package func write(to w: inout BitWriter) throws {
         w.writeBit(allDefault)
         if allDefault { return }
         w.write(bits: 5, value: p1C)
@@ -95,7 +95,7 @@ public struct WeightedPredictorHeader: Sendable, Equatable {
         w.write(bits: 4, value: weights.3)
     }
 
-    public static func read(from r: inout BitReader) throws -> WeightedPredictorHeader {
+    package static func read(from r: inout BitReader) throws -> WeightedPredictorHeader {
         let isDefault: Bool
         do { isDefault = try r.readBit() }
         catch let e as BitstreamError { throw GroupHeaderError.bitstream(e) }
@@ -126,7 +126,7 @@ public struct WeightedPredictorHeader: Sendable, Equatable {
 }
 
 /// Modular transform kinds (§C.7.2 / `TransformId`).
-public enum ModularTransformId: UInt32, Sendable, Equatable {
+package enum ModularTransformId: UInt32, Sendable, Equatable {
     case rct     = 0
     case palette = 1
     case squeeze = 2
@@ -135,25 +135,25 @@ public enum ModularTransformId: UInt32, Sendable, Equatable {
 /// One Modular transform applied to the image before per-channel
 /// prediction. We parse the metadata for each known kind and store
 /// it; pixel-application is the next milestone.
-public struct ModularTransform: Sendable, Equatable {
-    public let id: ModularTransformId
+package struct ModularTransform: Sendable, Equatable {
+    package let id: ModularTransformId
     /// For RCT and Palette: starting channel index.
-    public let beginC: UInt32
+    package let beginC: UInt32
     /// For RCT: type 0..41 (default 6 = YCoCg).
-    public let rctType: UInt32
+    package let rctType: UInt32
     /// For Palette: number of channels covered.
-    public let numC: UInt32
+    package let numC: UInt32
     /// For Palette: number of palette colours.
-    public let nbColors: UInt32
+    package let nbColors: UInt32
     /// For Palette: number of delta entries.
-    public let nbDeltas: UInt32
+    package let nbDeltas: UInt32
     /// For Palette: predictor index (libjxl modular predictor).
-    public let palettePredictor: UInt32
+    package let palettePredictor: UInt32
     /// For Squeeze: per-step squeeze parameters. Empty means default
     /// squeeze pattern (libjxl computes it from the channel layout).
-    public let squeezes: [SqueezeParams]
+    package let squeezes: [SqueezeParams]
 
-    public init(
+    package init(
         id: ModularTransformId,
         beginC: UInt32 = 0,
         rctType: UInt32 = 6,
@@ -174,13 +174,13 @@ public struct ModularTransform: Sendable, Equatable {
     }
 
     /// Per-step squeeze parameters when the transform is a Squeeze.
-    public struct SqueezeParams: Sendable, Equatable {
-        public let horizontal: Bool
-        public let inPlace: Bool
-        public let beginC: UInt32
-        public let numC: UInt32
+    package struct SqueezeParams: Sendable, Equatable {
+        package let horizontal: Bool
+        package let inPlace: Bool
+        package let beginC: UInt32
+        package let numC: UInt32
 
-        public init(
+        package init(
             horizontal: Bool = false, inPlace: Bool = false,
             beginC: UInt32 = 0, numC: UInt32 = 2
         ) {
@@ -212,7 +212,7 @@ public struct ModularTransform: Sendable, Equatable {
     }
 
     /// Inverse of `read`. Mirrors libjxl `Transform::VisitFields`.
-    public func write(to w: inout BitWriter) throws {
+    package func write(to w: inout BitWriter) throws {
         try w.writeU32(id.rawValue, distributions: (
             .literal(0), .literal(1), .literal(2), .literal(3)
         ))
@@ -282,7 +282,7 @@ public struct ModularTransform: Sendable, Equatable {
         }
     }
 
-    public static func read(from r: inout BitReader) throws -> ModularTransform {
+    package static func read(from r: inout BitReader) throws -> ModularTransform {
         let idRaw: UInt32
         do {
             idRaw = try r.readU32((
@@ -388,12 +388,12 @@ public struct ModularTransform: Sendable, Equatable {
 }
 
 /// The Modular sub-bitstream's per-group prelude.
-public struct GroupHeader: Sendable, Equatable {
-    public let useGlobalTree: Bool
-    public let wpHeader: WeightedPredictorHeader
-    public let transforms: [ModularTransform]
+package struct GroupHeader: Sendable, Equatable {
+    package let useGlobalTree: Bool
+    package let wpHeader: WeightedPredictorHeader
+    package let transforms: [ModularTransform]
 
-    public init(
+    package init(
         useGlobalTree: Bool = true,
         wpHeader: WeightedPredictorHeader = .default,
         transforms: [ModularTransform] = []
@@ -403,9 +403,9 @@ public struct GroupHeader: Sendable, Equatable {
         self.transforms = transforms
     }
 
-    public static let `default` = GroupHeader()
+    package static let `default` = GroupHeader()
 
-    public static func read(from r: inout BitReader) throws -> GroupHeader {
+    package static func read(from r: inout BitReader) throws -> GroupHeader {
         let useGlobalTree: Bool
         do { useGlobalTree = try r.readBit() }
         catch let e as BitstreamError { throw GroupHeaderError.bitstream(e) }
@@ -439,7 +439,7 @@ public struct GroupHeader: Sendable, Equatable {
     /// (Palette, Squeeze with custom params) is a placeholder for
     /// future encoder work — the all-default branches that lossless
     /// cjxl typically emits are fully supported.
-    public func write(to w: inout BitWriter) throws {
+    package func write(to w: inout BitWriter) throws {
         w.writeBit(useGlobalTree)
         try wpHeader.write(to: &w)
         try w.writeU32(UInt32(transforms.count), distributions: (

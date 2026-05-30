@@ -22,36 +22,36 @@ import Foundation
 
 /// One color-correlation tile covers `kColorTileDim × kColorTileDim`
 /// pixels (= 8 × 8 blocks per tile when the spec's `kBlockDim = 8`).
-public let kColorTileDim: Int = 64
+package let kColorTileDim: Int = 64
 /// Same as above expressed in 8×8 blocks.
-public let kColorTileDimInBlocks: Int = kColorTileDim / 8
+package let kColorTileDimInBlocks: Int = kColorTileDim / 8
 /// libjxl's `kDefaultColorFactor` — the divisor that converts the
 /// signed-byte tile slope to a fractional Y→X / Y→B ratio.
-public let kDefaultColorFactor: UInt32 = 84
+package let kDefaultColorFactor: UInt32 = 84
 /// Spec-default base correlation for the X channel (no a-priori
 /// correlation between Y and X).
-public let kBaseCorrelationX: Float = 0.0
+package let kBaseCorrelationX: Float = 0.0
 /// Spec-default base correlation for B (libjxl `kYToBRatio`).
-public let kBaseCorrelationB: Float = 1.0
+package let kBaseCorrelationB: Float = 1.0
 
 /// Per-frame chroma-from-luma parameters that apply to every tile.
 /// Mirrors libjxl `ColorCorrelation` minus the JPEG-reconstruct
 /// helpers we don't need here.
-public struct ColorCorrelation: Sendable, Equatable {
+package struct ColorCorrelation: Sendable, Equatable {
     /// Y→X tile-slope divisor. Larger values give finer-grained
     /// adjustment; libjxl's encoder may emit non-default values for
     /// content with unusual chroma-luma correlation.
-    public var colorFactor: UInt32
+    package var colorFactor: UInt32
     /// `ytox_dc` / `ytob_dc` — DC-plane Y-to-chroma correlation
     /// offsets, in the same int32 units the tile slopes use.
-    public var ytoxDC: Int32
-    public var ytobDC: Int32
+    package var ytoxDC: Int32
+    package var ytobDC: Int32
     /// Frame-level base ratios (constants per spec; left as fields
     /// in case future profiles flex them).
-    public var baseCorrelationX: Float
-    public var baseCorrelationB: Float
+    package var baseCorrelationX: Float
+    package var baseCorrelationB: Float
 
-    public init(
+    package init(
         colorFactor: UInt32 = kDefaultColorFactor,
         ytoxDC: Int32 = 0,
         ytobDC: Int32 = 0,
@@ -68,19 +68,19 @@ public struct ColorCorrelation: Sendable, Equatable {
     /// Convert a signed-byte tile slope into the actual `Y→X`
     /// multiplier the decoder applies inside the tile.
     @inline(__always)
-    public func ytoXRatio(slope: Int32) -> Float {
+    package func ytoXRatio(slope: Int32) -> Float {
         return baseCorrelationX + Float(slope) / Float(colorFactor)
     }
 
     @inline(__always)
-    public func ytoBRatio(slope: Int32) -> Float {
+    package func ytoBRatio(slope: Int32) -> Float {
         return baseCorrelationB + Float(slope) / Float(colorFactor)
     }
 
     /// DC-plane scalars — the X / B DC residuals are decorrelated
     /// against Y DC by these factors.
-    public var ytoxDCRatio: Float { ytoXRatio(slope: ytoxDC) }
-    public var ytobDCRatio: Float { ytoBRatio(slope: ytobDC) }
+    package var ytoxDCRatio: Float { ytoXRatio(slope: ytoxDC) }
+    package var ytobDCRatio: Float { ytoBRatio(slope: ytobDC) }
 
     /// Read libjxl `ColorCorrelation::DecodeDC`. 1-bit
     /// `all_default` shortcut + the full non-default branch:
@@ -89,7 +89,7 @@ public struct ColorCorrelation: Sendable, Equatable {
     ///   - `base_correlation_b` F16 (range [kYToBRatio - 4, +4])
     ///   - `ytox_dc` 8-bit unsigned shifted by `Int8.min`
     ///   - `ytob_dc` 8-bit unsigned shifted by `Int8.min`
-    public static func readDC(
+    package static func readDC(
         from r: inout BitReader
     ) throws -> ColorCorrelation {
         let allDefault: Bool
@@ -158,14 +158,14 @@ public struct ColorCorrelation: Sendable, Equatable {
     /// through it. Kept as a separate entry point so callers can
     /// distinguish "I expect default" from "give me whatever's
     /// here".
-    public static func readDCDefaultOrThrow(
+    package static func readDCDefaultOrThrow(
         from r: inout BitReader
     ) throws -> ColorCorrelation {
         return try readDC(from: &r)
     }
 }
 
-public enum ColorCorrelationError: Error, Sendable {
+package enum ColorCorrelationError: Error, Sendable {
     case bitstream(BitstreamError)
     case notDefault
     case outOfRange(String)
@@ -174,14 +174,14 @@ public enum ColorCorrelationError: Error, Sendable {
 /// Per-tile slope maps for a frame. Each map covers
 /// `ceil(xsize / kColorTileDim) × ceil(ysize / kColorTileDim)` tiles;
 /// each entry is a signed byte (-128…127).
-public struct ColorCorrelationMap: Sendable, Equatable {
-    public var base: ColorCorrelation
-    public var ytox: [Int8]   // row-major, length tilesX * tilesY
-    public var ytob: [Int8]   // row-major, length tilesX * tilesY
-    public let tilesX: Int
-    public let tilesY: Int
+package struct ColorCorrelationMap: Sendable, Equatable {
+    package var base: ColorCorrelation
+    package var ytox: [Int8]   // row-major, length tilesX * tilesY
+    package var ytob: [Int8]   // row-major, length tilesX * tilesY
+    package let tilesX: Int
+    package let tilesY: Int
 
-    public init(xsize: Int, ysize: Int, base: ColorCorrelation = .init()) {
+    package init(xsize: Int, ysize: Int, base: ColorCorrelation = .init()) {
         self.base = base
         self.tilesX = (xsize + kColorTileDim - 1) / kColorTileDim
         self.tilesY = (ysize + kColorTileDim - 1) / kColorTileDim
@@ -193,27 +193,27 @@ public struct ColorCorrelationMap: Sendable, Equatable {
     /// Look up the X-channel slope for the tile that contains
     /// pixel `(x, y)`.
     @inline(__always)
-    public func ytoxAt(_ x: Int, _ y: Int) -> Int32 {
+    package func ytoxAt(_ x: Int, _ y: Int) -> Int32 {
         let tx = x / kColorTileDim
         let ty = y / kColorTileDim
         return Int32(ytox[ty * tilesX + tx])
     }
 
     @inline(__always)
-    public func ytobAt(_ x: Int, _ y: Int) -> Int32 {
+    package func ytobAt(_ x: Int, _ y: Int) -> Int32 {
         let tx = x / kColorTileDim
         let ty = y / kColorTileDim
         return Int32(ytob[ty * tilesX + tx])
     }
 }
 
-public enum ChromaFromLuma {
+package enum ChromaFromLuma {
 
     /// Encoder-side: `residualX = X - Y · YtoX(slope)`. Caller
     /// applies this per-pixel before quantising the X plane.
     /// Same shape (`yPlane`, `xPlane` are aligned, length
     /// `width * height`).
-    public static func decorrelateX(
+    package static func decorrelateX(
         x xPlane: inout [Float], y yPlane: [Float],
         width: Int, height: Int, map: ColorCorrelationMap
     ) {
@@ -230,7 +230,7 @@ public enum ChromaFromLuma {
 
     /// Decoder-side: `X = residualX + Y · YtoX(slope)`. Caller
     /// applies this per-pixel after dequantising.
-    public static func recorrelateX(
+    package static func recorrelateX(
         x xPlane: inout [Float], y yPlane: [Float],
         width: Int, height: Int, map: ColorCorrelationMap
     ) {
@@ -246,7 +246,7 @@ public enum ChromaFromLuma {
     }
 
     /// Same as `decorrelateX` but for the B plane.
-    public static func decorrelateB(
+    package static func decorrelateB(
         b bPlane: inout [Float], y yPlane: [Float],
         width: Int, height: Int, map: ColorCorrelationMap
     ) {
@@ -262,7 +262,7 @@ public enum ChromaFromLuma {
     }
 
     /// Inverse of `decorrelateB`.
-    public static func recorrelateB(
+    package static func recorrelateB(
         b bPlane: inout [Float], y yPlane: [Float],
         width: Int, height: Int, map: ColorCorrelationMap
     ) {

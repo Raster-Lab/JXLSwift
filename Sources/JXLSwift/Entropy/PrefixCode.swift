@@ -15,7 +15,7 @@
 
 import Foundation
 
-public enum PrefixCodeError: Error, Sendable, Equatable {
+package enum PrefixCodeError: Error, Sendable, Equatable {
     case invalidLengths(String)
     case oversubscribed(maxBits: Int, sumOfWeights: Int)
     case undersubscribed(maxBits: Int, sumOfWeights: Int)
@@ -27,19 +27,19 @@ public enum PrefixCodeError: Error, Sendable, Equatable {
 /// Provides O(1) decoding via a flat lookup table indexed by the next
 /// `maxLength` bits of the bitstream, and O(1) encoding via a per-
 /// symbol (codeword, length) pair.
-public struct PrefixCodeTable: Sendable {
+package struct PrefixCodeTable: Sendable {
     /// Maximum code length per JXL spec.
-    public static let maxBits: Int = 15
+    package static let maxBits: Int = 15
 
     /// `codeword[s]` = the bits of symbol `s`'s codeword, MSB-first, in
     /// the lower `length[s]` bits. Zero when `length[s] == 0`.
-    public let codewords: [UInt32]
+    package let codewords: [UInt32]
     /// `lengths[s]` = bit length of symbol `s`'s codeword, 0 if absent.
-    public let lengths: [UInt8]
+    package let lengths: [UInt8]
     /// Effective alphabet size (length of `lengths`).
-    public var alphabetSize: Int { lengths.count }
+    package var alphabetSize: Int { lengths.count }
     /// Maximum length actually used. ≤ `maxBits`.
-    public let usedMaxLength: Int
+    package let usedMaxLength: Int
 
     /// Decoding LUT. Indexed by the next `usedMaxLength` bits of the
     /// bitstream (LSB-first when read from the bitstream — see decode
@@ -53,7 +53,7 @@ public struct PrefixCodeTable: Sendable {
     /// equal exactly 2^maxBits when there are ≥ 2 symbols. (A single
     /// symbol with length 0 is a degenerate "always emit symbol 0"
     /// case and is allowed.)
-    public init(lengths: [UInt8]) throws {
+    package init(lengths: [UInt8]) throws {
         if lengths.isEmpty {
             throw PrefixCodeError.invalidLengths("empty lengths array")
         }
@@ -144,7 +144,7 @@ public struct PrefixCodeTable: Sendable {
     /// into the bitstream first. Note: `BitWriter` itself is LSB-first
     /// within bytes, so we reverse the codeword bits before passing it
     /// to `write(bits:value:)`.
-    public func encode(_ symbol: Int, to w: inout BitWriter) throws {
+    package func encode(_ symbol: Int, to w: inout BitWriter) throws {
         guard symbol >= 0 && symbol < lengths.count else {
             throw PrefixCodeError.missingSymbol(symbol)
         }
@@ -168,7 +168,7 @@ public struct PrefixCodeTable: Sendable {
 
     /// Decode a single symbol from `r`. Reads up to `usedMaxLength` bits
     /// (peek N, look up symbol, consume only the codeword length).
-    public func decode(from r: inout BitReader) throws -> Int {
+    package func decode(from r: inout BitReader) throws -> Int {
         if usedMaxLength == 0 {
             // Single-symbol degenerate code.
             return lengths.firstIndex(where: { $0 > 0 })

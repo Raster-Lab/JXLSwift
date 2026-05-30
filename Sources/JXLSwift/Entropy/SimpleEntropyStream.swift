@@ -35,7 +35,7 @@
 
 import Foundation
 
-public enum SimpleEntropyStreamError: Error, Sendable {
+package enum SimpleEntropyStreamError: Error, Sendable {
     case alphabetTooLarge(Int)
     case truncated
     case anscode(ANSError)
@@ -47,12 +47,12 @@ public enum SimpleEntropyStreamError: Error, Sendable {
 /// One rANS context: the alphabet, the HybridUintConfig used to
 /// translate values↔tokens, and the ANSDistribution used to entropy-
 /// code those tokens.
-public struct SimpleEntropyContext: Sendable {
-    public let alphabetSize: Int
-    public let hybridConfig: HybridUintConfig
-    public let distribution: ANSDistribution
+package struct SimpleEntropyContext: Sendable {
+    package let alphabetSize: Int
+    package let hybridConfig: HybridUintConfig
+    package let distribution: ANSDistribution
 
-    public init(alphabetSize: Int,
+    package init(alphabetSize: Int,
                 hybridConfig: HybridUintConfig,
                 distribution: ANSDistribution) {
         self.alphabetSize = alphabetSize
@@ -62,12 +62,12 @@ public struct SimpleEntropyContext: Sendable {
 
     /// log2(alphabet_size), ceiling. Used to size the HybridUintConfig
     /// fields when serialising.
-    public var logAlpha: Int { Int(ceilLog2(UInt32(alphabetSize))) }
+    package var logAlpha: Int { Int(ceilLog2(UInt32(alphabetSize))) }
 }
 
 /// Distribution-shape selector for SimpleEntropyStream.encode. The
 /// caller picks one of the §C.6.3.2 shapes.
-public enum SimpleEntropyDistributionShape: Sendable {
+package enum SimpleEntropyDistributionShape: Sendable {
     /// Flat / uniform distribution over the alphabet.
     case flat
     /// Simple distribution: 1–4 named symbols receive the predefined
@@ -82,13 +82,13 @@ public enum SimpleEntropyDistributionShape: Sendable {
     case full(frequencies: [UInt32])
 }
 
-public struct SimpleEntropyStream {
+package struct SimpleEntropyStream {
 
     /// Encode a stream of values into a self-describing byte buffer.
     /// The caller supplies the rANS distribution and HybridUintConfig
     /// to use; this function packs them into the output along with the
     /// rANS-coded tokens and the extra-bits stream.
-    public static func encode(
+    package static func encode(
         values: [UInt32],
         context: SimpleEntropyContext,
         shape: SimpleEntropyDistributionShape = .flat
@@ -164,7 +164,7 @@ public struct SimpleEntropyStream {
     }
 
     /// Decode the byte buffer back to a stream of values.
-    public static func decode(_ data: Data) throws -> [UInt32] {
+    package static func decode(_ data: Data) throws -> [UInt32] {
         var r = BitReader(data)
 
         // Header.

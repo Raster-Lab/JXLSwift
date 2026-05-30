@@ -24,14 +24,14 @@
 
 import Foundation
 
-public enum AFV {
+package enum AFV {
 
     /// 16×16 AFV basis matrix (libjxl `k4x4AFVBasis`). Indexed
     /// `[basisFunctionIndex][pixelIndex]` — row j holds the `j`-th
     /// basis function's contribution to each of the 16 pixel
     /// positions in a 4×4 block (row-major, so pixel index
     /// `iy * 4 + ix`). Row 0 is the DC basis (constant 0.25).
-    public static let k4x4AFVBasis: [[Float]] = [
+    package static let k4x4AFVBasis: [[Float]] = [
         // Row 0: DC (constant = 1/4).
         [0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25,
          0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25],
@@ -129,7 +129,7 @@ public enum AFV {
     /// the 16 pixel positions in a 4×4 block, row-major).
     ///
     /// Direct port of libjxl `dec_transforms-inl.h::AFVIDCT4x4`.
-    public static func idct4x4(_ coeffs: [Float], _ pixels: inout [Float]) {
+    package static func idct4x4(_ coeffs: [Float], _ pixels: inout [Float]) {
         precondition(coeffs.count == 16, "AFV coeffs must be 16 floats")
         precondition(pixels.count == 16, "AFV pixels must be 16 floats")
         for i in 0..<16 {
@@ -145,7 +145,7 @@ public enum AFV {
     /// Exact inverse of `idct4x4` — the basis is orthonormal, so the
     /// forward direction is the same matrix viewed as `(row-vector
     /// of basis function j) · pixels`.
-    public static func fdct4x4(_ pixels: [Float], _ coeffs: inout [Float]) {
+    package static func fdct4x4(_ pixels: [Float], _ coeffs: inout [Float]) {
         precondition(pixels.count == 16, "AFV pixels must be 16 floats")
         precondition(coeffs.count == 16, "AFV coeffs must be 16 floats")
         for j in 0..<16 {
@@ -189,7 +189,7 @@ public enum AFV {
     /// libjxl-convention 2-D scaled IDCT to a 16-coefficient (4×4) or
     /// 32-coefficient (4×8) block in-place. Callers typically pass
     /// `LibjxlIDCT.idct2D` / `AccelerateDCT.idct2D` adapters.
-    public static func transformToPixels(
+    package static func transformToPixels(
         afvKind: Int,
         coefficients: [Float],
         pixels: inout [Float],

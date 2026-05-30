@@ -16,7 +16,7 @@
 import Foundation
 
 /// Top-level decoder API.
-public enum BrotliDecoder {
+package enum BrotliDecoder {
 
     /// Decode a complete Brotli stream into uncompressed bytes.
     ///
@@ -28,7 +28,7 @@ public enum BrotliDecoder {
     /// - Returns: the fully decompressed output bytes.
     /// - Throws: a `BrotliError` describing the failure (bitstream
     ///   wrap, malformed code, not-implemented path, etc.).
-    public static func decode(
+    package static func decode(
         _ input: Data, expectedOutputSize: Int? = nil
     ) throws -> Data {
         var r = BitReader(input)
@@ -41,7 +41,7 @@ public enum BrotliDecoder {
     /// payload from the same reader the Bundle was read from.
     /// The bit reader must be byte-aligned at the start of the
     /// Brotli stream.
-    public static func decode(
+    package static func decode(
         reader r: inout BitReader,
         expectedOutputSize: Int? = nil
     ) throws -> Data {

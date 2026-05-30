@@ -18,7 +18,7 @@
 import Foundation
 
 /// Errors raised by the container writer.
-public enum JPEGContainerWriteError: Error, Sendable, Equatable {
+package enum JPEGContainerWriteError: Error, Sendable, Equatable {
     /// Component count outside 1..3.
     case invalidComponentCount(Int)
     /// Frame dimension exceeds the 16-bit field limit (65535).
@@ -28,7 +28,7 @@ public enum JPEGContainerWriteError: Error, Sendable, Equatable {
     case invalidQuantPrecision(UInt32)
 }
 
-public enum JPEGContainerWriter {
+package enum JPEGContainerWriter {
 
     /// Build a complete minimal baseline-JPEG byte stream.
     ///
@@ -41,7 +41,7 @@ public enum JPEGContainerWriter {
     ///   - scanComponents: per-scan binding info (component id →
     ///     DC/AC table id pair).
     /// - Returns: complete JPEG bytes (SOI..EOI).
-    public static func write(
+    package static func write(
         image: JPEGCoefficientImage,
         dcHuffmanTables: [JPEGHuffmanTable],
         acHuffmanTables: [JPEGHuffmanTable],

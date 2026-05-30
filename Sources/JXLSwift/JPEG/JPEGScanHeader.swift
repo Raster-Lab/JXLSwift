@@ -22,39 +22,39 @@ import Foundation
 
 /// Per-component description from the SOFn header — sampling
 /// factors + which quant table to pull factors from.
-public struct JPEGFrameComponent: Sendable, Equatable {
-    public let componentId: Int
-    public let hSamplingFactor: Int  // 1..4
-    public let vSamplingFactor: Int  // 1..4
-    public let quantTableId: Int     // 0..3
+package struct JPEGFrameComponent: Sendable, Equatable {
+    package let componentId: Int
+    package let hSamplingFactor: Int  // 1..4
+    package let vSamplingFactor: Int  // 1..4
+    package let quantTableId: Int     // 0..3
 }
 
 /// Per-component scan binding from the SOS header — which DC and
 /// AC Huffman tables to use for this component in this scan.
-public struct JPEGScanComponent: Sendable, Equatable {
-    public let componentId: Int
-    public let dcTableId: Int        // 0..3
-    public let acTableId: Int        // 0..3
+package struct JPEGScanComponent: Sendable, Equatable {
+    package let componentId: Int
+    package let dcTableId: Int        // 0..3
+    package let acTableId: Int        // 0..3
 }
 
 /// One JPEG scan header — describes a chunk of entropy-coded data
 /// in terms of which components it covers, which Huffman tables
 /// they use, and (for progressive scans) which coefficient band +
 /// approximation level it carries.
-public struct JPEGScanHeader: Sendable, Equatable {
-    public let components: [JPEGScanComponent]
+package struct JPEGScanHeader: Sendable, Equatable {
+    package let components: [JPEGScanComponent]
     /// Start of spectral selection. 0 for a sequential scan.
-    public let spectralSelectionStart: Int
+    package let spectralSelectionStart: Int
     /// End of spectral selection. 63 for a sequential scan.
-    public let spectralSelectionEnd: Int
+    package let spectralSelectionEnd: Int
     /// Successive-approximation high bit. 0 for sequential.
-    public let successiveApproximationHigh: Int
+    package let successiveApproximationHigh: Int
     /// Successive-approximation low bit. 0 for sequential.
-    public let successiveApproximationLow: Int
+    package let successiveApproximationLow: Int
 
     /// True iff this looks like a baseline / sequential scan
     /// (covers the full 0..63 DCT band, no successive approximation).
-    public var isSequential: Bool {
+    package var isSequential: Bool {
         spectralSelectionStart == 0
             && spectralSelectionEnd == 63
             && successiveApproximationHigh == 0
@@ -67,7 +67,7 @@ extension JPEGFrameComponent {
     /// `payload` is the full SOFn segment payload starting at the
     /// `P` byte; this helper picks up from byte 6 (just past
     /// P/Y/X/Nf).
-    public static func parseSOFComponents(
+    package static func parseSOFComponents(
         sofPayload p: Data
     ) throws -> [JPEGFrameComponent] {
         guard p.count >= 6 else {
@@ -111,7 +111,7 @@ extension JPEGScanHeader {
     /// Parse one SOS segment payload into a `JPEGScanHeader`. The
     /// payload is the bytes AFTER the SOS marker's 2-byte length
     /// field — `Ns` is the first byte.
-    public static func parse(
+    package static func parse(
         sosPayload p: Data
     ) throws -> JPEGScanHeader {
         guard p.count >= 1 else {
@@ -161,7 +161,7 @@ extension JPEGStructure {
     /// Return the per-component records from the file's SOFn
     /// segment. Useful for the transcoder to learn the chroma
     /// subsampling (`(H,V)` factors) and the quant-table binding.
-    public static func frameComponents(
+    package static func frameComponents(
         in data: Data
     ) throws -> [JPEGFrameComponent] {
         var reader = JPEGSegmentReader(data)
@@ -178,7 +178,7 @@ extension JPEGStructure {
     /// Return every SOS scan header in document order. Baseline
     /// JPEGs have exactly one; progressive JPEGs typically have
     /// many (one per spectral / approximation pass).
-    public static func scanHeaders(
+    package static func scanHeaders(
         in data: Data
     ) throws -> [JPEGScanHeader] {
         var reader = JPEGSegmentReader(data)

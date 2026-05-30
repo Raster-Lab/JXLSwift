@@ -46,11 +46,11 @@ public struct EncodingOptions: Sendable {
     /// future spec-compliant decoder can recognise and reject it.
     /// Useful as a working lossless codec while the real Phase M
     /// pipeline is built out. See `MinimalLosslessCodec`.
-    public var useM0Placeholder: Bool
+    package var useM0Placeholder: Bool
     /// When `useM0Placeholder` is true, controls the M0 effort knob
     /// (`.balanced` tries every predictor + RCT variant; `.fast`
     /// skips the search for ~3× faster encode). Ignored otherwise.
-    public var m0Effort: M0Effort
+    package var m0Effort: M0Effort
     /// Wrap the codestream in an ISOBMFF (`.jxl`) container instead
     /// of emitting it naked. Real-world tooling (browsers, OS image
     /// loaders, `djxl`) accepts both, but the wrapped form is the

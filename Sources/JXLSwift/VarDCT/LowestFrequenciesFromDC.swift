@@ -23,7 +23,7 @@
 
 import Foundation
 
-public enum LowestFrequenciesFromDC {
+package enum LowestFrequenciesFromDC {
 
     /// libjxl `dct_scales.h::DCTResampleScales<2, 16>::kScales`.
     /// Used to scale the 2×2 forward-DCT outputs when reinterpreting
@@ -55,7 +55,7 @@ public enum LowestFrequenciesFromDC {
     /// flat 256-entry coefficient block (which match (0,0), (1,0),
     /// (0,1), (1,1) in the 16×16 coef grid — same indices as our
     /// `naturalCoeffOrder` LLF prefix).
-    public static func dct16x16(dc: [Float]) -> [Float] {
+    package static func dct16x16(dc: [Float]) -> [Float] {
         precondition(dc.count == 4, "DCT16x16 LLF needs 4 DC values")
         let d00 = dc[0]
         let d01 = dc[1]
@@ -94,7 +94,7 @@ public enum LowestFrequenciesFromDC {
     /// over the 2×2 covered cells — exactly the layout `dct16x16`
     /// consumes/produces, so `dct16x16(dcFromLowestFrequencies16x16(
     /// llf)) == llf` (within float epsilon).
-    public static func dcFromLowestFrequencies16x16(
+    package static func dcFromLowestFrequencies16x16(
         llf: [Float]
     ) -> [Float] {
         precondition(llf.count == 4,
@@ -136,7 +136,7 @@ public enum LowestFrequenciesFromDC {
     /// strategy's natural order (top-then-bottom for DCT16x8 stacking
     /// 2 cells vertically, left-then-right for DCT8x16 stacking 2
     /// cells horizontally).
-    public static func ord4Pair(dc: [Float]) -> [Float] {
+    package static func ord4Pair(dc: [Float]) -> [Float] {
         precondition(dc.count == 2, "ord 4 LLF needs 2 DC values")
         let s0 = (dc[0] + dc[1]) * 0.5
         let s1 = (dc[0] - dc[1]) * 0.5
@@ -149,7 +149,7 @@ public enum LowestFrequenciesFromDC {
     /// DCT8x16) from a block's 2 LLF coefficients.
     /// `ord4Pair(dcFromLowestFrequenciesOrd4Pair(llf)) == llf`
     /// within float epsilon.
-    public static func dcFromLowestFrequenciesOrd4Pair(
+    package static func dcFromLowestFrequenciesOrd4Pair(
         llf: [Float]
     ) -> [Float] {
         precondition(llf.count == 2,
@@ -237,7 +237,7 @@ public enum LowestFrequenciesFromDC {
     /// `DCTTotalResampleScale<4, 32>(y) * DCTTotalResampleScale<1, 8>(x)`.
     /// The `<1, 8>` axis scale collapses to 1 (single element on
     /// that axis), so only `kScales4to32` survives.
-    public static func ord5Block(dc: [Float]) -> [Float] {
+    package static func ord5Block(dc: [Float]) -> [Float] {
         precondition(dc.count == 4, "ord 5 LLF needs 4 DC values")
         // 1-D scaled DCT-4 along the 4-axis.
         let scaled = scaledDCT4(dc)
@@ -254,7 +254,7 @@ public enum LowestFrequenciesFromDC {
     /// from a block's 4 LLF coefficients.
     /// `ord5Block(dcFromLowestFrequenciesOrd5Block(llf)) == llf`
     /// within float epsilon.
-    public static func dcFromLowestFrequenciesOrd5Block(
+    package static func dcFromLowestFrequenciesOrd5Block(
         llf: [Float]
     ) -> [Float] {
         precondition(llf.count == 4,
@@ -285,7 +285,7 @@ public enum LowestFrequenciesFromDC {
     /// (For DCT16x32 it's ROWS=2, COLS=4 with axes swapped — the
     /// final LLF positions in the natural-order 4×2 LF region come
     /// out the same after symmetric handling.)
-    public static func ord6Block(dc: [Float]) -> [Float] {
+    package static func ord6Block(dc: [Float]) -> [Float] {
         precondition(dc.count == 8, "ord 6 LLF needs 8 DC values")
         // Step 1: 1-D DCT-4 along COLUMNS (process each col across
         // the 2 rows? No — we have ROWS=4 in coef layout, which means
@@ -356,7 +356,7 @@ public enum LowestFrequenciesFromDC {
     /// from a DCT32×16 / DCT16×32 block's 8 LLF coefficients.
     /// `ord6Block(dcFromLowestFrequenciesOrd6Block(llf)) == llf`
     /// within float epsilon.
-    public static func dcFromLowestFrequenciesOrd6Block(
+    package static func dcFromLowestFrequenciesOrd6Block(
         llf: [Float]
     ) -> [Float] {
         precondition(llf.count == 8,
@@ -394,7 +394,7 @@ public enum LowestFrequenciesFromDC {
     /// Per libjxl: `ComputeScaledDCT<4, 8>` (4 rows × 8 cols input)
     /// then per-axis `DCTTotalResampleScale<4, 32>(y) *
     /// DCTTotalResampleScale<8, 64>(x)`.
-    public static func ord8Block(dc: [Float]) -> [Float] {
+    package static func ord8Block(dc: [Float]) -> [Float] {
         precondition(dc.count == 32, "ord 8 LLF needs 32 DC values")
         // 2-D forward scaled DCT on 4 rows × 8 cols input.
         var scaled = dc
@@ -416,7 +416,7 @@ public enum LowestFrequenciesFromDC {
     /// from a DCT64×32 / DCT32×64 block's 32 LLF coefficients.
     /// `ord8Block(dcFromLowestFrequenciesOrd8Block(llf)) == llf`
     /// within float epsilon.
-    public static func dcFromLowestFrequenciesOrd8Block(
+    package static func dcFromLowestFrequenciesOrd8Block(
         llf: [Float]
     ) -> [Float] {
         precondition(llf.count == 32,
@@ -459,7 +459,7 @@ public enum LowestFrequenciesFromDC {
     /// We use `AccelerateDCT.dct2D` (≡ `LibjxlDCT.dct2D` byte-
     /// equivalent on Apple Silicon) for the 8×8 forward — that
     /// IS the libjxl scaled-DCT primitive applied at this size.
-    public static func dct64x64(dc: [Float]) -> [Float] {
+    package static func dct64x64(dc: [Float]) -> [Float] {
         precondition(dc.count == 64, "DCT64x64 LLF needs 64 DC values")
         // 2-D forward scaled DCT-8 on the 8×8 DC values.
         var scaled = dc
@@ -482,7 +482,7 @@ public enum LowestFrequenciesFromDC {
     /// cells) from a DCT64×64 block's 64 LLF coefficients.
     /// `dct64x64(dcFromLowestFrequencies64x64(llf)) == llf` within
     /// float epsilon.
-    public static func dcFromLowestFrequencies64x64(
+    package static func dcFromLowestFrequencies64x64(
         llf: [Float]
     ) -> [Float] {
         precondition(llf.count == 64,
@@ -509,7 +509,7 @@ public enum LowestFrequenciesFromDC {
     /// Per libjxl `LowestFrequenciesFromDC<DCT32X32>`: ROWS=4,
     /// COLS=4 → `ComputeScaledDCT<4, 4>` (separable 4-point DCT-2)
     /// then per-axis `DCTTotalResampleScale<4, 32>` resample.
-    public static func dct32x32(dc: [Float]) -> [Float] {
+    package static func dct32x32(dc: [Float]) -> [Float] {
         precondition(dc.count == 16, "DCT32x32 LLF needs 16 DC values")
         // 1-D scaled DCT-4 along COLUMNS (process each col across 4 rows).
         var tmp = [Float](repeating: 0, count: 16)
@@ -550,7 +550,7 @@ public enum LowestFrequenciesFromDC {
     /// decoder's `dct32x32` reconstructs those same coefficients.
     /// `dct32x32(dcFromLowestFrequencies32x32(llf)) == llf` within
     /// float epsilon.
-    public static func dcFromLowestFrequencies32x32(
+    package static func dcFromLowestFrequencies32x32(
         llf: [Float]
     ) -> [Float] {
         precondition(llf.count == 16,

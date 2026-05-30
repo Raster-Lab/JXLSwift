@@ -19,7 +19,7 @@ import Foundation
 /// have no payload; everything else has a 2-byte big-endian
 /// length followed by length-2 bytes of payload (the length field
 /// counts itself).
-public enum JPEGMarkerKind: Sendable, Equatable {
+package enum JPEGMarkerKind: Sendable, Equatable {
     /// Start of image — must be the first marker.
     case startOfImage
     /// End of image — must be the last marker.
@@ -65,7 +65,7 @@ public enum JPEGMarkerKind: Sendable, Equatable {
 
     /// Stand-alone markers carry no payload — the next byte is the
     /// start of the following marker or entropy data.
-    public var isStandalone: Bool {
+    package var isStandalone: Bool {
         switch self {
         case .startOfImage, .endOfImage, .restart, .temporary:
             return true
@@ -79,7 +79,7 @@ public enum JPEGMarkerKind: Sendable, Equatable {
     /// returns nil — unknown marker codes fall through to
     /// `.other(markerByte:)` so the segment reader can still skip
     /// them by length.
-    public static func from(markerByte b: UInt8) -> JPEGMarkerKind {
+    package static func from(markerByte b: UInt8) -> JPEGMarkerKind {
         switch b {
         case 0xD8: return .startOfImage
         case 0xD9: return .endOfImage
@@ -107,7 +107,7 @@ public enum JPEGMarkerKind: Sendable, Equatable {
     }
 
     /// Human-readable label, for diagnostics.
-    public var label: String {
+    package var label: String {
         switch self {
         case .startOfImage: return "SOI"
         case .endOfImage: return "EOI"

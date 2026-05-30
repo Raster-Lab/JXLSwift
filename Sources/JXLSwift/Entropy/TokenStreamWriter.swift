@@ -28,7 +28,7 @@
 
 import Foundation
 
-public enum TokenStreamWriterError: Error, Sendable {
+package enum TokenStreamWriterError: Error, Sendable {
     case rANSPathNotImplemented
     case lz77NotImplemented
     case contextOutOfRange(Int, max: Int)
@@ -40,17 +40,17 @@ public enum TokenStreamWriterError: Error, Sendable {
 /// Encodes a sequence of (context, value) tokens into a destination
 /// `BitWriter`, matching the format `TokenStreamReader` expects to
 /// read back.
-public struct TokenStreamWriter: Sendable {
-    public let header: EntropySectionHeader
-    public let codebook: MultiClusterCodebook
+package struct TokenStreamWriter: Sendable {
+    package let header: EntropySectionHeader
+    package let codebook: MultiClusterCodebook
 
-    public init(header: EntropySectionHeader, codebook: MultiClusterCodebook) {
+    package init(header: EntropySectionHeader, codebook: MultiClusterCodebook) {
         self.header = header
         self.codebook = codebook
     }
 
     /// Emit one (context, value) token.
-    public func writeToken(
+    package func writeToken(
         context ctx: Int, value: UInt32, to w: inout BitWriter
     ) throws {
         if header.lz77.enabled {

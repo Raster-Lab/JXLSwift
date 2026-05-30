@@ -19,16 +19,16 @@
 
 import Foundation
 
-public enum ICCStreamError: Error, Sendable {
+package enum ICCStreamError: Error, Sendable {
     case bitstream(BitstreamError)
     case malformed(String)
     case entropy(String)
 }
 
-public enum ICCStream {
+package enum ICCStream {
 
-    public static let headerSize = 128
-    public static let numContexts = 41
+    package static let headerSize = 128
+    package static let numContexts = 41
 
     // MARK: - Command / flag constants (libjxl icc_codec_common.h)
 
@@ -91,7 +91,7 @@ public enum ICCStream {
     /// returning the reconstructed ICC profile bytes. Advances the
     /// reader past the ANS stream (the caller byte-aligns afterwards,
     /// mirroring libjxl `JumpToByteBoundary`).
-    public static func decode(
+    package static func decode(
         from r: inout BitReader
     ) throws -> Data {
         let encSize: UInt64

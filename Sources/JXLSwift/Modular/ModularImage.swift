@@ -25,14 +25,14 @@ import Foundation
 /// One channel inside a `ModularImage`. Pixel data is row-major
 /// `[Int32]`, `width × height`. `hshift` / `vshift` count how many
 /// Squeeze halvings have been applied (initial 0 = full resolution).
-public struct ModularChannel: Sendable, Equatable {
-    public var width: Int
-    public var height: Int
-    public var hshift: Int
-    public var vshift: Int
-    public var pixels: [Int32]
+package struct ModularChannel: Sendable, Equatable {
+    package var width: Int
+    package var height: Int
+    package var hshift: Int
+    package var vshift: Int
+    package var pixels: [Int32]
 
-    public init(width: Int, height: Int,
+    package init(width: Int, height: Int,
                 hshift: Int = 0, vshift: Int = 0,
                 pixels: [Int32]? = nil) {
         self.width = width
@@ -43,18 +43,18 @@ public struct ModularChannel: Sendable, Equatable {
     }
 }
 
-public struct ModularImage: Sendable, Equatable {
-    public var channels: [ModularChannel]
-    public var nbMetaChannels: Int
+package struct ModularImage: Sendable, Equatable {
+    package var channels: [ModularChannel]
+    package var nbMetaChannels: Int
 
-    public init(channels: [ModularChannel], nbMetaChannels: Int = 0) {
+    package init(channels: [ModularChannel], nbMetaChannels: Int = 0) {
         self.channels = channels
         self.nbMetaChannels = nbMetaChannels
     }
 
     /// Construct a fresh ModularImage with `nbColor + nbExtra`
     /// channels at full resolution (no transforms applied yet).
-    public static func fresh(
+    package static func fresh(
         xsize: Int, ysize: Int, nbColor: Int, nbExtra: Int = 0
     ) -> ModularImage {
         var chs = [ModularChannel]()
@@ -66,7 +66,7 @@ public struct ModularImage: Sendable, Equatable {
     }
 }
 
-public enum MetaApplyError: Error, Sendable {
+package enum MetaApplyError: Error, Sendable {
     case unsupportedRCTType(UInt32)
     case paletteUnsupported
     case paletteRangeInvalid(begin: UInt32, numC: UInt32, channels: Int)
@@ -87,7 +87,7 @@ public enum MetaApplyError: Error, Sendable {
 /// Currently handles RCT (no geometry change) and Squeeze (channel
 /// list reshape). Palette is rejected with `.paletteUnsupported` —
 /// not yet ported.
-public func metaApplyTransforms(
+package func metaApplyTransforms(
     image: inout ModularImage, transforms: [ModularTransform]
 ) throws {
     for t in transforms {
@@ -167,7 +167,7 @@ private func metaApplyPalette(
 /// Default-squeeze-parameter generator — mirror of libjxl
 /// `DefaultSqueezeParameters`. Returns the implicit list when the
 /// transform's `squeezes` array is empty.
-public func defaultSqueezeParameters(
+package func defaultSqueezeParameters(
     image: ModularImage
 ) -> [ModularTransform.SqueezeParams] {
     let kMaxFirstPreviewSize: Int = 8

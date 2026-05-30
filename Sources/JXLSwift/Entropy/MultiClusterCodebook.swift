@@ -25,7 +25,7 @@
 
 import Foundation
 
-public enum MultiClusterCodebookError: Error, Sendable {
+package enum MultiClusterCodebookError: Error, Sendable {
     case bitstream(BitstreamError)
     case prefix(PrefixCodeFormatError)
     case ans(SpecANSDistributionError)
@@ -35,20 +35,20 @@ public enum MultiClusterCodebookError: Error, Sendable {
 /// rANS distribution count array. Exactly one of `huffmanTables`
 /// and `ansCounts` is populated, picked by the surrounding
 /// `EntropySectionHeader.usePrefixCode`.
-public struct MultiClusterCodebook: Sendable {
+package struct MultiClusterCodebook: Sendable {
     /// One Huffman table per cluster; populated when the surrounding
     /// section uses prefix codes. Empty otherwise.
-    public let huffmanTables: [PrefixCodeTable]
+    package let huffmanTables: [PrefixCodeTable]
     /// One frequency array per cluster; populated when the surrounding
     /// section uses rANS. Empty otherwise.
-    public let ansCounts: [[Int32]]
+    package let ansCounts: [[Int32]]
     /// Per-cluster alphabet sizes. For prefix-code clusters this is
     /// the value libjxl reads via `VarLenUint16 + 1`. For ANS this is
     /// the count array's length (right-truncated by libjxl's
     /// trailing-zero pop).
-    public let alphabetSizes: [Int]
+    package let alphabetSizes: [Int]
 
-    public init(
+    package init(
         huffmanTables: [PrefixCodeTable],
         ansCounts: [[Int32]],
         alphabetSizes: [Int]
@@ -61,7 +61,7 @@ public struct MultiClusterCodebook: Sendable {
     /// Read all per-cluster tables that follow an
     /// `EntropySectionHeader`. The caller passes the parsed header so
     /// we know `numHistograms` and `usePrefixCode`.
-    public static func read(
+    package static func read(
         from r: inout BitReader,
         header: EntropySectionHeader
     ) throws -> MultiClusterCodebook {
@@ -145,7 +145,7 @@ public struct MultiClusterCodebook: Sendable {
     /// cluster (single-symbol alphabets carry zero header bits).
     /// Throws if any cluster's alphabet size is not 1; for the
     /// general case use `write(to:header:)`.
-    public func writeSingleSymbolPrefix(
+    package func writeSingleSymbolPrefix(
         to w: inout BitWriter, header: EntropySectionHeader
     ) throws {
         guard header.usePrefixCode else {
@@ -187,7 +187,7 @@ public struct MultiClusterCodebook: Sendable {
     ///     simple-1, simple-2, and flat shortcuts plus the full
     ///     **complex** path (general per-symbol histograms) are all
     ///     supported, so any cluster histogram serialises.
-    public func write(
+    package func write(
         to w: inout BitWriter, header: EntropySectionHeader
     ) throws {
         let n = header.numHistograms

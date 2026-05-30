@@ -27,38 +27,38 @@ import Foundation
 /// All the intermediate state the JXL bridge encoder needs to
 /// emit a JPEG-derived JXL frame. Populated by
 /// `JXLBridgeEncoder.prepareFromJPEG(_:colorTransform:)`.
-public struct JXLBridgeEncoderState: Sendable {
+package struct JXLBridgeEncoderState: Sendable {
     /// Source coefficient image (kept around so the bridge
     /// encoder can re-derive things like dimensions / precision
     /// without threading them through separate fields).
-    public let source: JPEGCoefficientImage
+    package let source: JPEGCoefficientImage
     /// Chosen JXL `color_transform`. Determines the channel
     /// permutation and DC adjustment that have already been
     /// applied to `planes`.
-    public let colorTransform: JXLBridgeColorTransform
+    package let colorTransform: JXLBridgeColorTransform
     /// Per-channel quantised DC + AC planes in JXL channel order
     /// (X / Y / B slots), with the `DCzero` adjustment for the
     /// chosen color_transform applied. Ready to feed into the
     /// JXL VarDCT bitstream writer's DC and AC encoders.
-    public let planes: JXLCoefficientPlanes
+    package let planes: JXLCoefficientPlanes
     /// `kQuantModeRAW` payload (qtable + qtable_den +
     /// dcQuantization) for the JXL `DequantMatrices` slot.
-    public let rawQuantPayload: JXLBridgeRAWQuantPayload
+    package let rawQuantPayload: JXLBridgeRAWQuantPayload
     /// Frame-header parameters the bridge encoder must set
     /// (color_transform, chroma_subsampling, loop_filter,
     /// encoding).
-    public let frameHeaderParams: JXLBridgeFrameHeaderParams
+    package let frameHeaderParams: JXLBridgeFrameHeaderParams
 }
 
 /// Errors specific to the JXL bridge encoder.
-public enum JXLBridgeEncoderError: Error, Sendable, Equatable,
+package enum JXLBridgeEncoderError: Error, Sendable, Equatable,
                                    LocalizedError {
     /// Bitstream-write step needs encoder primitives that aren't
     /// yet ported. See PHASE-J-COEFFICIENT-BRIDGE.md for the
     /// dependency chain.
     case notImplemented(String)
 
-    public var errorDescription: String? {
+    package var errorDescription: String? {
         switch self {
         case .notImplemented(let m):
             return "JXLBridgeEncoder: \(m)"
@@ -67,7 +67,7 @@ public enum JXLBridgeEncoderError: Error, Sendable, Equatable,
 }
 
 /// Bridge-encoder namespace.
-public enum JXLBridgeEncoder {
+package enum JXLBridgeEncoder {
 
     /// Emit a JXL codestream from a prepared `JXLBridgeEncoderState`.
     ///
@@ -109,7 +109,7 @@ public enum JXLBridgeEncoder {
     /// 4a (sub-step 3.6 write) for the implementation order.
     /// Step 3.7 swaps `JXLEncoder.encodeFromJPEGCoefficients(_:)`
     /// to call `prepareFromJPEG` + `write` once this lands.
-    public static func write(
+    package static func write(
         state: JXLBridgeEncoderState
     ) throws -> Data {
         // v0.12.0cc: wire-up — prelude + 4 section payloads + TOC
@@ -356,7 +356,7 @@ public enum JXLBridgeEncoder {
     /// the relevant builder error on out-of-scope inputs. Pre-
     /// validating here means the bitstream-write step can
     /// assume valid input without re-checking each invariant.
-    public static func prepareFromJPEG(
+    package static func prepareFromJPEG(
         _ jpeg: JPEGCoefficientImage,
         colorTransform: JXLBridgeColorTransform = .ycbcr
     ) throws -> JXLBridgeEncoderState {

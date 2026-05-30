@@ -11,44 +11,44 @@ import Foundation
 
 /// Lightweight structural description of a JPEG file — the kind
 /// of summary `jxl info` prints, without doing any entropy decode.
-public struct JPEGStructure: Sendable, Equatable {
+package struct JPEGStructure: Sendable, Equatable {
     /// Image width in pixels (samples per line) — from the SOFn
     /// `X` field. `0` means "to be defined by DNL marker" (rare).
-    public let width: Int
+    package let width: Int
     /// Image height in pixels (number of lines) — from the SOFn
     /// `Y` field. `0` means "to be defined by DNL marker".
-    public let height: Int
+    package let height: Int
     /// Samples per pixel (component count). 1 = grayscale,
     /// 3 = YCbCr / RGB, 4 = CMYK / YCCK.
-    public let componentCount: Int
+    package let componentCount: Int
     /// Bit precision per sample — `P` field of SOFn. Typically 8;
     /// 12-bit appears in lossless / extended modes.
-    public let precision: Int
+    package let precision: Int
     /// Which SOFn the encoder picked — distinguishes baseline
     /// (SOF0), extended sequential (SOF1), progressive (SOF2),
     /// lossless (SOF3), etc.
-    public let frameKind: FrameKind
+    package let frameKind: FrameKind
     /// How many DQT marker payloads we saw. JPEG segments may
     /// declare more than one table per DQT — this is the marker
     /// count, not the table count.
-    public let dqtSegmentCount: Int
+    package let dqtSegmentCount: Int
     /// How many DHT marker payloads we saw.
-    public let dhtSegmentCount: Int
+    package let dhtSegmentCount: Int
     /// `true` iff a JFIF APP0 marker (`"JFIF\0"` magic) was seen.
-    public let hasJFIF: Bool
+    package let hasJFIF: Bool
     /// `true` iff an EXIF APP1 marker (`"Exif\0\0"` magic) was seen.
-    public let hasEXIF: Bool
+    package let hasEXIF: Bool
     /// `true` iff an Adobe APP14 marker was seen.
-    public let hasAdobe: Bool
+    package let hasAdobe: Bool
     /// `true` iff at least one DAC (arithmetic conditioning)
     /// segment was present — arithmetic-coded JPEGs are rare and
     /// the transcoder will need to handle them differently.
-    public let usesArithmeticCoding: Bool
+    package let usesArithmeticCoding: Bool
     /// `true` iff a DRI marker declared a non-zero restart
     /// interval.
-    public let hasRestartInterval: Bool
+    package let hasRestartInterval: Bool
 
-    public enum FrameKind: Sendable, Equatable {
+    package enum FrameKind: Sendable, Equatable {
         case baselineDCT          // SOF0
         case extendedSequential   // SOF1
         case progressiveDCT       // SOF2
@@ -56,7 +56,7 @@ public struct JPEGStructure: Sendable, Equatable {
         case other(nibble: Int)   // SOF5..SOF15 (differential /
                                   // arithmetic variants)
 
-        public init(nibble: Int) {
+        package init(nibble: Int) {
             switch nibble {
             case 0: self = .baselineDCT
             case 1: self = .extendedSequential
@@ -66,7 +66,7 @@ public struct JPEGStructure: Sendable, Equatable {
             }
         }
 
-        public var label: String {
+        package var label: String {
             switch self {
             case .baselineDCT: return "baseline DCT (SOF0)"
             case .extendedSequential:
@@ -82,7 +82,7 @@ public struct JPEGStructure: Sendable, Equatable {
 
     /// Extract structural fields by walking the segment stream.
     /// `data` must be a complete JPEG file beginning with SOI.
-    public static func read(_ data: Data) throws -> JPEGStructure {
+    package static func read(_ data: Data) throws -> JPEGStructure {
         var reader = JPEGSegmentReader(data)
         var width = 0, height = 0, comp = 0, prec = 0
         var frameKind: FrameKind = .baselineDCT

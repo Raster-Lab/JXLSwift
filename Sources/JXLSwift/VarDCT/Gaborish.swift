@@ -32,21 +32,21 @@
 
 import Foundation
 
-public enum Gaborish {
+package enum Gaborish {
 
     /// libjxl spec-default `gab_*_weight1` for all three planes.
     /// Decoder honours the LoopFilter-carried per-plane weights;
     /// we expose the default for callers that don't have a
     /// custom LoopFilter handy.
-    public static let defaultWeight1: Float = 1.1 * 0.104699568   // ≈ 0.1151694247
+    package static let defaultWeight1: Float = 1.1 * 0.104699568   // ≈ 0.1151694247
     /// libjxl spec-default `gab_*_weight2` for all three planes.
-    public static let defaultWeight2: Float = 1.1 * 0.055680538   // ≈ 0.0612486
+    package static let defaultWeight2: Float = 1.1 * 0.055680538   // ≈ 0.0612486
 
     /// Apply Gaborish to a single channel's pixel buffer in-place.
     /// `pixels` is row-major float32 length `width*height`. Border
     /// pixels mirror the nearest in-image neighbour (libjxl's
     /// `kInOut` mode does the same with replicate-1 padding).
-    public static func apply(
+    package static func apply(
         to pixels: inout [Float],
         width: Int, height: Int,
         weight1: Float = defaultWeight1,
@@ -104,7 +104,7 @@ public enum Gaborish {
     /// `kGaborish[0..4]` via:
     /// `r = kGab[0]`, `d = kGab[1]`, `R = kGab[2]`, `L = kGab[3]`,
     /// `D = kGab[4]`.
-    public static let kGaborishInverse5x5: [Float] = [
+    package static let kGaborishInverse5x5: [Float] = [
         -0.09495815671340026,    // axis-1   (r)
         -0.041031725066768575,   // diagonal (d)
          0.013710004822696948,   // axis-2   (R)
@@ -116,7 +116,7 @@ public enum Gaborish {
     /// pixel buffer in-place. `mul` defaults to 1.0 (the libjxl
     /// encoder's standard call). Border pixels mirror the nearest
     /// in-image neighbour (libjxl `Symmetric5` boundary mode).
-    public static func applyInverse5x5(
+    package static func applyInverse5x5(
         to pixels: inout [Float],
         width: Int, height: Int,
         mul: Float = 1.0

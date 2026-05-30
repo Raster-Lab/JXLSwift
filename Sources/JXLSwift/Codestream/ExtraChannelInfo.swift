@@ -54,7 +54,7 @@ public struct ExtraChannelInfo: Sendable {
     }
 
     /// Read a single ExtraChannelInfo (§C.3.7).
-    public static func read(from r: inout BitReader) throws -> ExtraChannelInfo {
+    package static func read(from r: inout BitReader) throws -> ExtraChannelInfo {
         let allDefault = try r.readBit()
         if allDefault {
             return ExtraChannelInfo(

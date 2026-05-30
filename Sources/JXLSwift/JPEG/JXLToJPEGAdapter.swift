@@ -40,7 +40,7 @@
 import Foundation
 
 /// Errors raised by the reverse bridge.
-public enum JXLToJPEGAdapterError: Error, Sendable {
+package enum JXLToJPEGAdapterError: Error, Sendable {
     /// The JXL frame's coefficient planes don't match the shape
     /// the jbrd box says they should have.
     case shapeMismatch(String)
@@ -54,7 +54,7 @@ public enum JXLToJPEGAdapterError: Error, Sendable {
 /// Reverse-bridge entry point. Given a JXL frame (produced by the
 /// forward bridge) and its accompanying `jbrd` box, return the
 /// byte-identical JPEG bytes.
-public enum JXLToJPEGAdapter {
+package enum JXLToJPEGAdapter {
 
     /// **Autonomous reverse transcode.** Reconstruct the source JPEG
     /// from a cjxl `--lossless_jpeg=1` file with **no reference to
@@ -68,7 +68,7 @@ public enum JXLToJPEGAdapter {
     /// the per-component **sampling factors** (recovered from the
     /// frame's chroma subsampling) — then delegates to
     /// `reconstruct(coefficients:jbrd:colorTransform:)`.
-    public static func reconstruct(
+    package static func reconstruct(
         bridgeData: JXLJPEGBridgeData,
         jbrd: JBRDBox
     ) throws -> Data {
@@ -162,7 +162,7 @@ public enum JXLToJPEGAdapter {
     /// EOI). DRI, COM, intermarker, padding-bit-restoration are
     /// straightforward extensions; multi-scan SOS (progressive)
     /// would need a scan-encoder rewrite to handle Ss/Se/Ah/Al.
-    public static func reconstruct(
+    package static func reconstruct(
         coefficients: JXLCoefficientPlanes,
         jbrd: JBRDBox,
         colorTransform: JXLBridgeColorTransform,
@@ -570,7 +570,7 @@ public enum JXLToJPEGAdapter {
     ///   - `quantDCPerChannel`: DC quant factors per component in
     ///     JXL channel order; used only when `colorTransform == .none`
     ///     to invert the `1024/qt[DC]` offset.
-    public static func reconstructMinimal(
+    package static func reconstructMinimal(
         coefficients: JXLCoefficientPlanes,
         width: Int, height: Int,
         frameComponents: [JPEGFrameComponent],
@@ -615,7 +615,7 @@ extension JXLCoefficientPlanes {
     /// libjxl stores the lone luma component in the Y (XYB index 1)
     /// channel of an otherwise-zero 3-channel VarDCT frame, so the
     /// reverse bridge extracts that channel for the 1-component JPEG.
-    public func extractingChannel(_ c: Int) -> JXLCoefficientPlanes {
+    package func extractingChannel(_ c: Int) -> JXLCoefficientPlanes {
         precondition(c >= 0 && c < channelCount,
             "extractingChannel: \(c) out of range \(channelCount)")
         return JXLCoefficientPlanes(
@@ -629,7 +629,7 @@ extension JXLCoefficientPlanes {
     /// Invert `remappedForJXLBridge` — given planes in JXL channel
     /// order (X=Cb, Y, B=Cr), return planes in JPEG component order
     /// (Y, Cb, Cr) for grayscale or 3-component frames.
-    public func inverseJXLBridgeRemap(
+    package func inverseJXLBridgeRemap(
         colorTransform: JXLBridgeColorTransform
     ) -> JXLCoefficientPlanes {
         if channelCount == 1 { return self }
@@ -659,7 +659,7 @@ extension JXLCoefficientPlanes {
     /// subtract the `1024 / qt[DC]` offset that the forward bridge
     /// added. For `.ycbcr` (DCzero=true) the forward pass didn't
     /// modify DC, so this is a no-op.
-    public func inverseJPEGBridgeDC(
+    package func inverseJPEGBridgeDC(
         colorTransform: JXLBridgeColorTransform,
         quantDCPerChannel: [UInt16]
     ) -> JXLCoefficientPlanes {
@@ -712,7 +712,7 @@ extension JXLCoefficientPlanes {
     /// Reverse path is the inverse:
     ///   `jpeg.coefficients[x*8+y] = ac[bi][y*8+x]`
     /// DC is just copied straight from `dcPerChannel[c][bi]`.
-    public func toJPEGCoefficientImage(
+    package func toJPEGCoefficientImage(
         width: Int, height: Int,
         precision: Int = 8,
         frameKind: JPEGStructure.FrameKind = .baselineDCT,

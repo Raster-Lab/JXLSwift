@@ -17,24 +17,24 @@ import Foundation
 /// MSB-first bit writer over a growing `Data` buffer. Handles JPEG
 /// 0xFF byte-stuffing automatically — callers don't need to think
 /// about marker collisions.
-public struct JPEGBitWriter {
+package struct JPEGBitWriter {
     /// Output buffer being accumulated. Byte-stuffing is already
     /// applied; callers can read `data` directly when emitting an
     /// SOS payload.
-    public private(set) var data: Data
+    package private(set) var data: Data
     /// Current partial byte being filled. Bits are packed MSB-first.
     private var current: UInt8 = 0
     /// Number of bits *already* packed into `current` (0..7).
     private var bitsInCurrent: Int = 0
 
-    public init(capacityHint: Int = 0) {
+    package init(capacityHint: Int = 0) {
         var d = Data()
         if capacityHint > 0 { d.reserveCapacity(capacityHint) }
         self.data = d
     }
 
     /// Write a single bit (0 or 1). MSB-first packing.
-    public mutating func writeBit(_ bit: Int) {
+    package mutating func writeBit(_ bit: Int) {
         precondition(bit == 0 || bit == 1,
             "JPEGBitWriter.writeBit: bit must be 0 or 1")
         current = (current << 1) | UInt8(bit)
@@ -46,7 +46,7 @@ public struct JPEGBitWriter {
 
     /// Write `n` bits (1..32) MSB-first. Value's low-order `n` bits
     /// are the ones emitted; higher bits are ignored.
-    public mutating func writeBits(_ value: UInt32, count n: Int) {
+    package mutating func writeBits(_ value: UInt32, count n: Int) {
         precondition(n >= 0 && n <= 32,
             "JPEGBitWriter.writeBits: n must be 0...32")
         if n == 0 { return }
@@ -61,7 +61,7 @@ public struct JPEGBitWriter {
     /// The padding bits being 1s matches what most JPEG encoders
     /// emit; libjxl's jbrd box can record the exact padding pattern
     /// for byte-identical reconstruction (see `JBRDBox.paddingBits`).
-    public mutating func flushPaddingOnes() {
+    package mutating func flushPaddingOnes() {
         while bitsInCurrent != 0 {
             writeBit(1)
         }
@@ -71,7 +71,7 @@ public struct JPEGBitWriter {
     /// `bits.count` must match `8 - bitsInCurrent` (or this method
     /// asserts). Used to restore byte-identical padding from a
     /// jbrd box's `paddingBits` field.
-    public mutating func flushPadding(bits: [Int]) {
+    package mutating func flushPadding(bits: [Int]) {
         precondition(bits.count == padBitsNeeded,
             "JPEGBitWriter.flushPadding: bits.count "
             + "\(bits.count) ≠ needed \(padBitsNeeded)")
@@ -82,7 +82,7 @@ public struct JPEGBitWriter {
 
     /// Number of bits a `flushPadding` call would consume to reach
     /// the next byte boundary (0 if already aligned).
-    public var padBitsNeeded: Int {
+    package var padBitsNeeded: Int {
         bitsInCurrent == 0 ? 0 : 8 - bitsInCurrent
     }
 
@@ -106,7 +106,7 @@ public struct JPEGBitWriter {
     ///
     /// Precondition: bit accumulator is byte-aligned (call
     /// `flushPaddingOnes` or `flushPadding(bits:)` first).
-    public mutating func appendRawMarker(_ bytes: [UInt8]) {
+    package mutating func appendRawMarker(_ bytes: [UInt8]) {
         precondition(bitsInCurrent == 0,
             "JPEGBitWriter.appendRawMarker: must be byte-aligned "
             + "(bitsInCurrent = \(bitsInCurrent))")

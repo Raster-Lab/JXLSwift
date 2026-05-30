@@ -13,7 +13,7 @@
 
 import Foundation
 
-public enum Dequantize {
+package enum Dequantize {
 
     /// Multiply per-coefficient `weights` (e.g. from
     /// `QuantWeights.getQuantWeights`) by integer `coefficients`
@@ -24,7 +24,7 @@ public enum Dequantize {
     /// `weights` is `rows × cols` for one channel (caller picks
     /// the channel's slice from the 3-channel table). `coefficients`
     /// is the same length as `weights`. Output has the same shape.
-    public static func dequantize(
+    package static func dequantize(
         coefficients: [Int32], weights: [Float],
         scale: Float
     ) -> [Float] {
@@ -45,7 +45,7 @@ public enum Dequantize {
     /// Encoder-side inverse: divide DCT amplitudes by per-coefficient
     /// weights and a global scale, then round to the nearest
     /// integer. Mirrors libjxl `enc_quant_weights.cc::Quantize`.
-    public static func quantize(
+    package static func quantize(
         amplitudes: [Float], weights: [Float], scale: Float
     ) -> [Int32] {
         precondition(amplitudes.count == weights.count)

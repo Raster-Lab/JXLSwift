@@ -110,12 +110,12 @@
 
 import Foundation
 
-public enum SpecModularEncoderError: Error, Sendable {
+package enum SpecModularEncoderError: Error, Sendable {
     case notImplemented(String)
     case unsupportedFrame(String)
 }
 
-public enum SpecModularEncoder {
+package enum SpecModularEncoder {
 
     /// Encode a constant-pixel grayscale image (all pixels equal
     /// `pixelValue`) into a naked JXL codestream that round-trips
@@ -130,7 +130,7 @@ public enum SpecModularEncoder {
     ///   - height: Image height (same constraints).
     ///   - pixelValue: The constant 8-bit grayscale value every pixel
     ///     carries (0 ≤ value ≤ 255).
-    public static func encodeConstantGrayscale(
+    package static func encodeConstantGrayscale(
         width: Int, height: Int, pixelValue: UInt8
     ) throws -> Data {
         precondition(width > 0 && height > 0)
@@ -334,7 +334,7 @@ public enum SpecModularEncoder {
     ///   - width: Image width in pixels (8..256, multiple of 8).
     ///   - height: Image height (8..256, multiple of 8).
     ///   - pixels: Row-major pixel buffer of length `width * height`.
-    public static func encodeGrayscale8(
+    package static func encodeGrayscale8(
         width: Int, height: Int, pixels: [UInt8],
         effort: Int = 9
     ) throws -> Data {
@@ -373,7 +373,7 @@ public enum SpecModularEncoder {
     ///     range.
     ///   - pixels: Row-major `UInt16` buffer of length
     ///     `width * height`.
-    public static func encodeGrayscale16(
+    package static func encodeGrayscale16(
         width: Int, height: Int,
         bitsPerSample: UInt32 = 16,
         pixels: [UInt16],
@@ -411,7 +411,7 @@ public enum SpecModularEncoder {
     ///   - width: Image width (≤ 16384, any dimension).
     ///   - height: Image height (≤ 16384, any dimension).
     ///   - gray/alpha: Row-major `UInt8` buffers of length `width*height`.
-    public static func encodeGrayscaleAlpha8(
+    package static func encodeGrayscaleAlpha8(
         width: Int, height: Int,
         gray: [UInt8], alpha: [UInt8],
         effort: Int = 9
@@ -451,7 +451,7 @@ public enum SpecModularEncoder {
     ///   - height: Image height (≤ 16384, any dimension).
     ///   - bitsPerSample: 9..16. Sample range bound for both channels.
     ///   - gray/alpha: Row-major `UInt16` buffers of length `width*height`.
-    public static func encodeGrayscaleAlpha16(
+    package static func encodeGrayscaleAlpha16(
         width: Int, height: Int,
         bitsPerSample: UInt32 = 16,
         gray: [UInt16], alpha: [UInt16],
@@ -496,7 +496,7 @@ public enum SpecModularEncoder {
     ///   - bitsPerSample: 9..16. Per-channel sample range bound.
     ///   - r/g/b: Row-major `UInt16` buffers of length
     ///     `width * height`.
-    public static func encodeRGB16(
+    package static func encodeRGB16(
         width: Int, height: Int,
         bitsPerSample: UInt32 = 16,
         r: [UInt16], g: [UInt16], b: [UInt16],
@@ -525,7 +525,7 @@ public enum SpecModularEncoder {
 
     /// Encode a high-bit-depth RGBA image (9..16-bit per channel)
     /// with a 16-bit alpha extra channel.
-    public static func encodeRGBA16(
+    package static func encodeRGBA16(
         width: Int, height: Int,
         bitsPerSample: UInt32 = 16,
         r: [UInt16], g: [UInt16], b: [UInt16], a: [UInt16],
@@ -590,7 +590,7 @@ public enum SpecModularEncoder {
     ///   - height: Image height (8..256, multiple of 8).
     ///   - r/g/b: Per-channel row-major pixel buffers, each of length
     ///     `width * height`.
-    public static func encodeRGB8(
+    package static func encodeRGB8(
         width: Int, height: Int,
         r: [UInt8], g: [UInt8], b: [UInt8],
         effort: Int = 9
@@ -624,7 +624,7 @@ public enum SpecModularEncoder {
     ///   - height: Image height (8..256, multiple of 8).
     ///   - r/g/b/a: Per-channel row-major buffers of length `width *
     ///     height`. `a == 255` is fully opaque.
-    public static func encodeRGBA8(
+    package static func encodeRGBA8(
         width: Int, height: Int,
         r: [UInt8], g: [UInt8], b: [UInt8], a: [UInt8],
         effort: Int = 9
@@ -2457,7 +2457,7 @@ public enum SpecModularEncoder {
     /// metadata declares 100 tps so each unit is 10 ms by default).
     /// 8-bit RGB/RGBA convenience wrapper over
     /// `encodeModularAnimation`.
-    public static func encodeModularAnimation8(
+    package static func encodeModularAnimation8(
         width: Int, height: Int, hasAlpha: Bool,
         frames: [[[Int32]]],
         durations: [UInt32]
@@ -2475,7 +2475,7 @@ public enum SpecModularEncoder {
     /// frames must agree on dimensions and channel count.
     /// `frames[i]` is `[gray]` / `[gray, alpha]` / `[r, g, b]` /
     /// `[r, g, b, a]` per the (colorSpace, hasAlpha) combination.
-    public static func encodeModularAnimation(
+    package static func encodeModularAnimation(
         width: Int, height: Int,
         bitsPerSample: UInt32,
         colorSpace: ColorSpaceID,

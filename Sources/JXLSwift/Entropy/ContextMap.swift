@@ -48,7 +48,7 @@
 
 import Foundation
 
-public indirect enum ContextMapError: Error, Sendable, Equatable {
+package indirect enum ContextMapError: Error, Sendable, Equatable {
     case clusterIndexOutOfRange(index: Int, max: Int)
     case bitsPerEntryTooSmall(needed: Int, encoded: Int)
     case fullPathNotImplemented
@@ -70,7 +70,7 @@ public indirect enum ContextMapError: Error, Sendable, Equatable {
     /// appears in the decoded map. libjxl rejects this as malformed.
     case incompleteMap
 
-    public static func == (lhs: ContextMapError, rhs: ContextMapError) -> Bool {
+    package static func == (lhs: ContextMapError, rhs: ContextMapError) -> Bool {
         switch (lhs, rhs) {
         case (.clusterIndexOutOfRange(let a, let am),
               .clusterIndexOutOfRange(let b, let bm)):
@@ -98,19 +98,19 @@ public indirect enum ContextMapError: Error, Sendable, Equatable {
     }
 }
 
-public struct ContextMap: Sendable, Equatable {
+package struct ContextMap: Sendable, Equatable {
     /// Number of contexts (i.e. `map.count`).
-    public var numContexts: Int { map.count }
+    package var numContexts: Int { map.count }
     /// Number of distinct clusters; `map[i] < numClusters` for all `i`.
-    public let numClusters: Int
+    package let numClusters: Int
     /// Whether the inverse move-to-front transform is applied. Always
     /// `false` for the simple path; only relevant once the full path
     /// lands.
-    public let useMTF: Bool
+    package let useMTF: Bool
     /// `map[i]` = cluster index for context `i`.
-    public let map: [UInt8]
+    package let map: [UInt8]
 
-    public init(numClusters: Int, useMTF: Bool = false, map: [UInt8]) throws {
+    package init(numClusters: Int, useMTF: Bool = false, map: [UInt8]) throws {
         guard numClusters >= 1 && numClusters <= 256 else {
             throw ContextMapError.clusterIndexOutOfRange(index: numClusters, max: 256)
         }
@@ -129,7 +129,7 @@ public struct ContextMap: Sendable, Equatable {
 
     /// Construct the trivial single-cluster map: every context routes
     /// to cluster 0.
-    public static func trivial(numContexts: Int) -> ContextMap {
+    package static func trivial(numContexts: Int) -> ContextMap {
         // Bypass the `init` validator — this path is always valid.
         let m = [UInt8](repeating: 0, count: numContexts)
         return ContextMap(numClusters: 1, useMTF: false, mapAsserted: m)
@@ -163,7 +163,7 @@ extension ContextMap {
     ///
     /// Both encode the *same* map; `read` dispatches on the `is_simple`
     /// bit, so the choice here is purely a size optimisation.
-    public func write(to w: inout BitWriter) throws {
+    package func write(to w: inout BitWriter) throws {
         if numContexts <= 1 {
             // Defensive: caller should not call us in this case.
             return
@@ -230,7 +230,7 @@ extension ContextMap {
     /// token writer emits none); the cluster indices are entropy-coded
     /// only, which is already far cheaper than the simple path for the
     /// bridge's large, repetitive maps.
-    public func writeFullPath(to w: inout BitWriter) throws {
+    package func writeFullPath(to w: inout BitWriter) throws {
         // is_simple = 0  →  full entropy-coded path.
         w.writeBit(false)
         // use_mtf = 0.
@@ -308,7 +308,7 @@ extension ContextMap {
     ///     move-to-front transform may be applied. This is the path
     ///     cjxl picks for streams with > 8 clusters (typical of
     ///     larger RGB images).
-    public static func read(numContexts: Int, from r: inout BitReader) throws -> ContextMap {
+    package static func read(numContexts: Int, from r: inout BitReader) throws -> ContextMap {
         let trace = ProcessInfo.processInfo.environment["JXL_TRACE"] != nil
         let pStart = r.position
         if numContexts <= 1 {
@@ -459,7 +459,7 @@ extension ContextMap {
 /// place. Maintains a 256-entry alphabet permutation (`mtf`); for each
 /// input symbol `index`, the output is `mtf[index]` and (if `index !=
 /// 0`) the entry at `index` is moved to the front of `mtf`.
-public func inverseMoveToFrontTransform(_ v: inout [UInt8]) {
+package func inverseMoveToFrontTransform(_ v: inout [UInt8]) {
     var mtf = [UInt8](repeating: 0, count: 256)
     for i in 0..<256 { mtf[i] = UInt8(i) }
     for i in 0..<v.count {

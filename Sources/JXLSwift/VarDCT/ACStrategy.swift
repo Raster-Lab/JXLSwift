@@ -19,7 +19,7 @@ import Foundation
 
 /// All AC strategy IDs in their libjxl-numbered order. The wire
 /// format reads/writes these via a `u(5)` field per 8×8 cell.
-public enum ACStrategy: UInt8, Sendable, CaseIterable {
+package enum ACStrategy: UInt8, Sendable, CaseIterable {
     case dct8x8       = 0
     case hornuss      = 1   // 8×8 in spatial domain (smooth-block fast path)
     case dct2x2       = 2   // 4 sub-blocks
@@ -55,7 +55,7 @@ public enum ACStrategy: UInt8, Sendable, CaseIterable {
     /// horizontal cell × 2 vertical cells). Cross-checked against
     /// libjxl `ac_strategy.h` `covered_blocks_x` / `covered_blocks_y`
     /// LUTs at `static constexpr uint8_t kLut[]`.
-    public var blockCells: (cellsX: Int, cellsY: Int) {
+    package var blockCells: (cellsX: Int, cellsY: Int) {
         switch self {
         case .dct8x8, .hornuss, .dct2x2, .dct4x4,
              .dct4x8, .dct8x4, .afv0, .afv1, .afv2, .afv3:
@@ -81,7 +81,7 @@ public enum ACStrategy: UInt8, Sendable, CaseIterable {
     }
 
     /// Full-pixel dimensions of this strategy's coverage area.
-    public var blockPixels: (width: Int, height: Int) {
+    package var blockPixels: (width: Int, height: Int) {
         let c = blockCells
         return (c.cellsX * 8, c.cellsY * 8)
     }
@@ -89,19 +89,19 @@ public enum ACStrategy: UInt8, Sendable, CaseIterable {
     /// libjxl-style ordering bucket (`kStrategyOrder`). 27
     /// strategies cluster into 13 ordering classes — same value
     /// for XxY / YxX pairs.
-    public var orderBucket: Int {
+    package var orderBucket: Int {
         return Int(kStrategyOrder[Int(rawValue)])
     }
 
     /// Number of 8×8 cells covered (= cellsX × cellsY).
-    public var coveredBlocks: Int {
+    package var coveredBlocks: Int {
         let c = blockCells
         return c.cellsX * c.cellsY
     }
 
     /// `log₂(coveredBlocks)`. AC strategies cover power-of-two
     /// cell counts so this is exact.
-    public var log2CoveredBlocks: Int {
+    package var log2CoveredBlocks: Int {
         let n = coveredBlocks
         precondition(n > 0 && (n & (n - 1)) == 0,
                      "coveredBlocks must be a power of two")

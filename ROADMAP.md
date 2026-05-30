@@ -381,13 +381,13 @@ renormalisation — a dedicated, byte-identical-verified SIMD effort (below), no
 - **Phase R** — output bit-exact to libjxl's reference decoder on the conformance corpus.
 - **Phase J** — JPEG → JXL → JPEG round-trip is bitwise-identical to the source JPEG.
 
-## Road to v1.0.0 (lossless-first)
+## v1.0.0 — shipped (2026-05-30) ✅
 
-v1.0.0 is scoped to a **production-ready lossless codec** (the medical-imaging focus). Full
-lossy *encode* (pixels → lossy VarDCT) is the headline of **v2.0** — it is the single largest
-unbuilt subsystem (libjxl-scale) and should not gate a lossless 1.0. As of v0.12.0 the lossless
-encode + decode and the JPEG ⇄ JXL transcode are already comprehensive and `djxl`-validated; what
-remains for 1.0 is conformance, completeness, hardening, performance, and API stability. Ordered:
+JXLSwift 1.0 is a production-ready, pure-Swift, lossless JPEG XL codec
+(ISO/IEC 18181) with a **frozen public API**, medical-grade validated, zero
+runtime deps beyond `swift-argument-parser` (CLI). Full lossy *encode*
+(pixels → lossy VarDCT) is the headline of **v2.0** — out of 1.0 scope. The
+1.0 milestones were:
 
 1. **Conformance gate — ✅ wired (v0.13.0).** The official `jxl-conformance` vectors are wired into
    the harness (`Tests/JXLSwiftTests/ConformanceTests.swift`): env-gated `JXL_CONFORMANCE_DIR` for
@@ -435,16 +435,15 @@ remains for 1.0 is conformance, completeness, hardening, performance, and API st
    shortcuts the common cases). The remaining lever is **vectorising the per-pixel predictor / RCT /
    ANS-renorm inner loops** (NEON/Accelerate, scalar source of truth per constraint 1) — a
    dedicated byte-identical-verified effort, deliberately not rushed against the byte-exact invariant.
-5. **API freeze + family parity — in progress (v0.17.0 RC).** Audit + align the public surface vs
-   J2KSwift ([FAMILY-API-PARITY.md](Documentation/FAMILY-API-PARITY.md)). Done: the `convert`
-   subcommand landed (closing the last common-set CLI gap — PNM ↔ JXL, JPEG → PNM/JXL,
-   `djxl`-validated); CLI flags are `-i/-o` in both repos; stale version string fixed
-   (`0.13.0-dev`); the parity doc's stale "stub subcommand" / positional-args claims corrected.
-   **Open (needs sign-off):** the one accidental divergence is preset quality —
-   `JXLConfiguration.balanced=0.9/.fast=0.75` vs J2KSwift `0.85/0.70` (+ J2K's `.maxCompression`);
-   recommended to align JXL→J2K but deferred to explicit sign-off (changes preset behaviour). The
-   structural image-model divergence (flat-interleaved vs planar-per-component) stays frozen-by-design,
-   bridged by `CompressionImage`.
+5. **API freeze + family parity — ✅ done (v1.0.0).** Adversarial v1.0-readiness review surfaced
+   ~150+ accidentally-public spec internals (visible only to cross-target `JXLTool`); ~1 250
+   demotions to Swift 5.9+ `package` access locked the surface down to the canonical headline
+   types listed in [CHANGELOG.md](CHANGELOG.md#100--2026-05-30-production-release). `convert`
+   landed (PNM ↔ JXL / JPEG → PNM/JXL); CLI flags are `-i/-o`; preset values aligned with J2KSwift
+   (`.balanced=0.85`, `.fast=0.70`, `.maxCompression=0.50`); `JXLDecoder.decodeModular(_:)` no-op
+   `force:` param removed; `EncoderError` libjxl-backend reference dropped; all public types remain
+   `Sendable`, no force-unwraps in the public surface. The structural image-model divergence
+   (flat-interleaved vs planar-per-component) stays frozen-by-design, bridged by `CompressionImage`.
 
 **v1.0.0** = all of the above, green on the lossless conformance corpus, with a frozen public API.
 The VarDCT lossy *decoder* ships as-is (preview); its `d = 2/5/10` byte-equality close-out tracks

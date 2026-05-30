@@ -5,10 +5,10 @@
 
 import Foundation
 
-public let codestreamSignatureBytes: [UInt8] = [0xFF, 0x0A]
+package let codestreamSignatureBytes: [UInt8] = [0xFF, 0x0A]
 
 /// Whether `data` starts with the codestream signature.
-public func hasCodestreamSignature(_ data: Data) -> Bool {
+package func hasCodestreamSignature(_ data: Data) -> Bool {
     data.count >= 2
         && data[data.startIndex]     == 0xFF
         && data[data.startIndex + 1] == 0x0A

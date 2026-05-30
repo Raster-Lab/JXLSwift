@@ -34,8 +34,7 @@ public enum EncoderError: Error, LocalizedError, Sendable {
     public var errorDescription: String? {
         switch self {
         case .notImplemented(let path):
-            return "JXLEncoder: \(path) is not yet implemented in pure Swift. " +
-                   "See ROADMAP.md for status; or use the libjxl-backend branch."
+            return "JXLEncoder: \(path) is not yet implemented. See ROADMAP.md for status."
         case .unsupportedFrame(let m):  return "JXLEncoder: unsupported frame — \(m)"
         case .bitstream(let e):         return "JXLEncoder bitstream error: \(e)"
         }
@@ -463,7 +462,7 @@ public struct JXLEncoder: Sendable {
     /// who need a true compression-ratio against the originating
     /// JPEG bytes should compute it externally from their own
     /// source size and the returned `data.count`.
-    public func encodeFromJPEGCoefficients(
+    package func encodeFromJPEGCoefficients(
         _ jpeg: JPEGCoefficientImage
     ) throws -> EncodedImage {
         // Validate the input shape against the bridge's contract.

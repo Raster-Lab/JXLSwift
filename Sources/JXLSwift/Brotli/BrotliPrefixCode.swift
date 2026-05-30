@@ -26,22 +26,22 @@ import Foundation
 /// A Brotli prefix (Huffman) code, decoded from the bitstream.
 /// Symbol-to-bit-length mapping plus the canonical-Huffman tables
 /// derived from it. Decoded values are in `[0, alphabetSize)`.
-public struct BrotliPrefixCode: Sendable {
+package struct BrotliPrefixCode: Sendable {
     /// Number of distinct symbols this code can produce.
-    public let alphabetSize: Int
+    package let alphabetSize: Int
     /// Per-symbol bit length (0 = symbol not used). Length =
     /// `alphabetSize`.
-    public let codeLengths: [UInt8]
+    package let codeLengths: [UInt8]
     /// Codes assigned to each symbol via the canonical-Huffman
     /// algorithm. Symbols with `codeLengths[i] == 0` are unused
     /// and the corresponding entry is 0 (sentinel).
-    public let codes: [UInt32]
+    package let codes: [UInt32]
     /// Special-case marker for single-symbol trees: when only one
     /// symbol has a non-zero code length (or all lengths are zero
     /// signalling a 1-symbol code per RFC 7932 §3.4 NSYM=0), every
     /// read of this code yields the same symbol without consuming
     /// bits. Stored here for fast-path dispatch.
-    public let singleSymbol: UInt32?
+    package let singleSymbol: UInt32?
 
     /// Build a canonical-Huffman code from per-symbol bit lengths.
     /// Mirrors RFC 1951 §3.2.2 (Deflate) — same algorithm Brotli
@@ -54,7 +54,7 @@ public struct BrotliPrefixCode: Sendable {
     /// complete code) — throws `malformedPrefixCode` otherwise.
     /// A single non-zero entry is treated as a 1-symbol code with
     /// 0-bit lookup (the singleSymbol fast path).
-    public init(
+    package init(
         alphabetSize: Int, codeLengths: [UInt8]
     ) throws {
         precondition(codeLengths.count == alphabetSize,
@@ -139,7 +139,7 @@ public struct BrotliPrefixCode: Sendable {
     /// with linear scan over the symbol list at each step. A LUT
     /// optimisation is a follow-on bite once correctness is proven
     /// (libjxl uses a 9-bit root LUT + secondary tables).
-    public func decodeSymbol(
+    package func decodeSymbol(
         from r: inout BitReader
     ) throws -> UInt32 {
         if let s = singleSymbol { return s }
@@ -172,7 +172,7 @@ public struct BrotliPrefixCode: Sendable {
     }
 }
 
-public enum BrotliPrefixCodeReader {
+package enum BrotliPrefixCodeReader {
 
     /// Read a prefix code from the bitstream. Dispatches on the
     /// 2-bit format selector at the head:
@@ -186,7 +186,7 @@ public enum BrotliPrefixCodeReader {
     /// (literal alphabet = 256, insert-and-copy = 704, distance =
     /// 16 + NDIRECT + (48 << NPOSTFIX), block-type = NBLTYPES + 2,
     /// etc.) and bounds the largest symbol the reader will accept.
-    public static func read(
+    package static func read(
         from r: inout BitReader,
         alphabetSize: Int
     ) throws -> BrotliPrefixCode {
@@ -235,7 +235,7 @@ public enum BrotliPrefixCodeReader {
     /// Symbols must be distinct and strictly increasing within the
     /// 4-symbol case (the spec says the encoder writes them in
     /// strictly ascending order); we validate this on read.
-    public static func readSimple(
+    package static func readSimple(
         from r: inout BitReader,
         alphabetSize: Int
     ) throws -> BrotliPrefixCode {
@@ -363,7 +363,7 @@ public enum BrotliPrefixCodeReader {
     ///
     /// After decoding, the 15-bit max canonical Huffman code is
     /// built via `BrotliPrefixCode.init`.
-    public static func readComplex(
+    package static func readComplex(
         from r: inout BitReader,
         hskip: Int,
         alphabetSize: Int

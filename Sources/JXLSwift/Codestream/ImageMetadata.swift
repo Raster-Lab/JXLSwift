@@ -33,24 +33,24 @@
 
 import Foundation
 
-public struct PreviewHeader: Sendable, Equatable {
-    public let xsize: UInt32
-    public let ysize: UInt32
+package struct PreviewHeader: Sendable, Equatable {
+    package let xsize: UInt32
+    package let ysize: UInt32
 }
 
-public struct AnimationHeader: Sendable, Equatable {
-    public let tpsNumerator: UInt32
-    public let tpsDenominator: UInt32
-    public let numLoops: UInt32
-    public let haveTimecodes: Bool
+package struct AnimationHeader: Sendable, Equatable {
+    package let tpsNumerator: UInt32
+    package let tpsDenominator: UInt32
+    package let numLoops: UInt32
+    package let haveTimecodes: Bool
 }
 
 public struct ImageMetadata: Sendable {
     public let allDefault: Bool
     public let orientation: UInt32        // 1..8 (EXIF), default 1
-    public let intrinsicSize: SizeHeader?
-    public let preview: PreviewHeader?
-    public let animation: AnimationHeader?
+    package let intrinsicSize: SizeHeader?
+    package let preview: PreviewHeader?
+    package let animation: AnimationHeader?
     public let bitDepth: BitDepth
     public let modular16BitBufferSufficient: Bool
     public let extraChannels: [ExtraChannelInfo]
@@ -83,7 +83,7 @@ public struct ImageMetadata: Sendable {
         linearBelow: 0.0
     )
 
-    public init(
+    package init(
         allDefault: Bool, orientation: UInt32,
         intrinsicSize: SizeHeader?, preview: PreviewHeader?,
         animation: AnimationHeader?, bitDepth: BitDepth,
@@ -124,7 +124,7 @@ public struct ImageMetadata: Sendable {
         extraChannels.contains { $0.type == .alpha }
     }
 
-    public static func read(from r: inout BitReader) throws -> ImageMetadata {
+    package static func read(from r: inout BitReader) throws -> ImageMetadata {
         let allDefault = try r.readBit()
         if allDefault {
             return .default
@@ -259,7 +259,7 @@ extension ImageMetadata {
     /// end of the metadata block) are not written — the writer always
     /// emits "no extensions". This matches the dominant case for
     /// medical imaging.
-    public func write(to w: inout BitWriter) throws {
+    package func write(to w: inout BitWriter) throws {
         if allDefault && isAllDefault {
             w.writeBit(true)
             return
@@ -376,7 +376,7 @@ extension ColorEncoding {
         return false
     }
 
-    public func write(to w: inout BitWriter) throws {
+    package func write(to w: inout BitWriter) throws {
         // Per spec §C.3.4: ColorEncoding has its own all_default bit
         // (distinct from ImageMetadata's). Single-bit shortcut for
         // the spec-default sRGB case.
@@ -447,7 +447,7 @@ extension ColorEncoding {
 }
 
 extension ExtraChannelInfo {
-    public func write(to w: inout BitWriter) throws {
+    package func write(to w: inout BitWriter) throws {
         // We only emit the all_default = 1 case for default alpha
         // channels; otherwise emit the full structure.
         let isDefaultAlpha = (type == .alpha

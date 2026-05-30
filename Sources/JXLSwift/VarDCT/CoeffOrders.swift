@@ -28,20 +28,20 @@
 
 import Foundation
 
-public enum CoeffOrdersError: Error, Sendable {
+package enum CoeffOrdersError: Error, Sendable {
     case bitstream(BitstreamError)
     case tokenStream(TokenStreamReaderError)
     case invalidPermutationSize(end: Int, size: Int)
     case invalidLehmerCode(i: Int, code: UInt32, n: Int)
 }
 
-public enum CoeffOrders {
+package enum CoeffOrders {
 
     /// libjxl `coeff_order.h::kPermutationContexts`.
-    public static let kPermutationContexts: Int = 8
+    package static let kPermutationContexts: Int = 8
 
     /// libjxl `coeff_order_fwd.h::kNumOrders`.
-    public static let kNumOrders: Int = 13
+    package static let kNumOrders: Int = 13
 
     /// libjxl `coeff_order.cc::CoeffOrderContext`. Encodes `val` via
     /// `HybridUintConfig(0,0,0)` and returns the resulting token,
@@ -55,7 +55,7 @@ public enum CoeffOrders {
     /// i.e., `token = 1 + floor(log2(val))` for `val >= 1`, then
     /// `min(token, 7)`.
     @inline(__always)
-    public static func context(_ val: UInt32) -> Int {
+    package static func context(_ val: UInt32) -> Int {
         if val == 0 { return 0 }
         let n = 32 - Int(val.leadingZeroBitCount) - 1  // floor(log2(val))
         return min(1 + n, kPermutationContexts - 1)
@@ -85,7 +85,7 @@ public enum CoeffOrders {
     /// strategies (DCT16x8, DCT32x8, …), `CoefficientLayout` first
     /// swaps cx/cy so cx ≥ cy — so DCT16x8 and DCT8x16 share the
     /// same order (and the same `orderBucket`).
-    public static func naturalCoeffOrder(for strategy: ACStrategy) -> [Int] {
+    package static func naturalCoeffOrder(for strategy: ACStrategy) -> [Int] {
         var cx = strategy.blockCells.cellsX
         var cy = strategy.blockCells.cellsY
         // CoefficientLayout(&cy, &cx): make first arg the smaller.
@@ -153,7 +153,7 @@ public enum CoeffOrders {
     /// actually decodes per-block AC for non-DCT8 strategies, or
     /// for DCT8 strategies when the bitstream sets `used_orders`
     /// bit 0 (cjxl emits this for textured ≥ d=0.5 fixtures).
-    public static func skipUnusedPermutations(
+    package static func skipUnusedPermutations(
         usedOrders: UInt16,
         from r: inout BitReader,
         stream: inout TokenStreamReader
@@ -178,7 +178,7 @@ public enum CoeffOrders {
     ///             lehmer = ReadPermutation(skip=llf, size=size, ...)
     ///             order  = DecodeLehmerCode(lehmer, size)
     ///             for k in 0..<size: order[k] = natural[order[k]]
-    public static func decodePermutations(
+    package static func decodePermutations(
         usedOrders: UInt16,
         from r: inout BitReader,
         stream: inout TokenStreamReader
@@ -276,7 +276,7 @@ public enum CoeffOrders {
     /// `code[i]` is the rank of the i-th selected element among
     /// the still-unused values in `[0, n)`. Returns the resulting
     /// permutation of `[0, n)`.
-    public static func decodeLehmerCode(
+    package static func decodeLehmerCode(
         _ code: [UInt32], size n: Int
     ) -> [Int] {
         precondition(n > 0, "Lehmer size must be positive")

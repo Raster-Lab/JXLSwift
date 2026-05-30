@@ -49,20 +49,20 @@ import Foundation
 ///   in libjxl color order under `kYCbCr`).
 /// - `channelCount`: 1 for grayscale, 3 for 3-component (Y / Cb /
 ///   Cr; bridge encoder maps to JXL X / Y / B).
-public struct JXLCoefficientPlanes: Sendable {
-    public let blocksX: Int
-    public let blocksY: Int
-    public let channelCount: Int
+package struct JXLCoefficientPlanes: Sendable {
+    package let blocksX: Int
+    package let blocksY: Int
+    package let channelCount: Int
     /// Per-channel block grid dimensions. `blocksPerChannel[ch] =
     /// (cx, cy)` is the number of blocks for channel `ch`. For
     /// 4:4:4 each entry equals `(blocksX, blocksY)`. For 4:2:0
     /// (kYCbCr remap = [Cb, Y, Cr]): `[(cx/2, cy/2), (cx, cy),
     /// (cx/2, cy/2)]`.
-    public let blocksPerChannel: [(blocksX: Int, blocksY: Int)]
-    public let dcPerChannel: [[Int32]]
-    public let acPerChannel: [[[Int32]]]
+    package let blocksPerChannel: [(blocksX: Int, blocksY: Int)]
+    package let dcPerChannel: [[Int32]]
+    package let acPerChannel: [[[Int32]]]
 
-    public init(
+    package init(
         blocksX: Int, blocksY: Int, channelCount: Int,
         dcPerChannel: [[Int32]], acPerChannel: [[[Int32]]],
         blocksPerChannel: [(blocksX: Int, blocksY: Int)]? = nil
@@ -113,7 +113,7 @@ public struct JXLCoefficientPlanes: Sendable {
 /// Matches libjxl `frame_header.h::ColorTransform`. The choice
 /// determines the JPEG-component → JXL-channel mapping (see
 /// `JPEGToJXLAdapter.jpegOrder(colorTransform:isGray:)`).
-public enum JXLBridgeColorTransform: Sendable, Equatable {
+package enum JXLBridgeColorTransform: Sendable, Equatable {
     /// JPEG's YCbCr is treated as YCbCr by JXL — the decoder
     /// applies the YCbCr → RGB conversion at output time. JPEG
     /// component → JXL channel mapping under this mode is
@@ -127,7 +127,7 @@ public enum JXLBridgeColorTransform: Sendable, Equatable {
 }
 
 /// Errors specific to the JPEG → JXL coefficient adapter.
-public enum JPEGToJXLAdapterError: Error, Sendable, Equatable,
+package enum JPEGToJXLAdapterError: Error, Sendable, Equatable,
                                    LocalizedError {
     /// Components have non-uniform sampling factors. The 4:4:4
     /// fast path in v0.12.0i requires identical `(H, V)` across
@@ -136,7 +136,7 @@ public enum JPEGToJXLAdapterError: Error, Sendable, Equatable,
     /// Component count is outside the supported envelope.
     case unsupportedComponentCount(Int)
 
-    public var errorDescription: String? {
+    package var errorDescription: String? {
         switch self {
         case .nonUniformSampling(let m):
             return "JPEG → JXL adapter: \(m)"
@@ -148,7 +148,7 @@ public enum JPEGToJXLAdapterError: Error, Sendable, Equatable,
 }
 
 /// Helper namespace for the JPEG → JXL coefficient bridge.
-public enum JPEGToJXLAdapter {
+package enum JPEGToJXLAdapter {
 
     /// Port of libjxl `frame_header.h::JpegOrder`. Returns the
     /// `(jxlChannel0 → jpegComponent, jxlChannel1 → jpegComponent,
@@ -161,7 +161,7 @@ public enum JPEGToJXLAdapter {
     /// - `colorTransform == .ycbcr`: returns `(1, 0, 2)` — JXL
     ///   X-slot = Cb, Y-slot = Y, B-slot = Cr.
     /// - `colorTransform == .none`: returns `(0, 1, 2)` — identity.
-    public static func jpegOrder(
+    package static func jpegOrder(
         colorTransform: JXLBridgeColorTransform,
         isGray: Bool
     ) -> (Int, Int, Int) {
@@ -196,7 +196,7 @@ extension JXLCoefficientPlanes {
     /// by default in libjxl's own transcoder. Matching that
     /// default we don't apply it here; it can be a follow-on
     /// bite once the bridge has end-to-end pixel verification.
-    public func applyJPEGBridgeDC(
+    package func applyJPEGBridgeDC(
         colorTransform: JXLBridgeColorTransform,
         quantDCPerChannel: [UInt16]
     ) -> JXLCoefficientPlanes {
@@ -242,7 +242,7 @@ extension JXLCoefficientPlanes {
     /// decoder — so the forward bridge writes 3 channels even though
     /// the image metadata stays grayscale (the inverse of the reverse
     /// path's `extractingChannel(1)`).
-    public func expandGrayscaleToThreeChannel() -> JXLCoefficientPlanes {
+    package func expandGrayscaleToThreeChannel() -> JXLCoefficientPlanes {
         precondition(channelCount == 1,
             "expandGrayscaleToThreeChannel requires 1 channel")
         let bpc = blocksPerChannel[0]
@@ -269,7 +269,7 @@ extension JXLCoefficientPlanes {
     /// adapter's output (JPEG channel order, [Y, Cb, Cr]) to JXL's
     /// XYB-slot order ([Cb, Y, Cr] under kYCbCr; [Y, Cb, Cr]
     /// under kNone).
-    public func remappedForJXLBridge(
+    package func remappedForJXLBridge(
         colorTransform: JXLBridgeColorTransform
     ) -> JXLCoefficientPlanes {
         if channelCount == 1 { return self }
@@ -308,12 +308,12 @@ extension JXLCoefficientPlanes {
 /// - `dcQuantization`: per-channel `255 × 8 / qtableDC` —
 ///   feeds the JXL `DequantMatrices` DC slot (libjxl
 ///   `DequantMatricesSetCustomDC`).
-public struct JXLBridgeRAWQuantPayload: Sendable {
-    public let qtable: [Int32]
-    public let qtableDen: Float
-    public let dcQuantization: [Float]
+package struct JXLBridgeRAWQuantPayload: Sendable {
+    package let qtable: [Int32]
+    package let qtableDen: Float
+    package let dcQuantization: [Float]
 
-    public init(qtable: [Int32], qtableDen: Float,
+    package init(qtable: [Int32], qtableDen: Float,
                 dcQuantization: [Float]) {
         precondition(qtable.count == 3 * 64,
             "JXLBridgeRAWQuantPayload.qtable must be 3×64")
@@ -336,20 +336,20 @@ public struct JXLBridgeRAWQuantPayload: Sendable {
 /// header (frame type, animation fields, blending info, etc.)
 /// from its own state. This layer just resolves the
 /// JPEG-derived fields.
-public struct JXLBridgeFrameHeaderParams: Sendable, Equatable {
+package struct JXLBridgeFrameHeaderParams: Sendable, Equatable {
     /// `color_transform`. For .ycbcr the JXL decoder applies
     /// YCbCr → RGB at output. For .none JXL treats the channels
     /// as opaque colour data with no conversion.
-    public let colorTransform: ColorTransform
+    package let colorTransform: ColorTransform
     /// `chroma_subsampling`. For 4:4:4 (which is all the
     /// v0.12.0i adapter supports) this is all zeros.
-    public let chromaSubsampling: YCbCrChromaSubsampling
+    package let chromaSubsampling: YCbCrChromaSubsampling
     /// `loop_filter`. JPEG decoding doesn't apply Gaborish or
     /// EPF, so the bridge disables both so the JXL decode
     /// pipeline matches JPEG's. `gab = false, epfIters = 0`.
-    public let loopFilter: LoopFilter
+    package let loopFilter: LoopFilter
     /// `encoding`. Always VarDCT for the bridge.
-    public let encoding: FrameEncoding
+    package let encoding: FrameEncoding
 }
 
 extension JPEGCoefficientImage {
@@ -359,7 +359,7 @@ extension JPEGCoefficientImage {
     /// `chroma_subsampling` from the JPEG `(H, V)` sampling
     /// factors, supporting 4:4:4 / 4:2:0 / 4:2:2 (horizontal or
     /// vertical).
-    public func buildJXLBridgeFrameHeaderParams(
+    package func buildJXLBridgeFrameHeaderParams(
         colorTransform: JXLBridgeColorTransform
     ) -> JXLBridgeFrameHeaderParams {
         let jxlCT: ColorTransform
@@ -453,7 +453,7 @@ extension JPEGCoefficientImage {
     /// the bridge encoder to package into `DequantMatrices` via
     /// `kQuantModeRAW`. The actual bitstream-write step
     /// (Modular sub-image of the qtable) is step 3.5+ work.
-    public func buildJXLBridgeRAWQuantPayload(
+    package func buildJXLBridgeRAWQuantPayload(
         colorTransform: JXLBridgeColorTransform
     ) -> JXLBridgeRAWQuantPayload {
         let nc = frameComponents.count
@@ -517,7 +517,7 @@ extension JPEGCoefficientImage {
     /// Channel order is preserved (JPEG component `i` → JXL plane
     /// `i`); the bridge encoder applies the JpegOrder remap
     /// downstream to land Y at the JXL Y slot (index 1) etc.
-    public func toJXLCoefficientPlanes(
+    package func toJXLCoefficientPlanes(
     ) throws -> JXLCoefficientPlanes {
         let nch = frameComponents.count
         guard nch == 1 || nch == 3 else {

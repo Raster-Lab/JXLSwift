@@ -42,7 +42,7 @@
 
 import Foundation
 
-public enum TokenStreamReaderError: Error, Sendable {
+package enum TokenStreamReaderError: Error, Sendable {
     case bitstream(BitstreamError)
     case hybridUint(HybridUintConfigError)
     case ans(ANSError)
@@ -56,7 +56,7 @@ public enum TokenStreamReaderError: Error, Sendable {
 /// libjxl `kNumSpecialDistances` — the size of the 2D distance LUT
 /// applied to modular sub-image LZ77 references when a non-zero
 /// `distanceMultiplier` is in effect.
-public let kNumSpecialDistances: Int = 120
+package let kNumSpecialDistances: Int = 120
 
 /// libjxl `kSpecialDistances` (WebP-lossless inheritance) — 120 entries
 /// of `(rowOffset, colOffset)` pairs. The effective distance is
@@ -65,7 +65,7 @@ public let kNumSpecialDistances: Int = 120
 /// "previous row" / "row above" copies fit in a single token.
 ///
 /// Spec / libjxl: `lib/jxl/dec_ans.h::kSpecialDistances`.
-public let kSpecialDistancesLUT: [(Int8, Int8)] = [
+package let kSpecialDistancesLUT: [(Int8, Int8)] = [
     (0, 1),  (1, 0),  (1, 1),  (-1, 1), (0, 2),  (2, 0),  (1, 2),  (-1, 2),
     (2, 1),  (-2, 1), (2, 2),  (-2, 2), (0, 3),  (3, 0),  (1, 3),  (-1, 3),
     (3, 1),  (-3, 1), (2, 3),  (-2, 3), (3, 2),  (-3, 2), (0, 4),  (4, 0),
@@ -88,9 +88,9 @@ public let kSpecialDistancesLUT: [(Int8, Int8)] = [
 /// per-cluster codebook. Mutating across calls — the rANS state lives
 /// inside the reader for the ANS path; the LZ77 history & copy queue
 /// also live here.
-public struct TokenStreamReader: Sendable {
-    public let header: EntropySectionHeader
-    public let codebook: MultiClusterCodebook
+package struct TokenStreamReader: Sendable {
+    package let header: EntropySectionHeader
+    package let codebook: MultiClusterCodebook
     /// libjxl's "distance multiplier" — the widest channel width in
     /// the modular sub-image whose LZ77 references this reader
     /// services. `0` disables the `SpecialDistance` remap (correct
@@ -98,7 +98,7 @@ public struct TokenStreamReader: Sendable {
     /// sub-image readers must pass the channel-width max so distances
     /// `< 120` get the 2D-pattern LUT treatment that libjxl uses to
     /// encode "previous row" / "row above" patterns.
-    public let distanceMultiplier: Int
+    package let distanceMultiplier: Int
     /// Lazily-built rANS decoder for the ANS path. nil for prefix-code
     /// sections.
     private var ansDecoder: ANSStreamDecoder?
@@ -112,7 +112,7 @@ public struct TokenStreamReader: Sendable {
     /// LZ77 copy.
     private var copyReadPos: Int = 0
 
-    public init(
+    package init(
         header: EntropySectionHeader,
         codebook: MultiClusterCodebook,
         distanceMultiplier: Int = 0,
@@ -144,7 +144,7 @@ public struct TokenStreamReader: Sendable {
     /// bits (ANS mode, with state init / renorm reads coming from the
     /// same BitReader). Drains any pending LZ77 copy before reading
     /// new ANS symbols.
-    public mutating func readToken(
+    package mutating func readToken(
         context ctx: Int, from r: inout BitReader
     ) throws -> UInt32 {
         // 0. Drain any in-flight LZ77 copy first. The "context" the

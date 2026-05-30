@@ -15,13 +15,13 @@
 import Foundation
 
 /// Adaptive DC smoothing of the dequantised DC plane.
-public enum AdaptiveDCSmoothing {
+package enum AdaptiveDCSmoothing {
 
     /// libjxl `compressed_dc.cc` smoothing weights — a 3×3 kernel
     /// `[[w2,w1,w2],[w1,w0,w1],[w2,w1,w2]]` whose weights sum to 1.
-    public static let w1: Float = 0.20345139757231578
-    public static let w2: Float = 0.0334829185968739
-    public static let w0: Float = 1.0 - 4.0 * (w1 + w2)
+    package static let w1: Float = 0.20345139757231578
+    package static let w2: Float = 0.0334829185968739
+    package static let w0: Float = 1.0 - 4.0 * (w1 + w2)
 
     /// Smooth the three DC planes in place. `dc` holds the dequantised,
     /// CfL-applied DC for the X/Y/B channels (each `width × height`,
@@ -36,7 +36,7 @@ public enum AdaptiveDCSmoothing {
     /// averaged; sharp DC edges are left untouched. Borders are
     /// copied through unchanged. A no-op for planes ≤ 2 in either
     /// dimension (libjxl early-return).
-    public static func apply(
+    package static func apply(
         dc: inout [[Float]], width: Int, height: Int,
         dcFactors: [Float]
     ) {

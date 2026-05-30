@@ -40,14 +40,14 @@ public enum ContainerError: Error, Equatable, Sendable {
 }
 
 /// A parsed ISOBMFF box from a JXL container.
-public struct JXLBox: Sendable, Equatable {
+package struct JXLBox: Sendable, Equatable {
     /// 4-character ASCII box type (`jxlc`, `jxlp`, `Exif`, `xml `, …).
-    public let type: String
+    package let type: String
     /// Byte range of the payload within the original buffer (does not
     /// include the box header).
-    public let payloadRange: Range<Int>
+    package let payloadRange: Range<Int>
 
-    public init(type: String, payloadRange: Range<Int>) {
+    package init(type: String, payloadRange: Range<Int>) {
         self.type = type
         self.payloadRange = payloadRange
     }
@@ -55,18 +55,18 @@ public struct JXLBox: Sendable, Equatable {
 
 /// The 12-byte JXL container signature box (always at offset 0 when the
 /// file is in container form).
-public let jxlContainerSignature: [UInt8] = [
+package let jxlContainerSignature: [UInt8] = [
     0x00, 0x00, 0x00, 0x0C,       // box size = 12
     0x4A, 0x58, 0x4C, 0x20,       // 'JXL '
     0x0D, 0x0A, 0x87, 0x0A        // codestream marker
 ]
 
 /// The 2-byte naked-codestream signature.
-public let jxlCodestreamSignature: [UInt8] = [0xFF, 0x0A]
+package let jxlCodestreamSignature: [UInt8] = [0xFF, 0x0A]
 
 /// Whether `data` looks like a JXL byte stream (either naked codestream
 /// or ISOBMFF container).
-public func isJXL(_ data: Data) -> Bool {
+package func isJXL(_ data: Data) -> Bool {
     if data.count >= 2 && data[data.startIndex] == 0xFF && data[data.startIndex + 1] == 0x0A {
         return true
     }
@@ -79,7 +79,7 @@ public func isJXL(_ data: Data) -> Bool {
     return false
 }
 
-public enum JXLContainerForm: Sendable, Equatable {
+package enum JXLContainerForm: Sendable, Equatable {
     /// Naked codestream — the entire file IS the codestream.
     case naked
     /// ISOBMFF container with a list of boxes.
@@ -88,7 +88,7 @@ public enum JXLContainerForm: Sendable, Equatable {
 
 /// Parse a JXL byte stream into either a naked codestream or a list of
 /// ISOBMFF boxes. Does not validate codestream contents.
-public func parseJXLContainer(_ data: Data) throws -> JXLContainerForm {
+package func parseJXLContainer(_ data: Data) throws -> JXLContainerForm {
     guard data.count >= 2 else {
         throw ContainerError.truncated("file too small to be JXL")
     }
@@ -153,7 +153,7 @@ public func parseJXLContainer(_ data: Data) throws -> JXLContainerForm {
 
 /// Locate and concatenate the codestream from a parsed container.
 /// Looks for a single `jxlc` box or a sequence of `jxlp` partials.
-public func extractCodestream(from boxes: [JXLBox], in data: Data) throws -> Data {
+package func extractCodestream(from boxes: [JXLBox], in data: Data) throws -> Data {
     if let jxlc = boxes.first(where: { $0.type == "jxlc" }) {
         return data.subdata(in: jxlc.payloadRange)
     }
@@ -202,7 +202,7 @@ public func extractCodestream(from boxes: [JXLBox], in data: Data) throws -> Dat
 /// **Status (v0.12.0gj).** Handles direct boxes + brob-wrapped boxes
 /// for the uncompressed-Brotli case. Compressed-Brotli brob payloads
 /// throw `notImplemented` (consistent with `BrotliDecoder`).
-public func extractMetadataBox(
+package func extractMetadataBox(
     type wantedType: String,
     from boxes: [JXLBox], in data: Data
 ) throws -> Data? {
@@ -242,7 +242,7 @@ public func extractMetadataBox(
 ///   the container has no such box.
 /// - Throws: `ContainerError.malformedBox` if multiple `jbrd` boxes
 ///   are present (the format allows at most one).
-public func extractJBRDBox(from boxes: [JXLBox], in data: Data)
+package func extractJBRDBox(from boxes: [JXLBox], in data: Data)
     throws -> Data?
 {
     let jbrdBoxes = boxes.filter { $0.type == "jbrd" }
@@ -258,7 +258,7 @@ public func extractJBRDBox(from boxes: [JXLBox], in data: Data)
 /// Build an ISOBMFF container around a single codestream payload.
 /// Emits: signature box → `ftyp` box → `jxlc` box. Suitable for files
 /// that don't need split partials, EXIF, JPEG-reconstruct, etc.
-public func buildJXLContainer(codestream: Data) -> Data {
+package func buildJXLContainer(codestream: Data) -> Data {
     var out = Data()
     out.append(contentsOf: jxlContainerSignature)
     // ftyp box: major = 'jxl ', minor = 0, compat = 'jxl '
@@ -277,7 +277,7 @@ public func buildJXLContainer(codestream: Data) -> Data {
 /// `jxlc`. `jbrdPayload` is the serialised jbrd Bundle bytes followed
 /// by the (Brotli) marker/tail payload. The reverse transcode (and
 /// `djxl --jpeg`) reconstruct the source JPEG byte-for-byte from this.
-public func buildJXLContainerWithReconstruction(
+package func buildJXLContainerWithReconstruction(
     codestream: Data, jbrdPayload: Data
 ) -> Data {
     var out = Data()

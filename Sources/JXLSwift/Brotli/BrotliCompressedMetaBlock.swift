@@ -10,41 +10,41 @@
 import Foundation
 
 /// Per-stream block-type metadata (L, I, or D).
-public struct BrotliBlockTypeMetadata: Sendable {
+package struct BrotliBlockTypeMetadata: Sendable {
     /// Number of block types for this stream. `1` means the stream
     /// has only one block type — the block-type tree and block-
     /// length tree are NOT emitted.
-    public let nbltypes: Int
+    package let nbltypes: Int
     /// If `nbltypes > 1`, the block-type symbol prefix code.
     /// Alphabet size = `nbltypes + 2`. Otherwise nil.
-    public let btypeTree: BrotliPrefixCode?
+    package let btypeTree: BrotliPrefixCode?
     /// If `nbltypes > 1`, the block-length prefix code (alphabet 26).
-    public let blenTree: BrotliPrefixCode?
+    package let blenTree: BrotliPrefixCode?
     /// The first block-length value (only present if `nbltypes > 1`).
-    public let firstBlockLength: UInt32?
+    package let firstBlockLength: UInt32?
 }
 
 /// Full per-meta-block header bits read once per compressed body.
-public struct BrotliMetaBlockBodyHeader: Sendable {
-    public let literal: BrotliBlockTypeMetadata
-    public let insertCopy: BrotliBlockTypeMetadata
-    public let distance: BrotliBlockTypeMetadata
+package struct BrotliMetaBlockBodyHeader: Sendable {
+    package let literal: BrotliBlockTypeMetadata
+    package let insertCopy: BrotliBlockTypeMetadata
+    package let distance: BrotliBlockTypeMetadata
     /// `NPOSTFIX` ∈ 0..3 — distance alphabet postfix bits.
-    public let npostfix: Int
+    package let npostfix: Int
     /// `NDIRECT` raw 4-bit value; the *real* number of direct distance
     /// codes is `ndirect << npostfix`.
-    public let ndirect: Int
+    package let ndirect: Int
     /// Per-literal-block-type context mode (2 bits each).
     /// `contextModes[i]` ∈ 0..3 selects between
     ///   LSB6 / MSB6 / UTF8 / Signed context-mode tables (RFC 7932 §7.1).
-    public let contextModes: [UInt8]
+    package let contextModes: [UInt8]
     /// Number of context trees for literals.
-    public let ntreesl: Int
+    package let ntreesl: Int
     /// Number of context trees for distances.
-    public let ntreesd: Int
+    package let ntreesd: Int
 }
 
-public enum BrotliCompressedMetaBlockHeader {
+package enum BrotliCompressedMetaBlockHeader {
 
     /// Read the compressed meta-block body header (everything between
     /// the basic meta-block header and the L/I/D prefix code section).
@@ -63,7 +63,7 @@ public enum BrotliCompressedMetaBlockHeader {
     ///   9. NTREESD (VarLenU8)
     ///   10. CMAPD (size = NBLTYPESD × 4) — caller reads after, only
     ///       if NTREESD > 1
-    public static func read(
+    package static func read(
         from r: inout BitReader
     ) throws -> BrotliMetaBlockBodyHeader {
         let lit = try readBlockType(from: &r)

@@ -62,7 +62,7 @@
 
 import Foundation
 
-public enum ANSDistributionFormatError: Error, Sendable, Equatable {
+package enum ANSDistributionFormatError: Error, Sendable, Equatable {
     case unsupportedNumSymbols(Int)
     case alphabetTooLarge(Int)
     case alphabetTooSmall(Int)
@@ -72,12 +72,12 @@ public enum ANSDistributionFormatError: Error, Sendable, Equatable {
     case bitstream(BitstreamError)
 }
 
-public struct ANSDistributionFormat {
+package struct ANSDistributionFormat {
 
     /// Encode a single-symbol "constant" distribution (all probability
     /// on one symbol). Bit layout: `is_simple=1, nsym_minus_1=0,
     /// symbol=u(log_alpha)`.
-    public static func encodeConstant(
+    package static func encodeConstant(
         symbol: Int,
         alphabetSize: Int,
         to w: inout BitWriter
@@ -98,7 +98,7 @@ public struct ANSDistributionFormat {
     /// `symbols` lists the alphabet-indices receiving non-zero
     /// probability, in the order their predefined frequencies apply.
     /// Symbols must be distinct and in-range.
-    public static func encodeSimple(
+    package static func encodeSimple(
         symbols: [Int],
         alphabetSize: Int,
         to w: inout BitWriter
@@ -132,7 +132,7 @@ public struct ANSDistributionFormat {
     /// pass it externally in this layer (the standalone histogram
     /// form, which embeds alphabet_size_log inline, is part of the
     /// not-yet-implemented full path).
-    public static func encodeFlat(
+    package static func encodeFlat(
         alphabetSize: Int,
         to w: inout BitWriter
     ) throws {
@@ -154,7 +154,7 @@ public struct ANSDistributionFormat {
     /// must be ≥ 0 and the sum must equal `ANSConstants.tabSize`
     /// (4 096) exactly. Use `normaliseToTabSize` to coerce a raw
     /// histogram into a valid distribution.
-    public static func encodeFull(
+    package static func encodeFull(
         frequencies: [UInt32],
         alphabetSize: Int,
         to w: inout BitWriter
@@ -194,7 +194,7 @@ public struct ANSDistributionFormat {
     /// encodable); rounding adjustment is absorbed by the symbol
     /// with the largest current frequency. Useful for callers
     /// preparing input to `encodeFull`.
-    public static func normaliseToTabSize(_ raw: [UInt32]) throws -> [UInt32] {
+    package static func normaliseToTabSize(_ raw: [UInt32]) throws -> [UInt32] {
         guard !raw.isEmpty else {
             throw ANSDistributionFormatError.alphabetTooSmall(0)
         }
@@ -231,7 +231,7 @@ public struct ANSDistributionFormat {
     /// Decode a distribution. Caller supplies the alphabet size; on
     /// return, `frequencies.count == alphabetSize` and frequencies sum
     /// to `tabSize`.
-    public static func decode(
+    package static func decode(
         alphabetSize: Int,
         from r: inout BitReader
     ) throws -> ANSDistribution {

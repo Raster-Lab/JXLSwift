@@ -30,12 +30,12 @@
 
 import Foundation
 
-public enum AdjustQuantBias {
+package enum AdjustQuantBias {
 
     /// Per-XYB-channel `|q| == 1` dequant bias — libjxl
     /// `quantizer.h::kDefaultQuantBias[0..2]`. Indexed by XYB
     /// channel (0=X, 1=Y, 2=B).
-    public static let kDefaultQuantBias: [Float] = [
+    package static let kDefaultQuantBias: [Float] = [
         1.0 - 0.05465007330715401,    // X → 0.94534992…
         1.0 - 0.07005449891748593,    // Y → 0.92994550…
         1.0 - 0.049935103337343655,   // B → 0.95006490…
@@ -44,10 +44,10 @@ public enum AdjustQuantBias {
     /// Per-XYB-channel zero bias (libjxl `kZeroBiasDefault`) —
     /// the *encoder*-side quantisation threshold. Kept for
     /// reference; the decoder dequant uses `kDefaultQuantBias`.
-    public static let kZeroBiasDefault: [Float] = [0.5, 0.5, 0.5]
+    package static let kZeroBiasDefault: [Float] = [0.5, 0.5, 0.5]
 
     /// Bias numerator for `|q| >= 2` (libjxl `kBiasNumerator`).
-    public static let kBiasNumerator: Float = 0.145
+    package static let kBiasNumerator: Float = 0.145
 
     /// Apply libjxl-style quant bias to a single integer
     /// quantised AC coefficient. `channel` is the XYB channel
@@ -55,7 +55,7 @@ public enum AdjustQuantBias {
     /// should multiply by the dequant matrix entry, in place
     /// of `Float(quant)`.
     @inlinable
-    public static func adjust(
+    package static func adjust(
         channel: Int, quant: Int32,
         zeroBias: [Float] = kDefaultQuantBias,
         biasNumerator: Float = kBiasNumerator

@@ -2604,7 +2604,7 @@ final class FoundationTests: XCTestCase {
         let data = try Data(contentsOf: URL(fileURLWithPath: jxlPath))
         let dec = JXLDecoder()
         do {
-            let image = try dec.decodeModular(data, force: true)
+            let image = try dec.decodeModular(data)
             // If decode succeeds (some inputs may avoid the two-pass
             // gap): assert the channel count matches input (3 RGB).
             XCTAssertEqual(image.channels.count, 3,
@@ -2624,7 +2624,7 @@ final class FoundationTests: XCTestCase {
     /// `decodeModular` on an empty buffer throws cleanly.
     func testJXLDecoder_decodeModular_RejectsEmptyData() throws {
         let dec = JXLDecoder()
-        XCTAssertThrowsError(try dec.decodeModular(Data(), force: true))
+        XCTAssertThrowsError(try dec.decodeModular(Data()))
     }
 
     /// **Byte-equality validated**: `decodeModular` no longer needs
@@ -16945,7 +16945,7 @@ extension FoundationTests {
         let dec = JXLDecoder()
         let image: ModularImage
         do {
-            image = try dec.decodeModular(data, force: true)
+            image = try dec.decodeModular(data)
         } catch {
             try XCTSkipIf(true, "decodeModular failed: \(error)")
             return

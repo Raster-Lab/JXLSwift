@@ -22,9 +22,9 @@
 import Foundation
 
 /// Serialises forward-transformed VarDCT data into a codestream.
-public enum VarDCTBitstreamWriter {
+package enum VarDCTBitstreamWriter {
 
-    public enum WriterError: Error, Sendable {
+    package enum WriterError: Error, Sendable {
         case unsupported(String)
     }
 
@@ -51,7 +51,7 @@ public enum VarDCTBitstreamWriter {
     /// are supported: ≤ 256 px as a single contiguous section, larger
     /// frames as a multi-section codestream with one AC group per
     /// 256-px tile and one DC group per 2048-px tile.
-    public static func encode(
+    package static func encode(
         frame: ImageFrame, distance: Float = 1.0,
         gaborish: Bool = true, adaptiveQF: Bool = true
     ) throws -> Data {
@@ -2060,7 +2060,7 @@ public enum VarDCTBitstreamWriter {
     /// tps units (the metadata declares 100 tps, so each unit is
     /// 10 ms by default). The decoder reads them via the frame
     /// header's `animationFrame.duration` field.
-    public static func encodeAnimation(
+    package static func encodeAnimation(
         frames: [ImageFrame], distance: Float = 1.0,
         gaborish: Bool = true, adaptiveQF: Bool = true,
         frameDurations: [UInt32]? = nil

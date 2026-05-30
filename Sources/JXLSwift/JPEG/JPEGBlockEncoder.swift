@@ -37,7 +37,7 @@ import Foundation
 
 /// Errors raised by the block encoder when its inputs don't fit
 /// JPEG's coefficient format.
-public enum JPEGBlockEncodeError: Error, Sendable, Equatable,
+package enum JPEGBlockEncodeError: Error, Sendable, Equatable,
                                   LocalizedError {
     /// DC delta magnitude exceeded the spec's 11-bit limit (8-bit
     /// JPEG; the upper bound is 15 bits for 12-bit JPEG but we
@@ -52,7 +52,7 @@ public enum JPEGBlockEncodeError: Error, Sendable, Equatable,
     /// incompatible with the input coefficients.
     case missingHuffmanSymbol(UInt8)
 
-    public var errorDescription: String? {
+    package var errorDescription: String? {
         switch self {
         case .dcDeltaOutOfRange(let d):
             return "JPEG block encode: DC delta \(d) out of range"
@@ -66,7 +66,7 @@ public enum JPEGBlockEncodeError: Error, Sendable, Equatable,
 }
 
 /// Encode one 8×8 quantised DCT block to JPEG entropy bits.
-public enum JPEGBlockEncoder {
+package enum JPEGBlockEncoder {
 
     /// Encode a single block. The DC predictor is updated in place
     /// (current value becomes `block.coefficients[0]`).
@@ -80,7 +80,7 @@ public enum JPEGBlockEncoder {
     ///     Huffman table. Indexed by `(run << 4) | size` ∈ 0..255.
     ///   - dcPredictor: in-out per-component DC predictor.
     ///   - writer: bit writer accumulating output.
-    public static func encode(
+    package static func encode(
         _ block: JPEGCoefficientBlock,
         dcCodeTable: [JPEGHuffmanEncodeEntry],
         acCodeTable: [JPEGHuffmanEncodeEntry],
@@ -192,10 +192,10 @@ public enum JPEGBlockEncoder {
 /// One (Huffman code, bit length) pair, indexed by Huffman symbol.
 /// Length 0 marks an unused symbol — `JPEGBlockEncoder.encode`
 /// throws `missingHuffmanSymbol` if a required symbol is unused.
-public struct JPEGHuffmanEncodeEntry: Sendable, Equatable {
-    public var code: UInt32
-    public var length: Int
-    public init(code: UInt32 = 0, length: Int = 0) {
+package struct JPEGHuffmanEncodeEntry: Sendable, Equatable {
+    package var code: UInt32
+    package var length: Int
+    package init(code: UInt32 = 0, length: Int = 0) {
         self.code = code
         self.length = length
     }
@@ -205,7 +205,7 @@ public struct JPEGHuffmanEncodeEntry: Sendable, Equatable {
 /// `counts[]` + `values[]` pair. Mirrors the canonical-Huffman
 /// algorithm `JPEGHuffmanCodebook.init` runs for decoding, but
 /// emits the (code, length) form an encoder needs.
-public enum JPEGHuffmanEncodeTable {
+package enum JPEGHuffmanEncodeTable {
 
     /// - Parameters:
     ///   - counts: `counts[L]` = number of symbols with code length
@@ -214,7 +214,7 @@ public enum JPEGHuffmanEncodeTable {
     /// - Returns: 256-entry table where `table[sym]` is the
     ///   (code, length) for that symbol. Unused symbols have
     ///   length 0.
-    public static func build(
+    package static func build(
         counts: [UInt32], values: [UInt32]
     ) -> [JPEGHuffmanEncodeEntry] {
         precondition(counts.count == 17,

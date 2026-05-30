@@ -9,6 +9,79 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## [1.0.0] — 2026-05-30 (production release)
+
+**JXLSwift 1.0** — a production-ready pure-Swift lossless JPEG XL codec
+(ISO/IEC 18181). Medical-grade validated. **Public API frozen.**
+
+### Public-API freeze
+
+Following an adversarial v1.0-readiness review that surfaced ~150+
+accidentally-public spec-internal types (visible only because `JXLTool`
+needed cross-target access), the entire spec-internal surface was demoted
+to Swift 5.9+ `package` access — keeping `JXLTool`/tests' visibility while
+hiding internals from external consumers. **~1 250 demotions** across
+`Modular/`, `Entropy/`, `VarDCT/`, `Bitstream/`, `JPEG/`, `Brotli/`,
+`Codestream/`, `Container/`, `Codec/` internals. Public surface frozen to:
+
+- **Encoder / decoder.** `JXLEncoder`, `JXLDecoder`, `EncodingOptions`,
+  `JXLConfiguration`, `CompressionMode`, `EncodingEffort`, `EncodedImage`,
+  `CompressionStats`, `JXLInspection`, `JXLFrameInspection` (incl. nested
+  `FrameSummary`).
+- **Pixel container.** `ImageFrame` (+ `JXLImage` typealias), `PixelType`,
+  `ColorSpace`, `ImageMetrics` (+ nested `ChannelMetrics`).
+- **Metadata.** `ImageMetadata` + `ColorEncoding` + `BitDepth` +
+  `ExtraChannelInfo` (returned by `JXLInspection`).
+- **Errors.** `EncoderError`, `DecoderError`, `ContainerError`,
+  `BitstreamError`, `FrameEncoding` (all `Sendable, LocalizedError`).
+- **Progress.** `JXLEncodingStage`, `JXLDecodingStage`,
+  `JXLEncoderProgressUpdate`, `JXLDecoderProgressUpdate`.
+- **Async overloads** + **CompressionFamily** protocol conformances.
+
+All public types remain `Sendable`; the public surface contains zero
+force-unwraps. Demotion was gate-protected by the full 697-test
+djxl-byte-exact suite — no runtime behaviour change.
+
+### Other 1.0 readiness fixes
+
+- `JXLDecoder.decodeModular(_:)` — removed the documented-no-op
+  `force: Bool = true` parameter (would have frozen a useless knob).
+- `EncoderError.errorDescription` — dropped the libjxl-backend branch
+  reference (that branch is historical-only per CLAUDE.md).
+- CLAUDE.md phase table — corrected stale "pending" qualifiers on E4b /
+  E5 / E6 (all spec-complete and `djxl`-byte-exact since v0.13.0).
+- README test-count claim refreshed (574 → 697) and CLI quickstart
+  re-anchored to the v1.0 line.
+
+### Carrying forward (no change)
+
+Everything v0.14.0 shipped — preset alignment with J2KSwift
+(`.balanced=0.85`, `.fast=0.70`, `.maxCompression=0.50`), the UInt64
+`BitWriter` accumulator, the shared WP per-pixel pass, the BitWriter
+capacity reservation — plus all of v0.13.0 (conformance gate +
+medical DICOM validation 2 867/0 + CID22 49/0 + robustness sweep +
+fuzz harness + `convert` CLI) — is preserved exactly. Reproducible
+via `scripts/medical-dicom-validate.sh` and `scripts/cid22-validate.sh`.
+
+### Test gate
+
+**697 tests / 0 failures** (`swift test -c release`, ~80 s on Apple
+Silicon) — including the lossless conformance gate, the robustness
+sweep + decoder fuzz (0 traps across 1 812 malformed inputs), and the
+`JXLPerfC` C-bridge tests. Plus the medical DICOM (2 867) + CID22 (49)
+corpora — all `djxl`-byte-exact.
+
+### Documented deliberate 1.0 limitations (post-1.0 roadmap)
+
+- Forward JPEG → JXL transcode caps at 2 048 px / side (multi-DC-group
+  on the transcode path is post-1.0; the lossless Modular path handles
+  ≤ 16 384).
+- Reconciling `fillModularProperties` slots 6/7/8/11/13/14 with libjxl
+  (a ratio lever, not a correctness gap).
+- Full lossy VarDCT *encode* (pixels → lossy JXL) — headline of v2.0.
+- libjxl-class encode speed needs the C `BitWriter` / rANS hot path
+  to land in `JXLPerfC` (boundary scaffolded in v0.14.0).
+
 ## [0.14.0] — 2026-05-30 (release)
 
 **Headline:** measured perf work + family-parity preset alignment, all

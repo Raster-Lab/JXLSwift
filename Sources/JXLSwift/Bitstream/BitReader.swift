@@ -28,12 +28,12 @@ public enum BitstreamError: Error, Equatable, Sendable {
 }
 
 /// Bitwise reader for byte-backed buffers. LSB-first within each byte.
-public struct BitReader: Sendable {
-    public let data: Data
+package struct BitReader: Sendable {
+    package let data: Data
     /// Bit position in the stream (0 = LSB of first byte).
-    public private(set) var position: Int
+    package private(set) var position: Int
 
-    public init(_ data: Data, startingAt position: Int = 0) {
+    package init(_ data: Data, startingAt position: Int = 0) {
         self.data = data
         self.position = position
     }
@@ -58,12 +58,12 @@ public struct BitReader: Sendable {
     }
 
     /// Total bits available in the underlying buffer.
-    public var totalBits: Int { data.count * 8 }
-    public var bitsRemaining: Int { totalBits - position }
-    public var isExhausted: Bool { position >= totalBits }
+    package var totalBits: Int { data.count * 8 }
+    package var bitsRemaining: Int { totalBits - position }
+    package var isExhausted: Bool { position >= totalBits }
 
     /// Read `count` bits as a `UInt32` (1...32 bits).
-    public mutating func read(bits count: Int) throws -> UInt32 {
+    package mutating func read(bits count: Int) throws -> UInt32 {
         guard count >= 0 && count <= 32 else {
             throw BitstreamError.tooManyBits(requested: count, max: 32)
         }
@@ -94,7 +94,7 @@ public struct BitReader: Sendable {
     }
 
     /// Read 1 bit as a Bool.
-    public mutating func readBit() throws -> Bool {
+    package mutating func readBit() throws -> Bool {
         try read(bits: 1) == 1
     }
 
@@ -103,7 +103,7 @@ public struct BitReader: Sendable {
     /// however many bits the lookup-table entry asked for. Used by
     /// libjxl-style fixed-table Huffman decoders (e.g. ReadHistogram's
     /// 7-bit logcount table).
-    public func peek(bits count: Int) throws -> UInt32 {
+    package func peek(bits count: Int) throws -> UInt32 {
         guard count >= 0 && count <= 32 else {
             throw BitstreamError.tooManyBits(requested: count, max: 32)
         }
@@ -131,7 +131,7 @@ public struct BitReader: Sendable {
     }
 
     /// Read a 64-bit value (0 ≤ count ≤ 64).
-    public mutating func read64(bits count: Int) throws -> UInt64 {
+    package mutating func read64(bits count: Int) throws -> UInt64 {
         guard count >= 0 && count <= 64 else {
             throw BitstreamError.tooManyBits(requested: count, max: 64)
         }
@@ -144,7 +144,7 @@ public struct BitReader: Sendable {
     }
 
     /// Skip ahead by `count` bits.
-    public mutating func skip(bits count: Int) throws {
+    package mutating func skip(bits count: Int) throws {
         guard count >= 0 else {
             throw BitstreamError.malformedValue("negative skip")
         }
@@ -169,14 +169,14 @@ public struct BitReader: Sendable {
     /// Align forward to the next byte boundary by consuming up to 7
     /// padding bits. Per the JXL spec the padding bits must be zero;
     /// callers can verify this with `expectZeroPadding`.
-    public mutating func alignToByte() throws {
+    package mutating func alignToByte() throws {
         let pad = (8 - (position % 8)) % 8
         try skip(bits: pad)
     }
 
     /// Variant of `alignToByte` that asserts the consumed padding bits
     /// are all zero (per spec).
-    public mutating func expectZeroPadding() throws {
+    package mutating func expectZeroPadding() throws {
         let pad = (8 - (position % 8)) % 8
         if pad == 0 { return }
         let bits = try read(bits: pad)

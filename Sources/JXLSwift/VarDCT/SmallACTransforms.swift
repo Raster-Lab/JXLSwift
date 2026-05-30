@@ -8,7 +8,7 @@
 
 import Foundation
 
-public enum DCT2x2Transform {
+package enum DCT2x2Transform {
 
     /// libjxl `IDCT2TopBlock<S>` — a 2×2 butterfly over the top-left
     /// `S×S` region of an 8×8 block. `num_2x2 = S/2` sub-blocks are
@@ -40,7 +40,7 @@ public enum DCT2x2Transform {
     /// Inverse DCT2X2 transform: a dequantised 8×8 coefficient block
     /// → an 8×8 row-major pixel block. Applies the `IDCT2TopBlock`
     /// cascade at scales 2, 4, 8.
-    public static func transformToPixels(_ coefficients: [Float]) -> [Float] {
+    package static func transformToPixels(_ coefficients: [Float]) -> [Float] {
         precondition(coefficients.count == 64)
         var c = idct2TopBlock(coefficients, s: 2)
         c = idct2TopBlock(c, s: 4)
@@ -49,7 +49,7 @@ public enum DCT2x2Transform {
     }
 }
 
-public enum DCT4x4Transform {
+package enum DCT4x4Transform {
 
     /// Inverse DCT4X4 transform: a dequantised 8×8 coefficient block
     /// → an 8×8 row-major pixel block. The cell is split into four
@@ -57,7 +57,7 @@ public enum DCT4x4Transform {
     /// four corner coefficients, its 15 AC coefficients from a
     /// strided gather, and the quadrant is reconstructed with a 4×4
     /// `ComputeScaledIDCT` (= `IDCTSlow(coefᵀ)`).
-    public static func transformToPixels(_ coefficients: [Float]) -> [Float] {
+    package static func transformToPixels(_ coefficients: [Float]) -> [Float] {
         precondition(coefficients.count == 64)
         var pixels = [Float](repeating: 0, count: 64)
         let block00 = coefficients[0]
@@ -128,11 +128,11 @@ enum ScaledIDCT {
 /// `ComputeScaledIDCT<4,8>` / `<8,4>`. Ports of libjxl
 /// `dec_transforms-inl.h::TransformToPixels` (`Type::DCT4X8` /
 /// `Type::DCT8X4`).
-public enum DCT4x8Transform {
+package enum DCT4x8Transform {
 
     /// Inverse DCT4X8: dequantised 8×8 coefficient block → 8×8
     /// pixels. Two 4-tall × 8-wide halves stacked vertically.
-    public static func transformToPixels(_ coef: [Float]) -> [Float] {
+    package static func transformToPixels(_ coef: [Float]) -> [Float] {
         precondition(coef.count == 64)
         var pixels = [Float](repeating: 0, count: 64)
         let dcs: [Float] = [coef[0] + coef[8], coef[0] - coef[8]]
@@ -157,11 +157,11 @@ public enum DCT4x8Transform {
     }
 }
 
-public enum DCT8x4Transform {
+package enum DCT8x4Transform {
 
     /// Inverse DCT8X4: dequantised 8×8 coefficient block → 8×8
     /// pixels. Two 8-tall × 4-wide halves placed side by side.
-    public static func transformToPixels(_ coef: [Float]) -> [Float] {
+    package static func transformToPixels(_ coef: [Float]) -> [Float] {
         precondition(coef.count == 64)
         var pixels = [Float](repeating: 0, count: 64)
         let dcs: [Float] = [coef[0] + coef[8], coef[0] - coef[8]]

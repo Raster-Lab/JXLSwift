@@ -13,13 +13,13 @@
 
 import Foundation
 
-public struct SizeHeader: Sendable, Equatable {
+package struct SizeHeader: Sendable, Equatable {
     /// Decoded width.  1 ≤ xsize ≤ 2^30 (per spec §C.3.2).
-    public let xsize: UInt32
+    package let xsize: UInt32
     /// Decoded height. 1 ≤ ysize ≤ 2^30.
-    public let ysize: UInt32
+    package let ysize: UInt32
 
-    public init(xsize: UInt32, ysize: UInt32) {
+    package init(xsize: UInt32, ysize: UInt32) {
         precondition(xsize > 0 && ysize > 0, "size must be positive")
         self.xsize = xsize
         self.ysize = ysize
@@ -27,7 +27,7 @@ public struct SizeHeader: Sendable, Equatable {
 
     /// Read a SizeHeader from a bit reader positioned just after the
     /// codestream signature.
-    public static func read(from reader: inout BitReader) throws -> SizeHeader {
+    package static func read(from reader: inout BitReader) throws -> SizeHeader {
         let small = try reader.readBit()
         if small {
             // Small mode: ysize_div8 = u(5) + 1 (range 1…32 → 8…256).
@@ -61,7 +61,7 @@ public struct SizeHeader: Sendable, Equatable {
     /// multiples of 8 in 8…256 — that's the encoding cjxl uses, and
     /// keeps the bytes compact + (apparently) more spec-pedantic
     /// for downstream tools. Otherwise falls back to large mode.
-    public func write(to writer: inout BitWriter) throws {
+    package func write(to writer: inout BitWriter) throws {
         let canSmall = ysize >= 8 && ysize <= 256 && ysize % 8 == 0
                      && xsize >= 8 && xsize <= 256 && xsize % 8 == 0
         if canSmall {

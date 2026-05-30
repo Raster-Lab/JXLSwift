@@ -28,45 +28,45 @@
 import Foundation
 
 /// Forward VarDCT transform — `ImageFrame` → quantised coefficients.
-public enum VarDCTEncoder {
+package enum VarDCTEncoder {
 
     /// Quantised output of the forward transform — the input to the
     /// (separate) bitstream-serialisation layer.
-    public struct Quantized: Sendable {
-        public let xsize: Int
-        public let ysize: Int
+    package struct Quantized: Sendable {
+        package let xsize: Int
+        package let ysize: Int
         /// Block grid (8×8 blocks, padded to cover the frame).
-        public let blocksX: Int
-        public let blocksY: Int
+        package let blocksX: Int
+        package let blocksY: Int
         /// Quantiser parameters written to `QuantizerParams`.
-        public let globalScale: UInt32
-        public let quantDC: UInt32
+        package let globalScale: UInt32
+        package let quantDC: UInt32
         /// Per-block quantisation factor (uniform in this first cut).
-        public let qf: Int32
+        package let qf: Int32
         /// `dc_extra_precision` (0 here).
-        public let dcExtraPrecision: UInt32
+        package let dcExtraPrecision: UInt32
         /// Per-channel quantised DC, XYB-indexed `[X,Y,B][by*blocksX+bx]`.
         /// B is colour-decorrelated (`B − Y`) ready for the modular
         /// DC sub-image. Every 8×8 cell has a DC value, including the
         /// four cells a DCT16×16 covers.
-        public let dcQuant: [[Int32]]
+        package let dcQuant: [[Int32]]
         /// Per-block AC strategy, raster-indexed `ACStrategy.rawValue`
         /// (`0` = DCT8×8, `4` = DCT16×16). A multi-block transform's
         /// first-block and its covered cells carry the same value;
         /// the first-block / covered split is recovered by a raster
         /// walk (libjxl `ACStrategyImage`).
-        public let acStrategy: [UInt8]
+        package let acStrategy: [UInt8]
         /// Per-block quantised AC, `[blockIdx][xybChannel][...]`.
         /// A DCT8×8 first-block holds 64 coefficients; a DCT16×16
         /// first-block holds 256 (natural grid layout); covered cells
         /// of a multi-block transform are empty. LLF positions are 0
         /// (carried by the DC plane); X/Y/B are colour-decorrelated.
-        public let acQuant: [[[Int32]]]
+        package let acQuant: [[[Int32]]]
         /// Whether the inverse-Gaborish 5×5 pre-pass was applied to
         /// the XYB pixels before the forward DCT. The bitstream
         /// writer mirrors this into the frame header's `lf.gab`
         /// flag so the decoder runs the forward Gaborish pass.
-        public let gaborish: Bool
+        package let gaborish: Bool
         /// Per-block quantisation factor (uniform 8×8 cell grid,
         /// row-major `[by * blocksX + bx]`). Adaptive variance-
         /// driven: smooth cells get a coarser QF, textured cells get
@@ -76,7 +76,7 @@ public enum VarDCTEncoder {
         /// block's value via ACMetadata). For each first-block, the
         /// AC values in `acQuant[blockIdx]` were quantised with
         /// `qfPerBlock[firstBlockIdx]` and dequantise with the same.
-        public let qfPerBlock: [Int32]
+        package let qfPerBlock: [Int32]
     }
 
     /// libjxl `quant_weights.h::kInvDCQuant`, XYB-indexed.
@@ -95,13 +95,13 @@ public enum VarDCTEncoder {
     /// **crude global** mapping, not the perceptual butteraugli-
     /// driven adaptive quant libjxl uses. `distance = 1` reproduces
     /// the previous fixed quantiser (`global_scale = 5111`).
-    public static func globalScale(forDistance distance: Float) -> UInt32 {
+    package static func globalScale(forDistance distance: Float) -> UInt32 {
         let d = max(0.05, distance)
         let s = (5111.0 / d).rounded()
         return UInt32(max(1.0, min(65535.0, s)))
     }
 
-    public static func forward(
+    package static func forward(
         frame: ImageFrame, distance: Float = 1.0,
         gaborish: Bool = true, adaptiveQF: Bool = true
     ) throws -> Quantized {

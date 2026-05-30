@@ -24,7 +24,7 @@ extension BitReader {
 
     /// Decode the variable-length 0..255 integer used by libjxl
     /// `DecodeVarLenUint8`.
-    public mutating func readVarLenUint8() throws -> UInt32 {
+    package mutating func readVarLenUint8() throws -> UInt32 {
         if try !readBit() { return 0 }
         let nbits = Int(try read(bits: 3))
         if nbits == 0 { return 1 }
@@ -34,7 +34,7 @@ extension BitReader {
 
     /// Decode the variable-length 0..65535 integer used by libjxl
     /// `DecodeVarLenUint16`.
-    public mutating func readVarLenUint16() throws -> UInt32 {
+    package mutating func readVarLenUint16() throws -> UInt32 {
         if try !readBit() { return 0 }
         let nbits = Int(try read(bits: 4))
         if nbits == 0 { return 1 }
@@ -49,7 +49,7 @@ extension BitWriter {
     /// shortest representable encoding is picked: zero takes 1 bit;
     /// 1 takes 5 bits (`1, 0,0,0,0`); larger values take
     /// `1 + 3 + nbits` bits where `nbits = floor(log2(value))`.
-    public mutating func writeVarLenUint8(_ value: UInt32) throws {
+    package mutating func writeVarLenUint8(_ value: UInt32) throws {
         guard value <= 0xFF else {
             throw BitstreamError.malformedValue("VarLenUint8 out of range: \(value)")
         }
@@ -69,7 +69,7 @@ extension BitWriter {
     }
 
     /// Encode the variable-length 0..65535 integer.
-    public mutating func writeVarLenUint16(_ value: UInt32) throws {
+    package mutating func writeVarLenUint16(_ value: UInt32) throws {
         guard value <= 0xFFFF else {
             throw BitstreamError.malformedValue("VarLenUint16 out of range: \(value)")
         }

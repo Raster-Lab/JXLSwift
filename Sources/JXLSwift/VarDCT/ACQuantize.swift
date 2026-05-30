@@ -35,13 +35,13 @@ import Foundation
 /// Encoder-side per-block AC quantization. Pure float-in,
 /// `Int32`-out. The output is the input to `ACEncoder.encodeBlock`
 /// (after CFL has been undone — see comment).
-public enum ACQuantize {
+package enum ACQuantize {
 
     /// libjxl's default per-quadrant chroma thresholds for `c != 1`
     /// (X and B). The 4 entries correspond to the 4 quadrants of
     /// an 8×8 block in raster order. Y channel uses `[0, 0, 0, 0]`
     /// (no thresholding — full precision retained).
-    public static let kDefaultChromaThresholds: [Float] =
+    package static let kDefaultChromaThresholds: [Float] =
         [0.58, 0.62, 0.62, 0.62]
 
     /// Quantize one channel's worth of AC coefficients for an
@@ -70,7 +70,7 @@ public enum ACQuantize {
     ///   (the LLF coefficients for multi-block strategies) are also
     ///   passed through the same formula — caller is responsible
     ///   for restoring DC if needed.
-    public static func quantizeBlock(
+    package static func quantizeBlock(
         blockIn: [Float],
         weights: [Float],
         quant: Float, scale: Float, qmMultiplier: Float,

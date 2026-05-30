@@ -13,7 +13,7 @@ import Foundation
 /// because most of libjxl's codes describe runtime conditions
 /// (out-of-memory, transformer state) that don't apply to a pure
 /// Swift implementation.
-public enum BrotliError: Error, Sendable, Equatable {
+package enum BrotliError: Error, Sendable, Equatable {
     /// Underlying bit-reader error (EOF, too many bits, etc.).
     case bitstream(BitstreamError)
     /// A reserved bit had a non-zero value (RFC 7932 §9.1).

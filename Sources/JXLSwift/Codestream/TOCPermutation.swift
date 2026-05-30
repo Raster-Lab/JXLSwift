@@ -23,7 +23,7 @@
 
 import Foundation
 
-public enum TOCPermutationError: Error, Sendable, Equatable {
+package enum TOCPermutationError: Error, Sendable, Equatable {
     case bitstream(BitstreamError)
     case header(String)
     case codebook(String)
@@ -34,13 +34,13 @@ public enum TOCPermutationError: Error, Sendable, Equatable {
 
 /// libjxl `kPermutationContexts` — number of per-magnitude contexts
 /// the permutation entropy stream uses.
-public let kPermutationContexts: Int = 8
+package let kPermutationContexts: Int = 8
 
 /// libjxl `CoeffOrderContext(val)` — bucket a value into one of 8
 /// magnitude classes for context-routing the Lehmer code's tokens.
 /// Uses `HybridUintConfig(0, 0, 0)` to extract the token, capped at
 /// `kPermutationContexts - 1`.
-public func coeffOrderContext(_ val: UInt32) -> Int {
+package func coeffOrderContext(_ val: UInt32) -> Int {
     let cfg = HybridUintConfig(splitExponent: 0,
                                msbInToken: 0, lsbInToken: 0)
     let tok = cfg.encode(val).token
@@ -52,7 +52,7 @@ public func coeffOrderContext(_ val: UInt32) -> Int {
 /// the `has_permutation=1` bit; this function consumes the entropy
 /// section's bits but **does not** byte-align — the caller does that
 /// (matching libjxl `ReadToc`).
-public func decodeTOCPermutation(
+package func decodeTOCPermutation(
     from r: inout BitReader, size: Int, skip: Int = 0
 ) throws -> [Int] {
     // 1. Inner entropy section: 8 contexts.
@@ -120,7 +120,7 @@ public func decodeTOCPermutation(
 /// O(n²) implementation — sufficient for TOC permutation sizes.
 /// libjxl uses a Fenwick-tree variant for O(n log n); we can swap
 /// later if profiling shows this matters.
-public func lehmerCodeToPermutation(_ code: [UInt32]) -> [Int] {
+package func lehmerCodeToPermutation(_ code: [UInt32]) -> [Int] {
     let n = code.count
     var available = Array(0..<n)
     var perm = [Int](repeating: 0, count: n)

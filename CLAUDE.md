@@ -85,9 +85,9 @@ swift test  -c release           # ~688 tests, ~70 s (many shell out to djxl)
 | E2 | Prefix codes / canonical Huffman (§C.6.2) | ✅ |
 | E3 | rANS (§C.6.3) | ✅ |
 | E4a | Prefix-code-table serialisation (§C.6.2.1) — simple + complex | ✅ |
-| E4b | rANS distribution serialisation (§C.6.3.2) — simple + flat shortcuts | ✅ (full mode pending) |
-| E5 | Histogram clustering / context maps (§C.6.4) | ✅ simple + full path (>8-cluster `djxl` compliance pending) |
-| E6 | LZ77 hybrid header (§C.6.5) | ✅ header only (back-references pending) |
+| E4b | rANS distribution serialisation (§C.6.3.2) — simple + flat + spec **complex** (full) mode | ✅ (`SpecANSDistribution.writeComplex`/`readComplex`, `djxl`-byte-exact) |
+| E5 | Histogram clustering / context maps (§C.6.4) | ✅ both paths (`writeFullPath`/`readFullPath` + inverse-MTF), `djxl`-byte-verified for 16/18/26-cluster maps |
+| E6 | LZ77 hybrid header (§C.6.5) | ✅ header; back-references decoded by the JPEG bridge entropy path (`djxl`-validated via the `lz77_flower` conformance vector) |
 | M0 | Project-internal vertical slice via `MinimalLosslessCodec` | ✅ |
 | M  | Modular sub-codec (lossless path, real frame header §C.8.1) | ✅ — `SpecModularEncoder`: 8/16-bit gray / gray+alpha / RGB / RGBA, arbitrary dims ≤ 16384 (multi-group + multi-DC-group), multi-property MA-trees + learned thresholds, effort knob, `djxl`-byte-exact |
 | V  | VarDCT (lossy path) | ✅ **decode** (`djxl`-matching, Phase R filters incl.); lossy *encode* deferred to the last phase (project focus is lossless) |

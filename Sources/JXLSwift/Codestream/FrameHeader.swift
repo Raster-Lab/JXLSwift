@@ -25,14 +25,14 @@
 
 import Foundation
 
-public enum FrameHeaderError: Error, Sendable, Equatable {
+package enum FrameHeaderError: Error, Sendable, Equatable {
     case bitstream(BitstreamError)
     case unsupportedField(String)
     case invalidValue(String)
 }
 
 /// Frame type per §C.8.1.
-public enum FrameType: UInt32, Sendable, Equatable, CaseIterable {
+package enum FrameType: UInt32, Sendable, Equatable, CaseIterable {
     /// Regular frame.
     case regular     = 0
     /// DC frame (low-frequency only — used for progressive coding).
@@ -50,7 +50,7 @@ public enum FrameEncoding: UInt32, Sendable, Equatable {
 }
 
 /// Color transform applied to the frame content. Spec §C.8.1.
-public enum ColorTransform: UInt32, Sendable, Equatable {
+package enum ColorTransform: UInt32, Sendable, Equatable {
     case xyb   = 0
     case none  = 1
     case yCbCr = 2
@@ -58,7 +58,7 @@ public enum ColorTransform: UInt32, Sendable, Equatable {
 
 /// Blend mode for compositing this frame onto the canvas.
 /// Spec §C.8.1 (BlendMode enum).
-public enum BlendMode: UInt32, Sendable, Equatable {
+package enum BlendMode: UInt32, Sendable, Equatable {
     /// `sample = new` — most common; the new frame replaces the old.
     case replace            = 0
     /// `sample = old + new`.
@@ -75,29 +75,29 @@ public enum BlendMode: UInt32, Sendable, Equatable {
 /// Mode 0 = no subsampling, 1 = 2:1 horizontal, 2 = 2:1 vertical,
 /// 3 = 2:1 both. Only emitted when `color_transform == kYCbCr` and
 /// `(flags & UseDcFrame) == 0`.
-public struct YCbCrChromaSubsampling: Sendable, Equatable {
+package struct YCbCrChromaSubsampling: Sendable, Equatable {
     /// Per-channel mode for Y, Cb, Cr.
-    public let channelModes: (UInt32, UInt32, UInt32)
+    package let channelModes: (UInt32, UInt32, UInt32)
 
-    public init(y: UInt32 = 0, cb: UInt32 = 0, cr: UInt32 = 0) {
+    package init(y: UInt32 = 0, cb: UInt32 = 0, cr: UInt32 = 0) {
         self.channelModes = (y, cb, cr)
     }
 
-    public static let `default` = YCbCrChromaSubsampling()
+    package static let `default` = YCbCrChromaSubsampling()
 
-    public static func == (lhs: YCbCrChromaSubsampling, rhs: YCbCrChromaSubsampling) -> Bool {
+    package static func == (lhs: YCbCrChromaSubsampling, rhs: YCbCrChromaSubsampling) -> Bool {
         return lhs.channelModes.0 == rhs.channelModes.0
             && lhs.channelModes.1 == rhs.channelModes.1
             && lhs.channelModes.2 == rhs.channelModes.2
     }
 
-    public func write(to w: inout BitWriter) {
+    package func write(to w: inout BitWriter) {
         w.write(bits: 2, value: channelModes.0)
         w.write(bits: 2, value: channelModes.1)
         w.write(bits: 2, value: channelModes.2)
     }
 
-    public static func read(from r: inout BitReader) throws -> YCbCrChromaSubsampling {
+    package static func read(from r: inout BitReader) throws -> YCbCrChromaSubsampling {
         let y = try r.read(bits: 2)
         let cb = try r.read(bits: 2)
         let cr = try r.read(bits: 2)
@@ -125,12 +125,12 @@ public struct YCbCrChromaSubsampling: Sendable, Equatable {
     }
 
     /// libjxl `MaxHShift()` — `max_c kHShift[channel_mode_[c]]`.
-    public var maxHShift: Int {
+    package var maxHShift: Int {
         max(Self.kHShift[mode(0)],
             max(Self.kHShift[mode(1)], Self.kHShift[mode(2)]))
     }
     /// libjxl `MaxVShift()`.
-    public var maxVShift: Int {
+    package var maxVShift: Int {
         max(Self.kVShift[mode(0)],
             max(Self.kVShift[mode(1)], Self.kVShift[mode(2)]))
     }
@@ -140,17 +140,17 @@ public struct YCbCrChromaSubsampling: Sendable, Equatable {
     /// is the per-block horizontal right-shift this channel's plane
     /// uses relative to the (full-resolution) frame block grid.
     @inline(__always)
-    public func hShift(_ c: Int) -> Int {
+    package func hShift(_ c: Int) -> Int {
         return maxHShift - Self.kHShift[mode(c)]
     }
     /// libjxl `VShift(c)`.
     @inline(__always)
-    public func vShift(_ c: Int) -> Int {
+    package func vShift(_ c: Int) -> Int {
         return maxVShift - Self.kVShift[mode(c)]
     }
 
     /// True when all three channels are full-resolution (4:4:4).
-    public var is444: Bool {
+    package var is444: Bool {
         return hShift(0) == 0 && vShift(0) == 0
             && hShift(1) == 0 && vShift(1) == 0
             && hShift(2) == 0 && vShift(2) == 0
@@ -159,19 +159,19 @@ public struct YCbCrChromaSubsampling: Sendable, Equatable {
 
 /// Per-frame blending info — how the frame composites onto the
 /// canvas, optionally referencing a previous reference frame.
-public struct BlendingInfo: Sendable, Equatable {
-    public let mode: BlendMode
+package struct BlendingInfo: Sendable, Equatable {
+    package let mode: BlendMode
     /// Which extra channel acts as alpha for blending. Only emitted
     /// for `Blend` / `AlphaWeightedAdd` when there are extras.
-    public let alphaChannel: UInt32
+    package let alphaChannel: UInt32
     /// Clamp colour samples to [0, 1] during the blend. Only emitted
     /// for blend modes that involve alpha or `Mul`.
-    public let clamp: Bool
+    package let clamp: Bool
     /// Source frame index (0–3). Only emitted if `mode != Replace` or
     /// the frame is a partial crop.
-    public let source: UInt32
+    package let source: UInt32
 
-    public init(mode: BlendMode = .replace,
+    package init(mode: BlendMode = .replace,
                 alphaChannel: UInt32 = 0,
                 clamp: Bool = false,
                 source: UInt32 = 0) {
@@ -181,9 +181,9 @@ public struct BlendingInfo: Sendable, Equatable {
         self.source = source
     }
 
-    public static let `default` = BlendingInfo()
+    package static let `default` = BlendingInfo()
 
-    public func write(
+    package func write(
         to w: inout BitWriter,
         numExtraChannels: Int,
         isPartialFrame: Bool
@@ -210,7 +210,7 @@ public struct BlendingInfo: Sendable, Equatable {
         }
     }
 
-    public static func read(
+    package static func read(
         from r: inout BitReader,
         numExtraChannels: Int,
         isPartialFrame: Bool
@@ -249,21 +249,21 @@ public struct BlendingInfo: Sendable, Equatable {
 
 /// Animation timing for a single frame. Only emitted when the
 /// surrounding `ImageMetadata.animation` is non-nil.
-public struct AnimationFrame: Sendable, Equatable {
+package struct AnimationFrame: Sendable, Equatable {
     /// Duration in tps units, or 0 for "show until next frame".
-    public let duration: UInt32
+    package let duration: UInt32
     /// SMPTE timecode — only emitted when the metadata's
     /// `haveTimecodes` is true.
-    public let timecode: UInt32
+    package let timecode: UInt32
 
-    public init(duration: UInt32 = 0, timecode: UInt32 = 0) {
+    package init(duration: UInt32 = 0, timecode: UInt32 = 0) {
         self.duration = duration
         self.timecode = timecode
     }
 
-    public static let `default` = AnimationFrame()
+    package static let `default` = AnimationFrame()
 
-    public func write(
+    package func write(
         to w: inout BitWriter,
         haveAnimation: Bool, haveTimecodes: Bool
     ) throws {
@@ -279,7 +279,7 @@ public struct AnimationFrame: Sendable, Equatable {
         }
     }
 
-    public static func read(
+    package static func read(
         from r: inout BitReader,
         haveAnimation: Bool, haveTimecodes: Bool
     ) throws -> AnimationFrame {
@@ -300,18 +300,18 @@ public struct AnimationFrame: Sendable, Equatable {
 }
 
 /// Progressive-pass configuration for the frame.
-public struct Passes: Sendable, Equatable {
-    public let numPasses: UInt32
-    public let numDownsample: UInt32
+package struct Passes: Sendable, Equatable {
+    package let numPasses: UInt32
+    package let numDownsample: UInt32
     /// Per-pass shift for non-final passes. `shift[numPasses - 1]` is
     /// always 0 (not transmitted).
-    public let shifts: [UInt32]
+    package let shifts: [UInt32]
     /// Downsample factor for each level.
-    public let downsamples: [UInt32]
+    package let downsamples: [UInt32]
     /// Last-pass index for each downsample level.
-    public let lastPasses: [UInt32]
+    package let lastPasses: [UInt32]
 
-    public init(numPasses: UInt32 = 1,
+    package init(numPasses: UInt32 = 1,
                 numDownsample: UInt32 = 0,
                 shifts: [UInt32] = [],
                 downsamples: [UInt32] = [],
@@ -323,9 +323,9 @@ public struct Passes: Sendable, Equatable {
         self.lastPasses = lastPasses
     }
 
-    public static let `default` = Passes()
+    package static let `default` = Passes()
 
-    public func write(to w: inout BitWriter) throws {
+    package func write(to w: inout BitWriter) throws {
         // num_passes — `U32(1, 2, 3, 4+u(3))`.
         try w.writeU32(numPasses, distributions: (
             .literal(1), .literal(2), .literal(3),
@@ -358,7 +358,7 @@ public struct Passes: Sendable, Equatable {
         }
     }
 
-    public static func read(from r: inout BitReader) throws -> Passes {
+    package static func read(from r: inout BitReader) throws -> Passes {
         let numPasses = try r.readU32((
             .literal(1), .literal(2), .literal(3),
             .offset(constant: 4, extraBits: 3)
@@ -406,14 +406,14 @@ public struct Passes: Sendable, Equatable {
 /// Gaborish weights, EPF custom LUTs, etc.) is incremental future
 /// work — the read path covers it so we can cross-validate against
 /// cjxl-emitted frames.
-public struct LoopFilter: Sendable, Equatable {
-    public let allDefault: Bool
+package struct LoopFilter: Sendable, Equatable {
+    package let allDefault: Bool
     /// Gaborish smoothing on (default true).
-    public let gab: Bool
+    package let gab: Bool
     /// EPF iteration count (default 2, range 0..3 per `Bits(2)`).
-    public let epfIters: UInt32
+    package let epfIters: UInt32
 
-    public init(allDefault: Bool = true,
+    package init(allDefault: Bool = true,
                 gab: Bool = true,
                 epfIters: UInt32 = 2) {
         self.allDefault = allDefault
@@ -421,9 +421,9 @@ public struct LoopFilter: Sendable, Equatable {
         self.epfIters = epfIters
     }
 
-    public static let `default` = LoopFilter()
+    package static let `default` = LoopFilter()
 
-    public func write(to w: inout BitWriter) throws {
+    package func write(to w: inout BitWriter) throws {
         if allDefault {
             w.writeBit(true)
             // BeginExtensions U64.
@@ -456,7 +456,7 @@ public struct LoopFilter: Sendable, Equatable {
     /// Read a LoopFilter. `isModular` gates a few EPF sub-blocks per
     /// libjxl loop_filter.cc — Modular and VarDCT take different
     /// branches inside the EPF section.
-    public static func read(
+    package static func read(
         from r: inout BitReader, isModular: Bool
     ) throws -> LoopFilter {
         let isDefault = try r.readBit()
@@ -523,13 +523,13 @@ public struct LoopFilter: Sendable, Equatable {
 /// Surrounding-metadata context the FrameHeader needs to know which
 /// fields appear on the wire. All values default to "no extras, no
 /// animation, no XYB" — fine for a typical lossless image.
-public struct FrameHeaderContext: Sendable, Equatable {
-    public let xybEncoded: Bool
-    public let numExtraChannels: Int
-    public let haveAnimation: Bool
-    public let haveTimecodes: Bool
+package struct FrameHeaderContext: Sendable, Equatable {
+    package let xybEncoded: Bool
+    package let numExtraChannels: Int
+    package let haveAnimation: Bool
+    package let haveTimecodes: Bool
 
-    public init(xybEncoded: Bool = false,
+    package init(xybEncoded: Bool = false,
                 numExtraChannels: Int = 0,
                 haveAnimation: Bool = false,
                 haveTimecodes: Bool = false) {
@@ -539,36 +539,36 @@ public struct FrameHeaderContext: Sendable, Equatable {
         self.haveTimecodes = haveTimecodes
     }
 
-    public static let `default` = FrameHeaderContext()
+    package static let `default` = FrameHeaderContext()
 }
 
-public struct FrameHeader: Sendable, Equatable {
-    public let allDefault: Bool
-    public let frameType: FrameType
-    public let encoding: FrameEncoding
-    public let flags: UInt64
-    public let colorTransform: ColorTransform
-    public let chromaSubsampling: YCbCrChromaSubsampling
-    public let upsampling: UInt32
-    public let extraChannelUpsampling: [UInt32]
-    public let groupSizeShift: UInt32
-    public let xQmScale: UInt32
-    public let bQmScale: UInt32
-    public let passes: Passes
-    public let dcLevel: UInt32
-    public let customSizeOrOrigin: Bool
-    public let frameOrigin: (x: Int32, y: Int32)
-    public let frameSize: SizeHeader?
-    public let blendingInfo: BlendingInfo
-    public let extraChannelBlendingInfo: [BlendingInfo]
-    public let animationFrame: AnimationFrame
-    public let isLast: Bool
-    public let saveAsReference: UInt32
-    public let saveBeforeColorTransform: Bool
-    public let name: String
-    public let loopFilter: LoopFilter
+package struct FrameHeader: Sendable, Equatable {
+    package let allDefault: Bool
+    package let frameType: FrameType
+    package let encoding: FrameEncoding
+    package let flags: UInt64
+    package let colorTransform: ColorTransform
+    package let chromaSubsampling: YCbCrChromaSubsampling
+    package let upsampling: UInt32
+    package let extraChannelUpsampling: [UInt32]
+    package let groupSizeShift: UInt32
+    package let xQmScale: UInt32
+    package let bQmScale: UInt32
+    package let passes: Passes
+    package let dcLevel: UInt32
+    package let customSizeOrOrigin: Bool
+    package let frameOrigin: (x: Int32, y: Int32)
+    package let frameSize: SizeHeader?
+    package let blendingInfo: BlendingInfo
+    package let extraChannelBlendingInfo: [BlendingInfo]
+    package let animationFrame: AnimationFrame
+    package let isLast: Bool
+    package let saveAsReference: UInt32
+    package let saveBeforeColorTransform: Bool
+    package let name: String
+    package let loopFilter: LoopFilter
 
-    public init(
+    package init(
         allDefault: Bool = false,
         frameType: FrameType = .regular,
         encoding: FrameEncoding = .varDCT,
@@ -620,7 +620,7 @@ public struct FrameHeader: Sendable, Equatable {
         self.loopFilter = loopFilter
     }
 
-    public static func == (lhs: FrameHeader, rhs: FrameHeader) -> Bool {
+    package static func == (lhs: FrameHeader, rhs: FrameHeader) -> Bool {
         return lhs.allDefault == rhs.allDefault
             && lhs.frameType == rhs.frameType
             && lhs.encoding == rhs.encoding
@@ -651,12 +651,12 @@ public struct FrameHeader: Sendable, Equatable {
     /// Spec defaults: regular VarDCT XYB-encoded frame at upsampling=1
     /// with one pass, no crop, default blending (replace), is_last=1.
     /// `all_default=1` reduces this whole structure to a single bit.
-    public static let `default` = FrameHeader(allDefault: true)
+    package static let `default` = FrameHeader(allDefault: true)
 
     /// Convenience: a single-frame Modular lossless header — what
     /// `MinimalLosslessCodec` will use once it migrates off the `M0`
     /// placeholder. No XYB, no animation, group_size_shift=1.
-    public static func singleFrameModularLossless() -> FrameHeader {
+    package static func singleFrameModularLossless() -> FrameHeader {
         FrameHeader(
             allDefault: false,
             frameType: .regular,
@@ -714,7 +714,7 @@ extension FrameHeader {
     /// surrounding `ImageMetadata` the spec needs to gate fields
     /// (`xybEncoded`, `numExtraChannels`, `haveAnimation`,
     /// `haveTimecodes`).
-    public func write(
+    package func write(
         to w: inout BitWriter,
         context: FrameHeaderContext = .default
     ) throws {
@@ -869,7 +869,7 @@ extension FrameHeader {
         w.writeU64(0)
     }
 
-    public static func read(
+    package static func read(
         from r: inout BitReader,
         context: FrameHeaderContext = .default
     ) throws -> FrameHeader {
@@ -1071,7 +1071,7 @@ extension FrameHeader {
 }
 
 /// Bit positions in the `flags` U64. Match libjxl `FrameHeader::Flags`.
-public enum FrameFlag: UInt64 {
+package enum FrameFlag: UInt64 {
     case noise                  = 0x01
     case patches                = 0x02
     case splines                = 0x10

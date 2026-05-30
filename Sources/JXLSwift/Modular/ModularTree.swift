@@ -26,7 +26,7 @@
 
 import Foundation
 
-public enum ModularTreeError: Error, Sendable {
+package enum ModularTreeError: Error, Sendable {
     case tokenReader(TokenStreamReaderError)
     case treeTooLarge(size: Int, limit: Int)
     case invalidProperty(UInt32)
@@ -35,34 +35,34 @@ public enum ModularTreeError: Error, Sendable {
     case truncated
 }
 
-public struct ModularTreeNode: Sendable, Equatable {
+package struct ModularTreeNode: Sendable, Equatable {
     /// Property index this node tests. -1 marks a leaf.
-    public let property: Int32
+    package let property: Int32
     /// Split value (signed). Decision: route left if
     /// `properties[property] <= splitval`, else right. Ignored on
     /// leaves.
-    public let splitVal: Int32
+    package let splitVal: Int32
     /// Index of the left-child node in the parent tree's `nodes`
     /// array. On leaves this is reused as the `leafId` (a
     /// pre-order index across all leaves).
-    public let leftChildOrLeafId: Int
+    package let leftChildOrLeafId: Int
     /// Index of the right-child node. Ignored on leaves.
-    public let rightChild: Int
+    package let rightChild: Int
     /// Modular predictor for leaf nodes (semantic mapping into our
     /// `Predictor` enum, for round-trip with our M0 encoder).
     /// Decision nodes carry `Predictor.zero`.
-    public let predictor: Predictor
+    package let predictor: Predictor
     /// Raw libjxl predictor index 0..13 — the source-of-truth for
     /// per-pixel reconstruction. Used by the streaming decoder; the
     /// `predictor` field is the lossy semantic mapping.
-    public let rawPredictor: UInt32
+    package let rawPredictor: UInt32
     /// Signed offset added to predictor output (leaf only).
-    public let predictorOffset: Int64
+    package let predictorOffset: Int64
     /// Multiplier applied to residuals (leaf only). Always a power
     /// of two: `(mul_bits + 1) << mul_log`.
-    public let multiplier: UInt32
+    package let multiplier: UInt32
 
-    public init(
+    package init(
         property: Int32, splitVal: Int32,
         leftChildOrLeafId: Int, rightChild: Int,
         predictor: Predictor, predictorOffset: Int64, multiplier: UInt32,
@@ -78,19 +78,19 @@ public struct ModularTreeNode: Sendable, Equatable {
         self.multiplier = multiplier
     }
 
-    public var isLeaf: Bool { property == -1 }
-    public var leafId: Int { leftChildOrLeafId }
-    public var leftChild: Int { leftChildOrLeafId }
+    package var isLeaf: Bool { property == -1 }
+    package var leafId: Int { leftChildOrLeafId }
+    package var leftChild: Int { leftChildOrLeafId }
 }
 
-public struct ModularTree: Sendable, Equatable {
+package struct ModularTree: Sendable, Equatable {
     /// Pre-order list of nodes — `nodes[0]` is the root.
-    public let nodes: [ModularTreeNode]
+    package let nodes: [ModularTreeNode]
     /// Number of leaves in the tree (= `(nodes.count + 1) / 2` for a
     /// complete binary tree).
-    public let leafCount: Int
+    package let leafCount: Int
 
-    public init(nodes: [ModularTreeNode]) {
+    package init(nodes: [ModularTreeNode]) {
         self.nodes = nodes
         self.leafCount = nodes.lazy.filter { $0.isLeaf }.count
     }
@@ -111,7 +111,7 @@ public struct ModularTree: Sendable, Equatable {
     /// caused channel 0 first-pixel decode to land on cluster 0
     /// instead of cluster 4 in cjxl-emitted streams — see the
     /// byte-equality investigation in ROADMAP.md.)
-    public func walk(properties: [Int32]) throws -> ModularTreeNode {
+    package func walk(properties: [Int32]) throws -> ModularTreeNode {
         var idx = 0
         var safety = nodes.count + 1
         while safety > 0 {
@@ -146,7 +146,7 @@ public struct ModularTree: Sendable, Equatable {
     /// `treeSizeLimit` caps the node count — libjxl's bound is
     /// `min(1 << 22, 1024 + xsize*ysize*(channels)/16)`; pass any
     /// reasonable upper bound to abort on infinite-tree corruption.
-    public static func decode(
+    package static func decode(
         from r: inout BitReader,
         stream: inout TokenStreamReader,
         treeSizeLimit: Int = 1 << 22
@@ -264,7 +264,7 @@ public struct ModularTree: Sendable, Equatable {
     /// `nodes` array equals `nodes.count + toDecode + 1` at decode
     /// time, which we verify here by walking the tree depth-first
     /// from the root.
-    public func encode(
+    package func encode(
         emit: (_ ctx: Int, _ value: UInt32) throws -> Void
     ) throws {
         // libjxl context indices (must match `decode`).

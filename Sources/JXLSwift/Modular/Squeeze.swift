@@ -28,7 +28,7 @@
 
 import Foundation
 
-public enum Squeeze {
+package enum Squeeze {
 
     /// Forward 1D Haar squeeze on `row`. Pairs of adjacent values
     /// `(a[2i], a[2i+1])` are replaced with `(avg, res)`; output
@@ -37,7 +37,7 @@ public enum Squeeze {
     /// the input length is odd, the last value passes through
     /// unchanged at index `n/2` (as the last LL slot before the
     /// HH section).
-    public static func forwardHorizontal(_ row: [Int32]) -> [Int32] {
+    package static func forwardHorizontal(_ row: [Int32]) -> [Int32] {
         let n = row.count
         let halfPairs = n / 2          // number of (l, r) pairs
         let llCount = (n + 1) / 2      // size of low-pass section (= halfPairs + odd-tail)
@@ -59,7 +59,7 @@ public enum Squeeze {
     }
 
     /// Inverse of `forwardHorizontal`. `(avg, res)` → `(l, r)`.
-    public static func inverseHorizontal(_ row: [Int32]) -> [Int32] {
+    package static func inverseHorizontal(_ row: [Int32]) -> [Int32] {
         let n = row.count
         let halfPairs = n / 2
         let llCount = (n + 1) / 2
@@ -82,7 +82,7 @@ public enum Squeeze {
     /// Forward 1D Haar squeeze on a 2D buffer along the given axis.
     /// `axis = 0` squeezes each row horizontally; `axis = 1`
     /// squeezes each column vertically.
-    public static func forward2D(
+    package static func forward2D(
         _ buf: [Int32], width: Int, height: Int, axis: Int
     ) -> [Int32] {
         precondition(buf.count == width * height,
@@ -116,7 +116,7 @@ public enum Squeeze {
     }
 
     /// Inverse of `forward2D`.
-    public static func inverse2D(
+    package static func inverse2D(
         _ buf: [Int32], width: Int, height: Int, axis: Int
     ) -> [Int32] {
         precondition(buf.count == width * height,

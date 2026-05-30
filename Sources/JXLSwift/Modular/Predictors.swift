@@ -45,7 +45,7 @@
 import Foundation
 
 /// Identifies which predictor to apply.
-public enum Predictor: Sendable, Equatable {
+package enum Predictor: Sendable, Equatable {
     case zero
     case west
     case north
@@ -64,7 +64,7 @@ public enum Predictor: Sendable, Equatable {
 /// codestream. The slot space is u(3) — 8 values; 6 are
 /// definitively used and 2 are reserved for future spec-aligned
 /// predictors.
-public enum PredictorID: UInt32, Sendable, Equatable, CaseIterable {
+package enum PredictorID: UInt32, Sendable, Equatable, CaseIterable {
     case zero             = 0
     case west             = 1
     case north            = 2
@@ -75,7 +75,7 @@ public enum PredictorID: UInt32, Sendable, Equatable, CaseIterable {
     case nn               = 7
 
     /// The `Predictor` this ID names.
-    public var predictor: Predictor {
+    package var predictor: Predictor {
         switch self {
         case .zero:             return .zero
         case .west:             return .west
@@ -92,15 +92,15 @@ public enum PredictorID: UInt32, Sendable, Equatable, CaseIterable {
 /// A 4-neighbour patch around a pixel plus the second-order WW/NN
 /// values for higher-order predictors. Use `init(at:in:)` to read
 /// from an `Int32` 2-D buffer with edge fall-backs.
-public struct Neighbourhood: Sendable, Equatable {
-    public let w:  Int32   // west
-    public let n:  Int32   // north
-    public let nw: Int32   // north-west
-    public let ne: Int32   // north-east
-    public let ww: Int32   // 2 columns west (= west of west)
-    public let nn: Int32   // 2 rows north (= north of north)
+package struct Neighbourhood: Sendable, Equatable {
+    package let w:  Int32   // west
+    package let n:  Int32   // north
+    package let nw: Int32   // north-west
+    package let ne: Int32   // north-east
+    package let ww: Int32   // 2 columns west (= west of west)
+    package let nn: Int32   // 2 rows north (= north of north)
 
-    public init(w: Int32, n: Int32, nw: Int32, ne: Int32,
+    package init(w: Int32, n: Int32, nw: Int32, ne: Int32,
                 ww: Int32 = 0, nn: Int32 = 0) {
         self.w = w; self.n = n; self.nw = nw; self.ne = ne
         self.ww = ww; self.nn = nn
@@ -117,7 +117,7 @@ public struct Neighbourhood: Sendable, Equatable {
     ///
     /// `buffer.count` must equal `width * height` and entries are
     /// row-major.
-    public init(at x: Int, _ y: Int, in buffer: [Int32], width: Int) {
+    package init(at x: Int, _ y: Int, in buffer: [Int32], width: Int) {
         let height = buffer.count / width
         precondition(x >= 0 && x < width, "x out of bounds")
         precondition(y >= 0 && y < height, "y out of bounds")
@@ -151,7 +151,7 @@ extension Predictor {
     /// predicted value. The caller's responsibility to clamp into
     /// the channel's representable range *afterwards* (only the
     /// `gradient` and `medianWNGradient` predictors clamp internally).
-    public func apply(to nbh: Neighbourhood,
+    package func apply(to nbh: Neighbourhood,
                       lo: Int32 = .min, hi: Int32 = .max) -> Int32 {
         switch self {
         case .zero:
@@ -192,12 +192,12 @@ extension Predictor {
 // entropy coder needs for the cluster-near-zero residual
 // distributions that prediction produces.
 
-public enum ZigZag {
+package enum ZigZag {
 
     /// Pack a signed `Int32` into its unsigned zig-zag representation.
     /// `pack(0)=0, pack(-1)=1, pack(1)=2, pack(-2)=3, pack(2)=4, …`.
     @inline(__always)
-    public static func pack(_ v: Int32) -> UInt32 {
+    package static func pack(_ v: Int32) -> UInt32 {
         // Standard formula: (v << 1) ^ (v >> 31). The arithmetic
         // shift produces 0 for non-negative v and -1 (all bits set)
         // for negative v; XOR-ing flips bits when v < 0.
@@ -208,7 +208,7 @@ public enum ZigZag {
     /// Inverse of `pack`. Given a zig-zag-encoded `UInt32`, recover
     /// the original signed value.
     @inline(__always)
-    public static func unpack(_ u: UInt32) -> Int32 {
+    package static func unpack(_ u: UInt32) -> Int32 {
         // (u >> 1) ^ -(u & 1)   — when u is odd, negate after shift.
         let lsb = u & 1
         let signMask = UInt32(bitPattern: -Int32(bitPattern: lsb))

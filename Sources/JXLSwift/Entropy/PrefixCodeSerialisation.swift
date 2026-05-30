@@ -29,19 +29,19 @@
 
 import Foundation
 
-public enum SimplePrefixCodeError: Error, Sendable, Equatable {
+package enum SimplePrefixCodeError: Error, Sendable, Equatable {
     case wrongHeader(expectedHskip: Int, gotHskip: Int)
     case unsupportedNumSymbols(Int)
     case alphabetTooLarge(Int)
     case bitstream(BitstreamError)
 }
 
-public struct SimplePrefixCodeFormat {
+package struct SimplePrefixCodeFormat {
 
     /// Build a complete `[UInt8]` lengths array of size `alphabetSize`
     /// from a list of explicit (symbol, length) pairs. Symbols not
     /// listed get length 0.
-    public static func makeLengths(alphabetSize: Int,
+    package static func makeLengths(alphabetSize: Int,
                                     pairs: [(symbol: Int, length: UInt8)]) -> [UInt8] {
         var lengths = [UInt8](repeating: 0, count: alphabetSize)
         for (s, l) in pairs { lengths[s] = l }
@@ -59,7 +59,7 @@ public struct SimplePrefixCodeFormat {
     ///
     /// `alphabetSize` controls how many bits are used per symbol index
     /// (`ceil(log2(alphabetSize))`). Must be ≥ 2.
-    public static func encode(
+    package static func encode(
         to w: inout BitWriter,
         symbols: [Int],
         alphabetSize: Int,
@@ -92,7 +92,7 @@ public struct SimplePrefixCodeFormat {
     /// Decode a simple prefix code into a complete lengths array of
     /// size `alphabetSize`. Reader must be positioned at the `hskip`
     /// header bits when called.
-    public static func decode(
+    package static func decode(
         from r: inout BitReader,
         alphabetSize: Int
     ) throws -> [UInt8] {
@@ -167,7 +167,7 @@ func ceilLog2(_ value: UInt32) -> UInt32 {
 
 // MARK: - Unified prefix-code decoder
 
-public enum PrefixCodeFormatError: Error, Sendable, Equatable {
+package enum PrefixCodeFormatError: Error, Sendable, Equatable {
     case simple(SimplePrefixCodeError)
     case complex(ComplexPrefixCodeError)
     case zeroAlphabet
@@ -179,12 +179,12 @@ public enum PrefixCodeFormatError: Error, Sendable, Equatable {
 /// Returns a ready-to-use `PrefixCodeTable`.
 ///
 /// Mirrors libjxl `PrefixCodeData::ReadFromBitStream`.
-public enum PrefixCodeFormat {
+package enum PrefixCodeFormat {
 
     /// Single-entry decode: returns a `PrefixCodeTable` for a code
     /// with `alphabetSize` symbols. Caller must position the reader
     /// at the `hskip` header bits.
-    public static func decode(
+    package static func decode(
         from r: inout BitReader, alphabetSize: Int
     ) throws -> PrefixCodeTable {
         guard alphabetSize >= 1 else {
@@ -245,7 +245,7 @@ public enum PrefixCodeFormat {
     /// back to `ComplexPrefixCodeFormat.encode`. Single-symbol
     /// alphabets emit zero bits — they're a degenerate case
     /// declared by `alphabet_size == 1` in the surrounding codebook.
-    public static func encode(
+    package static func encode(
         to w: inout BitWriter,
         lengths: [UInt8],
         alphabetSize: Int
@@ -351,7 +351,7 @@ public enum PrefixCodeFormat {
 // the spec text; libjxl byte-for-byte cross-validation should confirm
 // before treating it as authoritative.
 
-public enum ComplexPrefixCodeError: Error, Sendable, Equatable {
+package enum ComplexPrefixCodeError: Error, Sendable, Equatable {
     case wrongHeader(gotHskip: Int)
     case reservedCLL(value: Int)
     case reservedSymbol(value: Int)
@@ -401,12 +401,12 @@ fileprivate func writeCLLValue(_ v: UInt8, to w: inout BitWriter) throws {
 /// compression") emission strategy — every literal length is emitted
 /// as itself, with no symbol-16 / symbol-17 runs. This is correct but
 /// not size-optimal; an optimising encoder is future work.
-public struct ComplexPrefixCodeFormat {
+package struct ComplexPrefixCodeFormat {
 
     /// Decode a complex prefix code into a complete lengths array of
     /// size `alphabetSize`. Reader must be positioned at the `hskip`
     /// header bits when called.
-    public static func decode(
+    package static func decode(
         from r: inout BitReader,
         alphabetSize: Int
     ) throws -> [UInt8] {
@@ -529,7 +529,7 @@ public struct ComplexPrefixCodeFormat {
     /// The encoder builds the meta-Huffman from a histogram of the
     /// literal lengths used in `lengths`, then emits each length as
     /// its meta-Huffman codeword.
-    public static func encode(
+    package static func encode(
         to w: inout BitWriter,
         lengths: [UInt8]
     ) throws {

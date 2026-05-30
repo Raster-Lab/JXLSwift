@@ -22,7 +22,7 @@ import Foundation
 
 /// Errors raised by the scan encoder when component counts /
 /// dimensions don't line up.
-public enum JPEGScanEncodeError: Error, Sendable, Equatable {
+package enum JPEGScanEncodeError: Error, Sendable, Equatable {
     /// The scan header listed components not present in the
     /// per-component coefficient input.
     case unknownScanComponent(componentId: Int)
@@ -38,11 +38,11 @@ public enum JPEGScanEncodeError: Error, Sendable, Equatable {
 /// One per-component scan binding (mirrors `JPEGScanComponent`
 /// from the existing reader, but indexed by the scan-component
 /// position not the SOFn order).
-public struct JPEGScanComponentEncode: Sendable, Equatable {
-    public var componentIndex: Int       // index into `components`
-    public var dcTableId: Int            // 0..3
-    public var acTableId: Int            // 0..3
-    public init(
+package struct JPEGScanComponentEncode: Sendable, Equatable {
+    package var componentIndex: Int       // index into `components`
+    package var dcTableId: Int            // 0..3
+    package var acTableId: Int            // 0..3
+    package init(
         componentIndex: Int,
         dcTableId: Int, acTableId: Int
     ) {
@@ -52,7 +52,7 @@ public struct JPEGScanComponentEncode: Sendable, Equatable {
     }
 }
 
-public enum JPEGScanEncoder {
+package enum JPEGScanEncoder {
 
     /// Encode a baseline-sequential scan.
     ///
@@ -72,7 +72,7 @@ public enum JPEGScanEncoder {
     ///     MCU row/col counts.
     /// - Returns: the SOS payload bytes (Huffman-coded + byte-stuffed,
     ///   with RST markers if `restartInterval > 0`).
-    public static func encodeBaselineSequential(
+    package static func encodeBaselineSequential(
         components: [JPEGComponentBlocks],
         frameComponents: [JPEGFrameComponent],
         scanComponents: [JPEGScanComponentEncode],
@@ -188,7 +188,7 @@ public enum JPEGScanEncoder {
     ///
     /// AC scans are always single-component (non-interleaved); DC
     /// scans may be interleaved (num_components > 1).
-    public static func encodeProgressive(
+    package static func encodeProgressive(
         ss: Int, se: Int, ah: Int, al: Int,
         components: [JPEGComponentBlocks],
         frameComponents: [JPEGFrameComponent],

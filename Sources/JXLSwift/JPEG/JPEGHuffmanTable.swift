@@ -23,7 +23,7 @@ import Foundation
 /// Which entropy-coding role this Huffman table fills. A baseline
 /// JPEG carries one DC and one AC table per component; progressive
 /// scans may pull in different tables per scan.
-public enum JPEGHuffmanClass: Int, Sendable, Equatable {
+package enum JPEGHuffmanClass: Int, Sendable, Equatable {
     case dc = 0
     case ac = 1
 }
@@ -32,20 +32,20 @@ public enum JPEGHuffmanClass: Int, Sendable, Equatable {
 /// list, exactly as they appear in the DHT payload. Length-counts
 /// + symbol order are enough to reconstruct the canonical Huffman
 /// code via the ITU-T T.81 §C.2 algorithm.
-public struct JPEGHuffmanTable: Sendable, Equatable {
+package struct JPEGHuffmanTable: Sendable, Equatable {
     /// DC or AC class.
-    public let `class`: JPEGHuffmanClass
+    package let `class`: JPEGHuffmanClass
     /// Destination identifier 0..3 (referenced by the SOS scan
     /// header to bind a component to a particular DC + AC pair).
-    public let tableId: Int
+    package let tableId: Int
     /// `bits[i]` is the number of Huffman codes with length `i + 1`
     /// bits (so `bits.count` is always 16). Sums to the total
     /// symbol count `huffvals.count`.
-    public let bits: [UInt8]
+    package let bits: [UInt8]
     /// The symbol values, in canonical Huffman code order. Each
     /// `Vi` is one byte; for a DC table the value is the magnitude
     /// category (0..11), for an AC table it packs `run << 4 | size`.
-    public let huffvals: [UInt8]
+    package let huffvals: [UInt8]
 }
 
 extension JPEGHuffmanTable {
@@ -54,7 +54,7 @@ extension JPEGHuffmanTable {
     /// `JPEGParseError.invalidSegmentLength` if the byte budget
     /// doesn't line up cleanly (typical malformed inputs:
     /// truncated symbol list, `sum(Li) > 256`).
-    public static func parse(
+    package static func parse(
         dhtPayload p: Data
     ) throws -> [JPEGHuffmanTable] {
         var out: [JPEGHuffmanTable] = []
@@ -111,7 +111,7 @@ extension JPEGStructure {
     /// Walk every DHT segment in `data` and return the
     /// concatenated list of `JPEGHuffmanTable`s. Same input the
     /// segment walker expects (full JPEG file starting with SOI).
-    public static func huffmanTables(
+    package static func huffmanTables(
         in data: Data
     ) throws -> [JPEGHuffmanTable] {
         var reader = JPEGSegmentReader(data)

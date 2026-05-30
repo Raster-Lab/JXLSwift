@@ -19,30 +19,30 @@
 
 import Foundation
 
-public enum AliasTableError: Error, Sendable {
+package enum AliasTableError: Error, Sendable {
     case tableSizeExceedsRange
     case distributionTooLarge
     case sumNotEqualRange
 }
 
-public struct AliasTable: Sendable {
-    public struct Entry: Sendable {
-        public var cutoff: UInt16
-        public var rightValue: UInt16
-        public var freq0: UInt16
-        public var offsets1: UInt16
-        public var freq1: UInt16
+package struct AliasTable: Sendable {
+    package struct Entry: Sendable {
+        package var cutoff: UInt16
+        package var rightValue: UInt16
+        package var freq0: UInt16
+        package var offsets1: UInt16
+        package var freq1: UInt16
     }
-    public struct LookupResult: Sendable {
-        public let value: Int     // symbol
-        public let offset: UInt32
-        public let freq: UInt32
+    package struct LookupResult: Sendable {
+        package let value: Int     // symbol
+        package let offset: UInt32
+        package let freq: UInt32
     }
-    public let entries: [Entry]
-    public let logEntrySize: Int
-    public let entrySizeMinusOne: Int
+    package let entries: [Entry]
+    package let logEntrySize: Int
+    package let entrySizeMinusOne: Int
 
-    public init(
+    package init(
         distribution: [Int32],
         logRange: Int,
         logAlphaSize: Int
@@ -151,7 +151,7 @@ public struct AliasTable: Sendable {
     /// Look up `(value, offset, freq)` for a given rANS slot. Mirrors
     /// libjxl `AliasTable::Lookup`.
     @inline(__always)
-    public func lookup(slot: UInt32) -> LookupResult {
+    package func lookup(slot: UInt32) -> LookupResult {
         let i = Int(slot) >> logEntrySize
         let pos = Int(slot) & entrySizeMinusOne
         let entry = entries[i]

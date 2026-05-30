@@ -8,7 +8,9 @@ import PackageDescription
 // amended 2026-05) — currently scaffolding only; functions added there must
 // be byte-equivalent to a scalar Swift reference and gate-tested.
 //
-// Status: medical-grade lossless codec (v0.14.0 — DICOM + CID22 validated).
+// Status: v1.0.0 production-ready lossless JPEG XL codec — medical-grade
+// (DICOM + CID22 byte-exact via djxl), API frozen, Swift-first with the
+// `JXLPerfC` boundary scaffolded for future C/C++ hot-path work.
 // See CHANGELOG.md / ROADMAP.md.
 
 let package = Package(

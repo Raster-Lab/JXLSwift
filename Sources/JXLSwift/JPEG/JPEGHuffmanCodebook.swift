@@ -21,35 +21,35 @@
 import Foundation
 
 /// One Huffman code → symbol entry in the runtime codebook.
-public struct JPEGHuffmanCode: Sendable, Equatable {
+package struct JPEGHuffmanCode: Sendable, Equatable {
     /// The 8-bit symbol value (DC magnitude category, or
     /// AC `run << 4 | size` byte).
-    public let symbol: UInt8
+    package let symbol: UInt8
     /// The canonical Huffman code value, right-aligned in
     /// `length` bits.
-    public let code: UInt32
+    package let code: UInt32
     /// Bit length of `code`, 1..16.
-    public let length: Int
+    package let length: Int
 }
 
 /// Runtime Huffman codebook ready to drive an entropy decoder.
-public struct JPEGHuffmanCodebook: Sendable {
+package struct JPEGHuffmanCodebook: Sendable {
     /// Per-symbol code, in input order — i.e. `codes[i]`
     /// corresponds to `table.huffvals[i]`. Empty for tables with
     /// no symbols (degenerate but spec-legal).
-    public let codes: [JPEGHuffmanCode]
+    package let codes: [JPEGHuffmanCode]
     /// `maxcode[L-1]` is the largest canonical code value of
     /// length L, or `-1` if no codes of that length exist. Used
     /// by §C.2 Figure F.15's decode loop: if the accumulated bits
     /// (interpreted as an L-bit integer) are `≤ maxcode[L-1]`,
     /// the symbol is `huffvals[valoffset[L-1] + (bits - mincode[L-1])]`.
-    public let maxcode: [Int]
+    package let maxcode: [Int]
     /// `mincode[L-1]` — the smallest canonical code value of
     /// length L. Undefined when `maxcode[L-1] == -1`.
-    public let mincode: [Int]
+    package let mincode: [Int]
     /// `valoffset[L-1]` — offset into `huffvals` where length-L
     /// symbols begin.
-    public let valoffset: [Int]
+    package let valoffset: [Int]
 }
 
 extension JPEGHuffmanTable {
@@ -57,7 +57,7 @@ extension JPEGHuffmanTable {
     /// Throws `JPEGParseError.invalidSegmentLength` if the
     /// length-count array `bits` overruns the 16-bit code space
     /// (a malformed DHT segment).
-    public func buildCodebook() throws -> JPEGHuffmanCodebook {
+    package func buildCodebook() throws -> JPEGHuffmanCodebook {
         // §C.2 Figure F.15: generate HUFFSIZE, then HUFFCODE.
         // Then collapse into mincode/maxcode/valoffset.
         precondition(bits.count == 16,
@@ -141,7 +141,7 @@ extension JPEGHuffmanCodebook {
     /// symbol is `huffvals[valoffset[L-1] + (code - mincode[L-1])]`.
     /// Falling through all 16 lengths means the stream is
     /// malformed.
-    public func decodeSymbol(
+    package func decodeSymbol(
         nextBit: () -> Int?,
         huffvals: [UInt8]
     ) -> UInt8? {

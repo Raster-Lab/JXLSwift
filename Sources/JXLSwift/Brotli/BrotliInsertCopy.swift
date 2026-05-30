@@ -18,22 +18,22 @@ import Foundation
 
 /// One row of the 704-entry insert-and-copy command lookup table.
 /// Mirrors libjxl/brotli's `CmdLutElement`.
-public struct BrotliCmdLutElement: Sendable, Equatable {
-    public let insertLenExtraBits: UInt8
-    public let copyLenExtraBits: UInt8
+package struct BrotliCmdLutElement: Sendable, Equatable {
+    package let insertLenExtraBits: UInt8
+    package let copyLenExtraBits: UInt8
     /// 0 = use last distance from cache; -1 = read a fresh distance.
-    public let distanceCode: Int8
+    package let distanceCode: Int8
     /// Distance context 0..3 (RFC 7932 §4 distance prefix code uses
     /// this as a sub-stream selector).
-    public let context: UInt8
-    public let insertLenOffset: UInt16
-    public let copyLenOffset: UInt16
+    package let context: UInt8
+    package let insertLenOffset: UInt16
+    package let copyLenOffset: UInt16
 }
 
-public enum BrotliInsertCopy {
+package enum BrotliInsertCopy {
 
     /// Number of IC alphabet symbols (BROTLI_NUM_COMMAND_SYMBOLS).
-    public static let alphabetSize: Int = 704
+    package static let alphabetSize: Int = 704
 
     /// Extra-bits tables from RFC 7932 §5 / libjxl `prefix.c`.
     static let kInsertLengthExtraBits: [UInt8] = [
@@ -53,7 +53,7 @@ public enum BrotliInsertCopy {
     ]
 
     /// Precomputed 704-entry table. Built lazily on first access.
-    public static let cmdLut: [BrotliCmdLutElement] = {
+    package static let cmdLut: [BrotliCmdLutElement] = {
         var insertOffsets = [UInt16](repeating: 0, count: 24)
         var copyOffsets   = [UInt16](repeating: 0, count: 24)
         copyOffsets[0] = 2
@@ -99,7 +99,7 @@ public enum BrotliInsertCopy {
     ///     `-1` ("read distance separately")
     ///   - `distanceContext` — 0..3, used as the sub-stream selector
     ///     for the distance prefix code
-    public static func decodeCommand(
+    package static func decodeCommand(
         from r: inout BitReader,
         prefixCode: BrotliPrefixCode
     ) throws -> (insertLength: UInt32, copyLength: UInt32,

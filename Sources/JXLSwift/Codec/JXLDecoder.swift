@@ -163,7 +163,7 @@ public struct JXLDecoder: Sendable {
     ///   ([X=Cb, Y, B=Cr] for kYCbCr 3-channel frames).
     /// - Throws: `DecoderError.notImplemented` until the refactor
     ///   above lands.
-    public func decodeToCoefficients(
+    package func decodeToCoefficients(
         _ data: Data
     ) throws -> JXLCoefficientPlanes {
         // Use a sentinel-error escape hatch: run the full
@@ -213,7 +213,7 @@ public struct JXLDecoder: Sendable {
     /// - Returns: a `JXLJPEGBridgeData` bundle.
     /// - Throws: `DecoderError.notImplemented` for non-VarDCT frames
     ///   or if the early-capture hook doesn't fire.
-    public func decodeJPEGBridgeData(
+    package func decodeJPEGBridgeData(
         _ data: Data
     ) throws -> JXLJPEGBridgeData {
         let inspection = try inspect(data)
@@ -268,31 +268,31 @@ fileprivate struct EarlyCoefficientCapture: Error {
 /// `--lossless_jpeg=1` codestream — enough (combined with the jbrd
 /// box's marker / Huffman structure) to reconstruct the source JPEG
 /// byte-for-byte with no reference to the original.
-public struct JXLJPEGBridgeData: Sendable {
+package struct JXLJPEGBridgeData: Sendable {
     /// Decoded DCT coefficients in JXL channel order [X, Y, B].
-    public let planes: JXLCoefficientPlanes
+    package let planes: JXLCoefficientPlanes
     /// RAW slot 0 quant table (3×64, channel-major, JXL-transposed),
     /// or `nil` when the frame's slot 0 isn't a JPEG-compatible RAW
     /// table.
-    public let rawQuantTable: [Int32]?
+    package let rawQuantTable: [Int32]?
     /// Frame chroma subsampling — drives JPEG sampling-factor
     /// recovery.
-    public let chromaSubsampling: YCbCrChromaSubsampling
+    package let chromaSubsampling: YCbCrChromaSubsampling
     /// Frame colour transform (`.ycbcr` / `.none`).
-    public let colorTransform: JXLBridgeColorTransform
+    package let colorTransform: JXLBridgeColorTransform
     /// Reconstructed codestream ICC profile (§C.3.4), or `nil` when
     /// the frame's colour encoding is enumerated rather than ICC.
     /// The reverse transcode splices this into the APP2
     /// `ICC_PROFILE` marker.
-    public let icc: Data?
+    package let icc: Data?
     /// True image pixel dimensions from the JXL `SizeHeader` — the
     /// source JPEG's SOFn `width`/`height`. These are the *exact*
     /// dimensions (e.g. 17×23), not the block-rounded grid
     /// (`blocksX*8`), so odd-sized JPEGs reconstruct byte-identically.
-    public let width: Int
-    public let height: Int
+    package let width: Int
+    package let height: Int
 
-    public init(
+    package init(
         planes: JXLCoefficientPlanes,
         rawQuantTable: [Int32]?,
         chromaSubsampling: YCbCrChromaSubsampling,
@@ -4092,12 +4092,7 @@ extension JXLDecoder {
     /// Palette transform, LZ77 length-token expansion, TOC
     /// permutation, VarDCT frames. These will throw structured errors.
     ///
-    /// The `force` parameter is retained for backwards compatibility
-    /// with the experimental-period gating; it's now a no-op.
-    public func decodeModular(
-        _ data: Data, force: Bool = true
-    ) throws -> ModularImage {
-        _ = force
+    package func decodeModular(_ data: Data) throws -> ModularImage {
         let inspection = try inspect(data)
         guard let m = inspection.metadata else {
             throw DecoderError.notImplemented(

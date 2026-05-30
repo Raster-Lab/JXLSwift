@@ -37,7 +37,7 @@
 
 import Foundation
 
-public enum EPFError: Error, Sendable, Equatable {
+package enum EPFError: Error, Sendable, Equatable {
     /// A block's sigma is above the kMinSigma early-exit threshold,
     /// meaning the bilateral kernel would actually apply. The full
     /// kernel is not yet implemented — pin this down first with a
@@ -46,26 +46,26 @@ public enum EPFError: Error, Sendable, Equatable {
 }
 
 /// Per-block parameters needed by `EPF.compute*`.
-public struct EPFParams: Sendable {
+package struct EPFParams: Sendable {
     /// Number of iterations to apply (0..3). 0 = skip EPF entirely.
-    public let epfIters: Int
+    package let epfIters: Int
     /// libjxl `epf_quant_mul` (default 0.46).
-    public let quantMul: Float
+    package let quantMul: Float
     /// libjxl `epf_sharp_lut[0..7]` — default `[i/7 for i in 0..7]`.
-    public let sharpLut: [Float]
+    package let sharpLut: [Float]
     /// Per-channel SAD scales — default `[X=40, Y=5, B=3.5]`.
-    public let channelScale: (Float, Float, Float)
+    package let channelScale: (Float, Float, Float)
     /// Pass-1 / pass-2 weight floors.
-    public let pass1ZeroFlush: Float
-    public let pass2ZeroFlush: Float
+    package let pass1ZeroFlush: Float
+    package let pass2ZeroFlush: Float
     /// libjxl `epf_pass0_sigma_scale` (default 0.9).
-    public let pass0SigmaScale: Float
+    package let pass0SigmaScale: Float
     /// libjxl `epf_pass2_sigma_scale` (default 6.5).
-    public let pass2SigmaScale: Float
+    package let pass2SigmaScale: Float
     /// libjxl `epf_border_sad_mul` (default 0.667).
-    public let borderSadMul: Float
+    package let borderSadMul: Float
 
-    public static let `default` = EPFParams(
+    package static let `default` = EPFParams(
         epfIters: 2,
         quantMul: 0.46,
         sharpLut: (0..<8).map { Float($0) / 7.0 },
@@ -78,24 +78,24 @@ public struct EPFParams: Sendable {
     )
 }
 
-public enum EPF {
+package enum EPF {
 
     /// libjxl `epf.h::kInvSigmaNum`. Used in the per-block sigma
     /// formula to derive `sigma_quant` from `quant_scale × row_quant`.
-    public static let kInvSigmaNum: Float = -1.1715728752538099024
+    package static let kInvSigmaNum: Float = -1.1715728752538099024
 
     /// libjxl `epf.h::kMinSigma`. Per-block sigma values strictly
     /// below this floor cause the EPF stage to early-exit (pixel
     /// pass-through). The `<` in the comparison means values *more
     /// negative* than this floor get the pass-through; values
     /// closer to zero (or positive) trigger the bilateral kernel.
-    public static let kMinSigma: Float = -3.90524291751269967465540850526868
+    package static let kMinSigma: Float = -3.90524291751269967465540850526868
 
     /// Compute per-block `inv_sigma` from the EPF sharpness and
     /// quantiser state. Returns the value libjxl stores in its
     /// `sigma_` image (which is actually `1/sigma`, i.e., inverse).
     /// The caller samples this value when filtering each pixel.
-    public static func computeInvSigma(
+    package static func computeInvSigma(
         sharpness: UInt8,
         rowQuant: Int32,
         quantScale: Float,
@@ -122,7 +122,7 @@ public enum EPF {
     /// -10000 — far below kMinSigma — so this returns `true` and
     /// no filtering is applied.
     @inline(__always)
-    public static func isNoOp(invSigma: Float) -> Bool {
+    package static func isNoOp(invSigma: Float) -> Bool {
         return invSigma < kMinSigma
     }
 
@@ -137,7 +137,7 @@ public enum EPF {
     /// pass over the planes; intermediate results are written to scratch
     /// buffers and ping-pong'd. Per-block `inv_sigma` is recomputed
     /// from `sharpnessField`, `perBlockQF`, and `quantScale`.
-    public static func applyAllStages(
+    package static func applyAllStages(
         planeX: inout [Float], planeY: inout [Float], planeB: inout [Float],
         width: Int, height: Int,
         sharpnessField: [UInt8],

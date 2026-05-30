@@ -31,9 +31,9 @@ import Foundation
 /// One 8×8 block of quantised DCT coefficients in natural
 /// (row-major) order. Position 0 is the DC term; positions 1..63
 /// are the AC terms.
-public struct JPEGCoefficientBlock: Sendable, Equatable {
-    public var coefficients: [Int32]  // length 64
-    public init(_ c: [Int32] = Array(repeating: 0, count: 64)) {
+package struct JPEGCoefficientBlock: Sendable, Equatable {
+    package var coefficients: [Int32]  // length 64
+    package init(_ c: [Int32] = Array(repeating: 0, count: 64)) {
         precondition(c.count == 64,
             "JPEGCoefficientBlock requires 64 coefficients")
         self.coefficients = c
@@ -44,18 +44,18 @@ public struct JPEGCoefficientBlock: Sendable, Equatable {
 /// that successive DC magnitudes add to. Initialised to 0 at the
 /// start of each scan AND after every RST marker (per
 /// §F.2.1.3.1).
-public struct JPEGDCPredictor: Sendable, Equatable {
-    public var value: Int32 = 0
-    public init() {}
-    public mutating func reset() { value = 0 }
+package struct JPEGDCPredictor: Sendable, Equatable {
+    package var value: Int32 = 0
+    package init() {}
+    package mutating func reset() { value = 0 }
 }
 
 /// Standard JPEG 8×8 zig-zag scan order (ITU-T T.81 Figure A.6).
 /// `zigZag[i]` is the natural-order index of the i-th zig-zag
 /// position. Inverse mapping (`natural → zig-zag`) is its
 /// reflection.
-public enum JPEGZigZag {
-    public static let order: [Int] = [
+package enum JPEGZigZag {
+    package static let order: [Int] = [
         0,  1,  8, 16,  9,  2,  3, 10,
        17, 24, 32, 25, 18, 11,  4,  5,
        12, 19, 26, 33, 40, 48, 41, 34,
@@ -68,7 +68,7 @@ public enum JPEGZigZag {
 }
 
 /// Decode one 8×8 quantised DCT block from a JPEG entropy stream.
-public enum JPEGBlockDecoder {
+package enum JPEGBlockDecoder {
 
     /// Decode a single block.
     /// - Parameters:
@@ -80,7 +80,7 @@ public enum JPEGBlockDecoder {
     /// - Returns: 64 quantised DCT coefficients in natural order.
     /// - Throws: `JPEGBitReaderError` for stream-level problems,
     ///   `JPEGBlockDecodeError` for malformed coefficient tokens.
-    public static func decode(
+    package static func decode(
         from reader: inout JPEGBitReader,
         dcCodebook: JPEGHuffmanCodebook,
         dcHuffvals: [UInt8],
@@ -200,7 +200,7 @@ public enum JPEGBlockDecoder {
 /// Errors raised when the entropy stream's coefficient tokens
 /// don't make sense — distinct from `JPEGBitReaderError`
 /// (stream-level) and `JPEGParseError` (segment-level).
-public enum JPEGBlockDecodeError: Error, Sendable, Equatable,
+package enum JPEGBlockDecodeError: Error, Sendable, Equatable,
                                   LocalizedError {
     /// Hit EOF or a non-RST marker while reading the DC
     /// magnitude-category byte.
@@ -216,7 +216,7 @@ public enum JPEGBlockDecodeError: Error, Sendable, Equatable,
     /// AC token had `SSSS == 0` with an `RRRR` other than 0 or 15.
     case invalidACToken(UInt8)
 
-    public var errorDescription: String? {
+    package var errorDescription: String? {
         switch self {
         case .malformedDCSymbol:
             return "JPEG block decode: malformed DC symbol"

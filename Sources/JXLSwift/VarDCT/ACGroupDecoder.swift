@@ -22,12 +22,12 @@
 
 import Foundation
 
-public enum ACGroupDecoderError: Error, Sendable {
+package enum ACGroupDecoderError: Error, Sendable {
     case sizeMismatch(String)
     case acDecode(ACDecoderError)
 }
 
-public enum ACGroupDecoder {
+package enum ACGroupDecoder {
 
     /// Decode one channel's worth of an AC group: walk every 8×8
     /// cell in raster order, call `ACDecoder.decodeBlock`,
@@ -52,7 +52,7 @@ public enum ACGroupDecoder {
     /// - Returns: row-major float pixel buffer of length
     ///   `(groupX * 8) * (groupY * 8)`, ready for inverse colour
     ///   transform / Gaborish.
-    public static func decodeChannel(
+    package static func decodeChannel(
         groupX: Int, groupY: Int,
         dcPlane: [Int32],
         weights: [Float], scale: Float,
@@ -147,10 +147,10 @@ public enum ACGroupDecoder {
 
 /// Multi-channel result. One float pixel buffer per colour plane,
 /// already inverse-DCT'd back to the (DC + AC IDCT) domain.
-public struct ACGroupRGBResult: Sendable {
-    public let xPlane: [Float]
-    public let yPlane: [Float]
-    public let bPlane: [Float]
+package struct ACGroupRGBResult: Sendable {
+    package let xPlane: [Float]
+    package let yPlane: [Float]
+    package let bPlane: [Float]
 }
 
 extension ACGroupDecoder {
@@ -167,7 +167,7 @@ extension ACGroupDecoder {
     ///
     /// `cfl: nil` skips the CfL re-correlation entirely (useful
     /// for tests + sRGB-input-as-XYB-stub frames).
-    public static func decodeRGB(
+    package static func decodeRGB(
         groupX: Int, groupY: Int,
         dcPlaneX: [Int32], dcPlaneY: [Int32], dcPlaneB: [Int32],
         weightsX: [Float], weightsY: [Float], weightsB: [Float],
@@ -333,14 +333,14 @@ extension ACGroupDecoder {
 /// only by the round-trip tests; will become the per-channel sub-
 /// loop of the production lossy encoder once the AC global section
 /// + bitstream layer is ready.
-public enum ACGroupEncoder {
+package enum ACGroupEncoder {
 
     /// Tokenise one channel's worth of an AC group: forward DCT each
     /// 8×8 cell, quantise, write tokens via `ACEncoder.encodeBlock`.
     /// Returns the per-cell DC plane (so the caller can write it
     /// separately, mirroring how libjxl's DC group section ships
     /// the DC values out-of-band from the AC stream).
-    public static func encodeChannel(
+    package static func encodeChannel(
         pixels: [Float],
         groupX: Int, groupY: Int,
         weights: [Float], scale: Float,
@@ -410,7 +410,7 @@ public enum ACGroupEncoder {
     /// (Y, X, B) interleaved per cell. Returns the three DC planes
     /// (which the caller writes separately, mirroring how the libjxl
     /// DC group section ships DC out-of-band from the AC stream).
-    public static func encodeRGB(
+    package static func encodeRGB(
         xPx: [Float], yPx: [Float], bPx: [Float],
         groupX: Int, groupY: Int,
         weightsX: [Float], weightsY: [Float], weightsB: [Float],

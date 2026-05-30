@@ -33,13 +33,13 @@ import Foundation
 /// Per-component grid of decoded JPEG DCT coefficient blocks in
 /// row-major order. `blocks[r * blocksWide + c]` is the block at
 /// the (c, r) position within the per-component grid.
-public struct JPEGComponentBlocks: Sendable {
-    public let componentId: Int
-    public let blocksWide: Int
-    public let blocksHigh: Int
-    public var blocks: [JPEGCoefficientBlock]
+package struct JPEGComponentBlocks: Sendable {
+    package let componentId: Int
+    package let blocksWide: Int
+    package let blocksHigh: Int
+    package var blocks: [JPEGCoefficientBlock]
 
-    public init(
+    package init(
         componentId: Int,
         blocksWide: Int, blocksHigh: Int,
         blocks: [JPEGCoefficientBlock]
@@ -58,7 +58,7 @@ public struct JPEGComponentBlocks: Sendable {
 /// frame header — distinct from per-block decode errors so callers
 /// can tell "scan config wrong" from "this block's tokens are
 /// malformed".
-public enum JPEGScanDecodeError: Error, Sendable, Equatable,
+package enum JPEGScanDecodeError: Error, Sendable, Equatable,
                                  LocalizedError {
     /// Scan referenced a component ID not in the frame's SOFn.
     case unknownScanComponent(componentId: Int)
@@ -72,7 +72,7 @@ public enum JPEGScanDecodeError: Error, Sendable, Equatable,
     /// Frame dimensions or sampling factors don't make sense.
     case invalidFrameGeometry(reason: String)
 
-    public var errorDescription: String? {
+    package var errorDescription: String? {
         switch self {
         case .unknownScanComponent(let c):
             return "scan references component \(c) not in frame"
@@ -91,11 +91,11 @@ public enum JPEGScanDecodeError: Error, Sendable, Equatable,
 /// indexed by table destination ID. The scan decoder routes each
 /// component through `dcCodebooks[scanComponent.dcTableId]` and
 /// `acCodebooks[scanComponent.acTableId]`.
-public typealias JPEGHuffmanCodebookMap =
+package typealias JPEGHuffmanCodebookMap =
     [Int: (codebook: JPEGHuffmanCodebook, huffvals: [UInt8])]
 
 /// Drives one JPEG baseline-sequential scan to completion.
-public enum JPEGScanDecoder {
+package enum JPEGScanDecoder {
 
     /// Decode every MCU of a baseline-sequential scan. Returns
     /// one `JPEGComponentBlocks` per scan component, in scan
@@ -113,7 +113,7 @@ public enum JPEGScanDecoder {
     ///     ID. Build by parsing every DHT segment and calling
     ///     `buildCodebook` on each one.
     ///   - restartInterval: DRI value (0 = no restarts).
-    public static func decodeBaselineSequential(
+    package static func decodeBaselineSequential(
         from reader: inout JPEGBitReader,
         scanHeader: JPEGScanHeader,
         frameComponents: [JPEGFrameComponent],
@@ -286,7 +286,7 @@ extension JPEGScanDecoder {
     ///   - frameComponents: SOFn component list (defines the grid).
     ///   - components: shared, in-out per-frame-component coefficient
     ///     grids (parallel to `frameComponents`). Refined in place.
-    public static func decodeProgressive(
+    package static func decodeProgressive(
         from reader: inout JPEGBitReader,
         scanHeader: JPEGScanHeader,
         frameComponents: [JPEGFrameComponent],

@@ -32,33 +32,33 @@
 
 import Foundation
 
-public enum EntropySectionHeaderError: Error, Sendable {
+package enum EntropySectionHeaderError: Error, Sendable {
     case bitstream(BitstreamError)
     case lz77(LZ77ConfigError)
     case contextMap(ContextMapError)
     case hybridConfig(HybridUintConfigError)
 }
 
-public struct EntropySectionHeader: Sendable {
+package struct EntropySectionHeader: Sendable {
     /// LZ77 configuration. When `enabled`, `lengthUintConfig` is set
     /// from the wire; otherwise it's the disabled placeholder.
-    public let lz77: LZ77Config
+    package let lz77: LZ77Config
     /// Context map. When `numContexts <= 1` this is the trivial map
     /// `[0]` (no bits emitted). Otherwise it routes contexts to
     /// clusters via `ContextMap.read`.
-    public let contextMap: ContextMap
+    package let contextMap: ContextMap
     /// True if per-histogram codes are Huffman / prefix codes; false
     /// if they're rANS distributions.
-    public let usePrefixCode: Bool
+    package let usePrefixCode: Bool
     /// Log of the per-histogram alphabet size. `PREFIX_MAX_BITS` (=15)
     /// when `usePrefixCode`, otherwise `5..8` (5 + u(2)).
-    public let logAlphaSize: Int
+    package let logAlphaSize: Int
     /// One `HybridUintConfig` per cluster, in cluster order.
-    public let uintConfigs: [HybridUintConfig]
+    package let uintConfigs: [HybridUintConfig]
     /// libjxl `kPrefixMaxBits`.
-    public static let prefixMaxBits: Int = 15
+    package static let prefixMaxBits: Int = 15
 
-    public init(
+    package init(
         lz77: LZ77Config,
         contextMap: ContextMap,
         usePrefixCode: Bool,
@@ -75,13 +75,13 @@ public struct EntropySectionHeader: Sendable {
     /// Number of distinct clusters referenced by the context map —
     /// equivalently, the number of histograms that follow this header
     /// in the codestream.
-    public var numHistograms: Int { contextMap.numClusters }
+    package var numHistograms: Int { contextMap.numClusters }
 
     /// Read fields 1–6 of an entropy section. `numContexts` is the
     /// total number of context indices the surrounding consumer
     /// expects (LZ77 adds one extra implicit context for the
     /// distance — the caller doesn't need to compensate for that).
-    public static func read(
+    package static func read(
         from r: inout BitReader,
         numContexts: Int
     ) throws -> EntropySectionHeader {
@@ -158,7 +158,7 @@ public struct EntropySectionHeader: Sendable {
 
     /// Write fields 1–6 of an entropy section. `numContexts` matches
     /// what the reader will pass.
-    public func write(to w: inout BitWriter, numContexts: Int) throws {
+    package func write(to w: inout BitWriter, numContexts: Int) throws {
         do { try lz77.write(to: &w) }
         catch let e as LZ77ConfigError {
             throw EntropySectionHeaderError.lz77(e)

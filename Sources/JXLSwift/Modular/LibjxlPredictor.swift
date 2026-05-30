@@ -40,7 +40,7 @@ import Foundation
 /// Apply a libjxl predictor with raw index `raw` to the surrounding
 /// neighbourhood. `wpResult` is the weighted-predictor output for
 /// predictor 6; pass `0` when not yet implemented.
-public func applyLibjxlPredictor(
+package func applyLibjxlPredictor(
     raw: UInt32, neighbourhood nbh: Neighbourhood, wpResult: Int32 = 0
 ) -> Int32 {
     switch raw {

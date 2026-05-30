@@ -19,14 +19,14 @@
 
 import Foundation
 
-public enum JPEGColorConversion {
+package enum JPEGColorConversion {
 
     /// Convert a triplet of equal-size sample planes (Y, Cb, Cr)
     /// to a row-major RGB byte buffer of the same dimensions.
     /// All three planes must share `width` × `height`; callers
     /// upsample subsampled chroma via
     /// `JPEGPixelAssembler.upsampleNearest(...)` first.
-    public static func ycbcrToRGB8(
+    package static func ycbcrToRGB8(
         y: JPEGSamplePlane,
         cb: JPEGSamplePlane,
         cr: JPEGSamplePlane
@@ -52,7 +52,7 @@ public enum JPEGColorConversion {
 
     /// Single grayscale plane → row-major grayscale byte buffer.
     /// Just a typed convenience over the `Int32 → UInt8` clamp.
-    public static func grayscaleToBuffer(
+    package static func grayscaleToBuffer(
         _ plane: JPEGSamplePlane
     ) -> [UInt8] {
         return plane.samples.map { s -> UInt8 in

@@ -30,7 +30,7 @@
 
 import Foundation
 
-public enum ModularChannelDecoderError: Error, Sendable {
+package enum ModularChannelDecoderError: Error, Sendable {
     case invalidPredictor(UInt32)
     case tokenReader(TokenStreamReaderError)
     case treeWalk(ModularTreeError)
@@ -47,7 +47,7 @@ public enum ModularChannelDecoderError: Error, Sendable {
 /// `wpHeader` parameterises the weighted predictor (predictor 6 +
 /// property 15); pass the parsed `WeightedPredictorHeader` from the
 /// frame's `GroupHeader`.
-public func decodeModularChannel(
+package func decodeModularChannel(
     width: Int, height: Int,
     staticChannel: Int32, groupId: Int32,
     tree: ModularTree,
@@ -195,7 +195,7 @@ public func decodeModularChannel(
 
 /// Convenience: decode one Modular channel into a fresh `[Int32]`
 /// buffer. See `decodeModularChannel(...)` for parameter semantics.
-public func decodeModularChannel(
+package func decodeModularChannel(
     width: Int, height: Int,
     staticChannel: Int32, groupId: Int32,
     tree: ModularTree,
@@ -216,10 +216,10 @@ public func decodeModularChannel(
 /// One channel's geometry for `decodeAllChannels(...)`. `width` and
 /// `height` are post-shift dimensions (i.e., already accounting for
 /// `hshift` / `vshift` in chroma-subsampled inputs).
-public struct ModularChannelGeometry: Sendable, Equatable {
-    public let width: Int
-    public let height: Int
-    public init(width: Int, height: Int) {
+package struct ModularChannelGeometry: Sendable, Equatable {
+    package let width: Int
+    package let height: Int
+    package init(width: Int, height: Int) {
         self.width = width
         self.height = height
     }
@@ -232,7 +232,7 @@ public struct ModularChannelGeometry: Sendable, Equatable {
 /// the same `groupId` for all channels in a group.
 ///
 /// Returns one `[Int32]` buffer per input channel, in the same order.
-public func decodeAllChannels(
+package func decodeAllChannels(
     channels: [ModularChannelGeometry],
     groupId: Int32,
     tree: ModularTree,

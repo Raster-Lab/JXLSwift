@@ -16,30 +16,30 @@
 import Foundation
 
 /// Number of short codes in the distance alphabet (RFC 7932 §4).
-public let kBrotliNumDistanceShortCodes: Int = 16
+package let kBrotliNumDistanceShortCodes: Int = 16
 
 /// Computed distance-code lookup table for a given NPOSTFIX/NDIRECT
 /// combination + alphabet size. Indices 0..15 (short codes) are
 /// not stored — they go through the ring buffer.
-public struct BrotliDistanceLut: Sendable {
-    public let npostfix: Int
-    public let ndirect: Int
+package struct BrotliDistanceLut: Sendable {
+    package let npostfix: Int
+    package let ndirect: Int
     /// Per-code extra-bit count. Indexed by full distance code
     /// (0..alphabet_size-1); entries 0..15 are unused (ring buffer
     /// handled separately).
-    public let extraBits: [UInt8]
+    package let extraBits: [UInt8]
     /// Per-code base offset.
-    public let offsets: [UInt32]
+    package let offsets: [UInt32]
 }
 
-public enum BrotliDistance {
+package enum BrotliDistance {
 
     /// Build the LUT for a given NPOSTFIX (0..3), NDIRECT (raw value
     /// before shift), and `alphabet_size_limit`. Mirrors libjxl
     /// `CalculateDistanceLut`.
     ///
     /// The "real" NDIRECT = `ndirectRaw << npostfix` per RFC 7932 §4.
-    public static func buildLut(
+    package static func buildLut(
         npostfix: Int, ndirectShifted: Int,
         alphabetSizeLimit: Int
     ) -> BrotliDistanceLut {
@@ -78,7 +78,7 @@ public enum BrotliDistance {
     /// Distance-code alphabet size for given NPOSTFIX + NDIRECT.
     /// Per RFC 7932 §4: `16 + NDIRECT + (maxDistBits << (NPOSTFIX+1))`.
     /// libjxl uses maxDistBits=24 for the standard "window=22" case.
-    public static func alphabetSize(
+    package static func alphabetSize(
         npostfix: Int, ndirectShifted: Int,
         maxDistBits: Int = 24
     ) -> Int {
@@ -90,7 +90,7 @@ public enum BrotliDistance {
     /// Returns the actual distance value plus the updated
     /// `(ringBuffer, ringBufferIdx)`. Mirrors libjxl
     /// `TakeDistanceFromRingBuffer`.
-    public static func resolveShortCode(
+    package static func resolveShortCode(
         code: Int,
         ringBuffer: inout [Int],
         ringBufferIdx: inout Int
@@ -132,7 +132,7 @@ public enum BrotliDistance {
     /// `ringBufferIdx` (the "double-roll" the reference later undoes
     /// either by the normal-copy push or by `ringBufferIdx += context`
     /// on the dictionary path).
-    public static func readDistance(
+    package static func readDistance(
         from r: inout BitReader,
         prefixCode: BrotliPrefixCode,
         lut: BrotliDistanceLut,

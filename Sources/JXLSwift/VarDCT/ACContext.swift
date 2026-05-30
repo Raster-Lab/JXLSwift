@@ -30,20 +30,20 @@ import Foundation
 /// 13 ordering classes (one per "size class"), shared across
 /// XxY / YxX pairs. Direct port of libjxl
 /// `coeff_order.h::kStrategyOrder`.
-public let kStrategyOrder: [UInt8] = [
+package let kStrategyOrder: [UInt8] = [
     0, 1, 1, 1, 2, 3, 4, 4, 5,  5,  6,  6,  1,  1,
     1, 1, 1, 1, 7, 8, 8, 9, 10, 10, 11, 12, 12,
 ]
 
 /// `kNumOrders` from libjxl — the number of distinct AC ordering
 /// buckets.
-public let kNumOrders: Int = 13
+package let kNumOrders: Int = 13
 
 /// Maps a zigzag-scan position (0..63) into a compact frequency
 /// bucket used by `ZeroDensityContext`. Position 0 (DC) is unused
 /// (`0xBAD` in libjxl); positions 1..63 cluster into 31 buckets.
 /// Direct port of `ac_context.h::kCoeffFreqContext`.
-public let kCoeffFreqContext: [UInt16] = [
+package let kCoeffFreqContext: [UInt16] = [
     0xBAD, 0,  1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 12, 13, 14,
     15,    15, 16, 16, 17, 17, 18, 18, 19, 19, 20, 20, 21, 21, 22, 22,
     23,    23, 23, 23, 24, 24, 24, 24, 25, 25, 25, 25, 26, 26, 26, 26,
@@ -52,7 +52,7 @@ public let kCoeffFreqContext: [UInt16] = [
 
 /// Maps a "remaining nonzeros" count (0..63) into a compact context
 /// offset. Direct port of `ac_context.h::kCoeffNumNonzeroContext`.
-public let kCoeffNumNonzeroContext: [UInt16] = [
+package let kCoeffNumNonzeroContext: [UInt16] = [
     0xBAD, 0,   31,  62,  62,  93,  93,  93,  93,  123, 123, 123, 123,
     152,   152, 152, 152, 152, 152, 152, 152, 180, 180, 180, 180, 180,
     180,   180, 180, 180, 180, 180, 180, 206, 206, 206, 206, 206, 206,
@@ -62,13 +62,13 @@ public let kCoeffNumNonzeroContext: [UInt16] = [
 
 /// 37 buckets for "predicted number of nonzeros" — context for the
 /// per-block nnz read.
-public let kNonZeroBuckets: Int = 37
+package let kNonZeroBuckets: Int = 37
 
 /// Supremum of `ZeroDensityContext(...) + 1` when `x + y < 64`.
-public let kZeroDensityContextCount: Int = 458
+package let kZeroDensityContextCount: Int = 458
 
 /// Absolute supremum of `ZeroDensityContext`.
-public let kZeroDensityContextLimit: Int = 474
+package let kZeroDensityContextLimit: Int = 474
 
 /// libjxl's spec-default block context map clustering 3 channels ×
 /// 13 strategy orderings into 15 distinct block classes.
@@ -76,7 +76,7 @@ public let kZeroDensityContextLimit: Int = 474
 /// Layout: `kDefaultCtxMap[mappedChannel * kNumOrders + ord]`
 /// where the channel mapping is **Y first** (libjxl reorders X↔Y
 /// so the highest-frequency Y-luma context lands at index 0).
-public let kDefaultBlockCtxMap: [UInt8] = [
+package let kDefaultBlockCtxMap: [UInt8] = [
     0, 1, 2, 2, 3,  3,  4,  5,  6,  6,  6,  6,  6,
     7, 8, 9, 9, 10, 11, 12, 13, 14, 14, 14, 14, 14,
     7, 8, 9, 9, 10, 11, 12, 13, 14, 14, 14, 14, 14,
@@ -85,23 +85,23 @@ public let kDefaultBlockCtxMap: [UInt8] = [
 /// VarDCT block-context lookup table. Default-constructible to
 /// libjxl's spec-default config (no DC thresholds, no QF
 /// thresholds, 1 DC context, 15 block classes).
-public struct BlockCtxMap: Sendable {
+package struct BlockCtxMap: Sendable {
     /// Per-channel DC bucket cutoffs (libjxl `dc_thresholds[3]`).
     /// Empty by default — every block falls into `dc_idx = 0`.
-    public var dcThresholds: [[Int32]]
+    package var dcThresholds: [[Int32]]
     /// QF bucket cutoffs (libjxl `qf_thresholds`). Empty by default.
-    public var qfThresholds: [UInt32]
+    package var qfThresholds: [UInt32]
     /// Compact block-class assignment. Indexed by
     /// `((mappedChannel * kNumOrders + ord) * (qfThresholds.count + 1)
     ///   + qfIdx) * numDcCtxs + dcIdx`.
-    public var ctxMap: [UInt8]
+    package var ctxMap: [UInt8]
     /// Number of distinct block classes (= max(ctxMap) + 1).
-    public let numCtxs: Int
+    package let numCtxs: Int
     /// Number of DC contexts. With no `dcThresholds[c]` the value
     /// is 1; otherwise it's `(thresh.count + 1)^numChannels`.
-    public let numDcCtxs: Int
+    package let numDcCtxs: Int
 
-    public init(
+    package init(
         dcThresholds: [[Int32]] = [[], [], []],
         qfThresholds: [UInt32] = [],
         ctxMap: [UInt8] = kDefaultBlockCtxMap,
@@ -120,7 +120,7 @@ public struct BlockCtxMap: Sendable {
     /// frame. Layout: `numCtxs × kNonZeroBuckets` for the per-block
     /// nnz contexts, then `numCtxs × kZeroDensityContextCount` for
     /// the per-coefficient symbol contexts.
-    public var numACContexts: Int {
+    package var numACContexts: Int {
         return numCtxs * (kNonZeroBuckets + kZeroDensityContextCount)
     }
 
@@ -133,7 +133,7 @@ public struct BlockCtxMap: Sendable {
     /// at row 0 (its own clusters 0–6) and Y+B at rows 1–2 (shared
     /// clusters 7–14). Callers that have an XYB index need to convert:
     /// `storageC = (xybC == 0 || xybC == 1) ? (1 - xybC) : 2`.
-    public func context(
+    package func context(
         dcIdx: Int, qf: UInt32, ord: Int, c: Int
     ) -> Int {
         precondition(c >= 0 && c <= 2)
@@ -166,7 +166,7 @@ public struct BlockCtxMap: Sendable {
     /// storage 0, B = storage 2 — the caller supplies them already
     /// de-mapped to X/Y/B). When `numDcCtxs <= 1` this always
     /// returns 0 (the spec-default single-DC-context case).
-    public func dcContextIndex(dcX: Int32, dcY: Int32, dcB: Int32) -> Int {
+    package func dcContextIndex(dcX: Int32, dcY: Int32, dcB: Int32) -> Int {
         if numDcCtxs <= 1 { return 0 }
         var bucketX = 0
         for t in dcThresholds[0] where dcX > t { bucketX += 1 }
@@ -182,7 +182,7 @@ public struct BlockCtxMap: Sendable {
 
     /// Per-block nnz context: maps (predicted-nnz bucket, block class)
     /// to a compact context index in `[0, numCtxs * kNonZeroBuckets)`.
-    public func nonZeroContext(
+    package func nonZeroContext(
         nonZeros: UInt32, blockCtx: Int
     ) -> Int {
         let nnz = min(nonZeros, 64)
@@ -194,7 +194,7 @@ public struct BlockCtxMap: Sendable {
     /// bitstream. If set (1), returns the libjxl-spec default
     /// `BlockCtxMap()`. Otherwise throws `notDefault` — callers
     /// who want the full reader use `read(from:)` below.
-    public static func readDefaultOrThrow(
+    package static func readDefaultOrThrow(
         from r: inout BitReader
     ) throws -> BlockCtxMap {
         let allDefault: Bool
@@ -219,7 +219,7 @@ public struct BlockCtxMap: Sendable {
     ///     ctx_map = DecodeContextMap(size = 3 * kNumOrders *
     ///                                num_dc_ctxs * (qf+1))
     ///     enforce num_ctxs <= 16, num_dc_ctxs * (qf+1) <= 64
-    public static func read(
+    package static func read(
         from r: inout BitReader
     ) throws -> BlockCtxMap {
         let trace = ProcessInfo.processInfo.environment["JXL_TRACE"] != nil
@@ -331,13 +331,13 @@ public struct BlockCtxMap: Sendable {
     ///   [numCtxs × kNonZeroBuckets, numACContexts)   coefficient
     /// contexts. `ZeroDensityContextsOffset(block_ctx)` jumps to the
     /// start of `block_ctx`'s slot in the second region.
-    public func zeroDensityContextsOffset(blockCtx: Int) -> Int {
+    package func zeroDensityContextsOffset(blockCtx: Int) -> Int {
         return numCtxs * kNonZeroBuckets +
                kZeroDensityContextCount * blockCtx
     }
 }
 
-public enum BlockCtxMapError: Error, Sendable {
+package enum BlockCtxMapError: Error, Sendable {
     case bitstream(BitstreamError)
     case notDefault
     case contextMap(ContextMapError)
@@ -366,7 +366,7 @@ private func unpackSigned(_ u: UInt32) -> Int32 {
 /// `kCoeffFreqContext`) compress the joint (`nonzerosLeft`, `k`)
 /// space into a 458-entry alphabet shared across all blocks.
 @inline(__always)
-public func zeroDensityContext(
+package func zeroDensityContext(
     nonzerosLeft: Int, k: Int,
     coveredBlocks: Int, log2CoveredBlocks: Int,
     prev: Int

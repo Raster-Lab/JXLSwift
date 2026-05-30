@@ -14,7 +14,7 @@
 import Foundation
 
 /// Minimal Brotli encoder — uncompressed meta-blocks only.
-public enum BrotliEncoder {
+package enum BrotliEncoder {
 
     /// Encode `data` as a valid Brotli stream consisting of a single
     /// uncompressed meta-block (RFC 7932 §9.2) followed by the
@@ -24,7 +24,7 @@ public enum BrotliEncoder {
     /// `data` must be ≤ 2^24 bytes (one meta-block's `MLEN` ceiling);
     /// jbrd payloads are capped well below that (≈ 4 MB), so a single
     /// block always suffices.
-    public static func encodeUncompressed(_ data: Data) -> Data {
+    package static func encodeUncompressed(_ data: Data) -> Data {
         var w = BitWriter()
         // Stream header: WBITS = 16 (a single 0 bit).
         w.writeBit(false)

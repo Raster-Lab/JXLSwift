@@ -22,7 +22,7 @@ import Foundation
 extension JBRDBox {
 
     /// Errors specific to the forward jbrd extraction.
-    public enum ExtractError: Error, Sendable, Equatable {
+    package enum ExtractError: Error, Sendable, Equatable {
         case unsupportedMarker(UInt8)
         case malformedSegment(String)
     }
@@ -31,7 +31,7 @@ extension JBRDBox {
     /// the populated Bundle plus the (uncompressed) Brotli payload
     /// bytes carrying the kUnknown app / COM / tail content, in the
     /// order `distributeBrotliPayload` reads them.
-    public static func extract(
+    package static func extract(
         fromJPEG data: Data
     ) throws -> (box: JBRDBox, brotliPayload: Data) {
         var box = JBRDBox()

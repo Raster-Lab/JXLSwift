@@ -37,20 +37,20 @@ import Foundation
 /// per-component sampling factors + quant-table bindings,
 /// **quantised** DCT coefficient grids per component (natural
 /// row-major order), and the quant tables themselves.
-public struct JPEGCoefficientImage: Sendable {
+package struct JPEGCoefficientImage: Sendable {
     /// SOFn `X` field (samples per line) — visible image width.
-    public let width: Int
+    package let width: Int
     /// SOFn `Y` field (number of lines) — visible image height.
-    public let height: Int
+    package let height: Int
     /// SOFn `P` field — typically 8.
-    public let precision: Int
+    package let precision: Int
     /// SOFn flavour — baseline / extended-sequential / progressive
     /// / lossless / other. The current scan decoder only emits
     /// `.baselineDCT`; a progressive bridge is a v0.13+ bite.
-    public let frameKind: JPEGStructure.FrameKind
+    package let frameKind: JPEGStructure.FrameKind
     /// Per-component sampling factors + quant-table binding,
     /// straight from the SOFn payload.
-    public let frameComponents: [JPEGFrameComponent]
+    package let frameComponents: [JPEGFrameComponent]
     /// Quantised DCT coefficient grids, one per scan component,
     /// in scan order. `blocks[r * blocksWide + c].coefficients[k]`
     /// is the *quantised* coefficient at natural index `k` of the
@@ -59,18 +59,18 @@ public struct JPEGCoefficientImage: Sendable {
     /// (i.e. they may extend past `width × height` for
     /// chroma-subsampled inputs — same shape as
     /// `JPEGScanDecoder.decodeBaselineSequential` returns).
-    public let quantisedComponents: [JPEGComponentBlocks]
+    package let quantisedComponents: [JPEGComponentBlocks]
     /// Quant tables in zig-zag order, keyed by table destination
     /// ID. Each `frameComponent.quantTableId` points into this
     /// list. We don't dictionary-key by ID at this level because
     /// the canonical order in the JPEG matters for byte-exact
     /// reverse-encode (jbrd / Phase J capstone work).
-    public let quantTables: [JPEGQuantTable]
+    package let quantTables: [JPEGQuantTable]
 
     /// Total quantised coefficient count across every component
     /// in every block — useful as a one-number "how big is this
     /// image's coefficient state?" diagnostic.
-    public var totalCoefficientCount: Int {
+    package var totalCoefficientCount: Int {
         quantisedComponents.reduce(0) {
             $0 + $1.blocks.count * 64
         }
@@ -88,7 +88,7 @@ extension JPEGDecoder {
     /// Same scope envelope as `decode(_:)`: baseline-sequential 1-
     /// or 3-component 8-bit JPEGs; other shapes throw
     /// `JPEGDecoderError.unsupported`.
-    public static func decodeToCoefficients(
+    package static func decodeToCoefficients(
         _ data: Data
     ) throws -> JPEGCoefficientImage {
         // Walk every segment, collecting state. Same prelude as

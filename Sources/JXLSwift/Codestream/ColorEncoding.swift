@@ -105,7 +105,7 @@ public struct ColorEncoding: Sendable {
 
     /// Read a `ColorEncoding` per §C.3.4. Position must be at the
     /// `all_default` bit when called.
-    public static func read(from r: inout BitReader) throws -> ColorEncoding {
+    package static func read(from r: inout BitReader) throws -> ColorEncoding {
         // Per spec §C.3.4: ColorEncoding has its own all_default bit
         // (distinct from ImageMetadata.allDefault). When set, the
         // ColorEncoding equals the spec default — sRGB / D65 / sRGB

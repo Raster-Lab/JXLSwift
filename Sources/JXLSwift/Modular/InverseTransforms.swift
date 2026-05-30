@@ -19,7 +19,7 @@
 
 import Foundation
 
-public enum InverseTransformsError: Error, Sendable {
+package enum InverseTransformsError: Error, Sendable {
     case rct(SpecRCTError)
     case squeeze(SpecSqueezeError)
     case paletteNotImplemented
@@ -37,7 +37,7 @@ public enum InverseTransformsError: Error, Sendable {
 /// throw — callers can recover by skipping the inverse pass and
 /// presenting raw channel values, but pixel correctness against
 /// djxl requires the inverse pass to succeed.
-public func applyInverseTransforms(
+package func applyInverseTransforms(
     image: inout ModularImage, transforms: [ModularTransform]
 ) throws {
     for t in transforms.reversed() {

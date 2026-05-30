@@ -20,33 +20,33 @@
 import Foundation
 
 /// Bitwise writer producing a byte-aligned `Data` payload.
-public struct BitWriter: Sendable {
+package struct BitWriter: Sendable {
     /// Completed bytes. The in-progress partial byte (if any) is held in `acc`
     /// until it fills or the writer is aligned/finalised.
-    public private(set) var bytes: [UInt8] = []
+    package private(set) var bytes: [UInt8] = []
     /// Pending bits: the low `accBits` bits of `acc`, LSB-first.
     private var acc: UInt64 = 0
     /// Number of valid pending bits in `acc` (kept in 0..<8 after each call).
     private var accBits: Int = 0
 
-    public init() {}
+    package init() {}
 
     /// Pre-reserve the backing byte buffer. Pure optimisation — semantically
     /// identical to `init()`, it only avoids geometric-growth reallocations
     /// when the eventual size is roughly known. Over-estimating is harmless;
     /// reserving never changes the emitted bytes.
-    public init(reservingBytes n: Int) {
+    package init(reservingBytes n: Int) {
         if n > 0 { bytes.reserveCapacity(n) }
     }
 
     /// Bits already written *into* the current incomplete byte (0..<8).
-    public var partial: Int { accBits }
+    package var partial: Int { accBits }
 
     /// Total bits emitted so far.
-    public var bitCount: Int { bytes.count * 8 + accBits }
+    package var bitCount: Int { bytes.count * 8 + accBits }
 
     /// Append `count` bits of `value` (LSB-first). 0 ≤ count ≤ 32.
-    public mutating func write(bits count: Int, value: UInt32) {
+    package mutating func write(bits count: Int, value: UInt32) {
         precondition(count >= 0 && count <= 32, "bit count must be 0...32")
         if count == 0 { return }
         // Mask `value` to its low `count` bits, then shift into place above the
@@ -64,12 +64,12 @@ public struct BitWriter: Sendable {
     }
 
     /// Convenience for single-bit writes.
-    public mutating func writeBit(_ bit: Bool) {
+    package mutating func writeBit(_ bit: Bool) {
         write(bits: 1, value: bit ? 1 : 0)
     }
 
     /// Write up to 64 bits.
-    public mutating func write64(bits count: Int, value: UInt64) {
+    package mutating func write64(bits count: Int, value: UInt64) {
         precondition(count >= 0 && count <= 64, "bit count must be 0...64")
         if count <= 32 {
             write(bits: count, value: UInt32(truncatingIfNeeded: value))
@@ -80,7 +80,7 @@ public struct BitWriter: Sendable {
     }
 
     /// Pad the current byte with zero bits up to the next byte boundary.
-    public mutating func alignToByte() {
+    package mutating func alignToByte() {
         if accBits > 0 {
             // Flush the partial byte; unused high bits are already 0.
             bytes.append(UInt8(acc & 0xFF))
@@ -90,19 +90,19 @@ public struct BitWriter: Sendable {
     }
 
     /// Append raw bytes — only valid when the writer is byte-aligned.
-    public mutating func appendBytes(_ data: Data) {
+    package mutating func appendBytes(_ data: Data) {
         precondition(accBits == 0, "appendBytes requires byte alignment")
         bytes.append(contentsOf: data)
     }
 
-    public mutating func appendBytes(_ data: [UInt8]) {
+    package mutating func appendBytes(_ data: [UInt8]) {
         precondition(accBits == 0, "appendBytes requires byte alignment")
         bytes.append(contentsOf: data)
     }
 
     /// Finalise the buffer — pads any trailing partial byte with zeros and
     /// returns the resulting `Data`.
-    public mutating func finishToData() -> Data {
+    package mutating func finishToData() -> Data {
         if accBits > 0 {
             bytes.append(UInt8(acc & 0xFF))
             acc = 0

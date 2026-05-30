@@ -77,7 +77,7 @@
 
 import Foundation
 
-public enum MinimalLosslessError: Error, Sendable {
+package enum MinimalLosslessError: Error, Sendable {
     case unsupportedPixelType
     case unsupportedChannelCount(Int)
     case missingSignature
@@ -108,18 +108,18 @@ public enum M0Effort: Sendable, Equatable {
     case balanced
 }
 
-public struct MinimalLosslessCodec {
+package struct MinimalLosslessCodec {
 
     /// Marker constant: 'M' '0' = 0x4D, 0x30 — placed in the header so
     /// a future spec-compliant decoder can recognise this is *not* a
     /// real JXL codestream.
-    public static let placeholderMarker: UInt32 = 0x4D30
+    package static let placeholderMarker: UInt32 = 0x4D30
 
     /// Encode a frame to the M0 placeholder buffer format. The
     /// `effort` parameter trades encode speed against compression
     /// ratio — see `M0Effort`. Throws `.unsupportedPixelType` for
     /// `.float32` (not yet supported by M0).
-    public static func encode(
+    package static func encode(
         _ frame: ImageFrame, effort: M0Effort = .balanced
     ) throws -> Data {
         guard frame.pixelType == .uint8 || frame.pixelType == .uint16 else {
@@ -276,7 +276,7 @@ public struct MinimalLosslessCodec {
     }
 
     /// Decode an M0 placeholder buffer produced by `encode(_:)`.
-    public static func decode(_ data: Data) throws -> ImageFrame {
+    package static func decode(_ data: Data) throws -> ImageFrame {
         var r = BitReader(data)
         // 1. Signature.
         let sig0: UInt32
@@ -417,13 +417,13 @@ public struct MinimalLosslessCodec {
     /// encoder's compression choices. Cheaper than `decode(_:)`
     /// because it stops before the entropy stream — useful for
     /// `jxl-tool info`-style diagnostics.
-    public struct M0Inspection: Sendable {
-        public let xsize: UInt32
-        public let ysize: UInt32
-        public let bitsPerSample: UInt32
-        public let channels: Int
-        public let rctVariant: RCTVariant
-        public let channelPredictors: [PredictorID]
+    package struct M0Inspection: Sendable {
+        package let xsize: UInt32
+        package let ysize: UInt32
+        package let bitsPerSample: UInt32
+        package let channels: Int
+        package let rctVariant: RCTVariant
+        package let channelPredictors: [PredictorID]
     }
 
     /// Inspect an M0 buffer without decoding pixels. Reads the
@@ -431,7 +431,7 @@ public struct MinimalLosslessCodec {
     /// count + (if applicable) RCT variant + per-channel predictor
     /// IDs, and returns them. Throws if the buffer doesn't have the
     /// 'M0' marker (i.e. isn't an M0 buffer).
-    public static func inspectM0(_ data: Data) throws -> M0Inspection {
+    package static func inspectM0(_ data: Data) throws -> M0Inspection {
         var r = BitReader(data)
         let sig0: UInt32
         let sig1: UInt32
@@ -495,7 +495,7 @@ public struct MinimalLosslessCodec {
     /// True iff the buffer carries the M0 placeholder marker. Useful
     /// to gate display of M0-specific fields in tools that handle
     /// both M0 and (eventually) real JXL codestreams.
-    public static func isM0(_ data: Data) -> Bool {
+    package static func isM0(_ data: Data) -> Bool {
         do { _ = try inspectM0(data); return true }
         catch { return false }
     }

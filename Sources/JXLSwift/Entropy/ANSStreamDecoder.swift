@@ -36,17 +36,17 @@ import Foundation
 /// `ANSStreamEncoder` (which uses our cumulative-frequency layout),
 /// the decoder falls back to a slot LUT built from `ANSDistribution`.
 /// `useAliasTables` selects between the two.
-public struct ANSStreamDecoder: Sendable {
+package struct ANSStreamDecoder: Sendable {
     /// One distribution per cluster (cumulative-frequency layout).
-    public let distributions: [ANSDistribution]
+    package let distributions: [ANSDistribution]
     /// One alias table per cluster (libjxl-compatible layout).
-    public let aliasTables: [AliasTable]?
+    package let aliasTables: [AliasTable]?
     /// Which lookup the decoder uses.
-    public let useAliasTables: Bool
+    package let useAliasTables: Bool
     private var state: UInt32 = 0
     private var initialised: Bool = false
 
-    public init(distributions: [ANSDistribution]) {
+    package init(distributions: [ANSDistribution]) {
         self.distributions = distributions
         self.aliasTables = nil
         self.useAliasTables = false
@@ -56,7 +56,7 @@ public struct ANSStreamDecoder: Sendable {
     /// per-cluster `[Int32]` count arrays produced by
     /// `SpecANSDistribution.readHistogram`. The `logAlphaSize` is the
     /// post-tree codebook's `log_alpha_size` (5..8 for rANS).
-    public init(counts: [[Int32]], logAlphaSize: Int) throws {
+    package init(counts: [[Int32]], logAlphaSize: Int) throws {
         var aliases: [AliasTable] = []
         aliases.reserveCapacity(counts.count)
         for c in counts {
@@ -87,7 +87,7 @@ public struct ANSStreamDecoder: Sendable {
     /// cumulative-frequency layout — only useful for round-tripping
     /// against `ANSStreamEncoder`. For libjxl byte-equality use
     /// `init(counts:logAlphaSize:)`.
-    public static func from(counts: [[Int32]]) throws -> ANSStreamDecoder {
+    package static func from(counts: [[Int32]]) throws -> ANSStreamDecoder {
         var dists: [ANSDistribution] = []
         dists.reserveCapacity(counts.count)
         for c in counts {
@@ -107,7 +107,7 @@ public struct ANSStreamDecoder: Sendable {
 
     /// Read one symbol from cluster `cluster`. The first call also
     /// consumes the 32-bit rANS state init from the bitstream.
-    public mutating func readSymbol(
+    package mutating func readSymbol(
         cluster: Int, from r: inout BitReader
     ) throws -> UInt32 {
         if !initialised {
@@ -158,10 +158,10 @@ public struct ANSStreamDecoder: Sendable {
     }
 
     /// Whether the rANS state init has been consumed yet.
-    public var hasInitialised: Bool { initialised }
+    package var hasInitialised: Bool { initialised }
 
     /// Current state — primarily for diagnostics / testing.
-    public var currentState: UInt32 { state }
+    package var currentState: UInt32 { state }
 }
 
 /// Streaming-format rANS encoder. Companion to `ANSStreamDecoder`:
@@ -174,16 +174,16 @@ public struct ANSStreamDecoder: Sendable {
 /// production codec layer wires its rANS encoder differently (it emits
 /// via the same `BitWriter` that carries the rest of the section) and
 /// will be built later.
-public struct ANSStreamEncoder {
-    public let distributions: [ANSDistribution]
+package struct ANSStreamEncoder {
+    package let distributions: [ANSDistribution]
     /// Symbols + their target cluster, in forward order.
     private var pending: [(symbol: UInt32, cluster: Int)] = []
 
-    public init(distributions: [ANSDistribution]) {
+    package init(distributions: [ANSDistribution]) {
         self.distributions = distributions
     }
 
-    public mutating func write(symbol: Int, cluster: Int) throws {
+    package mutating func write(symbol: Int, cluster: Int) throws {
         guard cluster >= 0 && cluster < distributions.count else {
             throw ANSError.symbolHasZeroFrequency(symbol: symbol)
         }
@@ -201,7 +201,7 @@ public struct ANSStreamEncoder {
     /// by 16-bit renorm words (LSB-first) in decoder consumption order.
     /// All bits are byte-aligned because `BitWriter` is byte-aligned at
     /// every 32-/16-bit boundary.
-    public mutating func finish() -> Data {
+    package mutating func finish() -> Data {
         let tab = ANSConstants.tabSize
         var state: UInt32 = ANSConstants.stateLowerBound
         var renormChrono: [UInt16] = []

@@ -31,12 +31,12 @@
 
 import Foundation
 
-public enum SpecRCTError: Error, Sendable {
+package enum SpecRCTError: Error, Sendable {
     case invalidType(UInt32)
     case mismatchedChannelLengths
 }
 
-public enum SpecRCT {
+package enum SpecRCT {
 
     /// Apply the inverse RCT for `rctType` 0..41 to a triple of
     /// equal-length channel buffers. The buffers are mutated in
@@ -44,7 +44,7 @@ public enum SpecRCT {
     /// the post-inverse pixel values in the spec-mandated output
     /// channel order (so for `rct_type` with permutation=0, channel0
     /// holds R, channel1 G, channel2 B).
-    public static func inverse(
+    package static func inverse(
         rctType: UInt32,
         channel0: inout [Int32],
         channel1: inout [Int32],

@@ -92,10 +92,12 @@ See [ROADMAP.md](ROADMAP.md) for the spec-section status grid.
 
 ```bash
 swift build -c release
-swift test  -c release           # 574 tests — foundation, headers, entropy,
+swift test  -c release           # 697 tests — foundation, headers, entropy,
                                  # Modular + VarDCT decode/encode, JPEG decode,
-                                 # JPEG → JXL coefficient-bridge forward,
-                                 # byte-exact cjxl/djxl cross-validation
+                                 # JPEG ↔ JXL coefficient-bridge (forward +
+                                 # byte-identical reverse), lossless
+                                 # conformance gate, robustness sweep + fuzz,
+                                 # all djxl-byte-exact
 .build/release/jxl-tool --version
 .build/release/jxl-tool info path/to/file.jxl
 .build/release/jxl-tool encode -i in.ppm -o out.jxl       # lossy VarDCT
@@ -315,7 +317,7 @@ Sources/JXLSwift/Codec/       JXLEncoder / JXLDecoder (working codec),
                               VarDCTEncoder / VarDCTBitstreamWriter,
                               ImageFrame, EncodingOptions
 Sources/JXLTool/              jxl-tool CLI (info / encode / decode / …)
-Tests/JXLSwiftTests/          574 tests across foundation, headers, entropy,
+Tests/JXLSwiftTests/          697 tests across foundation, headers, entropy,
                               Modular + VarDCT decode/encode, JPEG decode,
                               JPEG → JXL coefficient-bridge forward
 ```

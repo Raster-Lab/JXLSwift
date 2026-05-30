@@ -48,13 +48,13 @@ import Foundation
 /// Construct once per channel, call `predict` then `update` per pixel
 /// in row-major order. Mutating across calls (the running error
 /// arrays evolve as pixels are decoded).
-public struct WeightedPredictor: Sendable {
-    public static let kPredExtraBits: Int = 3
-    public static let kPredictionRound: Int64 = (Int64(1) << kPredExtraBits) >> 1 - 1
-    public static let kNumPredictors: Int = 4
+package struct WeightedPredictor: Sendable {
+    package static let kPredExtraBits: Int = 3
+    package static let kPredictionRound: Int64 = (Int64(1) << kPredExtraBits) >> 1 - 1
+    package static let kNumPredictors: Int = 4
 
     /// 1 << 24 / (i + 1) for i in 0..<64 — division-avoidance LUT.
-    public static let divLookup: [UInt32] = [
+    package static let divLookup: [UInt32] = [
         16777216, 8388608, 5592405, 4194304, 3355443, 2796202, 2396745, 2097152,
         1864135,  1677721, 1525201, 1398101, 1290555, 1198372, 1118481, 1048576,
         986895,   932067,  883011,  838860,  798915,  762600,  729444,  699050,
@@ -65,14 +65,14 @@ public struct WeightedPredictor: Sendable {
         294337,   289262,  284359,  279620,  275036,  270600,  266305,  262144
     ]
 
-    public let header: WeightedPredictorHeader
+    package let header: WeightedPredictorHeader
     private let stride: Int  // (xsize + 2) — per-row span in error/predErrors.
     private var predErrors: [[UInt32]]   // [4][2 * stride]
     private var error: [Int64]           // [2 * stride]
-    private(set) public var prediction: [Int64]  // [4] — last-pixel sub-predictions.
-    private(set) public var pred: Int64           // last combined pred (shifted-up domain).
+    private(set) package var prediction: [Int64]  // [4] — last-pixel sub-predictions.
+    private(set) package var pred: Int64           // last combined pred (shifted-up domain).
 
-    public init(header: WeightedPredictorHeader, xsize: Int) {
+    package init(header: WeightedPredictorHeader, xsize: Int) {
         self.header = header
         self.stride = xsize + 2
         let total = 2 * stride
@@ -133,7 +133,7 @@ public struct WeightedPredictor: Sendable {
     /// Compute property 15 (kWPProp) — the largest absolute error
     /// among the W, N, NW, NE neighbours. Returns 0 on the very
     /// first pixel where no neighbours have errors yet.
-    public func propertyValue(x: Int, y: Int, xsize: Int) -> Int32 {
+    package func propertyValue(x: Int, y: Int, xsize: Int) -> Int32 {
         let curRowOff  = (y & 1 == 1) ? 0 : stride
         let prevRowOff = (y & 1 == 1) ? stride : 0
         let posN  = prevRowOff + x
@@ -154,7 +154,7 @@ public struct WeightedPredictor: Sendable {
     /// supplies the unshifted neighbour pixel values; this function
     /// internally applies `AddBits` (≪ 3) and shifts back at the end.
     /// **Mutates** `prediction[]` and `pred` for the next `update`.
-    public mutating func predict(
+    package mutating func predict(
         x: Int, y: Int, xsize: Int,
         n: Int32, w: Int32, ne: Int32, nw: Int32, nn: Int32
     ) -> Int32 {
@@ -236,7 +236,7 @@ public struct WeightedPredictor: Sendable {
     /// error arrays. **Must** be called after `predict` for every
     /// pixel in scan order — the prediction at `(x, y+1)` depends on
     /// the errors recorded at row y.
-    public mutating func update(actual: Int32, x: Int, y: Int, xsize: Int) {
+    package mutating func update(actual: Int32, x: Int, y: Int, xsize: Int) {
         let curRowOff = (y & 1 == 1) ? 0 : stride
         let prevRowOff = (y & 1 == 1) ? stride : 0
         let valShifted = WeightedPredictor.addBits(Int64(actual))

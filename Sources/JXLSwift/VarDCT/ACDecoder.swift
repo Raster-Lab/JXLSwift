@@ -32,7 +32,7 @@
 
 import Foundation
 
-public enum ACDecoderError: Error, Sendable {
+package enum ACDecoderError: Error, Sendable {
     case nzerosOutOfRange(Int, max: Int)
     case nzerosNonZeroAtEnd(Int)
     case tokenStream(TokenStreamReaderError)
@@ -49,14 +49,14 @@ public enum ACDecoderError: Error, Sendable {
 /// (`y * 8 + x`) for the `k`-th scan-order index. `block[order[k]]`
 /// places the k-th decoded scan-order coefficient at its 8×8 grid
 /// position before IDCT.
-public let naturalCoeffOrderDCT8: [Int] = [
+package let naturalCoeffOrderDCT8: [Int] = [
     0,  1,  8, 16,  9,  2,  3, 10, 17, 24, 32, 25, 18, 11,  4,  5,
    12, 19, 26, 33, 40, 48, 41, 34, 27, 20, 13,  6,  7, 14, 21, 28,
    35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51,
    58, 59, 52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63
 ]
 
-public enum ACDecoder {
+package enum ACDecoder {
 
     /// Decode one VarDCT AC block from `stream`. Coefficients
     /// accumulate into `block` via `+=` (libjxl's convention so
@@ -84,7 +84,7 @@ public enum ACDecoder {
     ///     for non-progressive single-pass frames.
     ///   - stream / r: caller-supplied TokenStreamReader + BitReader
     ///     positioned at the start of this block's tokens.
-    public static func decodeBlock(
+    package static func decodeBlock(
         block: inout [Int32],
         order: [Int],
         coveredBlocks: Int, log2CoveredBlocks: Int,
@@ -173,7 +173,7 @@ public enum ACDecoder {
     ///   • top edge (`bx == 0`, row above present): rowAbove[bx]
     ///   • interior: `(rowAbove[bx] + rowCurrent[bx-1] + 1) >> 1`
     @inline(__always)
-    public static func predictNnz(
+    package static func predictNnz(
         rowAbove: [Int32]?, rowCurrent: [Int32], bx: Int,
         predictedMax: Int32 = 32
     ) -> UInt32 {
@@ -192,7 +192,7 @@ public enum ACDecoder {
 /// libjxl's `enc_group.cc::TokenizeCoefficients` for a single
 /// VarDCT block. Used today only by tests; the production lossy
 /// encoder is still pending.
-public enum ACEncoder {
+package enum ACEncoder {
 
     /// Tokenise one VarDCT block's AC coefficients into
     /// `(context, value)` pairs — the exact inverse of
@@ -213,7 +213,7 @@ public enum ACEncoder {
     ///     `order[k]` is the natural-order index of the `k`-th
     ///     scan-order coefficient.
     ///   - others: same semantics as `ACDecoder.decodeBlock`.
-    public static func tokenize(
+    package static func tokenize(
         block: [Int32],
         order: [Int],
         coveredBlocks: Int, log2CoveredBlocks: Int,
@@ -267,7 +267,7 @@ public enum ACEncoder {
     /// Tokenise one block (via `tokenize`) and write the resulting
     /// `(context, value)` pairs through `writer`. Caller ensures the
     /// writer's context map + codebook cover the emitted contexts.
-    public static func encodeBlock(
+    package static func encodeBlock(
         block: [Int32],
         order: [Int],
         coveredBlocks: Int, log2CoveredBlocks: Int,
@@ -298,7 +298,7 @@ public enum ACEncoder {
 /// Direct port of libjxl's spec-default DCT8x8 order — reused
 /// across all blocks unless an override token in the AC global
 /// section says otherwise.
-public let kDCT8x8NaturalOrder: [Int] = [
+package let kDCT8x8NaturalOrder: [Int] = [
      0,  1,  8,  16,  9,  2,  3, 10,
     17, 24, 32, 25, 18, 11,  4,  5,
     12, 19, 26, 33, 40, 48, 41, 34,

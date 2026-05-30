@@ -37,13 +37,13 @@
 
 import Foundation
 
-public enum JPEGDecoderError: Error, Sendable, Equatable,
+package enum JPEGDecoderError: Error, Sendable, Equatable,
                               LocalizedError {
     case missingFrame
     case missingScan
     case unsupported(String)
 
-    public var errorDescription: String? {
+    package var errorDescription: String? {
         switch self {
         case .missingFrame:
             return "JPEG: no SOFn frame header found"
@@ -56,11 +56,11 @@ public enum JPEGDecoderError: Error, Sendable, Equatable,
 }
 
 /// High-level "JPEG bytes → ImageFrame" decoder.
-public enum JPEGDecoder {
+package enum JPEGDecoder {
 
     /// Decode a JPEG file. Returns an 8-bit ImageFrame:
     /// `channels: 1` for grayscale, `channels: 3` for YCbCr.
-    public static func decode(_ data: Data) throws -> ImageFrame {
+    package static func decode(_ data: Data) throws -> ImageFrame {
         // Walk every segment, collecting state.
         var reader = JPEGSegmentReader(data)
         var dcMap = JPEGHuffmanCodebookMap()

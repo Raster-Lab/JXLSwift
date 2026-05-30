@@ -20,7 +20,7 @@
 
 import Foundation
 
-public enum ACStrategyImageError: Error, Sendable {
+package enum ACStrategyImageError: Error, Sendable {
     case invalidStrategyValue(Int32)
     case acsCountMismatch(expected: Int, actual: Int)
     case overflow(blockX: Int, blockY: Int, cellsX: Int, cellsY: Int)
@@ -28,29 +28,29 @@ public enum ACStrategyImageError: Error, Sendable {
 }
 
 /// One entry in the AC strategy plane.
-public struct ACStrategyEntry: Sendable, Equatable {
+package struct ACStrategyEntry: Sendable, Equatable {
     /// True if this cell is the (top-left) "first-block" of its
     /// transform — only first-blocks have AC tokens decoded for them.
-    public let isFirstBlock: Bool
+    package let isFirstBlock: Bool
     /// The transform's strategy. For non-first-block entries, this
     /// is the same value as the first-block's strategy.
-    public let strategy: ACStrategy
+    package let strategy: ACStrategy
     /// Coordinates of the first-block (= self for first-blocks).
-    public let firstBlockX: Int
-    public let firstBlockY: Int
+    package let firstBlockX: Int
+    package let firstBlockY: Int
     /// Per-block QF (1..256). Only meaningful on first-blocks.
-    public let qf: Int32
+    package let qf: Int32
 }
 
-public struct ACStrategyImage: Sendable {
-    public let width: Int   // in blocks (numBlocksX)
-    public let height: Int  // in blocks (numBlocksY)
-    public let entries: [ACStrategyEntry]
+package struct ACStrategyImage: Sendable {
+    package let width: Int   // in blocks (numBlocksX)
+    package let height: Int  // in blocks (numBlocksY)
+    package let entries: [ACStrategyEntry]
     /// First-block coordinates in raster scan order — same order the
     /// AC decode loop iterates.
-    public let firstBlocks: [(x: Int, y: Int)]
+    package let firstBlocks: [(x: Int, y: Int)]
 
-    public func at(x: Int, y: Int) -> ACStrategyEntry {
+    package func at(x: Int, y: Int) -> ACStrategyEntry {
         precondition(x >= 0 && x < width && y >= 0 && y < height)
         return entries[y * width + x]
     }
@@ -69,7 +69,7 @@ public struct ACStrategyImage: Sendable {
     /// Throws if the encoder emitted fewer ACS entries than there are
     /// uncovered first-blocks, or a strategy whose covered area
     /// extends past the block grid.
-    public static func build(
+    package static func build(
         from acmetaChannel2: [Int32],
         count: Int,
         numBlocksX: Int, numBlocksY: Int
@@ -151,18 +151,18 @@ public struct ACStrategyImage: Sendable {
     }
 
     /// A single DC group's ACMetadata channel-2 segment.
-    public struct Segment: Sendable {
+    package struct Segment: Sendable {
         /// Top-left block offset of the DC group within the frame.
-        public let offsetX: Int
-        public let offsetY: Int
+        package let offsetX: Int
+        package let offsetY: Int
         /// DC group block dimensions (clipped at the frame edge).
-        public let width: Int
-        public let height: Int
+        package let width: Int
+        package let height: Int
         /// ACMeta channel 2 (`[ACS_0…, QF_0…]`) for this DC group.
-        public let channel2: [Int32]
+        package let channel2: [Int32]
         /// First-block count for this DC group.
-        public let count: Int
-        public init(offsetX: Int, offsetY: Int, width: Int, height: Int,
+        package let count: Int
+        package init(offsetX: Int, offsetY: Int, width: Int, height: Int,
                     channel2: [Int32], count: Int) {
             self.offsetX = offsetX; self.offsetY = offsetY
             self.width = width; self.height = height
@@ -177,7 +177,7 @@ public struct ACStrategyImage: Sendable {
     /// libjxl `dec_modular.cc::DecodeAcMetadata`, where the walk is
     /// confined to `DCGroupRect`). First-block coordinates are emitted
     /// in DC-group order, then raster order within each group.
-    public static func buildMultiGroup(
+    package static func buildMultiGroup(
         fullWidth: Int, fullHeight: Int,
         segments: [Segment]
     ) throws -> ACStrategyImage {

@@ -35,7 +35,7 @@
 
 import Foundation
 
-public enum SpecANSDistributionError: Error, Sendable, Equatable {
+package enum SpecANSDistributionError: Error, Sendable, Equatable {
     case bitstream(BitstreamError)
     case duplicateSymbol(Int)
     case complexPathNotImplemented
@@ -89,12 +89,12 @@ fileprivate let kComplexLogCountEncode: [(length: Int, code: UInt32)] = {
     return table
 }()
 
-public enum SpecANSDistribution {
+package enum SpecANSDistribution {
 
     /// Read one per-cluster distribution. `precisionBits` is the
     /// log of the rANS table size (always `ANS_LOG_TAB_SIZE = 12`
     /// for JXL); `range = 1 << precisionBits = 4096`.
-    public static func readHistogram(
+    package static func readHistogram(
         from r: inout BitReader,
         precisionBits: Int = 12
     ) throws -> [Int32] {
@@ -330,7 +330,7 @@ public enum SpecANSDistribution {
     ///   array, not the raw input, or the encode and decode tables will
     ///   disagree.
     @discardableResult
-    public static func writeHistogram(
+    package static func writeHistogram(
         _ counts: [Int32],
         to w: inout BitWriter,
         precisionBits: Int = 12
@@ -382,7 +382,7 @@ public enum SpecANSDistribution {
     /// across the candidate range `0...13` (the decoder rejects
     /// `shift > precisionBits + 1`).
     @discardableResult
-    public static func writeComplex(
+    package static func writeComplex(
         _ counts: [Int32],
         to w: inout BitWriter,
         precisionBits: Int = 12
@@ -549,7 +549,7 @@ public enum SpecANSDistribution {
 
     /// True iff `counts` is the flat distribution for its alphabet
     /// size — i.e. matches `CreateFlatHistogram(alphabetSize, range)`.
-    public static func isFlat(counts: [Int32], range: Int32) -> Bool {
+    package static func isFlat(counts: [Int32], range: Int32) -> Bool {
         let alphabetSize = Int32(counts.count)
         if alphabetSize == 0 { return false }
         let base = range / alphabetSize

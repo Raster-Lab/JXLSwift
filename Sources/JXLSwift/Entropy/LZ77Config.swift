@@ -40,22 +40,22 @@
 
 import Foundation
 
-public enum LZ77ConfigError: Error, Sendable, Equatable {
+package enum LZ77ConfigError: Error, Sendable, Equatable {
     case bitstream(BitstreamError)
     case hybridConfig(HybridUintConfigError)
 }
 
-public struct LZ77Config: Sendable, Equatable {
-    public let enabled: Bool
-    public let minSymbol: UInt32
-    public let minLength: UInt32
+package struct LZ77Config: Sendable, Equatable {
+    package let enabled: Bool
+    package let minSymbol: UInt32
+    package let minLength: UInt32
     /// HybridUintConfig used for LZ77 length tokens (entropy symbols
     /// `>= minSymbol`). The decoder applies this config when it sees a
     /// symbol in the LZ77 range; ordinary symbols use the per-context
     /// HybridUintConfig from the surrounding ANS code.
-    public let lengthUintConfig: HybridUintConfig
+    package let lengthUintConfig: HybridUintConfig
 
-    public init(enabled: Bool,
+    package init(enabled: Bool,
                 minSymbol: UInt32 = 224,
                 minLength: UInt32 = 3,
                 lengthUintConfig: HybridUintConfig = .defaultConfig) {
@@ -66,18 +66,18 @@ public struct LZ77Config: Sendable, Equatable {
     }
 
     /// Default disabled configuration. Emit just the 1-bit flag.
-    public static let disabled = LZ77Config(enabled: false)
+    package static let disabled = LZ77Config(enabled: false)
 }
 
 extension LZ77Config {
 
     /// log_alpha_size used to (de)serialise `length_uint_config` —
     /// libjxl hardcodes this to 8 in `DecodeHistograms`.
-    public static let lengthUintConfigLogAlpha: Int = 8
+    package static let lengthUintConfigLogAlpha: Int = 8
 
     /// Serialise this config. Has no `logAlpha` argument — the LZ77
     /// length token alphabet is always 2^8 by spec convention.
-    public func write(to w: inout BitWriter) throws {
+    package func write(to w: inout BitWriter) throws {
         w.writeBit(enabled)
         if !enabled { return }
         // min_symbol — `U32(Val(224), Val(512), Val(4096),
@@ -104,7 +104,7 @@ extension LZ77Config {
     }
 
     /// Deserialise.
-    public static func read(from r: inout BitReader) throws -> LZ77Config {
+    package static func read(from r: inout BitReader) throws -> LZ77Config {
         let trace = ProcessInfo.processInfo.environment["JXL_TRACE"] != nil
         let pStart = r.position
         let enabled: Bool

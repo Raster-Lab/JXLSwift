@@ -21,7 +21,7 @@
 
 import Foundation
 
-public enum QuantWeights {
+package enum QuantWeights {
 
     /// Convert a signed band offset into a positive multiplicative
     /// step. Mirrors libjxl's `Mult`: positive offsets give
@@ -29,7 +29,7 @@ public enum QuantWeights {
     /// (reciprocal — keeps the curve monotonic across the band
     /// boundaries).
     @inline(__always)
-    public static func mult(_ v: Float) -> Float {
+    package static func mult(_ v: Float) -> Float {
         return v > 0 ? 1 + v : 1 / (1 - v)
     }
 
@@ -38,7 +38,7 @@ public enum QuantWeights {
     /// curve. `out[0] = bands[0]`, `out[i] = out[i-1] · Mult(bands[i])`.
     /// Returns the expanded curve so callers can feed it to
     /// `interpolate`.
-    public static func expandBands(_ bands: [Float]) -> [Float] {
+    package static func expandBands(_ bands: [Float]) -> [Float] {
         precondition(!bands.isEmpty)
         var out = [Float](repeating: 0, count: bands.count)
         out[0] = bands[0]
@@ -59,7 +59,7 @@ public enum QuantWeights {
     /// `pos == 0` returns `array[0]`; `pos == max` returns the
     /// last entry. Caller's responsibility to keep `pos ≤ max`.
     @inline(__always)
-    public static func interpolate(
+    package static func interpolate(
         pos: Float, max: Float, array: [Float]
     ) -> Float {
         let len = array.count
@@ -78,7 +78,7 @@ public enum QuantWeights {
     /// Maximum normalised distance an `(x, y)` cell can be from the
     /// DC corner: `√2` (for a square block, the bottom-right cell).
     /// libjxl `quant_weights.cc` uses this as the curve's `max`.
-    public static let kSqrt2: Float = 1.4142135623730951
+    package static let kSqrt2: Float = 1.4142135623730951
 
     /// Synthesise a 3-plane per-coefficient quant-weight table for a
     /// `rows × cols` rectangular DCT block from per-channel distance
@@ -95,7 +95,7 @@ public enum QuantWeights {
     /// `params->distance_bands[c][0] *= 64.0f`). Subsequent
     /// entries are signed multiplicative offsets piped through
     /// `mult(_:)`.
-    public static func getQuantWeights(
+    package static func getQuantWeights(
         rows: Int, cols: Int,
         bands: (x: [Float], y: [Float], b: [Float])
     ) throws -> [Float] {
@@ -148,7 +148,7 @@ public enum QuantWeights {
     }
 }
 
-public enum QuantWeightsError: Error, Sendable {
+package enum QuantWeightsError: Error, Sendable {
     case misshapedBands(String)
 }
 
@@ -159,7 +159,7 @@ extension QuantWeights {
     /// takes `idweights[c][0]`, except coefficient slots 1 and 8
     /// (→ `idweights[c][1]`) and slot 9 (→ `idweights[c][2]`).
     /// Output layout is `out[c * 64 + k]`.
-    public static func getIdentityQuantWeights(
+    package static func getIdentityQuantWeights(
         _ idweights: (x: [Float], y: [Float], b: [Float])
     ) -> [Float] {
         let perChannel: [[Float]] = [idweights.x, idweights.y, idweights.b]
@@ -180,7 +180,7 @@ extension QuantWeights {
     /// blocks. Position 0 (DC) is libjxl's `0xBAD` sentinel — it is
     /// always overwritten by `LowestFrequenciesFromDC`, so this
     /// builder leaves it 0.
-    public static func getDCT2QuantWeights(
+    package static func getDCT2QuantWeights(
         _ dct2weights: (x: [Float], y: [Float], b: [Float])
     ) -> [Float] {
         let perChannel: [[Float]] = [dct2weights.x, dct2weights.y,
@@ -218,7 +218,7 @@ extension QuantWeights {
     /// `getQuantWeights` table fanned out 2× in each axis. The
     /// LIBRARY-default DCT4 multipliers are all 1, so no per-slot
     /// division is applied.
-    public static func getDCT4QuantWeights(
+    package static func getDCT4QuantWeights(
         bands: (x: [Float], y: [Float], b: [Float])
     ) throws -> [Float] {
         let w4 = try getQuantWeights(rows: 4, cols: 4, bands: bands)
@@ -238,7 +238,7 @@ extension QuantWeights {
     /// DCT8X4). Mirrors libjxl `kQuantModeDCT4X8`: a 4×8
     /// `getQuantWeights` table fanned out 2× along the row axis
     /// only. The LIBRARY-default DCT4X8 multiplier is 1.
-    public static func getDCT4X8QuantWeights(
+    package static func getDCT4X8QuantWeights(
         bands: (x: [Float], y: [Float], b: [Float])
     ) throws -> [Float] {
         let w48 = try getQuantWeights(rows: 4, cols: 8, bands: bands)
@@ -284,7 +284,7 @@ extension QuantWeights {
     /// - Returns: `3 * coefCount` weight floats.
     /// - Throws: `QuantWeightsError.misshapedBands("invalid RAW qtable")` if `qtable`
     ///   contains a zero entry (division by zero).
-    public static func getRAWQuantWeights(
+    package static func getRAWQuantWeights(
         qtable: [Int32], qtableDen: Float
     ) throws -> [Float] {
         guard !qtable.isEmpty,
@@ -307,18 +307,18 @@ extension QuantWeights {
 /// Each tuple's first entry is *raw* (not yet ×64) — call
 /// `scaledForBitstream(_:)` to apply the libjxl scaling that the
 /// bitstream-decoded form carries.
-public enum DefaultQuantBands {
+package enum DefaultQuantBands {
 
     /// DCT8x8 bands per libjxl `quant_weights.cc` `DCT()`.
     /// Channel order: X (red-green), Y (luma), B (yellow-blue).
-    public static let dct8x8: (x: [Float], y: [Float], b: [Float]) = (
+    package static let dct8x8: (x: [Float], y: [Float], b: [Float]) = (
         x: [3150.0,    0.0, -0.4, -0.4, -0.4, -2.0],
         y: [ 560.0,    0.0, -0.3, -0.3, -0.3, -0.3],
         b: [ 512.0,   -2.0, -1.0,  0.0, -1.0, -2.0]
     )
 
     /// DCT16x16 bands per libjxl `quant_weights.cc` `DCT16X16()`.
-    public static let dct16x16: (x: [Float], y: [Float], b: [Float]) = (
+    package static let dct16x16: (x: [Float], y: [Float], b: [Float]) = (
         x: [
              8996.8725711814115328,
                -1.3000777393353804,
@@ -349,7 +349,7 @@ public enum DefaultQuantBands {
     )
 
     /// DCT32x32 bands per libjxl `quant_weights.cc` `DCT32X32()`.
-    public static let dct32x32: (x: [Float], y: [Float], b: [Float]) = (
+    package static let dct32x32: (x: [Float], y: [Float], b: [Float]) = (
         x: [
              15718.40830982518931456,
                 -1.025,
@@ -386,7 +386,7 @@ public enum DefaultQuantBands {
     /// `DCT8X16()`. (libjxl's DCT8X16 corresponds to a 16-tall ×
     /// 8-wide coefficient layout — same layout as DCT16X8 after
     /// `CoefficientLayout` swap, so they share the table.)
-    public static let dct8x16: (x: [Float], y: [Float], b: [Float]) = (
+    package static let dct8x16: (x: [Float], y: [Float], b: [Float]) = (
         x: [7240.7734393502, -0.7, -0.7, -0.2, -0.2, -0.2, -0.5],
         y: [1448.15468787004, -0.5, -0.5, -0.5, -0.2, -0.2, -0.2],
         b: [ 506.854140754517, -1.4, -0.2, -0.5, -0.5, -1.5, -3.6]
@@ -395,7 +395,7 @@ public enum DefaultQuantBands {
     /// DCT8x32 / DCT32x8 bands per libjxl `quant_weights.cc`
     /// `DCT8X32()`. Both share the 32×8 (after `CoefficientLayout`)
     /// coef layout and therefore the same quant table.
-    public static let dct8x32: (x: [Float], y: [Float], b: [Float]) = (
+    package static let dct8x32: (x: [Float], y: [Float], b: [Float]) = (
         x: [
             16283.2494710648897,
                -1.7812845336559429,
@@ -431,7 +431,7 @@ public enum DefaultQuantBands {
     /// DCT64x32 / DCT32x64 bands per libjxl `quant_weights.cc`
     /// `DCT32X64()`. Both share the 64×32 (after `CoefficientLayout`)
     /// coef layout. libjxl bakes a `0.65 *` factor into the seed.
-    public static let dct32x64: (x: [Float], y: [Float], b: [Float]) = (
+    package static let dct32x64: (x: [Float], y: [Float], b: [Float]) = (
         x: [
              Float(0.65 * 23629.073922049845),
                 -1.025,
@@ -467,7 +467,7 @@ public enum DefaultQuantBands {
     /// DCT64x64 bands per libjxl `quant_weights.cc` `DCT64X64()`.
     /// Note: libjxl baked in a `0.9 *` factor on the seed values
     /// for this strategy.
-    public static let dct64x64: (x: [Float], y: [Float], b: [Float]) = (
+    package static let dct64x64: (x: [Float], y: [Float], b: [Float]) = (
         x: [
              Float(0.9 * 26629.073922049845),
                 -1.025,
@@ -503,7 +503,7 @@ public enum DefaultQuantBands {
     /// DCT16x32 / DCT32x16 bands per libjxl `quant_weights.cc`
     /// `DCT16X32()`. Both share a 32×16 (after `CoefficientLayout`)
     /// coef layout and therefore the same quant table.
-    public static let dct16x32: (x: [Float], y: [Float], b: [Float]) = (
+    package static let dct16x32: (x: [Float], y: [Float], b: [Float]) = (
         x: [
              13844.97076442300573,
                 -0.97113799999999995,
@@ -541,7 +541,7 @@ public enum DefaultQuantBands {
     /// `params->distance_bands[c][0] *= 64.0f`). Apply here so the
     /// resulting weights match what the decoder actually
     /// dequantises with.
-    public static func scaledForBitstream(
+    package static func scaledForBitstream(
         _ bands: (x: [Float], y: [Float], b: [Float])
     ) -> (x: [Float], y: [Float], b: [Float]) {
         var x = bands.x, y = bands.y, b = bands.b
@@ -553,7 +553,7 @@ public enum DefaultQuantBands {
 
     /// DCT4X4 quant bands (libjxl `quant_weights.cc::DCT4X4()`).
     /// Used when building AFV quant matrices.
-    public static let dct4x4: (x: [Float], y: [Float], b: [Float]) = (
+    package static let dct4x4: (x: [Float], y: [Float], b: [Float]) = (
         x: [2200.0, 0.0, 0.0, 0.0],
         y: [ 392.0, 0.0, 0.0, 0.0],
         b: [ 112.0, -0.25, -0.25, -0.5]
@@ -561,7 +561,7 @@ public enum DefaultQuantBands {
 
     /// DCT4X8 quant bands (libjxl `quant_weights.cc::DCT4X8()`).
     /// Used when building AFV quant matrices.
-    public static let dct4x8: (x: [Float], y: [Float], b: [Float]) = (
+    package static let dct4x8: (x: [Float], y: [Float], b: [Float]) = (
         x: [2198.050556016380522,  -0.96269623020744692,
             -0.76194253026666783,  -0.6551140670773547],
         y: [ 764.3655248643528689, -0.92630200888366945,
@@ -585,7 +585,7 @@ public enum DefaultQuantBands {
     /// [7]  = AFV high-freq band[2] delta
     /// [8]  = AFV high-freq band[3] delta
     /// ```
-    public static let afv: (x: [Float], y: [Float], b: [Float]) = (
+    package static let afv: (x: [Float], y: [Float], b: [Float]) = (
         x: [3072, 3072, 256, 256, 256, 414, 0, 0, 0],
         y: [1024, 1024,  50,  50,  50,  58, 0, 0, 0],
         b: [ 384,  384,  12,  12,  12,  22, -0.25, -0.25, -0.25]
@@ -596,7 +596,7 @@ public enum DefaultQuantBands {
     /// Three weights per channel: `[0]` fills all 64 positions,
     /// `[1]` overrides coefficient positions 1 and 8, `[2]`
     /// overrides position 9. Used raw (no ×64) for LIBRARY mode.
-    public static let identity: (x: [Float], y: [Float], b: [Float]) = (
+    package static let identity: (x: [Float], y: [Float], b: [Float]) = (
         x: [280.0, 3160.0, 3160.0],
         y: [ 60.0,  864.0,  864.0],
         b: [ 18.0,  200.0,  200.0]
@@ -606,7 +606,7 @@ public enum DefaultQuantBands {
     /// `DequantMatricesLibraryDef::DCT2X2()`. Six weights per
     /// channel, fanned out across the 8×8 grid by
     /// `getDCT2QuantWeights`.
-    public static let dct2x2: (x: [Float], y: [Float], b: [Float]) = (
+    package static let dct2x2: (x: [Float], y: [Float], b: [Float]) = (
         x: [3840.0, 2560.0, 1280.0, 640.0, 480.0, 300.0],
         y: [ 960.0,  640.0,  320.0, 180.0, 140.0, 120.0],
         b: [ 640.0,  320.0,  128.0,  64.0,  32.0,  16.0]
@@ -629,7 +629,7 @@ extension QuantWeights {
     /// bands (caller passes the LIBRARY default + ×64 if needed).
     /// `afvWeights` is a 3-tuple of length-9 AFV weight vectors
     /// from ``DefaultQuantBands/afv``.
-    public static func getAFVQuantWeights(
+    package static func getAFVQuantWeights(
         dct4x8Bands: (x: [Float], y: [Float], b: [Float]),
         dct4x4Bands: (x: [Float], y: [Float], b: [Float]),
         afvWeights: (x: [Float], y: [Float], b: [Float])

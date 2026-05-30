@@ -22,18 +22,18 @@ import Foundation
 /// stored grid is the full block-aligned width/height; the
 /// nominal "visible" width/height comes from the SOFn frame
 /// dimensions scaled by the component's sampling factors.
-public struct JPEGSamplePlane: Sendable {
-    public let componentId: Int
+package struct JPEGSamplePlane: Sendable {
+    package let componentId: Int
     /// Pixel width of the stored plane — always a multiple of 8.
-    public let width: Int
+    package let width: Int
     /// Pixel height of the stored plane — always a multiple of 8.
-    public let height: Int
+    package let height: Int
     /// `samples[y * width + x]`. Element type is `Int32` so 12-bit
     /// extended-precision JPEGs round-trip without truncation; for
     /// 8-bit the values fit in 0..255.
-    public var samples: [Int32]
+    package var samples: [Int32]
 
-    public init(componentId: Int, width: Int, height: Int,
+    package init(componentId: Int, width: Int, height: Int,
                 samples: [Int32]) {
         precondition(samples.count == width * height,
             "JPEGSamplePlane: samples count must equal w*h")
@@ -44,13 +44,13 @@ public struct JPEGSamplePlane: Sendable {
     }
 }
 
-public enum JPEGPixelAssembler {
+package enum JPEGPixelAssembler {
 
     /// Take per-component blocks (from `JPEGScanDecoder`),
     /// dequantise each one with the right quant table, run IDCT,
     /// and stitch the resulting sample tiles into a flat plane.
     /// Returns one plane per input component, in the same order.
-    public static func assemble(
+    package static func assemble(
         componentBlocks: [JPEGComponentBlocks],
         frameComponents: [JPEGFrameComponent],
         quantTables: [JPEGQuantTable],
@@ -105,7 +105,7 @@ public enum JPEGPixelAssembler {
     /// dimensions and evenly divisible by them — that's what
     /// JPEG's whole-integer sampling factors guarantee
     /// (`H_max / H_i`, `V_max / V_i`).
-    public static func upsampleNearest(
+    package static func upsampleNearest(
         _ plane: JPEGSamplePlane,
         toWidth targetWidth: Int, height targetHeight: Int
     ) -> JPEGSamplePlane {
@@ -140,12 +140,12 @@ public enum JPEGPixelAssembler {
 
 /// Errors raised when the component / quant-table set passed to
 /// the assembler doesn't line up.
-public enum JPEGAssembleError: Error, Sendable, Equatable,
+package enum JPEGAssembleError: Error, Sendable, Equatable,
                                LocalizedError {
     case unknownComponent(componentId: Int)
     case missingQuantTable(tableId: Int)
 
-    public var errorDescription: String? {
+    package var errorDescription: String? {
         switch self {
         case .unknownComponent(let c):
             return "JPEG pixel assembler: component \(c) not in frame"

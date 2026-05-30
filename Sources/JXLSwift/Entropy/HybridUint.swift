@@ -35,12 +35,12 @@
 
 import Foundation
 
-public struct HybridUintConfig: Sendable, Equatable {
-    public let splitExponent: Int    // 0...15 in practice; 0...30 in theory
-    public let msbInToken: Int       // 0...splitExponent
-    public let lsbInToken: Int       // 0...splitExponent - msbInToken
+package struct HybridUintConfig: Sendable, Equatable {
+    package let splitExponent: Int    // 0...15 in practice; 0...30 in theory
+    package let msbInToken: Int       // 0...splitExponent
+    package let lsbInToken: Int       // 0...splitExponent - msbInToken
 
-    public init(splitExponent: Int, msbInToken: Int = 0, lsbInToken: Int = 0) {
+    package init(splitExponent: Int, msbInToken: Int = 0, lsbInToken: Int = 0) {
         precondition(splitExponent >= 0 && splitExponent <= 30,
                      "split_exponent must be 0..30")
         precondition(msbInToken >= 0 && msbInToken <= splitExponent,
@@ -55,20 +55,20 @@ public struct HybridUintConfig: Sendable, Equatable {
     /// libjxl's default for many distributions: a balanced 4/2/0 split
     /// that gives a 16-symbol "literal" range and packs MSB pairs into
     /// the token.
-    public static let defaultConfig = HybridUintConfig(
+    package static let defaultConfig = HybridUintConfig(
         splitExponent: 4, msbInToken: 2, lsbInToken: 0
     )
 
     /// "Trivial" config with split_exponent = 4 and no MSB/LSB folding —
     /// values below 16 encode directly, larger values use a single token
     /// per "bit class" plus extra bits.
-    public static let raw4 = HybridUintConfig(
+    package static let raw4 = HybridUintConfig(
         splitExponent: 4, msbInToken: 0, lsbInToken: 0
     )
 
     /// Maximum token value this config can produce. The token alphabet is
     /// `[0, maxToken]`. Used by the entropy coder to size its distribution.
-    public var maxToken: Int {
+    package var maxToken: Int {
         // For value up to 2^maxValueBits - 1 the largest token comes from
         // n = maxValueBits - 1, m = 2^n - 1.
         // Token = (1 << splitExp) + ((n - splitExp) << (msb + lsb))
@@ -81,10 +81,10 @@ public struct HybridUintConfig: Sendable, Equatable {
 
 /// One step's output of HybridUint encoding: a token (used by the
 /// entropy coder) and the raw extra bits to emit after the token.
-public struct HybridUintToken: Sendable, Equatable {
-    public let token: UInt32
-    public let extraBits: UInt32
-    public let extraNBits: Int
+package struct HybridUintToken: Sendable, Equatable {
+    package let token: UInt32
+    package let extraBits: UInt32
+    package let extraNBits: Int
 }
 
 extension HybridUintConfig {
@@ -92,7 +92,7 @@ extension HybridUintConfig {
     /// Encode a value into (token, extra_bits, extra_nbits). The caller
     /// is responsible for emitting the token via the entropy coder and
     /// then writing `extra_nbits` of `extra_bits` to the bit writer.
-    public func encode(_ value: UInt32) -> HybridUintToken {
+    package func encode(_ value: UInt32) -> HybridUintToken {
         let split = UInt32(1) &<< UInt32(splitExponent)
         if value < split {
             return HybridUintToken(token: value, extraBits: 0, extraNBits: 0)
@@ -135,7 +135,7 @@ extension HybridUintConfig {
     /// only the token alphabet membership matters; saves ~40% of
     /// the per-pixel work versus calling `encode(_:).token`.
     @inline(__always)
-    public func tokenOnly(_ value: UInt32) -> UInt32 {
+    package func tokenOnly(_ value: UInt32) -> UInt32 {
         let split = UInt32(1) &<< UInt32(splitExponent)
         if value < split { return value }
         let n = Int(31 - value.leadingZeroBitCount)
@@ -156,7 +156,7 @@ extension HybridUintConfig {
     /// coder) and the bit reader (positioned at the extra-bits payload),
     /// recover the original value. Reads `extra_nbits` bits from `r` for
     /// large tokens; small tokens read 0 bits.
-    public func decode(token: UInt32, from r: inout BitReader) throws -> UInt32 {
+    package func decode(token: UInt32, from r: inout BitReader) throws -> UInt32 {
         let split = UInt32(1) &<< UInt32(splitExponent)
         if token < split {
             return token
@@ -199,7 +199,7 @@ extension HybridUintConfig {
 // `log_alpha` is the log2 of the distribution's alphabet size and is
 // known from the surrounding codestream context. Spec range: 5..8.
 
-public enum HybridUintConfigError: Error, Sendable, Equatable {
+package enum HybridUintConfigError: Error, Sendable, Equatable {
     case logAlphaOutOfRange(Int)
     case splitOutOfRange(split: Int, logAlpha: Int)
     case msbOutOfRange(msb: Int, split: Int)
@@ -212,7 +212,7 @@ extension HybridUintConfig {
     /// Serialise this config against an alphabet of size `2^logAlpha`.
     /// `logAlpha` is the log-alphabet-size of the distribution that
     /// will use this config; spec range is 5..8.
-    public func write(to w: inout BitWriter, logAlpha: Int) throws {
+    package func write(to w: inout BitWriter, logAlpha: Int) throws {
         guard logAlpha >= 0 && logAlpha <= 30 else {
             throw HybridUintConfigError.logAlphaOutOfRange(logAlpha)
         }
@@ -246,7 +246,7 @@ extension HybridUintConfig {
 
     /// Deserialise a config given the surrounding `logAlpha`. Mirror of
     /// `write(to:logAlpha:)`.
-    public static func read(from r: inout BitReader, logAlpha: Int) throws -> HybridUintConfig {
+    package static func read(from r: inout BitReader, logAlpha: Int) throws -> HybridUintConfig {
         guard logAlpha >= 0 && logAlpha <= 30 else {
             throw HybridUintConfigError.logAlphaOutOfRange(logAlpha)
         }

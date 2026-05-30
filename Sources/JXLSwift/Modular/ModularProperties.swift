@@ -59,7 +59,7 @@ import Foundation
 /// (weighted-predictor output) is sourced from `wpProperty` — pass
 /// the value `WeightedPredictor.propertyValue(...)` returns for the
 /// current pixel, or `0` when no WP state machine is active.
-public func computeModularProperties(
+package func computeModularProperties(
     staticChannel: Int32, groupId: Int32,
     x: Int32, y: Int32,
     top: Int32, left: Int32,
@@ -83,7 +83,7 @@ public func computeModularProperties(
 /// per-pixel decode loop to avoid re-allocating a fresh `[Int32]`
 /// 16M times for a 4096² image — a measurable hot spot.
 @inline(__always)
-public func fillModularProperties(
+package func fillModularProperties(
     into p: inout [Int32],
     staticChannel: Int32, groupId: Int32,
     x: Int32, y: Int32,

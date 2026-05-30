@@ -24,7 +24,7 @@
 import Foundation
 
 /// JPEG block → 8×8 reconstructed sample bytes.
-public enum JPEGIDCT {
+package enum JPEGIDCT {
 
     /// Run the inverse DCT on a dequantised 8×8 block and return
     /// 64 sample values in row-major order. Samples are clamped
@@ -35,7 +35,7 @@ public enum JPEGIDCT {
     /// `precision` is the SOFn `P` field (typically 8; 12 for
     /// extended-precision JPEGs). The returned `[Int32]` makes
     /// callers free to handle 12-bit outputs without truncation.
-    public static func inverseTransform(
+    package static func inverseTransform(
         _ block: JPEGCoefficientBlock,
         precision: Int = 8
     ) -> [Int32] {
@@ -64,7 +64,7 @@ public enum JPEGIDCT {
     /// 8-bit convenience: returns `[UInt8]` directly. Callers
     /// who know they're decoding 8-bit JPEGs (the common case)
     /// can skip the `Int32 → UInt8` narrowing themselves.
-    public static func inverseTransform8Bit(
+    package static func inverseTransform8Bit(
         _ block: JPEGCoefficientBlock
     ) -> [UInt8] {
         let s = inverseTransform(block, precision: 8)

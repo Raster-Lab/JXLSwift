@@ -36,7 +36,7 @@ public struct BitDepth: Sendable, Equatable {
         floatingPoint: false, bitsPerSample: 8, exponentBitsPerSample: 0
     )
 
-    public static func read(from r: inout BitReader) throws -> BitDepth {
+    package static func read(from r: inout BitReader) throws -> BitDepth {
         let isFloat = try r.readBit()
         if isFloat {
             let bps = try r.readU32((
@@ -57,7 +57,7 @@ public struct BitDepth: Sendable, Equatable {
         }
     }
 
-    public func write(to w: inout BitWriter) throws {
+    package func write(to w: inout BitWriter) throws {
         w.writeBit(floatingPoint)
         if floatingPoint {
             try w.writeU32(bitsPerSample, distributions: (

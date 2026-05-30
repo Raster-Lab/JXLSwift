@@ -22,7 +22,7 @@ import Foundation
 /// Multiply a quantised JPEG coefficient block by its
 /// quantisation table. Output is in natural (row-major) order,
 /// same layout as the input block.
-public enum JPEGDequantiser {
+package enum JPEGDequantiser {
 
     /// Dequantise `block` in-place by `table`. Both inputs must
     /// describe an 8×8 block — `block.coefficients.count == 64`
@@ -34,7 +34,7 @@ public enum JPEGDequantiser {
     /// coefficients fit in roughly ±16 384 and quant factors in
     /// 1..65 535, so the product fits comfortably in `Int32`. We
     /// don't clamp.
-    public static func dequantise(
+    package static func dequantise(
         _ block: inout JPEGCoefficientBlock,
         using table: JPEGQuantTable
     ) {
@@ -48,7 +48,7 @@ public enum JPEGDequantiser {
 
     /// Functional flavour — returns a new dequantised block
     /// instead of mutating in place.
-    public static func dequantising(
+    package static func dequantising(
         _ block: JPEGCoefficientBlock,
         using table: JPEGQuantTable
     ) -> JPEGCoefficientBlock {

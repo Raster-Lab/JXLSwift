@@ -13,20 +13,20 @@
 
 import Foundation
 
-public struct DequantMatricesDC: Sendable {
+package struct DequantMatricesDC: Sendable {
     /// Per-channel DC quant scale. libjxl multiplies the F16 read
     /// value by `1.0f / 128.0f`; the default values are
     /// `[1.0/128, 1.0/128, 1.0/128]` (no per-channel adjustment).
-    public var dcQuant: (Float, Float, Float)
+    package var dcQuant: (Float, Float, Float)
 
-    public init(dcQuant: (Float, Float, Float) = (1.0 / 128, 1.0 / 128, 1.0 / 128)) {
+    package init(dcQuant: (Float, Float, Float) = (1.0 / 128, 1.0 / 128, 1.0 / 128)) {
         self.dcQuant = dcQuant
     }
 
     /// Reciprocals — what callers actually multiply by during DC
     /// dequantisation. Cached so `[Float]` and `[Float]` aren't
     /// computed per-pixel.
-    public var invDcQuant: (Float, Float, Float) {
+    package var invDcQuant: (Float, Float, Float) {
         return (1.0 / dcQuant.0, 1.0 / dcQuant.1, 1.0 / dcQuant.2)
     }
 
@@ -57,7 +57,7 @@ public struct DequantMatricesDC: Sendable {
     /// is ~58 000× too large for typical `qt[0]` values, sending
     /// the DC dequant cascade into saturation (every decoded
     /// pixel becomes 0xFF saturated white for any non-zero DC).
-    public init(jpegBridgeScales dcQuantization: [Float]) {
+    package init(jpegBridgeScales dcQuantization: [Float]) {
         precondition(dcQuantization.count == 3,
             "DequantMatricesDC(jpegBridgeScales:): need 3 entries")
         self.dcQuant = (
@@ -66,7 +66,7 @@ public struct DequantMatricesDC: Sendable {
             1.0 / dcQuantization[2])
     }
 
-    public static func read(from r: inout BitReader) throws -> DequantMatricesDC {
+    package static func read(from r: inout BitReader) throws -> DequantMatricesDC {
         let allDefault: Bool
         do { allDefault = try r.readBit() }
         catch let e as BitstreamError {
@@ -106,7 +106,7 @@ public struct DequantMatricesDC: Sendable {
     /// `1/128`. The bridge constructs non-default values via
     /// `init(jpegBridgeScales:)`, so it always hits the F16
     /// branch.
-    public func write(to w: inout BitWriter) {
+    package func write(to w: inout BitWriter) {
         let defaultVal: Float = 1.0 / 128.0
         let eps: Float = 1e-9
         let allDefault =
@@ -125,7 +125,7 @@ public struct DequantMatricesDC: Sendable {
     }
 }
 
-public enum DequantMatricesDCError: Error, Sendable {
+package enum DequantMatricesDCError: Error, Sendable {
     case bitstream(BitstreamError)
     case invalidDcQuant(Int, value: Float)
 }
@@ -142,26 +142,26 @@ public enum DequantMatricesDCError: Error, Sendable {
 /// long-form path, plus a full reader (v0.12.0gs) that loops over
 /// 17 quant tables and reads per-slot `QuantEncoding` entries when
 /// the `all_default` bit is 0.
-public enum DequantMatricesAC {
+package enum DequantMatricesAC {
 
     /// Number of quant tables in the JXL spec (DCT, ID, DCT2x2, …,
     /// DCT128X256 = 17). libjxl `quant_weights.h`:
     /// `kNumQuantTables == 17`.
-    public static let kNumQuantTables: Int = 17
+    package static let kNumQuantTables: Int = 17
 
     /// Per-slot required size in BLOCKS (libjxl `quant_weights.h:
     /// required_size_x`). Multiply by 8 to get pixel dimensions.
-    public static let requiredSizeXBlocks: [Int] = [
+    package static let requiredSizeXBlocks: [Int] = [
         1, 1, 1, 1, 2, 4, 1, 1, 2, 1, 1, 8, 4, 16, 8, 32, 16,
     ]
-    public static let requiredSizeYBlocks: [Int] = [
+    package static let requiredSizeYBlocks: [Int] = [
         1, 1, 1, 1, 2, 4, 2, 4, 4, 1, 1, 8, 8, 16, 16, 32, 32,
     ]
 
     /// Read the 1-bit `all_default` flag. Returns `true` if every
     /// AC strategy uses its library default; throws `notDefault`
     /// otherwise.
-    public static func readDefaultOrThrow(
+    package static func readDefaultOrThrow(
         from r: inout BitReader
     ) throws -> Bool {
         let allDefault: Bool
@@ -183,7 +183,7 @@ public enum DequantMatricesAC {
     /// the LfGlobal modular state, needed for slot entries that
     /// use `kQuantModeRAW` (their quant matrix lives in a modular
     /// sub-image).
-    public static func read(
+    package static func read(
         from r: inout BitReader,
         globalTree: ModularTree? = nil,
         globalPostHeader: EntropySectionHeader? = nil,
@@ -233,7 +233,7 @@ public enum DequantMatricesAC {
     }
 }
 
-public enum DequantMatricesACError: Error, Sendable {
+package enum DequantMatricesACError: Error, Sendable {
     case bitstream(BitstreamError)
     case notDefault
     case perSlotRead(slot: Int, error: QuantEncodingError)

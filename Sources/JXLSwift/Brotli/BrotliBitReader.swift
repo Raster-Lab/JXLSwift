@@ -11,7 +11,7 @@ import Foundation
 /// Brotli read helpers. Wraps `BitReader` so the call sites read
 /// like the RFC instead of like bit-twiddling. Each helper cites
 /// the RFC section that defines the encoding.
-public enum BrotliBitReader {
+package enum BrotliBitReader {
 
     /// RFC 7932 §9.2 — variable-length unsigned integer for fields
     /// like NBLTYPESL / NBLTYPESI / NBLTYPESD. The encoded value `N`
@@ -37,7 +37,7 @@ public enum BrotliBitReader {
     /// ```
     ///
     /// Returns the decoded value (1..256).
-    public static func readVarLenU8(
+    package static func readVarLenU8(
         from r: inout BitReader
     ) throws -> UInt32 {
         let firstBit: UInt32
@@ -67,7 +67,7 @@ public enum BrotliBitReader {
     ///
     /// Returns the *decoded* MNIBBLES value (4, 5, or 6), or throws
     /// `reservedMNibbles` for the 11-binary reserved value.
-    public static func readMNibbles(
+    package static func readMNibbles(
         from r: inout BitReader
     ) throws -> Int {
         let v: UInt32
@@ -85,7 +85,7 @@ public enum BrotliBitReader {
     /// Read a Brotli variable-length integer encoded as `nbits` of
     /// raw bits, returning a UInt32. Convenience wrapper that
     /// converts the underlying `BitstreamError` to `BrotliError`.
-    public static func read(
+    package static func read(
         bits n: Int, from r: inout BitReader
     ) throws -> UInt32 {
         do { return try r.read(bits: n) }
@@ -93,7 +93,7 @@ public enum BrotliBitReader {
     }
 
     /// Read one bit, returning as Bool.
-    public static func readBit(
+    package static func readBit(
         from r: inout BitReader
     ) throws -> Bool {
         do { return try r.readBit() }

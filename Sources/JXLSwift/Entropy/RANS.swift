@@ -23,7 +23,7 @@
 
 import Foundation
 
-public enum ANSError: Error, Sendable, Equatable {
+package enum ANSError: Error, Sendable, Equatable {
     case emptyDistribution
     case symbolHasZeroFrequency(symbol: Int)
     case invalidDistributionSum(expected: UInt32, got: UInt32)
@@ -32,30 +32,30 @@ public enum ANSError: Error, Sendable, Equatable {
     case bitstream(BitstreamError)
 }
 
-public enum ANSConstants {
-    public static let logTabSize: Int = 12
-    public static let tabSize: UInt32 = 1 << UInt32(logTabSize)         // 4096
-    public static let stateLowerBound: UInt32 = 1 << 16                  // 65 536
+package enum ANSConstants {
+    package static let logTabSize: Int = 12
+    package static let tabSize: UInt32 = 1 << UInt32(logTabSize)         // 4096
+    package static let stateLowerBound: UInt32 = 1 << 16                  // 65 536
     /// libjxl `ANS_SIGNATURE` (`lib/jxl/ans_params.h`). The encoder's
     /// initial rANS state is `ANS_SIGNATURE << 16`; the decoder verifies
     /// its **final** state returns to that exact value, so a stream
     /// initialised with any other value (e.g. `stateLowerBound`) decodes
     /// with our lenient reader but is rejected by libjxl/djxl.
-    public static let signature: UInt32 = 0x13
+    package static let signature: UInt32 = 0x13
     /// Initial encoder state / expected decoder final state.
-    public static let initialState: UInt32 = signature << 16            // 0x130000
+    package static let initialState: UInt32 = signature << 16            // 0x130000
 }
 
 /// A normalised probability distribution for an alphabet. Frequencies
 /// sum to exactly `tabSize`. Provides O(1) symbol → (freq, cum) lookup
 /// and O(1) slot → symbol lookup via an explicit LUT.
-public struct ANSDistribution: Sendable {
+package struct ANSDistribution: Sendable {
     /// Number of symbols in the alphabet.
-    public let alphabetSize: Int
+    package let alphabetSize: Int
     /// Per-symbol frequencies. Sum equals `ANSConstants.tabSize`.
-    public let frequencies: [UInt32]
+    package let frequencies: [UInt32]
     /// Per-symbol cumulative-frequencies (exclusive prefix sum).
-    public let cumulative: [UInt32]
+    package let cumulative: [UInt32]
     /// Slot → symbol LUT, sized `tabSize`. `slotLUT[s]` is the symbol
     /// whose `[cumulative[symbol], cumulative[symbol]+freq[symbol])`
     /// range contains slot `s`.
@@ -64,7 +64,7 @@ public struct ANSDistribution: Sendable {
     /// Build a distribution from raw symbol counts, normalising to
     /// `tabSize`. Symbols with non-zero raw count get at least frequency
     /// 1; the largest-count symbol absorbs any rounding adjustment.
-    public init(rawFrequencies: [UInt32]) throws {
+    package init(rawFrequencies: [UInt32]) throws {
         guard !rawFrequencies.isEmpty else { throw ANSError.emptyDistribution }
         let total = rawFrequencies.reduce(UInt64(0)) { $0 + UInt64($1) }
         guard total > 0 else { throw ANSError.emptyDistribution }
@@ -132,7 +132,7 @@ public struct ANSDistribution: Sendable {
     }
 
     @inline(__always)
-    public func symbol(forSlot slot: UInt32) -> UInt32 {
+    package func symbol(forSlot slot: UInt32) -> UInt32 {
         slotLUT[Int(slot)]
     }
 }
@@ -141,15 +141,15 @@ public struct ANSDistribution: Sendable {
 /// in **reverse** order internally (the spec mandates this), so the
 /// caller emits symbols in forward order and the encoder buffers them.
 /// Call `finish()` once to retrieve the final byte stream.
-public struct ANSEncoder {
+package struct ANSEncoder {
     private let distribution: ANSDistribution
     private var symbols: [UInt32] = []
 
-    public init(distribution: ANSDistribution) {
+    package init(distribution: ANSDistribution) {
         self.distribution = distribution
     }
 
-    public mutating func write(_ symbol: Int) throws {
+    package mutating func write(_ symbol: Int) throws {
         guard symbol >= 0 && symbol < distribution.alphabetSize else {
             throw ANSError.symbolHasZeroFrequency(symbol: symbol)
         }
@@ -163,7 +163,7 @@ public struct ANSEncoder {
     /// stream. Layout: 16-bit renormalisation words emitted in encoder
     /// order, followed by the final 32-bit state. Decoder reads in the
     /// same order.
-    public mutating func finish() -> Data {
+    package mutating func finish() -> Data {
         var output = [UInt16]()
         output.reserveCapacity(symbols.count / 2)
 
@@ -206,7 +206,7 @@ public struct ANSEncoder {
 
 /// rANS decoder. Construct from the encoded byte stream and a matching
 /// distribution; pop symbols one at a time in forward order.
-public struct ANSDecoder {
+package struct ANSDecoder {
     private let distribution: ANSDistribution
     private var data: Data
     /// Byte offset into `data` of the next renorm word to consume.
@@ -217,7 +217,7 @@ public struct ANSDecoder {
     private let finalStateOffset: Int
     private var state: UInt32 = 0
 
-    public init(data: Data, distribution: ANSDistribution) throws {
+    package init(data: Data, distribution: ANSDistribution) throws {
         guard data.count >= 4 else { throw ANSError.malformedFinalState }
         self.distribution = distribution
         self.data = data
@@ -233,7 +233,7 @@ public struct ANSDecoder {
             | (UInt32(data[base + finalStateOffset + 3]) << 24)
     }
 
-    public mutating func read() throws -> Int {
+    package mutating func read() throws -> Int {
         let logTab = UInt32(ANSConstants.logTabSize)
         let mask: UInt32 = ANSConstants.tabSize - 1
         let slot = state & mask

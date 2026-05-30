@@ -27,11 +27,11 @@
 
 import Foundation
 
-public enum DCT2D {
+package enum DCT2D {
 
     /// Apply a square N×N type-II DCT in-place, where N is a
     /// power of two in `[2, 256]`.
-    public static func forward(_ block: inout [Float], size n: Int) {
+    package static func forward(_ block: inout [Float], size n: Int) {
         precondition(isPowerOfTwo(n) && n >= 2 && n <= 256,
                      "size must be a power of two in [2, 256]")
         precondition(block.count == n * n,
@@ -41,7 +41,7 @@ public enum DCT2D {
     }
 
     /// Inverse of `forward(_:size:)`. Recovers original samples.
-    public static func inverse(_ block: inout [Float], size n: Int) {
+    package static func inverse(_ block: inout [Float], size n: Int) {
         precondition(isPowerOfTwo(n) && n >= 2 && n <= 256,
                      "size must be a power of two in [2, 256]")
         precondition(block.count == n * n,
@@ -54,7 +54,7 @@ public enum DCT2D {
     /// possibly different) — the separable cascade libjxl uses for
     /// asymmetric AC strategies (e.g. DCT4x8, DCT16x8).
     /// `block` is row-major length `w * h`.
-    public static func forward(
+    package static func forward(
         _ block: inout [Float], width w: Int, height h: Int
     ) {
         precondition(isPowerOfTwo(w) && w >= 2 && w <= 256,
@@ -71,7 +71,7 @@ public enum DCT2D {
     }
 
     /// Inverse of `forward(_:width:height:)`.
-    public static func inverse(
+    package static func inverse(
         _ block: inout [Float], width w: Int, height h: Int
     ) {
         precondition(isPowerOfTwo(w) && w >= 2 && w <= 256,
@@ -91,13 +91,13 @@ public enum DCT2D {
 
     @available(*, deprecated, renamed: "forward(_:size:)",
                message: "Use forward(_:size:) for any square size")
-    public static func forward8x8(_ block: inout [Float]) {
+    package static func forward8x8(_ block: inout [Float]) {
         forward(&block, size: 8)
     }
 
     @available(*, deprecated, renamed: "inverse(_:size:)",
                message: "Use inverse(_:size:) for any square size")
-    public static func inverse8x8(_ block: inout [Float]) {
+    package static func inverse8x8(_ block: inout [Float]) {
         inverse(&block, size: 8)
     }
 }

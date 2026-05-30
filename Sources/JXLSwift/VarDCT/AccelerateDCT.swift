@@ -30,7 +30,7 @@ import Foundation
 #if canImport(Accelerate)
 import Accelerate
 
-public enum AccelerateDCT {
+package enum AccelerateDCT {
 
     /// Per-N cache of the precomputed forward DCT matrix
     /// (`M_fwd[u, y] = α(u) · cos((y+0.5)·u·π/N) · √2/N`).
@@ -107,7 +107,7 @@ public enum AccelerateDCT {
     /// We re-derive the final layout by carrying the `block` shape
     /// through transposes so the output ends up in row-major order
     /// matching `LibjxlDCT.dct2D`.
-    public static func dct2D(_ block: inout [Float], size N: Int) {
+    package static func dct2D(_ block: inout [Float], size N: Int) {
         precondition(block.count == N * N, "block must be N*N")
         let M = forwardMatrix(N: N)
         var temp = [Float](repeating: 0, count: N * N)
@@ -179,7 +179,7 @@ public enum AccelerateDCT {
     ///
     /// `M_fwd<N>` cached per N as in the square path; both N=R and
     /// N=C are warmed lazily.
-    public static func dct2D(
+    package static func dct2D(
         _ block: inout [Float], rows R: Int, cols C: Int
     ) {
         precondition(block.count == R * C, "block must be R*C")
@@ -246,7 +246,7 @@ public enum AccelerateDCT {
 
     /// Asymmetric 2-D inverse DCT, R×C. Mirrors
     /// `LibjxlIDCT.idct2D(_:rows:cols:)` with vDSP-backed mmuls.
-    public static func idct2D(
+    package static func idct2D(
         _ block: inout [Float], rows R: Int, cols C: Int
     ) {
         precondition(block.count == R * C, "block must be R*C")
@@ -305,7 +305,7 @@ public enum AccelerateDCT {
     /// 2-D inverse DCT, N×N square. Equivalent to
     /// `LibjxlIDCT.idct2D(_:size:N)` — same vDSP_mmul + transpose
     /// pipeline as `dct2D` but with the inverse matrix.
-    public static func idct2D(_ block: inout [Float], size N: Int) {
+    package static func idct2D(_ block: inout [Float], size N: Int) {
         precondition(block.count == N * N, "block must be N*N")
         let M = inverseMatrix(N: N)
         var temp = [Float](repeating: 0, count: N * N)
@@ -359,19 +359,19 @@ public enum AccelerateDCT {
 /// Non-Apple platforms fall through to the scalar `LibjxlDCT` /
 /// `LibjxlIDCT` implementations — the source-of-truth path. Same
 /// signature so call sites don't need to fork on the platform.
-public enum AccelerateDCT {
-    public static func dct2D(_ block: inout [Float], size N: Int) {
+package enum AccelerateDCT {
+    package static func dct2D(_ block: inout [Float], size N: Int) {
         LibjxlDCT.dct2D(&block, size: N)
     }
-    public static func idct2D(_ block: inout [Float], size N: Int) {
+    package static func idct2D(_ block: inout [Float], size N: Int) {
         LibjxlIDCT.idct2D(&block, size: N)
     }
-    public static func dct2D(
+    package static func dct2D(
         _ block: inout [Float], rows R: Int, cols C: Int
     ) {
         LibjxlDCT.dct2D(&block, rows: R, cols: C)
     }
-    public static func idct2D(
+    package static func idct2D(
         _ block: inout [Float], rows R: Int, cols C: Int
     ) {
         LibjxlIDCT.idct2D(&block, rows: R, cols: C)

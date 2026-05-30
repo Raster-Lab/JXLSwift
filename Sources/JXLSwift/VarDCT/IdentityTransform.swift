@@ -14,14 +14,14 @@
 
 import Foundation
 
-public enum IdentityTransform {
+package enum IdentityTransform {
 
     /// Inverse IDENTITY transform: a dequantised 8×8 coefficient
     /// block → an 8×8 row-major pixel block.
     ///
     /// `coefficients` is the 64-entry dequantised block (DC at
     /// index 0, residuals elsewhere). Returns 64 row-major pixels.
-    public static func transformToPixels(_ coefficients: [Float]) -> [Float] {
+    package static func transformToPixels(_ coefficients: [Float]) -> [Float] {
         precondition(coefficients.count == 64,
                      "IDENTITY transform needs a 64-entry block")
         var pixels = [Float](repeating: 0, count: 64)

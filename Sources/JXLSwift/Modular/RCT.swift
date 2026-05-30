@@ -39,7 +39,7 @@
 import Foundation
 
 /// Identifies a specific reversible colour transform.
-public enum RCTVariant: UInt32, Sendable, Equatable, CaseIterable {
+package enum RCTVariant: UInt32, Sendable, Equatable, CaseIterable {
     /// Identity — channels pass through unchanged. Useful as the
     /// "RCT disabled" baseline.
     case identity = 0
@@ -49,14 +49,14 @@ public enum RCTVariant: UInt32, Sendable, Equatable, CaseIterable {
     case ycocgR   = 1
 }
 
-public enum RCT {
+package enum RCT {
 
     /// Apply the forward transform to a 3-channel pixel triple.
     /// `(r, g, b)` → `(y, co, cg)`. Inputs and outputs are `Int32`.
     /// Identity passes through unchanged; YCoCg-R applies the
     /// formulas at the top of the file.
     @inline(__always)
-    public static func forwardPixel(
+    package static func forwardPixel(
         _ variant: RCTVariant, r: Int32, g: Int32, b: Int32
     ) -> (Int32, Int32, Int32) {
         switch variant {
@@ -73,7 +73,7 @@ public enum RCT {
 
     /// Inverse of `forwardPixel(_:r:g:b:)`. `(y, co, cg)` → `(r, g, b)`.
     @inline(__always)
-    public static func inversePixel(
+    package static func inversePixel(
         _ variant: RCTVariant, y: Int32, co: Int32, cg: Int32
     ) -> (Int32, Int32, Int32) {
         switch variant {
@@ -91,7 +91,7 @@ public enum RCT {
     /// Apply the forward transform to three flat row-major channel
     /// buffers in-place, replacing them with the transformed
     /// channels. All three buffers must be the same length.
-    public static func forward(
+    package static func forward(
         _ variant: RCTVariant,
         channel0: inout [Int32], channel1: inout [Int32], channel2: inout [Int32]
     ) {
@@ -111,7 +111,7 @@ public enum RCT {
 
     /// Apply the inverse transform to three flat row-major channel
     /// buffers in-place.
-    public static func inverse(
+    package static func inverse(
         _ variant: RCTVariant,
         channel0: inout [Int32], channel1: inout [Int32], channel2: inout [Int32]
     ) {

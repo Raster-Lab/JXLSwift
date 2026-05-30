@@ -31,14 +31,14 @@
 
 import Foundation
 
-public enum SpecSqueezeError: Error, Sendable {
+package enum SpecSqueezeError: Error, Sendable {
     case mismatchedHeight
     case mismatchedWidth
     case channelOutOfRange(c: Int, residualC: Int, channels: Int)
     case sizeMismatch(expected: (Int, Int), got: (Int, Int))
 }
 
-public enum SpecSqueeze {
+package enum SpecSqueeze {
 
     /// libjxl `SmoothTendency`. Returns the predicted `l - r` for an
     /// LL position whose left output is `B`, current LL is `a`, and
@@ -46,7 +46,7 @@ public enum SpecSqueeze {
     /// three values are monotonic (B ≤ a ≤ n or B ≥ a ≥ n) — that's
     /// the "smooth area" condition.
     @inline(__always)
-    public static func smoothTendency(B: Int64, a: Int64, n: Int64) -> Int64 {
+    package static func smoothTendency(B: Int64, a: Int64, n: Int64) -> Int64 {
         var diff: Int64 = 0
         if B >= a && a >= n {
             diff = (4 &* B &- 3 &* n &- a &+ 6) / 12
@@ -71,7 +71,7 @@ public enum SpecSqueeze {
     /// Inverse horizontal Squeeze: combine `ll` (low-pass) +
     /// `residual` (high-pass) into a full-resolution row buffer of
     /// width `ll.width + residual.width`. Heights must match.
-    public static func inverseHorizontal(
+    package static func inverseHorizontal(
         ll: ModularChannel, residual: ModularChannel
     ) throws -> ModularChannel {
         guard ll.height == residual.height else {
@@ -117,7 +117,7 @@ public enum SpecSqueeze {
     /// Inverse vertical Squeeze: combine `ll` (top half) +
     /// `residual` (bottom half) into a full-resolution buffer of
     /// height `ll.height + residual.height`. Widths must match.
-    public static func inverseVertical(
+    package static func inverseVertical(
         ll: ModularChannel, residual: ModularChannel
     ) throws -> ModularChannel {
         guard ll.width == residual.width else {

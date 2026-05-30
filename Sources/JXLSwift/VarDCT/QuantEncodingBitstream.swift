@@ -36,7 +36,7 @@ private let kQuantModeBits = 3
 //  `library=0`, etc. v0.12.0t corrected those rawValues to match
 //  libjxl. Don't introduce a parallel enum; use `QuantMode`.)
 
-public enum QuantEncodingBitstream {
+package enum QuantEncodingBitstream {
 
     /// Write a slot encoded as `kQuantModeLibrary` selecting
     /// `predefined` (typically 0 for the only currently-defined
@@ -52,7 +52,7 @@ public enum QuantEncodingBitstream {
     /// `predefined == 0` to catch callers that haven't realised
     /// this — extending to multiple predefined tables is a
     /// theoretical libjxl future, not in 0.11.2.
-    public static func writeLibraryEncoding(
+    package static func writeLibraryEncoding(
         predefined: UInt32 = 0,
         to w: inout BitWriter
     ) {
@@ -74,7 +74,7 @@ public enum QuantEncodingBitstream {
     ///
     /// `payload.qtable` must hold `3 × size.x × size.y` Int32
     /// values in channel-major order.
-    public static func writeRAWEncoding(
+    package static func writeRAWEncoding(
         payload: JXLBridgeRAWQuantPayload,
         size: (x: Int, y: Int),
         to w: inout BitWriter
@@ -122,7 +122,7 @@ public enum QuantEncodingBitstream {
     /// For the JPEG → JXL coefficient bridge today, the only
     /// override is slot 0 (DCT8×8, `kRequiredSizeX[0]=1`,
     /// `kRequiredSizeY[0]=1`).
-    public static func writeDequantMatrices(
+    package static func writeDequantMatrices(
         rawSlotOverrides: [Int: JXLBridgeRAWQuantPayload],
         to w: inout BitWriter
     ) throws {
