@@ -72,18 +72,24 @@ entropy/allocation costs that dominate are addressed first.
 Every item must remain **byte-identical** to the current output (the djxl
 byte-exact suite + the 2 867-image medical DICOM validation are the gate).
 
-1. **Encoder allocation / redundant-work — partly done; the rest is the floor.**
-   The effort-≥5 cost-gating constructs fresh `BitWriter` + `ANSTokenStreamWriter`
-   + `AliasTable` (4096-slot scan) per candidate. **Done (applied below):** the
-   full-image WP per-pixel pass that the WP single-context, activity-split, and
-   greedy candidates each re-ran (~3×) is now computed once and shared. That gave
-   only **~2.8 %** at effort 7 — the key lesson: even eliminating the dominant
-   redundancy barely moves the needle, because the per-candidate **entropy
-   encoding itself** (each candidate tree → its own rANS stream over all tokens)
-   is the irreducible floor under byte-identity. **A larger win therefore needs**
-   either *fewer candidates* (changes the chosen output/ratio — not byte-identical)
-   or an *entropy-pipeline restructure* (pool/stream the rANS encode) — an
-   attended effort, not incremental pooling.
+1. **C/C++ entropy hot-path (`JXLPerfC`) — the next major lever; ATTENDED.**
+   The exhaustive Swift-side hygiene above proves the per-candidate **rANS
+   encoding + `BitWriter`** is the irreducible floor under byte-identity: even
+   eliminating the dominant redundancy (the 3× WP pass) only moved the needle
+   ~2.8 % at effort 7. With CLAUDE.md constraint 1 amended (C/C++ permitted for
+   measured hot paths), the SwiftPM `JXLPerfC` target is now in place
+   (`Sources/JXLPerfC/`) as the boundary. The work, in order:
+   - **C `BitWriter` UInt64-accumulator** — `unsafe`-buffer, no Swift ARC /
+     `[UInt8].append` overhead; byte-identical to the Swift accumulator
+     (gate-tested per-byte). Likely the larger of the two wins.
+   - **C `rANS` encoder** (init/encode-symbol/finish/`AliasTable`) — the rANS
+     state machine in plain C, called per-candidate. The scalar Swift
+     `ANSTokenStreamWriter` stays as reference; switch is behind a flag.
+   - **C `HybridUint.encode`** for batch token computation.
+   Each function ships with a Swift-vs-C byte-identity equivalence test plus
+   the existing 695-test djxl-exact suite, 49-image CID22, and 2 867-image
+   medical DICOM validation as integration gates. If C output ever diverges,
+   the C path is reverted.
 2. **`ANSTokenStreamWriter.finish` tightening.** Pre-reserve `pending`
    (token count is known = w·h); shrink the per-token `Seg` buffer; emit
    extra-bits in tighter batches. Small, safe.
@@ -114,6 +120,12 @@ byte-exact suite + the 2 867-image medical DICOM validation are the gate).
   catches any byte divergence.
 - **`BitWriter(reservingBytes:)`** — optional pre-reservation of the byte
   buffer to avoid geometric-growth `memmove`s; semantically identical.
+- **`JXLPerfC` SwiftPM C target — scaffolding (post-v0.14.0).** New
+  `Sources/JXLPerfC/` target plus `Tests/JXLSwiftTests/CPerfBridgeTests.swift`.
+  Scaffolding-only (`jxlperf_c_version`, `jxlperf_fnv1a`) — proves the
+  Swift↔C bridge compiles, links, and exchanges byte buffers with full
+  fidelity. The boundary the roadmap item 1 entropy-pipeline refactor will
+  live behind. Adds zero runtime overhead until used.
 
 ## How to reproduce
 

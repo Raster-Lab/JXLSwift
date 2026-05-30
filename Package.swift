@@ -2,10 +2,14 @@
 import PackageDescription
 
 // JXLSwift — a pure-Swift implementation of JPEG XL (ISO/IEC 18181).
-// No native code, no C dependency. The codec is implemented in Swift
-// targeting the strict-concurrency model of Swift 6.2.
+// Swift-first (Swift 6.2, strict concurrency); the scalar Swift path is the
+// always-correct source of truth. The `JXLPerfC` target is the optional C
+// boundary for measured hot-path optimisations (CLAUDE.md constraint 1,
+// amended 2026-05) — currently scaffolding only; functions added there must
+// be byte-equivalent to a scalar Swift reference and gate-tested.
 //
-// Status: foundation only. See ROADMAP.md for what's done vs. WIP.
+// Status: medical-grade lossless codec (v0.14.0 — DICOM + CID22 validated).
+// See CHANGELOG.md / ROADMAP.md.
 
 let package = Package(
     name: "JXLSwift",
@@ -33,6 +37,14 @@ let package = Package(
         .package(path: "../CompressionFamily"),
     ],
     targets: [
+        // Optional C boundary for measured hot-path primitives. The scalar
+        // Swift implementation in `JXLSwift` remains the source of truth; the
+        // C target is deletable without disturbing the core.
+        .target(
+            name: "JXLPerfC",
+            path: "Sources/JXLPerfC",
+            publicHeadersPath: "include"
+        ),
         .target(
             name: "JXLSwift",
             dependencies: [
@@ -53,6 +65,7 @@ let package = Package(
             name: "JXLSwiftTests",
             dependencies: [
                 "JXLSwift",
+                "JXLPerfC",
                 .product(name: "CompressionFamily", package: "CompressionFamily"),
             ]
         ),
