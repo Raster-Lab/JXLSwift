@@ -206,14 +206,22 @@ public struct JXLConfiguration: Sendable {
         JXLConfiguration(quality: 0.95, lossless: false)
     }
 
-    /// Balanced (`quality = 0.9`). Recommended default.
+    /// Balanced (`quality = 0.85`). Recommended default. Aligned with
+    /// `J2KConfiguration.balanced` for cross-codec parity (v0.14.0; was 0.9).
     public static var balanced: JXLConfiguration {
-        JXLConfiguration(quality: 0.9, lossless: false)
+        JXLConfiguration(quality: 0.85, lossless: false)
     }
 
-    /// Fast lossy (`quality = 0.75`). Trades quality for speed.
+    /// Fast lossy (`quality = 0.70`). Trades quality for speed. Aligned with
+    /// `J2KConfiguration.fast` for cross-codec parity (v0.14.0; was 0.75).
     public static var fast: JXLConfiguration {
-        JXLConfiguration(quality: 0.75, lossless: false)
+        JXLConfiguration(quality: 0.70, lossless: false)
+    }
+
+    /// Maximum compression lossy (`quality = 0.50`). Mirrors
+    /// `J2KConfiguration.maxCompression` — added in v0.14.0 for family parity.
+    public static var maxCompression: JXLConfiguration {
+        JXLConfiguration(quality: 0.50, lossless: false)
     }
 
     /// Convert to the canonical ``EncodingOptions`` used by

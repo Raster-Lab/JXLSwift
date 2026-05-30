@@ -9,6 +9,46 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## [0.14.0] — 2026-05-30 (release)
+
+**Headline:** measured perf work + family-parity preset alignment, all
+byte-identical. The lossless path remains medical-grade (still 2 867/0 DICOM
++ 49/0 CID22, both `djxl`-byte-exact). Public API stayed within v0.13.0's
+already-Sendable, no-force-unwrap shape — audit-clean and ready for a 1.0
+freeze on your sign-off.
+
+### Measured perf (byte-identical, full 695-test djxl suite green)
+
+- **`BitWriter` UInt64-accumulator** — replaced the per-bit-chunk `append` +
+  bounds-checked subscript with a 64-bit accumulator flushing whole bytes.
+  ~5 % faster on the effort-1 fast path; `bitCount`/`partial` preserved so
+  cost-gating is unaffected.
+- **Shared WP per-pixel pass (`wpGreedyPerPixel`)** — the activity-split
+  (effort ≥ 4) and greedy (effort ≥ 7) candidates each re-ran the same
+  full-image weighted-predictor pass; now computed once in
+  `buildSingleSection` and handed to both via optional `precomputed:` params
+  (other callers untouched). **~2.8 % faster at effort 7** (controlled A/B,
+  512² 16-bit: 763 → 741 ms). Modest by design — see
+  `Documentation/PERFORMANCE-ANALYSIS.md` for why the remainder is the
+  irreducible-under-byte-identity floor (per-candidate rANS encoding) and a
+  C/C++ hot-path target is now the prescribed next step.
+
+### Family parity
+
+- **Preset-quality alignment with J2KSwift.** `JXLConfiguration.balanced`
+  0.9 → **0.85**; `.fast` 0.75 → **0.70**; added `.maxCompression = 0.50`
+  (mirroring `J2KConfiguration.maxCompression`). High-quality (0.95) and
+  lossless presets were already aligned. Closes the last accidental
+  preset-quality divergence flagged in `FAMILY-API-PARITY.md`.
+
+### Validation
+
+- **Cloudinary CID22 (non-DICOM natural images)** — 49 / 49 PASS, every one
+  byte-exact through our decoder + `djxl`, aggregate lossless ratio 40.6 %.
+  Reproducible: `scripts/cid22-validate.sh`.
+- **Medical DICOM re-validation** — 978 / 0 byte-exact (sample re-run
+  confirming the perf changes preserve the 2 867/0 v0.13.0 baseline).
+
 ## [0.13.0] — 2026-05-29 (release)
 
 **Headline:** the **road to a lossless v1.0** — a real conformance gate, a
