@@ -9,6 +9,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## [1.0.1] — 2026-06-01 (release)
+
+**JXLSwift is now a fully self-contained, URL-consumable SwiftPM package,
+and Apple-platforms-only.** Packaging and dependency surface only — there
+is **no change to codec behaviour or output bytes** (the full
+`djxl`-byte-exact suite is unaffected).
+
+### Removed
+
+- **`CompressionFamily` dependency dropped.** Removed
+  `Sources/JXLSwift/CompressionFamily.swift` (the family-protocol
+  conformances), the `.package(path: "../CompressionFamily")` dependency
+  from `Package.swift`, and its `.product(...)` entries from both the
+  `JXLSwift` library target and the test target. The **`JXLSwift` library
+  target now has zero external dependencies**; `swift-argument-parser`
+  remains, but is CLI-only (the `JXLTool` target). This makes JXLSwift
+  trivially consumable by URL as a SwiftPM dependency — a consumer pulls
+  one repo with nothing transitive. Type/method-name parity with J2KSwift
+  is now maintained by naming/shape convention rather than a shared
+  protocol module.
+- The three `testFamilyParity_*` tests and `import CompressionFamily`
+  removed from `Tests/JXLSwiftTests/IntegrationTests.swift`.
+
+### Changed
+
+- **Apple platforms only.** `Package.swift` `platforms:` pinned to Apple
+  OSes (macOS / iOS / tvOS / watchOS / visionOS) with a comment; JXLSwift
+  no longer advertises Linux / Windows / Intel-Linux as deployment
+  targets. Platform-isolated code paths (e.g. x86 SIMD) remain behind
+  clean abstractions per CLAUDE.md, but are no longer presented as
+  supported deployment tiers.
+- Current-state docs (README, ROADMAP, CLAUDE.md, STATUS-AND-ROADMAP)
+  reconciled with the two decisions above (self-contained package;
+  Apple-only).
+- Tool version reported by `jxl --version` / `jxl version` bumped to
+  `1.0.1`.
+
 ## [1.0.0] — 2026-05-30 (production release)
 
 **JXLSwift 1.0** — a production-ready pure-Swift lossless JPEG XL codec

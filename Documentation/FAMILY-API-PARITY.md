@@ -207,40 +207,36 @@ Items 6–9 are landed. Item 10 is cross-repo and deferred.
     Phase A.5 — the parser-library divergence is implementation,
     not user-visible surface, so this is non-urgent.
 
-### Phase C — final convergence ✅ shipped (v0.9.0z)
+### Phase C — final convergence ✅ shipped (v0.9.0z), **shared-protocol module removed (v1.0.x)**
 
-Items 11 and 13 are landed in JXLSwift. Item 12 is cross-repo
-(J2KSwift) and deferred.
+Items 11 and 13 originally landed a shared `CompressionFamily`
+protocol module. **That module was removed in v1.0.x** so JXLSwift
+ships as a fully self-contained, URL-consumable SwiftPM package with
+no external repo dependency (the library target now has zero
+dependencies; `swift-argument-parser` is CLI-only). Item 12 is
+cross-repo (J2KSwift) and deferred.
 
-11. **`CompressionFamily` protocols** —
-    [Sources/JXLSwift/CompressionFamily.swift](../Sources/JXLSwift/CompressionFamily.swift)
-    defines four protocols:
-    - `CompressionImage: Sendable` — minimal common ground (`width`,
-      `height`).
-    - `CompressionOutput: Sendable` — encoded-bitstream wrapper with
-      `data: Data` accessor.
-    - `CompressionEncoder: Sendable` — `associatedtype Image` +
-      `associatedtype Output`, `encode(_:) async throws -> Output`.
-    - `CompressionDecoder: Sendable` — `associatedtype Image`,
-      `decode(_:) async throws -> Image`.
+Family parity is therefore maintained **by naming/shape convention,
+not by a shared protocol type**: `JXLEncoder.encode(_:) async throws`,
+`JXLDecoder.decode(_:) async throws`, `ImageFrame(width:height:...)`,
+and the `EncoderError`/`DecoderError` enums keep the same names and
+signatures as their J2KSwift counterparts, so callers switch codecs
+without re-learning the surface.
 
-    JXLSwift conformances added: `ImageFrame: CompressionImage`,
-    `EncodedImage: CompressionOutput`, `JXLEncoder:
-    CompressionEncoder`, `JXLDecoder: CompressionDecoder`. Callers
-    can write generic-over-codec helpers like:
+11. **`CompressionFamily` protocols — removed (v1.0.x).** The four
+    protocols (`CompressionImage`, `CompressionOutput`,
+    `CompressionEncoder`, `CompressionDecoder`) and the JXLSwift
+    conformances to them (`ImageFrame`, `EncodedImage`, `JXLEncoder`,
+    `JXLDecoder`) are gone, along with `Sources/JXLSwift/CompressionFamily.swift`.
+    Trade-off: a caller can no longer write a single generic helper
+    bound to `some CompressionEncoder` that works across *both*
+    libraries at once. The concrete API names/shapes still match, so
+    swapping codecs at a call site is mechanical.
 
-        func encodeAll<E: CompressionEncoder>(
-            _ enc: E, images: [E.Image]
-        ) async throws -> [Data] { ... }
-
-    Pin-downs:
-    `testFamilyParity_GenericOverCompressionEncoder`,
-    `testFamilyParity_GenericOverCompressionDecoder`.
-
-13. **`CompressionError` umbrella protocol** — `EncoderError` and
-    `DecoderError` both conform. Callers can `catch let e as
-    CompressionError` regardless of which library emitted it.
-    Pin-down: `testFamilyParity_CompressionError_UmbrellaCatch`.
+13. **`CompressionError` umbrella protocol — removed (v1.0.x).**
+    `EncoderError` and `DecoderError` no longer conform to a shared
+    umbrella; catch them as their concrete types (or as
+    `LocalizedError`). The enum names match J2KSwift.
 
 ### Phase C item 12 — deferred (cross-repo)
 
@@ -254,9 +250,13 @@ Items 11 and 13 are landed in JXLSwift. Item 12 is cross-repo
 ### Cross-repo follow-ons (deferred to J2KSwift)
 
 For the family-parity story to complete, J2KSwift must:
-1. Mirror the four `CompressionFamily` protocols (or import them
-   if we extract a shared package). Each conformance is a one-line
-   extension if the existing types already match the shape.
+1. Keep its public API names/shapes aligned with JXLSwift's
+   (encoder/decoder method signatures, image constructor shape,
+   error enum names). The shared `CompressionFamily` protocol module
+   was dropped (v1.0.x) to keep both libraries self-contained, so
+   parity is by convention — there is no shared protocol package to
+   import. If true cross-codec generics are wanted later, re-extract
+   a shared package and have *both* libraries depend on it.
 2. Add the `J2KImage(width:height:channels:bitDepth:)` convenience
    constructor (Phase C.12).
 3. Optionally switch its CLI parser to swift-argument-parser

@@ -8,13 +8,22 @@ import PackageDescription
 // amended 2026-05) — currently scaffolding only; functions added there must
 // be byte-equivalent to a scalar Swift reference and gate-tested.
 //
-// Status: v1.0.0 production-ready lossless JPEG XL codec — medical-grade
+// Status: v1.0.1 production-ready lossless JPEG XL codec — medical-grade
 // (DICOM + CID22 byte-exact via djxl), API frozen, Swift-first with the
 // `JXLPerfC` boundary scaffolded for future C/C++ hot-path work.
 // See CHANGELOG.md / ROADMAP.md.
 
+// JXLSwift is fully self-contained: no shared-protocol package. The only
+// dependency is swift-argument-parser, and that is CLI-only (the JXLSwift
+// library target itself has zero external dependencies). This keeps
+// JXLSwift trivially URL-consumable as a SwiftPM dependency — a consumer
+// pulls one repo and nothing transitive. Type/method-name parity with
+// J2KSwift is maintained by convention, not a shared protocol module.
+
 let package = Package(
     name: "JXLSwift",
+    // Apple platforms only — JXLSwift targets Apple silicon/Apple OSes
+    // exclusively (no Linux/Windows deployment).
     platforms: [
         .macOS(.v13),
         .iOS(.v16),
@@ -31,12 +40,8 @@ let package = Package(
         .executable(name: "jxl", targets: ["JXLTool"]),
     ],
     dependencies: [
+        // CLI only — the JXLSwift library target has no dependencies.
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.5.0"),
-        // Shared protocol surface for the Swift compression-library
-        // family. JXLSwift conforms its types to these protocols so
-        // callers can write codec-agnostic code that also works with
-        // J2KSwift (which adopts the same protocols).
-        .package(path: "../CompressionFamily"),
     ],
     targets: [
         // Optional C boundary for measured hot-path primitives. The scalar
@@ -49,9 +54,6 @@ let package = Package(
         ),
         .target(
             name: "JXLSwift",
-            dependencies: [
-                .product(name: "CompressionFamily", package: "CompressionFamily"),
-            ],
             swiftSettings: [
                 .enableExperimentalFeature("StrictConcurrency"),
             ]
@@ -68,7 +70,6 @@ let package = Package(
             dependencies: [
                 "JXLSwift",
                 "JXLPerfC",
-                .product(name: "CompressionFamily", package: "CompressionFamily"),
             ]
         ),
     ]

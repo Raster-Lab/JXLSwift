@@ -26,8 +26,8 @@ Configurable trade-offs (`EncodingOptions`) must let callers pick which dimensio
 ### Platform targets
 
 - **Primary:** macOS on Apple Silicon (arm64).
-- **Modular support:** macOS Intel (x86_64), Linux Intel (x86_64).
-- Platform-specific code paths (e.g. x86 SSE/AVX) live behind a clean abstraction so they can be deleted later without disturbing the core.
+- **Supported Apple OSes:** macOS (incl. Intel x86_64), iOS, tvOS, watchOS, visionOS — **Apple platforms only**, no Linux/Windows deployment (see `Package.swift` `platforms`).
+- Platform-specific code paths (e.g. x86 SSE/AVX on Intel Macs) live behind a clean abstraction so they can be deleted later without disturbing the core.
 
 ### Optional acceleration (future, kept modular)
 
@@ -35,7 +35,6 @@ Configurable trade-offs (`EncodingOptions`) must let callers pick which dimensio
 - Apple Accelerate framework for vectorised operations where applicable.
 - Metal GPU compute for large-scale parallel workloads (optional).
 - **C/C++ hot-path layer** — permitted for performance-critical routines (per constraint 1): a measured hot path may be reimplemented in C/C++ behind a clean SwiftPM `target` boundary, with the scalar Swift implementation kept as the always-correct reference.
-- Vulkan on non-Apple platforms (future, optional).
 
 None of these are required for correctness; the scalar Swift path is always the source of truth.
 

@@ -4,12 +4,9 @@
 
 JXLSwift is a ground-up, independent implementation of the JPEG XL Image Coding System (ISO/IEC 18181) written in **100% pure Swift 6.2 with strict concurrency** enabled.
 
-The primary target platform is **macOS on Apple Silicon (arm64)**, with clearly defined and modular support for:
+The target platform is **Apple platforms (macOS, iOS, tvOS, watchOS, visionOS)**, with **macOS on Apple Silicon (arm64)** as the primary development and performance target. There is no Linux, Intel-Linux, or Windows deployment target.
 
-- macOS on Intel (x86_64)
-- Linux on Intel (x86_64)
-
-The architecture must ensure that platform-specific code paths (e.g., x86 optimisations) are cleanly isolated, allowing them to be removed in the future without impacting the core design.
+The architecture must ensure that platform-specific code paths (e.g., x86 SIMD on Intel Macs) are cleanly isolated, allowing them to be removed in the future without impacting the core design.
 
 ### Performance and Optimisation Goals
 
@@ -27,7 +24,7 @@ Hardware and platform capabilities should be leveraged where appropriate, includ
 - **Apple Accelerate framework** (vectorised operations where applicable)
 - **Metal GPU compute** (optional, for large-scale parallel workloads)
 
-On non-Apple platforms, GPU acceleration (e.g., Vulkan) may be considered in future, but must remain modular and optional.
+GPU acceleration (via Metal) is optional and must remain modular; JXLSwift targets Apple platforms only, so no non-Apple GPU path (e.g. Vulkan) is planned.
 
 ### Concurrency Model
 
@@ -356,8 +353,7 @@ renormalisation — a dedicated, byte-identical-verified SIMD effort (below), no
 | Apple Accelerate (vDSP / vImage) | ⏳ | for vectorisable transforms (DCT, colour conversions) |
 | C/C++ hot-path layer | ⏳ | permitted (CLAUDE.md constraint 1, amended 2026-05) for measured hot paths, behind a clean SwiftPM target boundary; scalar Swift stays the reference |
 | Metal GPU compute | ⏳ | optional, for large-scale parallel workloads |
-| Vulkan compute (Linux / non-Apple) | ⏳ | future, optional, modular |
-| x86 SSE / AVX | ⏳ | modular; cleanly removable from the core |
+| x86 SSE / AVX (Intel Macs) | ⏳ | modular; cleanly removable from the core |
 
 ### Phase C — Conformance & interop
 
@@ -443,7 +439,9 @@ runtime deps beyond `swift-argument-parser` (CLI). Full lossy *encode*
    (`.balanced=0.85`, `.fast=0.70`, `.maxCompression=0.50`); `JXLDecoder.decodeModular(_:)` no-op
    `force:` param removed; `EncoderError` libjxl-backend reference dropped; all public types remain
    `Sendable`, no force-unwraps in the public surface. The structural image-model divergence
-   (flat-interleaved vs planar-per-component) stays frozen-by-design, bridged by `CompressionImage`.
+   (flat-interleaved vs planar-per-component) stays frozen-by-design; family parity is maintained
+   by API naming/shape convention, not a shared protocol type (the `CompressionFamily` module was
+   removed in v1.0.1).
 
 **v1.0.0** = all of the above, green on the lossless conformance corpus, with a frozen public API.
 The VarDCT lossy *decoder* ships as-is (preview); its `d = 2/5/10` byte-equality close-out tracks

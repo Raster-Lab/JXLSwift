@@ -2,7 +2,7 @@
 
 A ground-up, independent implementation of the JPEG XL Image Coding System (ISO/IEC 18181) written in **100% pure Swift 6.2 with strict concurrency**. **No C dependencies, no native libraries, no transitive runtime requirements.**
 
-Primary target: **macOS on Apple Silicon (arm64)**. Modular support for macOS Intel and Linux Intel.
+Target platforms: **Apple platforms only** — macOS, iOS, tvOS, watchOS, visionOS (primary: macOS on Apple Silicon, arm64). No Linux or Windows deployment.
 
 JXLSwift is intended for integration into the **DICOMkit** ecosystem but is fully independent and **not DICOM-aware** — the library is a general-purpose codec usable in any imaging or compression workflow.
 
@@ -294,7 +294,7 @@ let lossless = try JXLEncoder(
 The previous JXLSwift was a libjxl wrapper. Removing the C dependency means:
 
 - No libjxl shared library at runtime — single-binary distribution.
-- Native iOS / Linux / Windows builds without the Homebrew dependency story.
+- Native builds across Apple platforms (macOS / iOS / tvOS / watchOS / visionOS) without the Homebrew dependency story.
 - Memory safety from Swift 6.2's strict concurrency throughout the codec.
 - No transitive licence / patent surface from C++ codec libraries.
 
