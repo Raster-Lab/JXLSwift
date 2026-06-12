@@ -99,9 +99,22 @@ package struct TokenStreamReader: Sendable {
     /// `< 120` get the 2D-pattern LUT treatment that libjxl uses to
     /// encode "previous row" / "row above" patterns.
     package let distanceMultiplier: Int
-    /// Lazily-built rANS decoder for the ANS path. nil for prefix-code
-    /// sections.
-    private var ansDecoder: ANSStreamDecoder?
+    /// rANS decoder for the ANS path. A placeholder (with
+    /// `ansUnavailable` set) for prefix-code sections or when the
+    /// decoder couldn't be built from the codebook's counts.
+    private var ansDecoder: ANSStreamDecoder
+    /// True when `ansDecoder` is the placeholder — ANS symbol reads
+    /// then throw `.emptyDistribution`.
+    private let ansUnavailable: Bool
+    // Loop-invariant header state hoisted out of the per-token path
+    // (`header.…` nested-struct hops are measurable at 16M+ tokens).
+    private let usePrefixCode: Bool
+    private let lz77Enabled: Bool
+    private let lz77MinSymbol: UInt32
+    private let userCtxBound: Int
+    private let numHistograms: Int
+    private let ctxMap: [UInt8]
+    private let uintConfigs: [HybridUintConfig]
     /// Running history of emitted **decoded values** (post-HybridUint).
     /// Sized to bound LZ77 distances; libjxl's typical bound is
     /// `1 << 20` but we just grow naturally.
@@ -121,6 +134,20 @@ package struct TokenStreamReader: Sendable {
         self.header = header
         self.codebook = codebook
         self.distanceMultiplier = distanceMultiplier
+        self.usePrefixCode = header.usePrefixCode
+        self.lz77Enabled = header.lz77.enabled
+        self.lz77MinSymbol = header.lz77.minSymbol
+        // libjxl `ContextMap` for an LZ77-enabled section has
+        // `numUserContexts + 1` entries — the extra slot is the LZ77
+        // distance context. User reads must stay below that bound;
+        // we accept either layout so old call sites that pass the
+        // pre-LZ77 user index still validate.
+        let totalCtx = header.contextMap.numContexts
+        self.userCtxBound = header.lz77.enabled
+            ? max(0, totalCtx - 1) : totalCtx
+        self.numHistograms = header.numHistograms
+        self.ctxMap = header.contextMap.map
+        self.uintConfigs = header.uintConfigs
         if !header.usePrefixCode {
             if useAliasTables,
                let aliasDecoder = try? ANSStreamDecoder(
@@ -128,13 +155,19 @@ package struct TokenStreamReader: Sendable {
                    logAlphaSize: header.logAlphaSize
                ) {
                 self.ansDecoder = aliasDecoder
+                self.ansUnavailable = false
+            } else if let fallback = try? ANSStreamDecoder.from(
+                counts: codebook.ansCounts
+            ) {
+                self.ansDecoder = fallback
+                self.ansUnavailable = false
             } else {
-                self.ansDecoder = try? ANSStreamDecoder.from(
-                    counts: codebook.ansCounts
-                )
+                self.ansDecoder = ANSStreamDecoder(distributions: [])
+                self.ansUnavailable = true
             }
         } else {
-            self.ansDecoder = nil
+            self.ansDecoder = ANSStreamDecoder(distributions: [])
+            self.ansUnavailable = true
         }
     }
 
@@ -157,33 +190,25 @@ package struct TokenStreamReader: Sendable {
             history.append(v)
             return v
         }
-        // libjxl `ContextMap` for an LZ77-enabled section has
-        // `numUserContexts + 1` entries — the extra slot is the LZ77
-        // distance context. User reads must stay below that bound;
-        // we accept either layout so old call sites that pass the
-        // pre-LZ77 user index still validate.
-        let totalCtx = header.contextMap.numContexts
-        let userCtxBound = header.lz77.enabled
-            ? max(0, totalCtx - 1) : totalCtx
         guard ctx >= 0 && ctx < userCtxBound else {
             throw TokenStreamReaderError.contextOutOfRange(
                 ctx, max: userCtxBound - 1
             )
         }
-        let cluster = Int(header.contextMap.map[ctx])
-        guard cluster < header.numHistograms else {
+        let cluster = Int(ctxMap[ctx])
+        guard cluster < numHistograms else {
             throw TokenStreamReaderError.clusterOutOfRange(
-                cluster, max: header.numHistograms - 1
+                cluster, max: numHistograms - 1
             )
         }
         let symbol: UInt32
-        if header.usePrefixCode {
+        if usePrefixCode {
             symbol = try readPrefixSymbol(cluster: cluster, from: &r)
         } else {
             symbol = try readANSSymbol(cluster: cluster, from: &r)
         }
         // LZ77 length-token branch.
-        if header.lz77.enabled, symbol >= header.lz77.minSymbol {
+        if lz77Enabled, symbol >= lz77MinSymbol {
             return try beginLZ77Copy(
                 lengthSymbol: symbol, from: &r
             )
@@ -193,7 +218,7 @@ package struct TokenStreamReader: Sendable {
         // History is only needed when LZ77 might trigger; skip the
         // append + amortised reallocation cost on plain streams (the
         // common case for pixel data).
-        if header.lz77.enabled {
+        if lz77Enabled {
             history.append(value)
         }
         return value
@@ -204,9 +229,8 @@ package struct TokenStreamReader: Sendable {
     private func readPrefixSymbol(
         cluster: Int, from r: inout BitReader
     ) throws -> UInt32 {
-        let table = codebook.huffmanTables[cluster]
         let symbol: Int
-        do { symbol = try table.decode(from: &r) }
+        do { symbol = try codebook.huffmanTables[cluster].decode(from: &r) }
         catch let e as BitstreamError {
             throw TokenStreamReaderError.bitstream(e)
         }
@@ -217,11 +241,11 @@ package struct TokenStreamReader: Sendable {
     private mutating func readANSSymbol(
         cluster: Int, from r: inout BitReader
     ) throws -> UInt32 {
-        guard ansDecoder != nil else {
+        guard !ansUnavailable else {
             throw TokenStreamReaderError.ans(.emptyDistribution)
         }
         do {
-            return try ansDecoder!.readSymbol(cluster: cluster, from: &r)
+            return try ansDecoder.readSymbol(cluster: cluster, from: &r)
         } catch let e as ANSError {
             throw TokenStreamReaderError.ans(e)
         } catch let e as BitstreamError {
@@ -233,8 +257,7 @@ package struct TokenStreamReader: Sendable {
     private func expand(
         symbol: UInt32, cluster: Int, from r: inout BitReader
     ) throws -> UInt32 {
-        let cfg = header.uintConfigs[cluster]
-        do { return try cfg.decode(token: symbol, from: &r) }
+        do { return try uintConfigs[cluster].decode(token: symbol, from: &r) }
         catch let e as HybridUintConfigError {
             throw TokenStreamReaderError.hybridUint(e)
         } catch let e as BitstreamError {

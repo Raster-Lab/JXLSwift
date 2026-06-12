@@ -39,17 +39,21 @@ import Foundation
 package struct ANSStreamDecoder: Sendable {
     /// One distribution per cluster (cumulative-frequency layout).
     package let distributions: [ANSDistribution]
-    /// One alias table per cluster (libjxl-compatible layout).
-    package let aliasTables: [AliasTable]?
+    /// One alias table per cluster (libjxl-compatible layout). Empty
+    /// when `useAliasTables` is false.
+    package let aliasTables: [AliasTable]
     /// Which lookup the decoder uses.
     package let useAliasTables: Bool
+    /// Number of clusters the active lookup serves.
+    private let clusterCount: Int
     private var state: UInt32 = 0
     private var initialised: Bool = false
 
     package init(distributions: [ANSDistribution]) {
         self.distributions = distributions
-        self.aliasTables = nil
+        self.aliasTables = []
         self.useAliasTables = false
+        self.clusterCount = distributions.count
     }
 
     /// Build a libjxl-compatible alias-table-backed decoder from the
@@ -80,6 +84,7 @@ package struct ANSStreamDecoder: Sendable {
         self.distributions = dists
         self.aliasTables = aliases
         self.useAliasTables = true
+        self.clusterCount = aliases.count
     }
 
     /// Convenience constructor from the per-cluster count arrays
@@ -121,8 +126,7 @@ package struct ANSStreamDecoder: Sendable {
                 ))
             }
         }
-        guard cluster >= 0,
-              cluster < (aliasTables?.count ?? distributions.count) else {
+        guard cluster >= 0, cluster < clusterCount else {
             throw ANSError.symbolHasZeroFrequency(symbol: -1)
         }
         let logTab = UInt32(ANSConstants.logTabSize)
@@ -132,8 +136,8 @@ package struct ANSStreamDecoder: Sendable {
         let symbol: UInt32
         let offset: UInt32
         let freq: UInt32
-        if useAliasTables, let tables = aliasTables {
-            let lr = tables[cluster].lookup(slot: slot)
+        if useAliasTables {
+            let lr = aliasTables[cluster].lookup(slot: slot)
             symbol = UInt32(lr.value)
             offset = lr.offset
             freq = lr.freq

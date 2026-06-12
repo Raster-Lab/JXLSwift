@@ -869,8 +869,7 @@ extension JXLDecoder {
             // Seek to DC group dcG's TOC section. Single-section
             // frames share the cursor (no seek).
             if tocEntries > 1 {
-                r = BitReader(r.data,
-                              startingAt: sectionBitStart(1 + dcG))
+                r.seek(toBitPosition: sectionBitStart(1 + dcG))
             }
             // extra_precision — ReadFixedBits<2>. cjxl emits a
             // uniform value across DC groups, which we require (a
@@ -1072,8 +1071,7 @@ extension JXLDecoder {
         // For multi-section frames, AC global lives at section
         // `1 + num_dc_groups`.
         if tocEntries > 1 {
-            r = BitReader(r.data,
-                          startingAt: sectionBitStart(1 + numDcGroups))
+            r.seek(toBitPosition: sectionBitStart(1 + numDcGroups))
         }
 
         // (12) ProcessACGlobal — DequantMatrices.Decode (all-default
@@ -1333,9 +1331,7 @@ extension JXLDecoder {
             // frames; single-section reuses the cursor.
             if tocEntries > 1 {
                 let acGroupSecIdx = 2 + numDcGroups + groupIdx
-                r = BitReader(
-                    r.data, startingAt: sectionBitStart(acGroupSecIdx)
-                )
+                r.seek(toBitPosition: sectionBitStart(acGroupSecIdx))
             }
             // Per-group histogram selector. libjxl `dec_group.cc:656`
             // — when `num_histograms > 1`, each AC group's token
@@ -1645,6 +1641,10 @@ extension JXLDecoder {
             // group decodes its `groupDim`-pixel sub-rect of every
             // deferred channel and copies it into the full image.
             if var giImage = extraGiImage {
+                // Drop the optional's reference so `giImage`'s buffers
+                // are uniquely held while we mutate them (restored at
+                // the end of this block).
+                extraGiImage = nil
                 let gOX = gx * groupDim
                 let gOY = gy * groupDim
                 let pgGH: GroupHeader
@@ -1698,16 +1698,21 @@ extension JXLDecoder {
                     }
                     for (i, sr) in subRects.enumerated() {
                         let chW = giImage.channels[sr.c].width
-                        var pix = giImage.channels[sr.c].pixels
                         let src = decoded[i]
-                        for yy in 0..<sr.h {
-                            let dstRow = (sr.y + yy) * chW + sr.x
-                            let srcRow = yy * sr.w
-                            for xx in 0..<sr.w {
-                                pix[dstRow + xx] = src[srcRow + xx]
+                        giImage.channels[sr.c].pixels
+                            .withUnsafeMutableBufferPointer { dst in
+                                src.withUnsafeBufferPointer { sp in
+                                    guard let dBase = dst.baseAddress,
+                                          let sBase = sp.baseAddress else { return }
+                                    for yy in 0..<sr.h {
+                                        let dRow = dBase
+                                            + (sr.y + yy) * chW + sr.x
+                                        dRow.update(
+                                            from: sBase + yy * sr.w,
+                                            count: sr.w)
+                                    }
+                                }
                             }
-                        }
-                        giImage.channels[sr.c].pixels = pix
                     }
                 }
                 extraGiImage = giImage
@@ -3678,30 +3683,42 @@ extension JXLDecoder {
         // for a sub-container bit depth — e.g. a 9-bit image stored in a
         // 16-bit container must clamp to 511, not merely mask to 16 bits.
         let sampleMax = UInt32((1 << bps) - 1)
-        // Helper to write one Int32 sample at the right byte offset.
-        let writeSample: (Int, Int32) -> Void = { dstByte, value in
-            let clamped = min(UInt32(max(0, value)), sampleMax)
-            switch bytesPerSample {
-            case 1:
-                frame.data[dstByte] = UInt8(clamped)
-            default:
-                frame.data[dstByte] = UInt8(clamped & 0xff)
-                frame.data[dstByte + 1] = UInt8((clamped >> 8) & 0xff)
-            }
-        }
-        // Colour channels: 0..<nbColor.
+        let pixelCount = xsize * ysize
+        // Colour channels 0..<nbColor; alpha (if present) follows.
+        // Source channel index paired with the interleaved byte offset.
+        var planes: [(channel: Int, byteOffset: Int)] = []
+        planes.reserveCapacity(nbColor + 1)
         for ci in 0..<nbColor {
-            let pixels = modular.channels[ci].pixels
-            for i in 0..<(xsize * ysize) {
-                writeSample(i * stride + ci * bytesPerSample, pixels[i])
-            }
+            planes.append((ci, ci * bytesPerSample))
         }
-        // Alpha (if present) follows the colour channels.
         if let aIdx = alphaIdx {
-            let pixels = modular.channels[aIdx].pixels
-            let aOffset = nbColor * bytesPerSample
-            for i in 0..<(xsize * ysize) {
-                writeSample(i * stride + aOffset, pixels[i])
+            planes.append((aIdx, nbColor * bytesPerSample))
+        }
+        // Whole-buffer per-channel loops (split per byte width) —
+        // each sample clamps to [0, sampleMax] and lands LSB-first.
+        frame.data.withUnsafeMutableBufferPointer { dst in
+            for (channel, byteOffset) in planes {
+                modular.channels[channel].pixels
+                    .withUnsafeBufferPointer { src in
+                        if bytesPerSample == 1 {
+                            var d = byteOffset
+                            for i in 0..<pixelCount {
+                                let clamped = min(
+                                    UInt32(max(0, src[i])), sampleMax)
+                                dst[d] = UInt8(clamped)
+                                d &+= stride
+                            }
+                        } else {
+                            var d = byteOffset
+                            for i in 0..<pixelCount {
+                                let clamped = min(
+                                    UInt32(max(0, src[i])), sampleMax)
+                                dst[d] = UInt8(clamped & 0xff)
+                                dst[d + 1] = UInt8((clamped >> 8) & 0xff)
+                                d &+= stride
+                            }
+                        }
+                    }
             }
         }
         return frame
@@ -4176,9 +4193,10 @@ extension JXLDecoder {
         // multi-section flow, channels with `w ≤ groupDim && h ≤ groupDim`
         // also decode here ("global" channels); larger channels defer
         // to per-group AC sections.
-        var s0 = isMultiSection
-            ? BitReader(codestream, startingAt: sectionByteStarts[0] * 8)
-            : r
+        var s0 = r
+        if isMultiSection {
+            s0.seek(toBitPosition: sectionByteStarts[0] * 8)
+        }
         let matrixDcDefault = try s0.readBit()
         if !matrixDcDefault {
             for _ in 0..<3 { _ = try s0.read(bits: 16) }
@@ -4364,9 +4382,8 @@ extension JXLDecoder {
                 let gx = groupIdx % numGroupsX
                 let gy = groupIdx / numGroupsX
                 let sectionIdx = acStartIdx + groupIdx
-                var gr = BitReader(
-                    codestream, startingAt: sectionByteStarts[sectionIdx] * 8
-                )
+                var gr = r
+                gr.seek(toBitPosition: sectionByteStarts[sectionIdx] * 8)
                 let groupGH = try GroupHeader.read(from: &gr)
                 // Tree + post-tree codebook for this section: either
                 // the global ones (useGlobalTree=true) or per-section
@@ -4494,21 +4511,31 @@ extension JXLDecoder {
                     )
                 }
                 // Stitch each sub-image channel's rect into the
-                // corresponding full-image channel.
+                // corresponding full-image channel. Row blits through
+                // a single mutable-buffer scope per channel — holding
+                // a copy of the channel (or writing through nested
+                // subscripts) would force a whole-channel COW copy
+                // per (group, channel).
                 for (sci, info) in rectMap.enumerated() {
                     let sch = subImage.channels[sci]
-                    let parentCh = image.channels[info.parentChannel]
+                    let parentW = image.channels[info.parentChannel].width
                     let rectW = sch.width
                     let rectH = sch.height
-                    for ry in 0..<rectH {
-                        let srcStart = ry * rectW
-                        let dstStart = (info.rectY0 + ry)
-                            * parentCh.width + info.rectX0
-                        for rx in 0..<rectW {
-                            image.channels[info.parentChannel].pixels[dstStart + rx] =
-                                sch.pixels[srcStart + rx]
+                    image.channels[info.parentChannel].pixels
+                        .withUnsafeMutableBufferPointer { dst in
+                            sch.pixels.withUnsafeBufferPointer { src in
+                                guard let dBase = dst.baseAddress,
+                                      let sBase = src.baseAddress else { return }
+                                for ry in 0..<rectH {
+                                    let dRow = dBase
+                                        + (info.rectY0 + ry) * parentW
+                                        + info.rectX0
+                                    dRow.update(
+                                        from: sBase + ry * rectW,
+                                        count: rectW)
+                                }
+                            }
                         }
-                    }
                 }
             }
         }
