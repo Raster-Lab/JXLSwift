@@ -711,14 +711,15 @@ package enum SpecModularEncoder {
         // edge fall-backs against the rect. `flat` lists every group-channel
         // token run for the codebook cost-gate.
         func residuals(useWP: Bool)
-            -> (perGroup: [[[UInt32]]], flat: [[UInt32]],
-                histo: [Int], alphabetSize: Int) {
+            -> (perGroup: [[[UInt32]]], flatSymbols: [[UInt16]],
+                histo: [Int], alphabetSize: Int, totalExtraNBits: Int) {
             var perGroup: [[[UInt32]]] = Array(
                 repeating: Array(repeating: [], count: channels.count),
                 count: numGroups)
-            var flat: [[UInt32]] = []
+            var flatSymbols: [[UInt16]] = []
             var fullHisto = [Int](repeating: 0, count: postCfg.maxToken + 1)
             var maxTok = 0
+            var totalExtraNBits = 0
             for ci in 0..<channels.count {
                 let pix = channels[ci]
                 for gy in 0..<numGroupsY {
@@ -733,6 +734,8 @@ package enum SpecModularEncoder {
                         }
                         var packed = [UInt32]()
                         packed.reserveCapacity(rectW * rectH)
+                        var symbols = [UInt16]()
+                        symbols.reserveCapacity(rectW * rectH)
                         if useWP {
                             var wp = WeightedPredictor(
                                 header: .default, xsize: max(1, rectW))
@@ -744,9 +747,12 @@ package enum SpecModularEncoder {
                                         n: nbh.n, w: nbh.w, ne: nbh.ne, nw: nbh.nw, nn: nbh.nn)
                                     let actual = rect[ry * rectW + rx]
                                     let p = ZigZag.pack(actual &- pred)
-                                    let t = Int(postCfg.encode(p).token)
+                                    let exp = postCfg.encode(p)
+                                    let t = Int(exp.token)
                                     fullHisto[t] += 1; if t > maxTok { maxTok = t }
                                     packed.append(p)
+                                    symbols.append(UInt16(truncatingIfNeeded: exp.token))
+                                    totalExtraNBits += exp.extraNBits
                                     wp.update(actual: actual, x: rx, y: ry, xsize: rectW)
                                 }
                             }
@@ -756,28 +762,34 @@ package enum SpecModularEncoder {
                                     let nbh = Neighbourhood(at: rx, ry, in: rect, width: rectW)
                                     let pred = Predictor.gradient.apply(to: nbh, lo: 0, hi: sampleHi)
                                     let p = ZigZag.pack(rect[ry * rectW + rx] &- pred)
-                                    let t = Int(postCfg.encode(p).token)
+                                    let exp = postCfg.encode(p)
+                                    let t = Int(exp.token)
                                     fullHisto[t] += 1; if t > maxTok { maxTok = t }
                                     packed.append(p)
+                                    symbols.append(UInt16(truncatingIfNeeded: exp.token))
+                                    totalExtraNBits += exp.extraNBits
                                 }
                             }
                         }
                         perGroup[gy * numGroupsX + gx][ci] = packed
-                        flat.append(packed)
+                        flatSymbols.append(symbols)
                     }
                 }
             }
-            return (perGroup, flat, Array(fullHisto[0..<(maxTok + 1)]), maxTok + 1)
+            return (perGroup, flatSymbols, Array(fullHisto[0..<(maxTok + 1)]),
+                    maxTok + 1, totalExtraNBits)
         }
         // Cost-gate predictor × entropy (same lever as single-section).
         let grad = residuals(useWP: false)
         let gradBest = try bestModularPostCodebook(
             histo: grad.histo, alphabetSize: grad.alphabetSize,
-            postCfg: postCfg, tokensPerChannel: grad.flat)
+            postCfg: postCfg, symbolsPerChannel: grad.flatSymbols,
+            totalExtraNBits: grad.totalExtraNBits)
         let wp = residuals(useWP: true)
         let wpBest = try bestModularPostCodebook(
             histo: wp.histo, alphabetSize: wp.alphabetSize,
-            postCfg: postCfg, tokensPerChannel: wp.flat)
+            postCfg: postCfg, symbolsPerChannel: wp.flatSymbols,
+            totalExtraNBits: wp.totalExtraNBits)
         let useWP = wpBest.bits < gradBest.bits
         let chosen = useWP ? wpBest : gradBest
         let postHeader = chosen.header
@@ -1052,12 +1064,30 @@ package enum SpecModularEncoder {
         var histo = [[Int]](
             repeating: [Int](repeating: 0, count: postCfg.maxToken + 1), count: n)
         var maxTok = 0
+        // One tokenisation pass: global histograms for codebook building,
+        // plus per-group (cluster, symbol) sequences + extra-bit totals so
+        // both candidates below are costed analytically and only the
+        // winner is actually assembled.
+        var groupSymbols = [[UInt16]](repeating: [], count: numGroups)
+        var groupClusters = [[UInt8]](repeating: [], count: numGroups)
+        var groupExtraNBits = [Int](repeating: 0, count: numGroups)
         for g in 0..<numGroups {
-            for (ctx, v) in perGroupOrdered[g] {
-                let tk = Int(postCfg.encode(v).token)
-                histo[ctx][tk] += 1
+            let run = perGroupOrdered[g]
+            var syms = [UInt16](repeating: 0, count: run.count)
+            var cls = [UInt8](repeating: 0, count: run.count)
+            var extra = 0
+            for (i, t) in run.enumerated() {
+                let exp = postCfg.encode(t.val)
+                let tk = Int(exp.token)
+                histo[t.ctx][tk] += 1
                 if tk > maxTok { maxTok = tk }
+                syms[i] = UInt16(truncatingIfNeeded: exp.token)
+                cls[i] = UInt8(truncatingIfNeeded: t.ctx)
+                extra += exp.extraNBits
             }
+            groupSymbols[g] = syms
+            groupClusters[g] = cls
+            groupExtraNBits[g] = extra
         }
         for c in 0..<n where histo[c].reduce(0, +) == 0 { return nil }
         let alpha = maxTok + 1
@@ -1106,7 +1136,60 @@ package enum SpecModularEncoder {
             return sections
         }
 
-        var results: [[Data]] = []
+        // Per-AC-section constant: the GroupHeader bits that precede each
+        // group's token stream (every section is byte-aligned after it).
+        let groupHeaderBits: Int = {
+            var w = BitWriter()
+            try? GroupHeader.default.write(to: &w)
+            return w.bitCount
+        }()
+        // Analytic total bytes for one candidate: the DC-global section
+        // (tree + header + codebook — built for real, it has no per-pixel
+        // content) + one byte-aligned AC section per group whose stream
+        // bits are computed without emission (Huffman: Σ len + extras;
+        // rANS: 32 + 16·refills + extras per fresh group stream).
+        func analyticTotal(
+            _ h: EntropySectionHeader, _ c: MultiClusterCodebook
+        ) -> Int {
+            var dcGlobal = BitWriter()
+            dcGlobal.writeBit(true)
+            dcGlobal.writeBit(true)
+            do {
+                try writeModularTreeSectionOnly(to: &dcGlobal, tree: tree)
+                try h.write(to: &dcGlobal, numContexts: n)
+                try c.write(to: &dcGlobal, header: h)
+                try GroupHeader.default.write(to: &dcGlobal)
+            } catch { return Int.max }
+            dcGlobal.alignToByte()
+            var total = dcGlobal.bitCount / 8
+            if h.usePrefixCode {
+                for g in 0..<numGroups {
+                    var bits = groupHeaderBits + groupExtraNBits[g]
+                    let syms = groupSymbols[g]
+                    let cls = groupClusters[g]
+                    for i in 0..<syms.count {
+                        let len = Int(c.huffmanTables[Int(cls[i])]
+                            .lengths[Int(syms[i])])
+                        if len == 0 { return Int.max }
+                        bits += len
+                    }
+                    total += (bits + 7) / 8
+                }
+            } else {
+                guard let aw = try? ANSTokenStreamWriter(header: h, codebook: c)
+                else { return Int.max }
+                for g in 0..<numGroups {
+                    guard let r = try? aw.refillWordCount(
+                        symbols: groupSymbols[g], clusters: groupClusters[g])
+                    else { return Int.max }
+                    let bits = groupHeaderBits + 32 + 16 * r + groupExtraNBits[g]
+                    total += (bits + 7) / 8
+                }
+            }
+            return total
+        }
+
+        var candidates: [(EntropySectionHeader, MultiClusterCodebook)] = []
         do {
             let huffTables = try (0..<n).map { c in
                 try PrefixCodeTable(lengths: lengthLimitedCanonicalHuffman(
@@ -1119,7 +1202,7 @@ package enum SpecModularEncoder {
             let huffHeader = EntropySectionHeader(
                 lz77: .disabled, contextMap: ctxMap,
                 usePrefixCode: true, logAlphaSize: 15, uintConfigs: cfgs)
-            if let s = assemble(huffHeader, huffCodebook) { results.append(s) }
+            candidates.append((huffHeader, huffCodebook))
         } catch { /* fall through to rANS */ }
         var wires: [[Int32]] = []
         var maxWire = 0
@@ -1144,11 +1227,18 @@ package enum SpecModularEncoder {
                 let ansCodebook = MultiClusterCodebook(
                     huffmanTables: [], ansCounts: wires,
                     alphabetSizes: wires.map { $0.count })
-                if let s = assemble(ansHeader, ansCodebook) { results.append(s) }
+                candidates.append((ansHeader, ansCodebook))
             }
         }
-        return results.min(by: {
-            $0.reduce(0) { $0 + $1.count } < $1.reduce(0) { $0 + $1.count } })
+        // Cost both analytically (exact section-byte totals), assemble
+        // only the winner. `min(by: <)` keeps the earlier candidate on a
+        // tie — Huffman first, matching the previous assemble-both order.
+        let costed = candidates
+            .map { (cand: $0, total: analyticTotal($0.0, $0.1)) }
+            .filter { $0.total != Int.max }
+        guard let winner = costed.min(by: { $0.total < $1.total })
+        else { return nil }
+        return assemble(winner.cand.0, winner.cand.1)
     }
 
     /// Multi-context candidate for the multi-group path — the analogue of
@@ -1466,13 +1556,15 @@ package enum SpecModularEncoder {
             sampleHi: sampleHi, postCfg: postCfg, useWP: false)
         let gradBest = try bestModularPostCodebook(
             histo: grad.histo, alphabetSize: grad.alphabetSize,
-            postCfg: postCfg, tokensPerChannel: grad.packedPerChannel)
+            postCfg: postCfg, symbolsPerChannel: grad.symbolsPerChannel,
+            totalExtraNBits: grad.totalExtraNBits)
         let wp = computeModularResiduals(
             width: width, height: height, channels: channels,
             sampleHi: sampleHi, postCfg: postCfg, useWP: true)
         let wpBest = try bestModularPostCodebook(
             histo: wp.histo, alphabetSize: wp.alphabetSize,
-            postCfg: postCfg, tokensPerChannel: wp.packedPerChannel)
+            postCfg: postCfg, symbolsPerChannel: wp.symbolsPerChannel,
+            totalExtraNBits: wp.totalExtraNBits)
         let useWP = wpBest.bits < gradBest.bits
         let chosen = useWP ? wpBest : gradBest
         let postHeader = chosen.header
@@ -1631,37 +1723,41 @@ package enum SpecModularEncoder {
         var histo = [[Int]](
             repeating: [Int](repeating: 0, count: postCfg.maxToken + 1), count: n)
         var maxTok = 0
-        for (ctx, v) in ordered {
-            let tk = Int(postCfg.encode(v).token)
-            histo[ctx][tk] += 1
+        // One tokenisation pass: histograms for codebook building, plus
+        // the expanded (cluster, symbol) sequence and extra-bit total the
+        // analytic candidate costing below consumes. The contexts map to
+        // clusters via the identity map this function always emits.
+        var symbols = [UInt16](repeating: 0, count: ordered.count)
+        var clusters = [UInt8](repeating: 0, count: ordered.count)
+        var totalExtraNBits = 0
+        for (i, t) in ordered.enumerated() {
+            let exp = postCfg.encode(t.val)
+            let tk = Int(exp.token)
+            histo[t.ctx][tk] += 1
             if tk > maxTok { maxTok = tk }
+            symbols[i] = UInt16(truncatingIfNeeded: exp.token)
+            clusters[i] = UInt8(truncatingIfNeeded: t.ctx)
+            totalExtraNBits += exp.extraNBits
         }
         for c in 0..<n where histo[c].reduce(0, +) == 0 { return nil }
         let alpha = maxTok + 1
         guard let ctxMap = try? ContextMap(
             numClusters: n, map: (0..<n).map { UInt8($0) }) else { return nil }
         let cfgs = Array(repeating: postCfg, count: n)
-        func sectionBits(
+        // Header + codebook bits, measured with the real writers on a
+        // small scratch (no token emission — sizes below are analytic).
+        func headerCodebookBits(
             _ h: EntropySectionHeader, _ c: MultiClusterCodebook
         ) -> Int {
             var w = BitWriter()
             do {
                 try h.write(to: &w, numContexts: n)
                 try c.write(to: &w, header: h)
-                if h.usePrefixCode {
-                    let tw = TokenStreamWriter(header: h, codebook: c)
-                    for (ctx, v) in ordered {
-                        try tw.writeToken(context: ctx, value: v, to: &w)
-                    }
-                } else {
-                    var aw = try ANSTokenStreamWriter(header: h, codebook: c)
-                    for (ctx, v) in ordered { try aw.writeToken(context: ctx, value: v) }
-                    try aw.finish(to: &w)
-                }
             } catch { return Int.max }
             return w.bitCount
         }
-        // Huffman candidate (one table per context).
+        // Huffman candidate (one table per context). Exact size without
+        // emission: Σ histo[c][s]·codeLen[c][s] + Σ extraNBits.
         let huffTables: [PrefixCodeTable]
         do {
             huffTables = try (0..<n).map { c in
@@ -1678,8 +1774,22 @@ package enum SpecModularEncoder {
             usePrefixCode: true, logAlphaSize: 15, uintConfigs: cfgs)
         var best: (EntropySectionHeader, MultiClusterCodebook) =
             (huffHeader, huffCodebook)
-        var bestBits = sectionBits(huffHeader, huffCodebook)
-        // rANS candidate (one histogram per context).
+        var bestBits = headerCodebookBits(huffHeader, huffCodebook)
+        if bestBits != Int.max {
+            var streamBits = totalExtraNBits
+            var ok = true
+            outer: for c in 0..<n {
+                let lens = huffTables[c].lengths
+                for s in 0..<alpha where histo[c][s] > 0 {
+                    if Int(lens[s]) == 0 { ok = false; break outer }
+                    streamBits += histo[c][s] * Int(lens[s])
+                }
+            }
+            bestBits = ok ? bestBits + streamBits : Int.max
+        }
+        // rANS candidate (one histogram per context). Exact size:
+        // 32-bit init + 16 bits per refill + the extra bits, with the
+        // refill count from the bare reverse walk.
         var wires: [[Int32]] = []
         var maxWire = 0
         var ansOK = true
@@ -1704,10 +1814,20 @@ package enum SpecModularEncoder {
                 let ansCodebook = MultiClusterCodebook(
                     huffmanTables: [], ansCounts: wires,
                     alphabetSizes: wires.map { $0.count })
-                let b = sectionBits(ansHeader, ansCodebook)
+                var b = headerCodebookBits(ansHeader, ansCodebook)
+                if b != Int.max,
+                   let aw = try? ANSTokenStreamWriter(
+                       header: ansHeader, codebook: ansCodebook),
+                   let r = try? aw.refillWordCount(
+                       symbols: symbols, clusters: clusters) {
+                    b += 32 + 16 * r + totalExtraNBits
+                } else {
+                    b = Int.max
+                }
                 if b < bestBits { best = (ansHeader, ansCodebook); bestBits = b }
             }
         }
+        guard bestBits != Int.max else { return nil }
         let (postHeader, postCodebook) = best
         var sec = BitWriter()
         sec.writeBit(true)            // matrices_dc_default
@@ -2241,12 +2361,17 @@ package enum SpecModularEncoder {
     /// Pick the smaller of a Huffman or rANS post codebook for one
     /// pooled residual histogram + its token streams, returning
     /// `(header, codebook, usePrefixCode)`. rANS lifts the ≥1 bit/symbol
-    /// Huffman floor; the choice is made by actually encoding the whole
-    /// sub-image both ways (exact, no estimation). Shared by the
-    /// single-section and (future) multi-group Modular paths.
+    /// Huffman floor. The sizes are **exact, computed analytically** —
+    /// equal to the bit counts the former trial encodes measured:
+    /// Huffman is stateless (`Σ histo[s]·codeLen[s] + Σ extraNBits`),
+    /// and a rANS stream is `32 + 16·refills + Σ extraNBits` where the
+    /// refill count comes from the bare reverse state walk
+    /// (`refillWordCount`) — no trial bit emission. Shared by the
+    /// single-section and multi-group Modular paths.
     private static func bestModularPostCodebook(
         histo histoIn: [Int], alphabetSize alphabetSizeIn: Int,
-        postCfg: HybridUintConfig, tokensPerChannel: [[UInt32]]
+        postCfg: HybridUintConfig,
+        symbolsPerChannel: [[UInt16]], totalExtraNBits: Int
     ) throws -> (header: EntropySectionHeader,
                  codebook: MultiClusterCodebook,
                  usePrefix: Bool, bits: Int) {
@@ -2296,36 +2421,64 @@ package enum SpecModularEncoder {
             }
         }
 
-        func sectionBits(
+        // Header + codebook bits, measured on a small scratch writer with
+        // the same writers the real section uses.
+        func headerCodebookBits(
             _ h: EntropySectionHeader, _ c: MultiClusterCodebook
         ) -> Int {
             var w = BitWriter()
             do {
                 try h.write(to: &w, numContexts: 1)
                 try c.write(to: &w, header: h)
-                if h.usePrefixCode {
-                    let tw = TokenStreamWriter(header: h, codebook: c)
-                    for pk in tokensPerChannel {
-                        for v in pk {
-                            try tw.writeToken(context: 0, value: v, to: &w)
-                        }
-                    }
-                } else {
-                    var aw = try ANSTokenStreamWriter(header: h, codebook: c)
-                    for pk in tokensPerChannel {
-                        for v in pk { try aw.writeToken(context: 0, value: v) }
-                    }
-                    try aw.finish(to: &w)
-                }
             } catch { return Int.max }
             return w.bitCount
         }
 
-        let huffBits = sectionBits(huffHeader, huffCodebook)
+        // Huffman: stateless, so token-stream bits are exactly
+        // Σ histo[s]·codeLen[s] + Σ extraNBits. A counted symbol with no
+        // codeword would have thrown in emission — treat as unencodable.
+        var huffBits = headerCodebookBits(huffHeader, huffCodebook)
+        if huffBits != Int.max {
+            let lens = huffTable.lengths
+            var streamBits = totalExtraNBits
+            var ok = true
+            for s in 0..<alphabetSize where histo[s] > 0 {
+                if Int(lens[s]) == 0 { ok = false; break }
+                streamBits += histo[s] * Int(lens[s])
+            }
+            huffBits = ok ? huffBits + streamBits : Int.max
+        }
+
+        // rANS: 32-bit init + one 16-bit word per refill + the extra
+        // bits. Only the reverse state walk (whose renorm decisions
+        // depend on the alias slots) has to run. The section is ONE
+        // interleaved stream spanning every channel back-to-back, so
+        // the walk runs over the flattened symbol sequence.
+        var ansBits = Int.max
+        if let cand = ansCand {
+            let hc = headerCodebookBits(cand.0, cand.1)
+            if hc != Int.max,
+               let aw = try? ANSTokenStreamWriter(
+                   header: cand.0, codebook: cand.1) {
+                let all: [UInt16]
+                if symbolsPerChannel.count == 1 {
+                    all = symbolsPerChannel[0]
+                } else {
+                    var flat: [UInt16] = []
+                    flat.reserveCapacity(
+                        symbolsPerChannel.reduce(0) { $0 + $1.count })
+                    for s in symbolsPerChannel { flat.append(contentsOf: s) }
+                    all = flat
+                }
+                if let r = try? aw.refillWordCount(symbols: all) {
+                    ansBits = hc + 32 + 16 * r + totalExtraNBits
+                }
+            }
+        }
+
         guard let cand = ansCand else {
             return (huffHeader, huffCodebook, true, huffBits)
         }
-        let ansBits = sectionBits(cand.0, cand.1)
         return ansBits < huffBits
             ? (cand.0, cand.1, false, ansBits)
             : (huffHeader, huffCodebook, true, huffBits)
@@ -2340,14 +2493,20 @@ package enum SpecModularEncoder {
     private static func computeModularResiduals(
         width: Int, height: Int, channels: [[Int32]], sampleHi: Int32,
         postCfg: HybridUintConfig, useWP: Bool
-    ) -> (packedPerChannel: [[UInt32]], histo: [Int], alphabetSize: Int) {
+    ) -> (packedPerChannel: [[UInt32]], histo: [Int], alphabetSize: Int,
+          symbolsPerChannel: [[UInt16]], totalExtraNBits: Int) {
         var packedPerChannel = [[UInt32]]()
         packedPerChannel.reserveCapacity(channels.count)
+        var symbolsPerChannel = [[UInt16]]()
+        symbolsPerChannel.reserveCapacity(channels.count)
         var fullHisto = [Int](repeating: 0, count: postCfg.maxToken + 1)
         var maxUsedToken = 0
+        var totalExtraNBits = 0
         for pix32 in channels {
             var packed = [UInt32]()
             packed.reserveCapacity(width * height)
+            var symbols = [UInt16]()
+            symbols.reserveCapacity(width * height)
             if useWP {
                 var wp = WeightedPredictor(
                     header: .default, xsize: max(1, width))
@@ -2359,10 +2518,13 @@ package enum SpecModularEncoder {
                             n: nbh.n, w: nbh.w, ne: nbh.ne, nw: nbh.nw, nn: nbh.nn)
                         let actual = pix32[y * width + x]
                         let p = ZigZag.pack(actual &- pred)
-                        let t = Int(postCfg.encode(p).token)
+                        let exp = postCfg.encode(p)
+                        let t = Int(exp.token)
                         fullHisto[t] += 1
                         if t > maxUsedToken { maxUsedToken = t }
                         packed.append(p)
+                        symbols.append(UInt16(truncatingIfNeeded: exp.token))
+                        totalExtraNBits += exp.extraNBits
                         wp.update(actual: actual, x: x, y: y, xsize: width)
                     }
                 }
@@ -2373,17 +2535,21 @@ package enum SpecModularEncoder {
                         let pred = Predictor.gradient.apply(
                             to: nbh, lo: 0, hi: sampleHi)
                         let p = ZigZag.pack(pix32[y * width + x] &- pred)
-                        let t = Int(postCfg.encode(p).token)
+                        let exp = postCfg.encode(p)
+                        let t = Int(exp.token)
                         fullHisto[t] += 1
                         if t > maxUsedToken { maxUsedToken = t }
                         packed.append(p)
+                        symbols.append(UInt16(truncatingIfNeeded: exp.token))
+                        totalExtraNBits += exp.extraNBits
                     }
                 }
             }
             packedPerChannel.append(packed)
+            symbolsPerChannel.append(symbols)
         }
         return (packedPerChannel, Array(fullHisto[0..<(maxUsedToken + 1)]),
-                maxUsedToken + 1)
+                maxUsedToken + 1, symbolsPerChannel, totalExtraNBits)
     }
 
     /// Reject sizes outside the supported encoder range. Lifted from

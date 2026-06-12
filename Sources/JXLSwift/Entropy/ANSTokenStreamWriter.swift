@@ -187,4 +187,43 @@ package struct ANSTokenStreamWriter {
 
     /// Number of buffered tokens.
     package var tokenCount: Int { pending.count }
+
+    /// The bare reverse rANS walk of `finish()` over already-expanded
+    /// token symbols, counting the 16-bit refill words **without
+    /// emitting anything**. Cost-gating uses this: a section's exact
+    /// rANS stream size is `32 + 16·refills + Σ extraNBits`, so the
+    /// trial encode (buffering + bit emission) is unnecessary —
+    /// only the state walk, whose renorm decisions depend on the alias
+    /// slot assignments, has to run. `clusters` routes each symbol
+    /// (nil ⇒ all cluster 0); throws exactly where `finish()` would
+    /// (a symbol with zero on-wire frequency).
+    package func refillWordCount(
+        symbols: [UInt16], clusters clusterIdx: [UInt8]? = nil
+    ) throws -> Int {
+        let range = UInt32(ANSConstants.tabSize)
+        let tables = self.clusters
+        var refills = 0
+        var state: UInt32 = ANSConstants.initialState
+        var i = symbols.count - 1
+        while i >= 0 {
+            let cl = clusterIdx.map { Int($0[i]) } ?? 0
+            let sym = Int(symbols[i])
+            let enc = tables[cl]
+            guard sym < enc.freq.count, enc.freq[sym] > 0 else {
+                throw ANSTokenStreamWriterError.symbolHasZeroFrequency(
+                    cluster: cl, symbol: sym)
+            }
+            let f = enc.freq[sym]
+            let bound = UInt64(f) << UInt64(32 - ANSConstants.logTabSize)
+            if UInt64(state) >= bound {
+                refills += 1
+                state >>= 16
+            }
+            let offset = state % f
+            let q = state / f
+            state = q &* range &+ enc.slotForResidue[sym][Int(offset)]
+            i -= 1
+        }
+        return refills
+    }
 }
