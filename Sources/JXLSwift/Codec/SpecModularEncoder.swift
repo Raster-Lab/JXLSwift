@@ -387,10 +387,37 @@ package enum SpecModularEncoder {
                 + "≠ width*height (\(width * height))"
             )
         }
+        return try encodeGrayscale16(
+            width: width, height: height,
+            bitsPerSample: bitsPerSample,
+            pixelsInt32: pixels.map { Int32($0) },
+            effort: effort
+        )
+    }
+
+    /// `encodeGrayscale16` taking the samples already widened to `Int32`
+    /// (the encoder's working type). Callers holding interleaved or
+    /// `UInt16` buffers can convert in a single pass instead of paying
+    /// an extra full-image intermediate — for the 16-bit grayscale
+    /// medical path this removes one of the three ingestion copies.
+    package static func encodeGrayscale16(
+        width: Int, height: Int,
+        bitsPerSample: UInt32 = 16,
+        pixelsInt32: [Int32],
+        effort: Int = 9
+    ) throws -> Data {
+        try validateSize(width: width, height: height)
+        try validateHighBitDepth(bitsPerSample)
+        guard pixelsInt32.count == width * height else {
+            throw SpecModularEncoderError.unsupportedFrame(
+                "pixels.count (\(pixelsInt32.count)) "
+                + "≠ width*height (\(width * height))"
+            )
+        }
         let sampleHi = Int32((Int64(1) << bitsPerSample) - 1)
         let built = try buildSections(
             width: width, height: height,
-            channels: [pixels.map { Int32($0) }],
+            channels: [pixelsInt32],
             sampleHi: sampleHi, effort: effort
         )
         return try writeOuterCodestream(

@@ -144,11 +144,15 @@ public struct JXLEncoder: Sendable {
                 )
             }
         case (.uint16, 1, 0):
-            let pixels = unpackUInt16(from: frame, channelCount: 1, channel: 0)
+            // One pass interleaved bytes → Int32 (the encoder's working
+            // type): the [UInt16] intermediate cost a third full-image
+            // copy on the 16-bit grayscale medical path.
+            let pixels = unpackUInt16ToInt32(
+                from: frame, channelCount: 1, channel: 0)
             bytes = try wrapModular {
                 try SpecModularEncoder.encodeGrayscale16(
                     width: frame.width, height: frame.height,
-                    pixels: pixels, effort: options.effort.rawValue
+                    pixelsInt32: pixels, effort: options.effort.rawValue
                 )
             }
         case (.uint8, 2, 1):
@@ -625,6 +629,26 @@ private func unpackUInt16(
         let lo = UInt16(frame.data[base])
         let hi = UInt16(frame.data[base + 1])
         out[i] = (hi << 8) | lo
+    }
+    return out
+}
+
+/// `unpackUInt16` widened straight to `Int32` (the modular encoder's
+/// working type) — one pass, no `[UInt16]` intermediate.
+private func unpackUInt16ToInt32(
+    from frame: ImageFrame, channelCount: Int, channel: Int
+) -> [Int32] {
+    let n = frame.width * frame.height
+    var out = [Int32](repeating: 0, count: n)
+    frame.data.withUnsafeBytes { raw in
+        out.withUnsafeMutableBufferPointer { dst in
+            for i in 0..<n {
+                let base = (i * channelCount + channel) * 2
+                let lo = Int32(raw[base])
+                let hi = Int32(raw[base + 1])
+                dst[i] = (hi << 8) | lo
+            }
+        }
     }
     return out
 }
