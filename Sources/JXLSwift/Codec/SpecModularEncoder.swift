@@ -1043,22 +1043,23 @@ package enum SpecModularEncoder {
         return sets
     }
 
-    /// Assemble the multi-group section array for a given MA-tree + per-group
-    /// `(context, packed-residual)` routing: the tree + a shared per-context
-    /// post codebook live once in the DC-global section; every AC group
-    /// section routes its tokens through that codebook (Huffman inline per
-    /// group; rANS one fresh interleaved stream per group). The global
-    /// codebook is cost-gated Huffman-vs-rANS by assembling both fully and
-    /// keeping the smaller (sum of section bytes). `perGroupOrdered[g]` is
-    /// group `g`'s pairs in the decoder's per-group read order. Returns the
-    /// smaller candidate, or `nil` for a degenerate / unencodable routing.
-    /// Shared by the activity-split and greedy multi-property multi-group
-    /// paths (the analogue of `assembleMultiContextSection` for one section).
-    private static func assembleMultiGroupContextSections(
+    /// Analytically cost the multi-group section array for a given MA-tree
+    /// + per-group `(context, packed-residual)` routing: the EXACT summed
+    /// section bytes (DC global with tree + shared codebook, empty DC
+    /// groups / AC global, and one byte-aligned AC section per group),
+    /// with the Huffman-vs-rANS codebook gate decided analytically —
+    /// Huffman streams are `Σ codeLen + extras`, rANS streams are
+    /// `32 + 16·refills + extras` per fresh group stream. Returns the
+    /// winning header/codebook and the total, or `nil` for a degenerate /
+    /// unencodable routing. The caller emits only the winner
+    /// (`emitMultiGroupSections`); totals equal assembled byte sums
+    /// exactly, so candidate comparisons are unchanged.
+    private static func costMultiGroupSections(
         tree: ModularTree, numContexts n: Int,
         perGroupOrdered: [[(ctx: Int, val: UInt32)]],
         numDcGroups: Int, postCfg: HybridUintConfig
-    ) -> [Data]? {
+    ) -> (bytes: Int, header: EntropySectionHeader,
+          codebook: MultiClusterCodebook)? {
         let numGroups = perGroupOrdered.count
         guard n >= 1, numGroups >= 1 else { return nil }
         var histo = [[Int]](
@@ -1094,47 +1095,6 @@ package enum SpecModularEncoder {
         guard let ctxMap = try? ContextMap(
             numClusters: n, map: (0..<n).map { UInt8($0) }) else { return nil }
         let cfgs = Array(repeating: postCfg, count: n)
-
-        func assemble(
-            _ h: EntropySectionHeader, _ c: MultiClusterCodebook
-        ) -> [Data]? {
-            var dcGlobal = BitWriter()
-            dcGlobal.writeBit(true)            // matrices_dc_default
-            dcGlobal.writeBit(true)            // has_tree
-            do {
-                try writeModularTreeSectionOnly(to: &dcGlobal, tree: tree)
-                try h.write(to: &dcGlobal, numContexts: n)
-                try c.write(to: &dcGlobal, header: h)
-                try GroupHeader.default.write(to: &dcGlobal)
-            } catch { return nil }
-            dcGlobal.alignToByte()
-            var sections = [Data]()
-            sections.reserveCapacity(2 + numDcGroups + numGroups)
-            sections.append(dcGlobal.finishToData())
-            for _ in 0..<numDcGroups { sections.append(Data()) }
-            sections.append(Data())            // AC global, empty
-            for g in 0..<numGroups {
-                var sec = BitWriter()
-                do {
-                    try GroupHeader.default.write(to: &sec)
-                    if h.usePrefixCode {
-                        let tw = TokenStreamWriter(header: h, codebook: c)
-                        for (ctx, v) in perGroupOrdered[g] {
-                            try tw.writeToken(context: ctx, value: v, to: &sec)
-                        }
-                    } else {
-                        var aw = try ANSTokenStreamWriter(header: h, codebook: c)
-                        for (ctx, v) in perGroupOrdered[g] {
-                            try aw.writeToken(context: ctx, value: v)
-                        }
-                        try aw.finish(to: &sec)
-                    }
-                } catch { return nil }
-                sec.alignToByte()
-                sections.append(sec.finishToData())
-            }
-            return sections
-        }
 
         // Per-AC-section constant: the GroupHeader bits that precede each
         // group's token stream (every section is byte-aligned after it).
@@ -1230,15 +1190,79 @@ package enum SpecModularEncoder {
                 candidates.append((ansHeader, ansCodebook))
             }
         }
-        // Cost both analytically (exact section-byte totals), assemble
-        // only the winner. `min(by: <)` keeps the earlier candidate on a
-        // tie — Huffman first, matching the previous assemble-both order.
+        // Cost both analytically (exact section-byte totals).
+        // `min(by: <)` keeps the earlier candidate on a tie — Huffman
+        // first, matching the previous assemble-both order.
         let costed = candidates
             .map { (cand: $0, total: analyticTotal($0.0, $0.1)) }
             .filter { $0.total != Int.max }
         guard let winner = costed.min(by: { $0.total < $1.total })
         else { return nil }
-        return assemble(winner.cand.0, winner.cand.1)
+        return (winner.total, winner.cand.0, winner.cand.1)
+    }
+
+    /// Emit the multi-group section array a `costMultiGroupSections`
+    /// result describes (DC global + empty DC groups + empty AC global +
+    /// one AC section per group). Summed bytes equal the cost exactly.
+    private static func emitMultiGroupSections(
+        tree: ModularTree, numContexts n: Int,
+        perGroupOrdered: [[(ctx: Int, val: UInt32)]],
+        numDcGroups: Int,
+        header h: EntropySectionHeader, codebook c: MultiClusterCodebook
+    ) -> [Data]? {
+        let numGroups = perGroupOrdered.count
+        var dcGlobal = BitWriter()
+        dcGlobal.writeBit(true)            // matrices_dc_default
+        dcGlobal.writeBit(true)            // has_tree
+        do {
+            try writeModularTreeSectionOnly(to: &dcGlobal, tree: tree)
+            try h.write(to: &dcGlobal, numContexts: n)
+            try c.write(to: &dcGlobal, header: h)
+            try GroupHeader.default.write(to: &dcGlobal)
+        } catch { return nil }
+        dcGlobal.alignToByte()
+        var sections = [Data]()
+        sections.reserveCapacity(2 + numDcGroups + numGroups)
+        sections.append(dcGlobal.finishToData())
+        for _ in 0..<numDcGroups { sections.append(Data()) }
+        sections.append(Data())            // AC global, empty
+        for g in 0..<numGroups {
+            var sec = BitWriter()
+            do {
+                try GroupHeader.default.write(to: &sec)
+                if h.usePrefixCode {
+                    let tw = TokenStreamWriter(header: h, codebook: c)
+                    for (ctx, v) in perGroupOrdered[g] {
+                        try tw.writeToken(context: ctx, value: v, to: &sec)
+                    }
+                } else {
+                    var aw = try ANSTokenStreamWriter(header: h, codebook: c)
+                    aw.reserveCapacity(perGroupOrdered[g].count)
+                    for (ctx, v) in perGroupOrdered[g] {
+                        try aw.writeToken(context: ctx, value: v)
+                    }
+                    try aw.finish(to: &sec)
+                }
+            } catch { return nil }
+            sec.alignToByte()
+            sections.append(sec.finishToData())
+        }
+        return sections
+    }
+
+    /// Cost + emit in one step — used where there is a single candidate
+    /// (the greedy-tree multi-group path).
+    private static func assembleMultiGroupContextSections(
+        tree: ModularTree, numContexts n: Int,
+        perGroupOrdered: [[(ctx: Int, val: UInt32)]],
+        numDcGroups: Int, postCfg: HybridUintConfig
+    ) -> [Data]? {
+        guard let cost = costMultiGroupSections(
+            tree: tree, numContexts: n, perGroupOrdered: perGroupOrdered,
+            numDcGroups: numDcGroups, postCfg: postCfg) else { return nil }
+        return emitMultiGroupSections(
+            tree: tree, numContexts: n, perGroupOrdered: perGroupOrdered,
+            numDcGroups: numDcGroups, header: cost.header, codebook: cost.codebook)
     }
 
     /// Multi-context candidate for the multi-group path — the analogue of
@@ -1313,38 +1337,45 @@ package enum SpecModularEncoder {
                          max(0, Int(Double(allProps.count) * p)))]
         }
 
-        // Build the best section array for one N-bin activity split: route
-        // each group's tokens through `ctxOf` to produce per-group
-        // (context, token) pairs, then let the shared assembler build the
-        // DC-global tree + codebook and the per-group sections (Huffman vs
-        // rANS cost-gated).
-        func buildForThresholds(_ thr: [Int32]) -> [Data]? {
+        // Cost one N-bin activity-split candidate: route each group's
+        // tokens through `ctxOf` to per-group (context, token) pairs and
+        // compute the exact summed section bytes analytically. Only the
+        // winning candidate is emitted, at the end.
+        typealias Candidate = (
+            bytes: Int, tree: ModularTree, n: Int,
+            perGroupOrdered: [[(ctx: Int, val: UInt32)]],
+            header: EntropySectionHeader, codebook: MultiClusterCodebook)
+        func costForThresholds(_ thr: [Int32]) -> Candidate? {
             guard let (n, ctxOf, tree) =
                 activitySplitTree(thresholds: thr) else { return nil }
             let perGroupOrdered = perGroupPixels.map { group in
                 group.map { (ctx: ctxOf($0.wpProp), val: $0.token) }
             }
-            return assembleMultiGroupContextSections(
+            guard let cost = costMultiGroupSections(
                 tree: tree, numContexts: n, perGroupOrdered: perGroupOrdered,
-                numDcGroups: numDcGroups, postCfg: postCfg)
+                numDcGroups: numDcGroups, postCfg: postCfg) else { return nil }
+            return (cost.bytes, tree, n, perGroupOrdered,
+                    cost.header, cost.codebook)
         }
 
         // Try fixed 2-bin (median), 4-bin (quartile) and 8-bin (octile)
-        // splits plus a learned 2-bin split; keep the smallest. The caller
+        // splits plus a learned 2-bin split; keep the smallest (first wins
+        // ties, preserving the old assemble-all ordering). The caller
         // cost-gates the winner against single-context. Fixed splits are
         // only attempted when their thresholds are strictly increasing
         // (else the tree is degenerate).
-        var candidates: [[Data]] = []
-        let median = pct(0.5)
-        if let d = buildForThresholds([median]) { candidates.append(d) }
-        let q1 = pct(0.25), q2 = pct(0.5), q3 = pct(0.75)
-        if q1 < q2, q2 < q3, let d = buildForThresholds([q1, q2, q3]) {
-            candidates.append(d)
+        var best: Candidate?
+        func consider(_ c: Candidate?) {
+            guard let c else { return }
+            if best == nil || c.bytes < best!.bytes { best = c }
         }
+        let median = pct(0.5)
+        consider(costForThresholds([median]))
+        let q1 = pct(0.25), q2 = pct(0.5), q3 = pct(0.75)
+        if q1 < q2, q2 < q3 { consider(costForThresholds([q1, q2, q3])) }
         let oct = (1...7).map { pct(Double($0) / 8.0) }
-        if zip(oct, oct.dropFirst()).allSatisfy({ $0 < $1 }),
-           let d = buildForThresholds(oct) {
-            candidates.append(d)
+        if zip(oct, oct.dropFirst()).allSatisfy({ $0 < $1 }) {
+            consider(costForThresholds(oct))
         }
         // Learned (entropy-optimal) 2/4/8-bin splits, cost-gated alongside
         // the fixed percentile sets. Each is skipped when it matches the
@@ -1354,10 +1385,14 @@ package enum SpecModularEncoder {
             let isFixed = (l.count == 1 && l == [median])
                 || (l.count == 3 && l == [q1, q2, q3])
                 || (l.count == 7 && l == oct)
-            if !isFixed, let d = buildForThresholds(l) { candidates.append(d) }
+            if !isFixed { consider(costForThresholds(l)) }
         }
-        return candidates.min(by: {
-            $0.reduce(0) { $0 + $1.count } < $1.reduce(0) { $0 + $1.count } })
+        guard let win = best else { return nil }
+        return emitMultiGroupSections(
+            tree: win.tree, numContexts: win.n,
+            perGroupOrdered: win.perGroupOrdered,
+            numDcGroups: numDcGroups,
+            header: win.header, codebook: win.codebook)
     }
 
     /// Greedy multi-property MA-tree candidate for the **multi-group** path
@@ -1715,18 +1750,26 @@ package enum SpecModularEncoder {
     /// token stream. Shared by the activity-split and greedy multi-property
     /// paths. Returns `nil` for a degenerate / unencodable routing (an
     /// empty context, or a codebook that won't serialise).
-    private static func assembleMultiContextSection(
+    /// Analytically cost one multi-context single-section candidate:
+    /// the EXACT total section bytes (matrices bits + tree section +
+    /// entropy header + codebook + GroupHeader + token stream, byte-
+    /// aligned) it would assemble to, plus the chosen post header /
+    /// codebook — without emitting the token stream. The caller compares
+    /// candidates by these byte counts (identical to comparing assembled
+    /// `Data.count`s) and emits only the winner.
+    private static func costMultiContextSection(
         tree: ModularTree, numContexts n: Int,
         ordered: [(ctx: Int, val: UInt32)], postCfg: HybridUintConfig
-    ) -> Data? {
+    ) -> (bytes: Int, header: EntropySectionHeader,
+          codebook: MultiClusterCodebook)? {
         guard n >= 1, !ordered.isEmpty else { return nil }
         var histo = [[Int]](
             repeating: [Int](repeating: 0, count: postCfg.maxToken + 1), count: n)
         var maxTok = 0
         // One tokenisation pass: histograms for codebook building, plus
         // the expanded (cluster, symbol) sequence and extra-bit total the
-        // analytic candidate costing below consumes. The contexts map to
-        // clusters via the identity map this function always emits.
+        // analytic costing consumes. Contexts map to clusters via the
+        // identity map this section shape always uses.
         var symbols = [UInt16](repeating: 0, count: ordered.count)
         var clusters = [UInt8](repeating: 0, count: ordered.count)
         var totalExtraNBits = 0
@@ -1744,20 +1787,24 @@ package enum SpecModularEncoder {
         guard let ctxMap = try? ContextMap(
             numClusters: n, map: (0..<n).map { UInt8($0) }) else { return nil }
         let cfgs = Array(repeating: postCfg, count: n)
-        // Header + codebook bits, measured with the real writers on a
-        // small scratch (no token emission — sizes below are analytic).
-        func headerCodebookBits(
+        // Everything before the token stream, measured with the real
+        // writers on a scratch (no per-pixel content in any of it).
+        func prefixBits(
             _ h: EntropySectionHeader, _ c: MultiClusterCodebook
         ) -> Int {
             var w = BitWriter()
+            w.writeBit(true)           // matrices_dc_default
+            w.writeBit(true)           // has_tree
             do {
+                try writeModularTreeSectionOnly(to: &w, tree: tree)
                 try h.write(to: &w, numContexts: n)
                 try c.write(to: &w, header: h)
+                try GroupHeader.default.write(to: &w)
             } catch { return Int.max }
             return w.bitCount
         }
-        // Huffman candidate (one table per context). Exact size without
-        // emission: Σ histo[c][s]·codeLen[c][s] + Σ extraNBits.
+        // Huffman candidate (one table per context). Exact stream size:
+        // Σ histo[c][s]·codeLen[c][s] + Σ extraNBits.
         let huffTables: [PrefixCodeTable]
         do {
             huffTables = try (0..<n).map { c in
@@ -1774,7 +1821,7 @@ package enum SpecModularEncoder {
             usePrefixCode: true, logAlphaSize: 15, uintConfigs: cfgs)
         var best: (EntropySectionHeader, MultiClusterCodebook) =
             (huffHeader, huffCodebook)
-        var bestBits = headerCodebookBits(huffHeader, huffCodebook)
+        var bestBits = prefixBits(huffHeader, huffCodebook)
         if bestBits != Int.max {
             var streamBits = totalExtraNBits
             var ok = true
@@ -1787,9 +1834,9 @@ package enum SpecModularEncoder {
             }
             bestBits = ok ? bestBits + streamBits : Int.max
         }
-        // rANS candidate (one histogram per context). Exact size:
-        // 32-bit init + 16 bits per refill + the extra bits, with the
-        // refill count from the bare reverse walk.
+        // rANS candidate (one histogram per context). Exact stream size:
+        // 32-bit init + 16 bits per refill + the extra bits, refills from
+        // the bare reverse walk.
         var wires: [[Int32]] = []
         var maxWire = 0
         var ansOK = true
@@ -1814,7 +1861,7 @@ package enum SpecModularEncoder {
                 let ansCodebook = MultiClusterCodebook(
                     huffmanTables: [], ansCounts: wires,
                     alphabetSizes: wires.map { $0.count })
-                var b = headerCodebookBits(ansHeader, ansCodebook)
+                var b = prefixBits(ansHeader, ansCodebook)
                 if b != Int.max,
                    let aw = try? ANSTokenStreamWriter(
                        header: ansHeader, codebook: ansCodebook),
@@ -1828,7 +1875,17 @@ package enum SpecModularEncoder {
             }
         }
         guard bestBits != Int.max else { return nil }
-        let (postHeader, postCodebook) = best
+        return ((bestBits + 7) / 8, best.0, best.1)
+    }
+
+    /// Emit the full section a `costMultiContextSection` result describes.
+    /// Byte count equals the cost's `bytes` exactly.
+    private static func emitMultiContextSection(
+        tree: ModularTree, numContexts n: Int,
+        ordered: [(ctx: Int, val: UInt32)],
+        header postHeader: EntropySectionHeader,
+        codebook postCodebook: MultiClusterCodebook
+    ) -> Data? {
         var sec = BitWriter()
         sec.writeBit(true)            // matrices_dc_default
         sec.writeBit(true)            // has_tree
@@ -1844,12 +1901,27 @@ package enum SpecModularEncoder {
                 }
             } else {
                 var aw = try ANSTokenStreamWriter(header: postHeader, codebook: postCodebook)
+                aw.reserveCapacity(ordered.count)
                 for (ctx, v) in ordered { try aw.writeToken(context: ctx, value: v) }
                 try aw.finish(to: &sec)
             }
         } catch { return nil }
         sec.alignToByte()
         return sec.finishToData()
+    }
+
+    /// Cost + emit in one step — used where there is a single candidate
+    /// (the greedy-tree path), so the winner emission is the only one.
+    private static func assembleMultiContextSection(
+        tree: ModularTree, numContexts n: Int,
+        ordered: [(ctx: Int, val: UInt32)], postCfg: HybridUintConfig
+    ) -> Data? {
+        guard let cost = costMultiContextSection(
+            tree: tree, numContexts: n, ordered: ordered, postCfg: postCfg)
+        else { return nil }
+        return emitMultiContextSection(
+            tree: tree, numContexts: n, ordered: ordered,
+            header: cost.header, codebook: cost.codebook)
     }
 
     /// Multi-context single-section candidate: split residuals by the
@@ -1907,37 +1979,45 @@ package enum SpecModularEncoder {
                             max(0, Int(Double(sortedProps.count) * p)))]
         }
 
-        // Build a full section for an N-bin WP-activity split (N = 2 or 4),
-        // returning its bytes, or nil if degenerate / not encodable. The
-        // tree is a balanced property-15 decision tree in the decoder's
-        // fill layout; the per-pixel context mirrors the tree walk
-        // (property > split → leftChild).
-        func buildForThresholds(_ thr: [Int32]) -> Data? {
+        // Cost one N-bin WP-activity split candidate (exact section bytes,
+        // no emission). The tree is a balanced property-15 decision tree
+        // in the decoder's fill layout; the per-pixel context mirrors the
+        // tree walk (property > split → leftChild). The winner — and only
+        // the winner — is emitted at the end.
+        typealias Candidate = (
+            bytes: Int, tree: ModularTree, n: Int,
+            ordered: [(ctx: Int, val: UInt32)],
+            header: EntropySectionHeader, codebook: MultiClusterCodebook)
+        func costForThresholds(_ thr: [Int32]) -> Candidate? {
             guard let (n, ctxOf, tree) =
                 activitySplitTree(thresholds: thr) else { return nil }
             var ordered: [(ctx: Int, val: UInt32)] = []
             ordered.reserveCapacity(perPixel.count)
             for (wpProp, tok) in perPixel { ordered.append((ctxOf(wpProp), tok)) }
-            return assembleMultiContextSection(
+            guard let cost = costMultiContextSection(
                 tree: tree, numContexts: n, ordered: ordered, postCfg: postCfg)
+            else { return nil }
+            return (cost.bytes, tree, n, ordered, cost.header, cost.codebook)
         }
 
         // Try fixed 2-bin (median), 4-bin (quartile) and 8-bin (octile)
         // WP-activity splits plus a learned 2-bin split; keep whichever is
-        // smallest. The caller cost-gates against the single-context
+        // smallest (first wins ties, preserving the old assemble-all
+        // ordering). The caller cost-gates against the single-context
         // section. Fixed splits are only attempted when their thresholds
         // are strictly increasing.
-        var candidates: [Data] = []
-        let median = pct(0.5)
-        if let d = buildForThresholds([median]) { candidates.append(d) }
-        let q1 = pct(0.25), q2 = pct(0.5), q3 = pct(0.75)
-        if q1 < q2, q2 < q3, let d = buildForThresholds([q1, q2, q3]) {
-            candidates.append(d)
+        var best: Candidate?
+        func consider(_ c: Candidate?) {
+            guard let c else { return }
+            if best == nil || c.bytes < best!.bytes { best = c }
         }
+        let median = pct(0.5)
+        consider(costForThresholds([median]))
+        let q1 = pct(0.25), q2 = pct(0.5), q3 = pct(0.75)
+        if q1 < q2, q2 < q3 { consider(costForThresholds([q1, q2, q3])) }
         let oct = (1...7).map { pct(Double($0) / 8.0) }
-        if zip(oct, oct.dropFirst()).allSatisfy({ $0 < $1 }),
-           let d = buildForThresholds(oct) {
-            candidates.append(d)
+        if zip(oct, oct.dropFirst()).allSatisfy({ $0 < $1 }) {
+            consider(costForThresholds(oct))
         }
         // Learned (entropy-optimal) 2/4/8-bin splits, cost-gated alongside
         // the fixed percentile sets. Each is skipped when it matches the
@@ -1947,9 +2027,12 @@ package enum SpecModularEncoder {
             let isFixed = (l.count == 1 && l == [median])
                 || (l.count == 3 && l == [q1, q2, q3])
                 || (l.count == 7 && l == oct)
-            if !isFixed, let d = buildForThresholds(l) { candidates.append(d) }
+            if !isFixed { consider(costForThresholds(l)) }
         }
-        return candidates.min(by: { $0.count < $1.count })
+        guard let win = best else { return nil }
+        return emitMultiContextSection(
+            tree: win.tree, numContexts: win.n, ordered: win.ordered,
+            header: win.header, codebook: win.codebook)
     }
 
     /// Sorts the first `m` elements of `a` ascending (signed `Int64`) by LSD
