@@ -18,12 +18,14 @@
 // (`jxl transcode`) when the underlying reversible-transcode path
 // is built.
 //
-// Threading: single-threaded for now. The whole batch shares one
-// encoder/decoder instance per file (created lazily), so memory
-// is bounded by the largest single file. Parallelism is a
-// follow-on once the encoder/decoder is fully `Sendable` enough
-// to be invoked from multiple Tasks without contention on shared
-// caches.
+// Threading: files are processed in parallel (`parallelMap`, one
+// worker per core — `JXLEncoder`/`JXLDecoder` are Sendable value
+// types and each file's work is independent). Results are collected
+// by index, so per-file log lines and the summary print in the same
+// sorted-file order as the old sequential loop. Memory is bounded by
+// core-count × largest single file. With `--continue-on-error`
+// unset, a failure still fails the run (exit code), but files after
+// the failing one are attempted — scheduling is concurrent.
 
 import ArgumentParser
 import Foundation
@@ -103,9 +105,13 @@ struct BatchEncode: ParsableCommand {
         var summary = BatchSummary(operation: "encode")
         let started = clock_gettime_ms()
 
-        for src in files {
+        let inputRoot = input
+        let outputRoot = output
+        let outcomes = parallelMap(files.count) {
+            (i: Int) -> BatchFileOutcome in
+            let src = files[i]
             let dst = mappedOutputPath(
-                src: src, inputRoot: input, outputRoot: output,
+                src: src, inputRoot: inputRoot, outputRoot: outputRoot,
                 newExtension: "jxl")
             do {
                 try ensureDirectory(parent(of: dst))
@@ -123,27 +129,31 @@ struct BatchEncode: ParsableCommand {
                 }
                 let encoded = try encoder.encode(frame)
                 try encoded.data.write(to: URL(fileURLWithPath: dst))
-                summary.recordOk(
+                let pct = Double(encoded.data.count) * 100
+                    / Double(max(1, pnmData.count))
+                return BatchFileOutcome(
                     src: src, dst: dst,
-                    inBytes: pnmData.count,
-                    outBytes: encoded.data.count)
-                if !quiet && !json {
-                    let pct = Double(encoded.data.count) * 100
-                        / Double(max(1, pnmData.count))
-                    print("  \(src) → \(dst)  "
+                    inBytes: pnmData.count, outBytes: encoded.data.count,
+                    line: "  \(src) → \(dst)  "
                         + "\(formatBytes(pnmData.count)) → "
                         + "\(formatBytes(encoded.data.count)) "
-                        + "(\(String(format: "%.1f", pct))%)")
-                }
+                        + "(\(String(format: "%.1f", pct))%)",
+                    failure: nil)
             } catch {
-                summary.recordFail(src: src, reason: "\(error)")
-                if !quiet && !json {
-                    print("  \(src) FAILED: \(error)",
-                          to: &standardError)
-                }
-                if !continueOnError {
-                    throw JXLExitCode.generalError
-                }
+                return BatchFileOutcome(
+                    src: src, dst: dst, inBytes: 0, outBytes: 0,
+                    line: "  \(src) FAILED: \(error)",
+                    failure: "\(error)")
+            }
+        }
+        for o in outcomes {
+            if let reason = o.failure {
+                summary.recordFail(src: o.src, reason: reason)
+                if !quiet && !json { print(o.line, to: &standardError) }
+            } else {
+                summary.recordOk(src: o.src, dst: o.dst,
+                                 inBytes: o.inBytes, outBytes: o.outBytes)
+                if !quiet && !json { print(o.line) }
             }
         }
         summary.elapsedMs = clock_gettime_ms() - started
@@ -152,6 +162,17 @@ struct BatchEncode: ParsableCommand {
             throw JXLExitCode.generalError
         }
     }
+}
+
+/// Per-file result of a parallel batch worker — everything the ordered
+/// aggregation pass needs to reproduce the sequential loop's output.
+private struct BatchFileOutcome: Sendable {
+    let src: String
+    let dst: String
+    let inBytes: Int
+    let outBytes: Int
+    let line: String
+    let failure: String?
 }
 
 // MARK: - jxl batch decode
@@ -196,10 +217,14 @@ struct BatchDecode: ParsableCommand {
         var summary = BatchSummary(operation: "decode")
         let started = clock_gettime_ms()
 
-        for src in files {
+        let inputRoot = input
+        let outputRoot = output
+        let outcomes = parallelMap(files.count) {
+            (i: Int) -> BatchFileOutcome in
+            let src = files[i]
             do {
                 try ensureDirectory(parent(of: mappedOutputPath(
-                    src: src, inputRoot: input, outputRoot: output,
+                    src: src, inputRoot: inputRoot, outputRoot: outputRoot,
                     newExtension: "pnm")))
                 let jxlData = try Data(contentsOf:
                     URL(fileURLWithPath: src))
@@ -207,31 +232,35 @@ struct BatchDecode: ParsableCommand {
                 let ext = pnmExtension(for: frame.channels,
                                        bitsPerSample: frame.pixelType.bitsPerSample)
                 let dst = mappedOutputPath(
-                    src: src, inputRoot: input, outputRoot: output,
+                    src: src, inputRoot: inputRoot, outputRoot: outputRoot,
                     newExtension: ext)
                 let pnm = try PNM.write(frame)
                 try pnm.write(to: URL(fileURLWithPath: dst))
-                summary.recordOk(
+                return BatchFileOutcome(
                     src: src, dst: dst,
-                    inBytes: jxlData.count,
-                    outBytes: pnm.count)
-                if !quiet && !json {
-                    print("  \(src) → \(dst)  "
+                    inBytes: jxlData.count, outBytes: pnm.count,
+                    line: "  \(src) → \(dst)  "
                         + "\(formatBytes(jxlData.count)) → "
                         + "\(formatBytes(pnm.count))  "
                         + "(\(frame.width)×\(frame.height) "
                         + "\(channelDescription(frame.channels)) "
-                        + "\(frame.pixelType.bitsPerSample)-bit)")
-                }
+                        + "\(frame.pixelType.bitsPerSample)-bit)",
+                    failure: nil)
             } catch {
-                summary.recordFail(src: src, reason: "\(error)")
-                if !quiet && !json {
-                    print("  \(src) FAILED: \(error)",
-                          to: &standardError)
-                }
-                if !continueOnError {
-                    throw JXLExitCode.generalError
-                }
+                return BatchFileOutcome(
+                    src: src, dst: "", inBytes: 0, outBytes: 0,
+                    line: "  \(src) FAILED: \(error)",
+                    failure: "\(error)")
+            }
+        }
+        for o in outcomes {
+            if let reason = o.failure {
+                summary.recordFail(src: o.src, reason: reason)
+                if !quiet && !json { print(o.line, to: &standardError) }
+            } else {
+                summary.recordOk(src: o.src, dst: o.dst,
+                                 inBytes: o.inBytes, outBytes: o.outBytes)
+                if !quiet && !json { print(o.line) }
             }
         }
         summary.elapsedMs = clock_gettime_ms() - started

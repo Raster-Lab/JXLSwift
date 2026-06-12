@@ -922,36 +922,6 @@ package struct MinimalLosslessCodec {
 
 }
 
-/// Run `work(i)` for each `i` in `0..<count` in parallel where
-/// possible, collecting the results into an ordered array. Falls
-/// through to a sequential loop for `count <= 1` (no dispatch
-/// overhead).
-///
-/// Uses GCD `concurrentPerform` under the hood; the closure is
-/// `@Sendable` and we coordinate writes to disjoint indices via
-/// `withUnsafeMutableBufferPointer` (a scoped, Swift-stdlib-
-/// blessed escape hatch — not the prohibited
-/// `nonisolated(unsafe)` long-lived state pattern).
-@inline(__always)
-private func parallelMap<T: Sendable>(
-    _ count: Int,
-    _ work: @Sendable (Int) -> T
-) -> [T] {
-    if count <= 1 {
-        return (0..<count).map(work)
-    }
-    var results: [T?] = Array(repeating: nil, count: count)
-    results.withUnsafeMutableBufferPointer { buffer in
-        // Capture the buffer's base pointer as a Sendable
-        // raw-pointer integer — disjoint-index writes are safe.
-        let base = UInt(bitPattern: Int(bitPattern: OpaquePointer(buffer.baseAddress!)))
-        DispatchQueue.concurrentPerform(iterations: count) { i in
-            let p = UnsafeMutablePointer<T?>(
-                bitPattern: Int(bitPattern: base)
-            )!
-            p.advanced(by: i).pointee = work(i)
-        }
-    }
-    return results.map { $0! }
-}
+// (parallelMap was promoted from here to `Codec/ParallelMap.swift` —
+// it is now the package-wide deterministic-parallelism primitive.)
 
