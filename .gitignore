@@ -46,3 +46,4 @@ test-results.xml
 
 # Local-only test fixtures (large external datasets, e.g. DICOM WG26 demo)
 TestFixtures/
+.build-ounchecked/
