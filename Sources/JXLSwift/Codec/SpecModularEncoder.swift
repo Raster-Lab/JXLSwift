@@ -904,7 +904,11 @@ package enum SpecModularEncoder {
         var best = singleSections
         // Effort gates the extra cost-gated candidates (each is a full
         // encode): activity split at effort ≥ 4, greedy multi-property at
-        // effort ≥ 7. effort ≤ 3 ships the single-context baseline only.
+        // effort ≥ 8 (the costly learner rung — the default effort 7
+        // keeps the activity split, whose ratio is within a fraction of
+        // a percent on most natural content; efforts 8/9 buy
+        // progressively larger learned trees). effort ≤ 3 ships the
+        // single-context baseline only.
         if effort >= 4, let multi = try? buildSectionsMultiContext(
             width: width, height: height,
             channels: channels, sampleHi: sampleHi,
@@ -914,9 +918,9 @@ package enum SpecModularEncoder {
            total(multi) < total(best) {
             best = multi
         }
-        if effort >= 7, let greedy = buildSectionsGreedyTree(
+        if effort >= 8, let greedy = buildSectionsGreedyTree(
             width: width, height: height,
-            channels: channels, sampleHi: sampleHi,
+            channels: channels, sampleHi: sampleHi, effort: effort,
             numGroupsX: numGroupsX, numGroupsY: numGroupsY,
             numGroups: numGroups, numDcGroups: numDcGroups,
             groupDim: groupDim),
@@ -1460,16 +1464,18 @@ package enum SpecModularEncoder {
     /// the image is too large or the learner finds no useful split.
     private static func buildSectionsGreedyTree(
         width: Int, height: Int,
-        channels: [[Int32]], sampleHi: Int32,
+        channels: [[Int32]], sampleHi: Int32, effort: Int = 9,
         numGroupsX: Int, numGroupsY: Int,
         numGroups: Int, numDcGroups: Int, groupDim: Int
     ) -> [Data]? {
         guard width > 0, height > 0, !channels.isEmpty else { return nil }
         let n = width * height * channels.count
-        // Memory gate: 6 props/pixel are kept for routing. ≤ 4M px keeps
-        // that under ~100 MB; larger frames skip greedy (activity split
-        // still applies).
-        guard n <= 4_000_000 else { return nil }
+        // Memory gate: 6 props/pixel are kept for routing (~24 B/px).
+        // ≤ 16M px bounds that near ~400 MB — an opt-in cost at the
+        // effort ≥ 8 rung this candidate now lives on, and it covers the
+        // large medical plates (e.g. 4096²) the old 4M-px gate silently
+        // excluded. Larger frames skip greedy (activity split applies).
+        guard n <= 16_000_000 else { return nil }
         let postCfg = HybridUintConfig.raw4
         let propIndices: [Int32] = [4, 5, 9, 10, 12, 15]
         let propCount = propIndices.count
@@ -1542,10 +1548,14 @@ package enum SpecModularEncoder {
             }
         }
         guard sampleTok.count >= 2 else { return nil }
+        // Leaf budget by effort (16 at e8, 32 at e9) — see the
+        // single-section greedy builder for why the old 8-leaf cap
+        // (simple context-map path only) no longer applies.
+        let maxLeaves = effort >= 9 ? 32 : 16
         guard let (tree, _, numCtx) = greedyTreeAndContexts(
             propsFlat: sampleProps, tokBucket: sampleTok,
             pixelCount: sampleTok.count, propIndices: propIndices,
-            maxTok: sampleMaxTok, maxLeaves: 8, minGain: 32.0),
+            maxTok: sampleMaxTok, maxLeaves: maxLeaves, minGain: 32.0),
             numCtx >= 2 else { return nil }
         // Route every pixel through the decoder's own walk → per-group
         // (context, token) pairs in write order.
@@ -1766,7 +1776,10 @@ package enum SpecModularEncoder {
         // Candidates, smallest wins (all byte-exact through djxl):
         //  • single-context baseline — always,
         //  • activity split — property-15 WP-activity bins (effort ≥ 4),
-        //  • greedy multi-property MA-tree (effort ≥ 7).
+        //  • greedy multi-property MA-tree (effort ≥ 8 — the costly
+        //    learner rung; ratio plateaus near the activity split for
+        //    most natural content, so the default effort 7 skips it and
+        //    efforts 8/9 buy progressively larger learned trees).
         // The extra candidates are full encodes gated by `effort`; both
         // consume the stage-A shared WP pass. Stage B runs the baseline
         // emission and the candidates concurrently; the size comparisons
@@ -1782,7 +1795,7 @@ package enum SpecModularEncoder {
             case base(Result<Data, any Error>)
             case cand(Data?)
         }
-        let stageB = parallelMap(effort >= 7 ? 3 : 2) { (i: Int) -> StageB in
+        let stageB = parallelMap(effort >= 8 ? 3 : 2) { (i: Int) -> StageB in
             switch i {
             case 0:
                 return .base(emitBaseline())
@@ -1795,7 +1808,7 @@ package enum SpecModularEncoder {
             default:
                 return .cand(buildSingleSectionGreedyTree(
                     width: width, height: height,
-                    channels: channels, sampleHi: sampleHi,
+                    channels: channels, sampleHi: sampleHi, effort: effort,
                     precomputed: wpShared))
             }
         }
@@ -2475,6 +2488,7 @@ package enum SpecModularEncoder {
 
     private static func buildSingleSectionGreedyTree(
         width: Int, height: Int, channels: [[Int32]], sampleHi: Int32,
+        effort: Int = 9,
         precomputed: (propsFlat: [Int32], tokens: [UInt32],
                       tokBucket: [Int], maxTok: Int)? = nil
     ) -> Data? {
@@ -2498,18 +2512,21 @@ package enum SpecModularEncoder {
         let tokens = shared.tokens
         let tokBucket = shared.tokBucket
         let maxTok = shared.maxTok
-        // Cap leaves at 8: that keeps the post entropy section at ≤ 8
-        // contexts, where the context map uses the simple (≤3-bit-per-entry)
-        // path djxl accepts. Trees with > 8 contexts need the full
-        // entropy-coded context map, which our decoder round-trips but djxl
-        // currently rejects — supporting that is future work. The win here
-        // is multi-PROPERTY routing, not more contexts than the octile path.
+        // Leaf budget by effort: 16 at effort 8, 32 at effort 9. More
+        // than 8 contexts switches `ContextMap.write` onto the full
+        // entropy-coded path — djxl-byte-verified for 16/18/26-cluster
+        // maps (E5), so the old 8-leaf cap (whose comment predated that
+        // verification) is lifted; each section is still validated
+        // end-to-end through djxl by the test gates. minGain stays the
+        // splitting floor, so trees only grow where the entropy drop
+        // pays for the extra context.
         // Learn the tree from a uniform subsample (≤ ~256K pixels), matching
         // the multi-group path and bounding the learner's cost on large
         // multi-channel frames. For the common ≤256K case stride is 1 — the
         // sample IS every pixel, so the tree (and output) is identical to
         // learning on all pixels. Routing then walks the tree per pixel via
         // the decoder's own `ModularTree.walk`, so contexts agree exactly.
+        let maxLeaves = effort >= 9 ? 32 : 16
         let stride = max(1, n / 256_000)
         let sampleProps: [Int32]
         let sampleTok: [Int]
@@ -2534,7 +2551,7 @@ package enum SpecModularEncoder {
               let (tree, _, numCtx) = greedyTreeAndContexts(
                 propsFlat: sampleProps, tokBucket: sampleTok,
                 pixelCount: sampleTok.count, propIndices: propIndices,
-                maxTok: sampleMaxTok, maxLeaves: 8, minGain: 32.0),
+                maxTok: sampleMaxTok, maxLeaves: maxLeaves, minGain: 32.0),
               numCtx >= 2 else { return nil }
         var props16 = [Int32](repeating: 0, count: 16)
         var ordered: [(ctx: Int, val: UInt32)] = []

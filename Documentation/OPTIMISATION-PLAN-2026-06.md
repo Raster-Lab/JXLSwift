@@ -96,6 +96,19 @@ as one release**.
 
 ### Phase 3 — C hot path (JXLPerfC; after Phases 1–2, re-profile first)
 
+> **DECISION (2026-06-12, post-Phase-1/2 re-profile): deferred.** The
+> entropy floor this targeted no longer exists: after the analytic
+> cost-gating redesign, `ANSTokenStreamWriter.finish` fell from the top
+> profile entry to ~3 % of busy samples (one winner emission per section
+> instead of 3× trials), and the e7 profile is now dominated by the
+> greedy-tree **learner** (radix sort + sweep) — a Swift algorithmic
+> problem whose next lever is the presort+partition step of 1.2, not a C
+> boundary. The `-Ounchecked` A/B bounds total remaining safety-check
+> overhead at ~9 % (e5) / ~22 % (e1). A C port would buy a fraction of
+> that for L-complexity dual-path maintenance. The `JXLPerfC` scaffolding
+> stays in place; revisit only if a future profile shows a stable
+> single-function hot floor the gate can't reach in Swift.
+
 | # | Item | Cx | Notes |
 |---|---|---|---|
 | 3.1 | `jxlperf_rans_section_finish`: one batched C call per section (reverse rANS + interleaved emission + accumulator BitWriter) over the SoA token buffers from 1.1 — which are exactly the C-boundary layout. Flat cluster tables built once per codebook (`freq`/`cum`/`slot_for_residue` flattened; reciprocal-multiply division). Then `jxlperf_hybrid_tokenize_batch`; `jxlperf_prefix_emit_batch` only if still hot | L | Strictly batch (one call per 65 K–262 K tokens; per-token bridging would regress). Swift scalar path stays source of truth; per-function byte-equivalence tests + full gates. **Scope check:** Phase 1.1 removes ⅔ of the passes this would accelerate and the 0.3 A/B bounds the win — re-profile before building; if the post-Phase-1 floor is small, shrink or skip |
