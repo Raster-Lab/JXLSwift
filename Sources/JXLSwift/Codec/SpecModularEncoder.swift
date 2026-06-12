@@ -1832,6 +1832,82 @@ package enum SpecModularEncoder {
         return candidates.min(by: { $0.count < $1.count })
     }
 
+    /// Sorts the first `m` elements of `a` ascending (signed `Int64`) by LSD
+    /// byte-radix, using `tmp` as ping-pong scratch and `counts` as a reusable
+    /// 8×256 histogram block (all reused across calls — no allocation here).
+    /// Produces exactly the order `Array.sort()` would: `Int64` is totally
+    /// ordered and equal keys are interchangeable, so any consumer of the
+    /// sorted values sees identical results. Passes whose byte is constant
+    /// across the prefix are skipped (a stable counting pass over a constant
+    /// byte is the identity permutation). The top byte is sign-biased so the
+    /// unsigned bucket order matches signed order.
+    private static func radixSortInt64Prefix(
+        _ a: inout [Int64], tmp: inout [Int64], counts: inout [Int], count m: Int
+    ) {
+        guard m > 1 else { return }
+        for i in 0..<(8 * 256) { counts[i] = 0 }
+        a.withUnsafeBufferPointer { ap in
+            counts.withUnsafeMutableBufferPointer { cp in
+                for i in 0..<m {
+                    let v = UInt64(bitPattern: ap[i])
+                    cp[Int(v & 0xff)] += 1
+                    cp[256 + Int((v >> 8) & 0xff)] += 1
+                    cp[512 + Int((v >> 16) & 0xff)] += 1
+                    cp[768 + Int((v >> 24) & 0xff)] += 1
+                    cp[1024 + Int((v >> 32) & 0xff)] += 1
+                    cp[1280 + Int((v >> 40) & 0xff)] += 1
+                    cp[1536 + Int((v >> 48) & 0xff)] += 1
+                    cp[1792 + Int(((v >> 56) & 0xff) ^ 0x80)] += 1
+                }
+            }
+        }
+        var offsets = [Int](repeating: 0, count: 256)
+        var inA = true
+        for pass in 0..<8 {
+            let base = pass * 256
+            // Constant byte ⇒ stable pass is the identity: skip it.
+            var constant = false
+            for b in 0..<256 where counts[base + b] == m { constant = true; break }
+            if constant { continue }
+            var running = 0
+            for b in 0..<256 {
+                offsets[b] = running
+                running += counts[base + b]
+            }
+            let shift = UInt64(pass * 8)
+            let isTop = pass == 7
+            func scatter(_ src: UnsafeBufferPointer<Int64>,
+                         _ dst: UnsafeMutableBufferPointer<Int64>) {
+                offsets.withUnsafeMutableBufferPointer { op in
+                    for i in 0..<m {
+                        let e = src[i]
+                        var byte = Int((UInt64(bitPattern: e) >> shift) & 0xff)
+                        if isTop { byte ^= 0x80 }
+                        dst[op[byte]] = e
+                        op[byte] += 1
+                    }
+                }
+            }
+            if inA {
+                a.withUnsafeBufferPointer { ap in
+                    tmp.withUnsafeMutableBufferPointer { tp in scatter(ap, tp) }
+                }
+            } else {
+                tmp.withUnsafeBufferPointer { tp in
+                    a.withUnsafeMutableBufferPointer { ap in scatter(tp, ap) }
+                }
+            }
+            inA.toggle()
+        }
+        if !inA {
+            tmp.withUnsafeBufferPointer { tp in
+                a.withUnsafeMutableBufferPointer { ap in
+                    for i in 0..<m { ap[i] = tp[i] }
+                }
+            }
+        }
+    }
+
     /// Learn a greedy multi-property MA-tree (cjxl-style) from per-pixel
     /// property vectors + residual-token buckets. **Best-first** splitting:
     /// at each step the current leaf whose best `(property, threshold)`
@@ -1883,10 +1959,22 @@ package enum SpecModularEncoder {
             init(_ i: [Int]) { idxs = i }
         }
 
+        // Scratch shared by every computeBest call (one allocation for the
+        // whole learn instead of one per node × property — the sort buffer
+        // alone is up to 2 MB per use at the 256 K-pixel subsample).
+        var packedBuf = [Int64](repeating: 0, count: n)
+        var radixBuf = [Int64](repeating: 0, count: n)
+        var radixCounts = [Int](repeating: 0, count: 8 * 256)
+        var loBuf = [Int](repeating: 0, count: maxTok + 1)
+
         // Cache the best (property, threshold) split for `node` by sweeping
         // each candidate property's activity-sorted order and tracking the
         // running Σ count·log₂count of each side (O(1) per boundary).
-        func computeBest(_ node: GNode) {
+        func computeBest(
+            _ node: GNode,
+            _ packedBuf: inout [Int64], _ radixBuf: inout [Int64],
+            _ radixCounts: inout [Int], _ loBuf: inout [Int]
+        ) {
             node.bestGain = -1; node.bestK = -1
             let m = node.idxs.count
             if m < 2 { return }
@@ -1898,30 +1986,30 @@ package enum SpecModularEncoder {
             for k in 0..<propCount {
                 // Pack each pixel's (property value, token bucket) into one
                 // Int64 — `key << 16 | tok` is monotonic in key for any
-                // Int32 — and sort `[Int64]` (Swift's closure-free integer
-                // sort, no per-comparison array indirection). Ties in key
-                // are processed together by the sweep, so the chosen split
-                // is identical to a key-only sort. This is the encoder's hot
-                // path; the pack+int-sort is ~3× the index/closure sort.
-                var packed = [Int64](repeating: 0, count: m)
+                // Int32 — and radix-sort the prefix (identical order to
+                // `.sort()`, ~4× faster on these widths and allocation-free;
+                // this sort dominated effort-7 encode). Ties in key are
+                // processed together by the sweep, so the chosen split is
+                // identical to a key-only sort.
                 for (i, idx) in node.idxs.enumerated() {
-                    packed[i] = (Int64(propsFlat[idx * propCount + k]) << 16)
+                    packedBuf[i] = (Int64(propsFlat[idx * propCount + k]) << 16)
                         | Int64(tokBucket[idx])
                 }
-                packed.sort()
+                radixSortInt64Prefix(
+                    &packedBuf, tmp: &radixBuf, counts: &radixCounts, count: m)
                 var hi = nodeHist
                 var hiTot = m
                 var hiS = nodeS
-                var lo = [Int](repeating: 0, count: maxTok + 1)
+                for t in 0...maxTok { loBuf[t] = 0 }
                 var loTot = 0
                 var loS = 0.0
                 var j = 0
                 while j < m {
-                    let v = packed[j] >> 16
-                    while j < m && (packed[j] >> 16) == v {
-                        let tk = Int(packed[j] & 0xffff)
+                    let v = packedBuf[j] >> 16
+                    while j < m && (packedBuf[j] >> 16) == v {
+                        let tk = Int(packedBuf[j] & 0xffff)
                         hiS -= term(hi[tk]); hi[tk] -= 1; hiS += term(hi[tk]); hiTot -= 1
-                        loS -= term(lo[tk]); lo[tk] += 1; loS += term(lo[tk]); loTot += 1
+                        loS -= term(loBuf[tk]); loBuf[tk] += 1; loS += term(loBuf[tk]); loTot += 1
                         j += 1
                     }
                     if hiTot > 0 {
@@ -1938,7 +2026,7 @@ package enum SpecModularEncoder {
         }
 
         let root = GNode(Array(0..<n))
-        computeBest(root)
+        computeBest(root, &packedBuf, &radixBuf, &radixCounts, &loBuf)
         var leaves: [GNode] = [root]
         while leaves.count < maxLeaves {
             var bi = -1
@@ -1951,6 +2039,8 @@ package enum SpecModularEncoder {
             let k = node.bestK
             let s = node.bestSplit
             var leftIdxs = [Int](); var rightIdxs = [Int]()
+            leftIdxs.reserveCapacity(node.idxs.count)
+            rightIdxs.reserveCapacity(node.idxs.count)
             for i in node.idxs {
                 if propsFlat[i * propCount + k] > s { leftIdxs.append(i) }
                 else { rightIdxs.append(i) }
@@ -1961,7 +2051,8 @@ package enum SpecModularEncoder {
             let L = GNode(leftIdxs); let R = GNode(rightIdxs)
             node.left = L; node.right = R
             node.idxs = []
-            computeBest(L); computeBest(R)
+            computeBest(L, &packedBuf, &radixBuf, &radixCounts, &loBuf)
+            computeBest(R, &packedBuf, &radixBuf, &radixCounts, &loBuf)
             leaves.remove(at: bi)
             leaves.append(L); leaves.append(R)
         }
