@@ -149,31 +149,18 @@ package enum JPEGBlockDecoder {
         return JPEGCoefficientBlock(natural)
     }
 
-    /// Inline `JPEGHuffmanCodebook.decodeSymbol` adapter that
-    /// pulls bits from a `JPEGBitReader` — saves a closure
-    /// allocation per Huffman decode. Internal so the progressive
+    /// `JPEGHuffmanCodebook.decodeSymbol(from:huffvals:)` adapter
+    /// — the single shared fast path (8-bit lookahead probe with a
+    /// §C.2 Figure F.16 fallback). Internal so the progressive
     /// scan decoder (`JPEGScanDecoder.decodeProgressive`) can reuse
     /// the same primitive.
+    @inline(__always)
     static func decodeSymbol(
         using book: JPEGHuffmanCodebook,
         huffvals: [UInt8],
         reader: inout JPEGBitReader
     ) -> UInt8? {
-        var codeAcc: Int = 0
-        for L in 1...16 {
-            let b: Int
-            do { b = try reader.readBit() }
-            catch { return nil }
-            codeAcc = (codeAcc << 1) | b
-            if codeAcc <= book.maxcode[L - 1] {
-                let idx = book.valoffset[L - 1] + codeAcc
-                guard idx >= 0, idx < huffvals.count else {
-                    return nil
-                }
-                return huffvals[idx]
-            }
-        }
-        return nil
+        book.decodeSymbol(from: &reader, huffvals: huffvals)
     }
 
     /// Read `s` magnitude bits MSB-first and apply the §F.2.2.1

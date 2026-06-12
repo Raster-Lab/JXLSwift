@@ -50,6 +50,14 @@ package struct JPEGHuffmanCodebook: Sendable {
     /// `valoffset[L-1]` — offset into `huffvals` where length-L
     /// symbols begin.
     package let valoffset: [Int]
+    /// 256-entry 8-bit lookahead table: indexed by the next 8
+    /// stream bits (MSB-first), each entry packs
+    /// `(huffvals index << 8) | code length` for codes of ≤ 8
+    /// bits, or 0 when the code needs more than 8 bits (resolve
+    /// via the §C.2 Figure F.16 walk instead). One probe replaces
+    /// the per-bit maxcode loop for the overwhelming majority of
+    /// symbols.
+    package let fastLookup: [UInt16]
 }
 
 extension JPEGHuffmanTable {
@@ -121,10 +129,25 @@ extension JPEGHuffmanTable {
             maxcode[L - 1] = Int(huffcode[k + count - 1])
             k += count
         }
+        // 8-bit lookahead table: every length ≤ 8 code fills the
+        // 2^(8-L) entries that share its prefix. At most 256 leaves
+        // exist in the 8-bit code space, so the huffvals index of
+        // any such code fits a packed byte.
+        var fastLookup = Array<UInt16>(repeating: 0, count: 256)
+        for j in 0..<huffvals.count {
+            let len = huffsize[j]
+            guard len <= 8 else { break }
+            let base = Int(huffcode[j]) << (8 - len)
+            let entry = (UInt16(j) << 8) | UInt16(len)
+            for slot in base..<(base + (1 << (8 - len))) {
+                fastLookup[slot] = entry
+            }
+        }
         return JPEGHuffmanCodebook(
             codes: codes,
             maxcode: maxcode, mincode: mincode,
-            valoffset: valoffset)
+            valoffset: valoffset,
+            fastLookup: fastLookup)
     }
 }
 
@@ -160,5 +183,36 @@ extension JPEGHuffmanCodebook {
             }
         }
         return nil
+    }
+
+    /// Decode one symbol straight from a `JPEGBitReader` — the
+    /// shared fast path for every entropy-decode caller. Probes
+    /// `fastLookup` with 8 lookahead bits (resolving codes of ≤ 8
+    /// bits in one step); codes longer than 8 bits, or streams
+    /// with fewer than 8 bits left before a marker / end of data,
+    /// fall back to the §C.2 Figure F.16 walk above. Returns `nil`
+    /// on the same conditions as `decodeSymbol(nextBit:huffvals:)`.
+    package func decodeSymbol(
+        from reader: inout JPEGBitReader,
+        huffvals: [UInt8]
+    ) -> UInt8? {
+        let (bits, count) = reader.peekBits8()
+        if count == 8 {
+            let entry = fastLookup[bits]
+            let len = Int(entry & 0xFF)
+            if len != 0 {
+                reader.consumePeekedBits(len)
+                let idx = Int(entry >> 8)
+                guard idx < huffvals.count else { return nil }
+                return huffvals[idx]
+            }
+        }
+        // Rare path: peeking doesn't consume, so the slow walk
+        // re-reads the same bits and consumes exactly the matched
+        // code length (or fails part-way, as before).
+        var r = reader
+        defer { reader = r }
+        return decodeSymbol(
+            nextBit: { try? r.readBit() }, huffvals: huffvals)
     }
 }

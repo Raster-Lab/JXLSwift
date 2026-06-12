@@ -14,34 +14,40 @@
 
 import Foundation
 
-/// MSB-first bit writer over a growing `Data` buffer. Handles JPEG
+/// MSB-first bit writer over a growing byte buffer. Handles JPEG
 /// 0xFF byte-stuffing automatically — callers don't need to think
-/// about marker collisions.
+/// about marker collisions. Bits collect in a 64-bit accumulator
+/// and drain as whole bytes, so `writeBits` is a single shift per
+/// call with the stuffing branch running per byte, not per bit.
 package struct JPEGBitWriter {
+    /// Output bytes accumulated so far. Byte-stuffing is already
+    /// applied.
+    private var bytes: [UInt8]
+    /// Bit accumulator — the low `bitsPending` bits are queued for
+    /// output, MSB-first (always < 8 between mutations: whole
+    /// bytes drain eagerly).
+    private var accumulator: UInt64 = 0
+    /// Number of bits queued in `accumulator` (0..7).
+    private var bitsPending: Int = 0
+
     /// Output buffer being accumulated. Byte-stuffing is already
     /// applied; callers can read `data` directly when emitting an
     /// SOS payload.
-    package private(set) var data: Data
-    /// Current partial byte being filled. Bits are packed MSB-first.
-    private var current: UInt8 = 0
-    /// Number of bits *already* packed into `current` (0..7).
-    private var bitsInCurrent: Int = 0
+    package var data: Data { Data(bytes) }
 
     package init(capacityHint: Int = 0) {
-        var d = Data()
-        if capacityHint > 0 { d.reserveCapacity(capacityHint) }
-        self.data = d
+        var b = [UInt8]()
+        if capacityHint > 0 { b.reserveCapacity(capacityHint) }
+        self.bytes = b
     }
 
     /// Write a single bit (0 or 1). MSB-first packing.
     package mutating func writeBit(_ bit: Int) {
         precondition(bit == 0 || bit == 1,
             "JPEGBitWriter.writeBit: bit must be 0 or 1")
-        current = (current << 1) | UInt8(bit)
-        bitsInCurrent += 1
-        if bitsInCurrent == 8 {
-            appendCurrent()
-        }
+        accumulator = (accumulator << 1) | UInt64(bit)
+        bitsPending += 1
+        drainWholeBytes()
     }
 
     /// Write `n` bits (1..32) MSB-first. Value's low-order `n` bits
@@ -50,10 +56,11 @@ package struct JPEGBitWriter {
         precondition(n >= 0 && n <= 32,
             "JPEGBitWriter.writeBits: n must be 0...32")
         if n == 0 { return }
-        for i in stride(from: n - 1, through: 0, by: -1) {
-            let b = Int((value >> UInt32(i)) & 1)
-            writeBit(b)
-        }
+        let mask: UInt64 = (1 << UInt64(n)) - 1
+        accumulator = (accumulator << UInt64(n))
+            | (UInt64(value) & mask)
+        bitsPending += n
+        drainWholeBytes()
     }
 
     /// Pad the current partial byte to a full byte with 1-bits, then
@@ -62,13 +69,14 @@ package struct JPEGBitWriter {
     /// emit; libjxl's jbrd box can record the exact padding pattern
     /// for byte-identical reconstruction (see `JBRDBox.paddingBits`).
     package mutating func flushPaddingOnes() {
-        while bitsInCurrent != 0 {
-            writeBit(1)
+        let pad = padBitsNeeded
+        if pad > 0 {
+            writeBits((1 << UInt32(pad)) - 1, count: pad)
         }
     }
 
     /// Pad with a caller-supplied sequence of 0/1 bits.
-    /// `bits.count` must match `8 - bitsInCurrent` (or this method
+    /// `bits.count` must match `8 - bitsPending` (or this method
     /// asserts). Used to restore byte-identical padding from a
     /// jbrd box's `paddingBits` field.
     package mutating func flushPadding(bits: [Int]) {
@@ -83,19 +91,22 @@ package struct JPEGBitWriter {
     /// Number of bits a `flushPadding` call would consume to reach
     /// the next byte boundary (0 if already aligned).
     package var padBitsNeeded: Int {
-        bitsInCurrent == 0 ? 0 : 8 - bitsInCurrent
+        bitsPending == 0 ? 0 : 8 - bitsPending
     }
 
-    /// Append `current` to the buffer with 0xFF byte-stuffing, then
-    /// reset the bit accumulator. Internal helper.
-    private mutating func appendCurrent() {
-        data.append(current)
-        if current == 0xFF {
-            // Byte-stuff: insert a 0x00 after every emitted 0xFF.
-            data.append(0x00)
+    /// Drain every complete byte out of the accumulator with 0xFF
+    /// byte-stuffing. Internal helper.
+    private mutating func drainWholeBytes() {
+        while bitsPending >= 8 {
+            bitsPending -= 8
+            let b = UInt8(
+                truncatingIfNeeded: accumulator >> UInt64(bitsPending))
+            bytes.append(b)
+            if b == 0xFF {
+                // Byte-stuff: insert a 0x00 after every emitted 0xFF.
+                bytes.append(0x00)
+            }
         }
-        current = 0
-        bitsInCurrent = 0
     }
 
     /// Append raw bytes to the output **without** byte-stuffing.
@@ -107,9 +118,9 @@ package struct JPEGBitWriter {
     /// Precondition: bit accumulator is byte-aligned (call
     /// `flushPaddingOnes` or `flushPadding(bits:)` first).
     package mutating func appendRawMarker(_ bytes: [UInt8]) {
-        precondition(bitsInCurrent == 0,
+        precondition(bitsPending == 0,
             "JPEGBitWriter.appendRawMarker: must be byte-aligned "
-            + "(bitsInCurrent = \(bitsInCurrent))")
-        data.append(contentsOf: bytes)
+            + "(bitsPending = \(bitsPending))")
+        self.bytes.append(contentsOf: bytes)
     }
 }
