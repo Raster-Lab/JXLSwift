@@ -9,6 +9,97 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## [1.1.0] — 2026-06-12 (release)
+
+**Performance-programme release.** Default-effort lossless encode is
+**7.1× faster** (538 → 76 ms on the 512² 16-bit reference), a 64-slice
+CT-stack batch is **~20× faster end-to-end**, multi-group decode is
+**4.5× faster**, and the new top efforts compress **smaller files faster**
+than the old best. Full methodology, profiles, and the phase-by-phase
+record live in `Documentation/OPTIMISATION-PLAN-2026-06.md`. Public API
+is unchanged (additions are `package`-internal); **encoded bytes change
+at effort ≥ 7** (see *Changed*), with everything below effort 7 — and
+every decode — bit-identical to v1.0.1, gate-verified by a new
+byte-identity harness.
+
+### Changed
+
+- **Lossless effort ladder retuned** (output bytes change at effort ≥ 7):
+  - 1–3: cost-gated single-context baseline (unchanged).
+  - 4–**7**: + WP-activity split. **Effort 7 — the default — now stops
+    here**: the greedy-tree rung bought ~0.3–0.4 % file size on the
+    medical reference for 2–3× the encode time (the ratio plateau
+    documented in `PERFORMANCE-ANALYSIS.md`).
+  - 8: + greedy multi-property MA-tree, **16-leaf** budget (was 8).
+  - 9: greedy tree widened to **32 leaves**.
+  The old 8-leaf cap rested on a stale "djxl rejects > 8-context maps"
+  claim contradicted by the project's own E5 verification; 16/32-leaf
+  sections round-trip byte-exact through `djxl` (gate-verified). Effort
+  8/9 now beat the old best ratio (−0.4 % on 16-bit grayscale medical
+  content, −8.7 % on 16-bit RGB) while encoding faster than the old
+  effort 7. The multi-group greedy candidate's memory gate also rises
+  from 4 M px to 16 M px, so large plates (e.g. 4096²) get the learned
+  tree at effort ≥ 8 instead of being silently excluded.
+- **`jxl batch` runs files in parallel** (one worker per core). Per-file
+  log lines and the summary print in the same sorted order as before;
+  with `--continue-on-error` unset a failure still fails the run, but
+  later files are now attempted (scheduling is concurrent).
+- `make test` runs `swift test -c release --parallel` (~21 s vs ~70 s).
+
+### Performance (byte-identical, verified by the new A/B harness)
+
+- **Encoder cost gating is now analytic.** Candidate sizes (Huffman:
+  `Σ histo·codeLen + Σ extraBits`; rANS: `32 + 16·refills + Σ extraBits`
+  via a bare reverse state walk) are computed exactly instead of measured
+  by full trial encodes, and only the winning candidate is emitted —
+  previously every candidate's token stream was entropy-encoded up to
+  three times. Selection values and tie-breaks are bit-for-bit identical.
+- **Greedy MA-tree learner radix-sorted.** The per-(node × property)
+  stable sort — ~48 % of all effort-7-with-greedy samples — replaced by
+  an allocation-free LSD byte-radix over reused scratch.
+- **Deterministic parallelism** (`parallelMap`, ordered collection):
+  single-group candidate ladder, multi-group per-rect residuals +
+  per-group section emission, and per-group modular **decode** all run
+  concurrently with byte-identical assembly.
+- **Decode:** 64-bit lookahead `BitReader` (+ `seek`), per-token dispatch
+  flattening in `TokenStreamReader`/`ANSStreamDecoder`, multi-group
+  stitch COW fixes, and direct output conversion loops.
+- **JPEG transcode:** 64-bit lookahead bit I/O (stuffing/RST-aware),
+  8-bit Huffman fast-path table, accumulator-based writer — reverse
+  transcode −36 %, JPEG decode −18 %, byte-identical reconstruction.
+- Allocation hygiene: `WeightedPredictor` flattened (no per-pixel
+  allocations), `ANSTokenStreamWriter` drops its duplicated per-token
+  segment buffer, 16-bit grayscale ingestion fused (interleaved bytes →
+  `Int32` in one pass; ~0.5 GB less transient peak at 16384²).
+
+### Added
+
+- `scripts/ab-check.sh` + `scripts/ab-corpus-gen.py` — the byte-identity
+  A/B gate: deterministic synthetic corpus, stored encode-byte and
+  decoded-pixel hashes (our decoder **and** `djxl`) compared after every
+  change.
+- `scripts/medical-dicom-validate.py` parallelised (one worker per core,
+  per-worker scratch, deterministic report order).
+- Package-internal API: `SpecModularEncoder.encodeGrayscale16(pixelsInt32:)`,
+  `ANSTokenStreamWriter.refillWordCount` / `reserveCapacity`,
+  shared `parallelMap` primitive. No public-API changes.
+
+### Validation (this release)
+
+- 694/694 tests (round-trip, conformance vectors, `djxl` byte-exact).
+- CID22 natural-image set: 49/49 lossless byte-exact through our decoder
+  and `djxl` at the new default effort.
+- Medical DICOM corpus (823 stratified from 4 441 files: CT/MR/XA/CR/DX/PX,
+  16-bit): 814 pass / 0 fail at effort 7 **and** at effort 9 (the new
+  32-leaf path), every pass byte-exact through both decoders.
+
+### Known limitations (pre-existing, now documented)
+
+- Some `cjxl`-produced lossless streams remain outside the decoder's
+  envelope (observed: `cjxl -e 9`, and `-e 5` on multi-group images);
+  v1.0.1 fails identically, so this is not a regression. `djxl` decodes
+  JXLSwift output everywhere (see *Validation*).
+
 ## [1.0.1] — 2026-06-01 (release)
 
 **JXLSwift is now a fully self-contained, URL-consumable SwiftPM package,

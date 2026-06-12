@@ -8,10 +8,12 @@ import PackageDescription
 // amended 2026-05) — currently scaffolding only; functions added there must
 // be byte-equivalent to a scalar Swift reference and gate-tested.
 //
-// Status: v1.0.1 production-ready lossless JPEG XL codec — medical-grade
+// Status: v1.1.0 production-ready lossless JPEG XL codec — medical-grade
 // (DICOM + CID22 byte-exact via djxl), API frozen, Swift-first with the
-// `JXLPerfC` boundary scaffolded for future C/C++ hot-path work.
-// See CHANGELOG.md / ROADMAP.md.
+// `JXLPerfC` boundary scaffolded for future C/C++ hot-path work. v1.1.0
+// is the performance-programme release (7.1× default-effort encode,
+// parallel batch/groups, retuned effort ladder — see CHANGELOG.md and
+// Documentation/OPTIMISATION-PLAN-2026-06.md).
 
 // JXLSwift is fully self-contained: no shared-protocol package. The only
 // dependency is swift-argument-parser, and that is CLI-only (the JXLSwift
