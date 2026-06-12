@@ -19,6 +19,13 @@ public enum CompressionMode: Sendable, Equatable {
 }
 
 /// libjxl effort levels. Higher = slower + smaller output.
+///
+/// For the lossless Modular path the ladder has four rungs:
+/// 1–3 encode a cost-gated single-context baseline, 4–7 add the
+/// WP-activity split (the default, `.squirrel`, stops here — its ratio
+/// sits within a fraction of a percent of the costlier rungs on most
+/// natural content), 8 adds a greedy multi-property MA-tree with a
+/// 16-leaf budget, and 9 widens that tree to 32 leaves.
 public enum EncodingEffort: Int, Sendable {
     case lightning = 1
     case thunder   = 2
