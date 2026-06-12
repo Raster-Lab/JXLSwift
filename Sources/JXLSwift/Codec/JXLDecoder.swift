@@ -4378,12 +4378,33 @@ extension JXLDecoder {
             //   [1+numDcGroups]             AC global  (empty for Modular)
             //   [2+numDcGroups + g .. )     AC group g (per-group data)
             let acStartIdx = 2 + numDcGroups
-            for groupIdx in 0..<numGroups {
+            // Per-group sections are independent bitstreams (own reader
+            // position, own entropy state, rects disjoint in the parent
+            // channels) — decode them concurrently and stitch the results
+            // sequentially in group order. Decoded pixels are identical
+            // to the sequential loop's; the lowest-index group's error
+            // surfaces first, as before.
+            struct GroupChannelMap: Sendable {
+                let parentChannel: Int  // index in full image
+                let rectX0: Int
+                let rectY0: Int
+            }
+            let chanGeo = image.channels.map {
+                (width: $0.width, height: $0.height,
+                 hshift: $0.hshift, vshift: $0.vshift)
+            }
+            let rBase = r
+            let sectionStarts = sectionByteStarts
+            let groupOutcomes = parallelMap(numGroups) {
+                (groupIdx: Int)
+                -> Result<(subImage: ModularImage,
+                           rectMap: [GroupChannelMap]), any Error> in
+                Result {
                 let gx = groupIdx % numGroupsX
                 let gy = groupIdx / numGroupsX
                 let sectionIdx = acStartIdx + groupIdx
-                var gr = r
-                gr.seek(toBitPosition: sectionByteStarts[sectionIdx] * 8)
+                var gr = rBase
+                gr.seek(toBitPosition: sectionStarts[sectionIdx] * 8)
                 let groupGH = try GroupHeader.read(from: &gr)
                 // Tree + post-tree codebook for this section: either
                 // the global ones (useGlobalTree=true) or per-section
@@ -4427,15 +4448,10 @@ extension JXLDecoder {
                 // rect per too-big channel, in original-image order;
                 // each rect's geometry is the channel's per-axis
                 // group_dim quantum.
-                struct GroupChannelMap {
-                    let parentChannel: Int  // index in full image
-                    let rectX0: Int
-                    let rectY0: Int
-                }
                 var subImage = ModularImage(channels: [], nbMetaChannels: 0)
                 var rectMap: [GroupChannelMap] = []
-                for ci in 0..<image.channels.count {
-                    let ch = image.channels[ci]
+                for ci in 0..<chanGeo.count {
+                    let ch = chanGeo[ci]
                     if ch.width <= groupDim && ch.height <= groupDim {
                         continue
                     }
@@ -4510,12 +4526,17 @@ extension JXLDecoder {
                         + "expected \(preTransformChannelCount))"
                     )
                 }
-                // Stitch each sub-image channel's rect into the
-                // corresponding full-image channel. Row blits through
-                // a single mutable-buffer scope per channel — holding
-                // a copy of the channel (or writing through nested
-                // subscripts) would force a whole-channel COW copy
-                // per (group, channel).
+                return (subImage, rectMap)
+                }
+            }
+            // Stitch each group's sub-image channel rects into the
+            // corresponding full-image channels, in group order. Row
+            // blits through a single mutable-buffer scope per channel —
+            // holding a copy of the channel (or writing through nested
+            // subscripts) would force a whole-channel COW copy per
+            // (group, channel).
+            for outcome in groupOutcomes {
+                let (subImage, rectMap) = try outcome.get()
                 for (sci, info) in rectMap.enumerated() {
                     let sch = subImage.channels[sci]
                     let parentW = image.channels[info.parentChannel].width

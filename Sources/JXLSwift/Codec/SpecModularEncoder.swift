@@ -713,68 +713,98 @@ package enum SpecModularEncoder {
         func residuals(useWP: Bool)
             -> (perGroup: [[[UInt32]]], flatSymbols: [[UInt16]],
                 histo: [Int], alphabetSize: Int, totalExtraNBits: Int) {
+            // Every (channel, group) rect is an independent prediction
+            // stream (WP state is per rect, matching the decoder) — run
+            // them concurrently and merge in the channel-major slot
+            // order the sequential loop produced. Histogram summing and
+            // extra-bit totals are order-independent.
+            struct RectOut: Sendable {
+                let packed: [UInt32]
+                let symbols: [UInt16]
+                let histo: [Int]
+                let maxTok: Int
+                let extraNBits: Int
+            }
+            let chCount = channels.count
+            let slots = parallelMap(chCount * numGroups) {
+                (slot: Int) -> RectOut in
+                let ci = slot / numGroups
+                let gi = slot % numGroups
+                let gy = gi / numGroupsX, gx = gi % numGroupsX
+                let pix = channels[ci]
+                let rectX0 = gx * groupDim, rectY0 = gy * groupDim
+                let rectW = min(groupDim, width - rectX0)
+                let rectH = min(groupDim, height - rectY0)
+                var rect = [Int32](repeating: 0, count: rectW * rectH)
+                for ry in 0..<rectH {
+                    let s = (rectY0 + ry) * width + rectX0
+                    for rx in 0..<rectW { rect[ry * rectW + rx] = pix[s + rx] }
+                }
+                var packed = [UInt32]()
+                packed.reserveCapacity(rectW * rectH)
+                var symbols = [UInt16]()
+                symbols.reserveCapacity(rectW * rectH)
+                var histo = [Int](repeating: 0, count: postCfg.maxToken + 1)
+                var maxTok = 0
+                var extraNBits = 0
+                if useWP {
+                    var wp = WeightedPredictor(
+                        header: .default, xsize: max(1, rectW))
+                    for ry in 0..<rectH {
+                        for rx in 0..<rectW {
+                            let nbh = Neighbourhood(at: rx, ry, in: rect, width: rectW)
+                            let pred = wp.predict(
+                                x: rx, y: ry, xsize: rectW,
+                                n: nbh.n, w: nbh.w, ne: nbh.ne, nw: nbh.nw, nn: nbh.nn)
+                            let actual = rect[ry * rectW + rx]
+                            let p = ZigZag.pack(actual &- pred)
+                            let exp = postCfg.encode(p)
+                            let t = Int(exp.token)
+                            histo[t] += 1; if t > maxTok { maxTok = t }
+                            packed.append(p)
+                            symbols.append(UInt16(truncatingIfNeeded: exp.token))
+                            extraNBits += exp.extraNBits
+                            wp.update(actual: actual, x: rx, y: ry, xsize: rectW)
+                        }
+                    }
+                } else {
+                    for ry in 0..<rectH {
+                        for rx in 0..<rectW {
+                            let nbh = Neighbourhood(at: rx, ry, in: rect, width: rectW)
+                            let pred = Predictor.gradient.apply(to: nbh, lo: 0, hi: sampleHi)
+                            let p = ZigZag.pack(rect[ry * rectW + rx] &- pred)
+                            let exp = postCfg.encode(p)
+                            let t = Int(exp.token)
+                            histo[t] += 1; if t > maxTok { maxTok = t }
+                            packed.append(p)
+                            symbols.append(UInt16(truncatingIfNeeded: exp.token))
+                            extraNBits += exp.extraNBits
+                        }
+                    }
+                }
+                return RectOut(packed: packed, symbols: symbols,
+                               histo: histo, maxTok: maxTok,
+                               extraNBits: extraNBits)
+            }
             var perGroup: [[[UInt32]]] = Array(
-                repeating: Array(repeating: [], count: channels.count),
+                repeating: Array(repeating: [], count: chCount),
                 count: numGroups)
             var flatSymbols: [[UInt16]] = []
+            flatSymbols.reserveCapacity(slots.count)
             var fullHisto = [Int](repeating: 0, count: postCfg.maxToken + 1)
             var maxTok = 0
             var totalExtraNBits = 0
-            for ci in 0..<channels.count {
-                let pix = channels[ci]
-                for gy in 0..<numGroupsY {
-                    for gx in 0..<numGroupsX {
-                        let rectX0 = gx * groupDim, rectY0 = gy * groupDim
-                        let rectW = min(groupDim, width - rectX0)
-                        let rectH = min(groupDim, height - rectY0)
-                        var rect = [Int32](repeating: 0, count: rectW * rectH)
-                        for ry in 0..<rectH {
-                            let s = (rectY0 + ry) * width + rectX0
-                            for rx in 0..<rectW { rect[ry * rectW + rx] = pix[s + rx] }
-                        }
-                        var packed = [UInt32]()
-                        packed.reserveCapacity(rectW * rectH)
-                        var symbols = [UInt16]()
-                        symbols.reserveCapacity(rectW * rectH)
-                        if useWP {
-                            var wp = WeightedPredictor(
-                                header: .default, xsize: max(1, rectW))
-                            for ry in 0..<rectH {
-                                for rx in 0..<rectW {
-                                    let nbh = Neighbourhood(at: rx, ry, in: rect, width: rectW)
-                                    let pred = wp.predict(
-                                        x: rx, y: ry, xsize: rectW,
-                                        n: nbh.n, w: nbh.w, ne: nbh.ne, nw: nbh.nw, nn: nbh.nn)
-                                    let actual = rect[ry * rectW + rx]
-                                    let p = ZigZag.pack(actual &- pred)
-                                    let exp = postCfg.encode(p)
-                                    let t = Int(exp.token)
-                                    fullHisto[t] += 1; if t > maxTok { maxTok = t }
-                                    packed.append(p)
-                                    symbols.append(UInt16(truncatingIfNeeded: exp.token))
-                                    totalExtraNBits += exp.extraNBits
-                                    wp.update(actual: actual, x: rx, y: ry, xsize: rectW)
-                                }
-                            }
-                        } else {
-                            for ry in 0..<rectH {
-                                for rx in 0..<rectW {
-                                    let nbh = Neighbourhood(at: rx, ry, in: rect, width: rectW)
-                                    let pred = Predictor.gradient.apply(to: nbh, lo: 0, hi: sampleHi)
-                                    let p = ZigZag.pack(rect[ry * rectW + rx] &- pred)
-                                    let exp = postCfg.encode(p)
-                                    let t = Int(exp.token)
-                                    fullHisto[t] += 1; if t > maxTok { maxTok = t }
-                                    packed.append(p)
-                                    symbols.append(UInt16(truncatingIfNeeded: exp.token))
-                                    totalExtraNBits += exp.extraNBits
-                                }
-                            }
-                        }
-                        perGroup[gy * numGroupsX + gx][ci] = packed
-                        flatSymbols.append(symbols)
-                    }
+            for slot in 0..<slots.count {
+                let out = slots[slot]
+                let ci = slot / numGroups
+                let gi = slot % numGroups
+                perGroup[gi][ci] = out.packed
+                flatSymbols.append(out.symbols)
+                for t in 0...out.maxTok where out.histo[t] > 0 {
+                    fullHisto[t] += out.histo[t]
                 }
+                if out.maxTok > maxTok { maxTok = out.maxTok }
+                totalExtraNBits += out.extraNBits
             }
             return (perGroup, flatSymbols, Array(fullHisto[0..<(maxTok + 1)]),
                     maxTok + 1, totalExtraNBits)
@@ -819,37 +849,42 @@ package enum SpecModularEncoder {
         let dcGroupEmpty = Data()
         let acGlobalEmpty = Data()
 
-        // Per-group AC sections.
+        // Per-group AC sections. Each group is an independent section
+        // sharing the global post codebook (Huffman writes inline; rANS
+        // emits one fresh interleaved stream per group, matching the
+        // decoder's per-group TokenStreamReader) — emit concurrently,
+        // collect in group (TOC) order.
+        let chCount = channels.count
+        let acResults = parallelMap(numGroups) {
+            (groupIdx: Int) -> Result<Data, any Error> in
+            Result {
+                var sec = BitWriter()
+                try GroupHeader.default.write(to: &sec)
+                if postUsePrefix {
+                    let postWriter = TokenStreamWriter(
+                        header: postHeader, codebook: postCodebook)
+                    for ci in 0..<chCount {
+                        for v in perGroupPerChannelPacked[groupIdx][ci] {
+                            try postWriter.writeToken(context: 0, value: v, to: &sec)
+                        }
+                    }
+                } else {
+                    var aw = try ANSTokenStreamWriter(
+                        header: postHeader, codebook: postCodebook)
+                    for ci in 0..<chCount {
+                        for v in perGroupPerChannelPacked[groupIdx][ci] {
+                            try aw.writeToken(context: 0, value: v)
+                        }
+                    }
+                    try aw.finish(to: &sec)
+                }
+                sec.alignToByte()
+                return sec.finishToData()
+            }
+        }
         var acSections = [Data]()
         acSections.reserveCapacity(numGroups)
-        for groupIdx in 0..<numGroups {
-            var sec = BitWriter()
-            try GroupHeader.default.write(to: &sec)
-            // Each group is an independent section sharing the global
-            // post codebook. Huffman writes inline; rANS emits one fresh
-            // interleaved stream per group (matching the decoder's
-            // per-group TokenStreamReader).
-            if postUsePrefix {
-                let postWriter = TokenStreamWriter(
-                    header: postHeader, codebook: postCodebook)
-                for ci in 0..<channels.count {
-                    for v in perGroupPerChannelPacked[groupIdx][ci] {
-                        try postWriter.writeToken(context: 0, value: v, to: &sec)
-                    }
-                }
-            } else {
-                var aw = try ANSTokenStreamWriter(
-                    header: postHeader, codebook: postCodebook)
-                for ci in 0..<channels.count {
-                    for v in perGroupPerChannelPacked[groupIdx][ci] {
-                        try aw.writeToken(context: 0, value: v)
-                    }
-                }
-                try aw.finish(to: &sec)
-            }
-            sec.alignToByte()
-            acSections.append(sec.finishToData())
-        }
+        for r in acResults { acSections.append(try r.get()) }
 
         var singleSections = [Data]()
         singleSections.reserveCapacity(2 + numDcGroups + numGroups)
@@ -1226,7 +1261,11 @@ package enum SpecModularEncoder {
         sections.append(dcGlobal.finishToData())
         for _ in 0..<numDcGroups { sections.append(Data()) }
         sections.append(Data())            // AC global, empty
-        for g in 0..<numGroups {
+        // Each AC group section is an independent bitstream sharing the
+        // immutable header/codebook — emit them concurrently and append
+        // in group order (the TOC order), so the codestream is
+        // byte-identical to the sequential loop's.
+        let groupSections = parallelMap(numGroups) { (g: Int) -> Data? in
             var sec = BitWriter()
             do {
                 try GroupHeader.default.write(to: &sec)
@@ -1245,7 +1284,11 @@ package enum SpecModularEncoder {
                 }
             } catch { return nil }
             sec.alignToByte()
-            sections.append(sec.finishToData())
+            return sec.finishToData()
+        }
+        for s in groupSections {
+            guard let s else { return nil }
+            sections.append(s)
         }
         return sections
     }
@@ -1291,43 +1334,52 @@ package enum SpecModularEncoder {
         // order the AC sections emit tokens. Pool every wpProp to choose
         // global percentile thresholds. `propertyValue` is read BEFORE
         // `predict`, matching the decoder.
+        // Per-(channel, group) rects are independent WP streams — run
+        // them concurrently and merge into each group's channel-major
+        // pixel list (the AC sections' token order). `propertyValue` is
+        // read BEFORE `predict` in each rect, matching the decoder.
+        let chCount = channels.count
+        let rectPixels = parallelMap(chCount * numGroups) {
+            (slot: Int) -> [(wpProp: Int32, token: UInt32)] in
+            let ci = slot / numGroups
+            let gi = slot % numGroups
+            let gy = gi / numGroupsX, gx = gi % numGroupsX
+            let pix = channels[ci]
+            let rectX0 = gx * groupDim, rectY0 = gy * groupDim
+            let rectW = min(groupDim, width - rectX0)
+            let rectH = min(groupDim, height - rectY0)
+            var rect = [Int32](repeating: 0, count: rectW * rectH)
+            for ry in 0..<rectH {
+                let s = (rectY0 + ry) * width + rectX0
+                for rx in 0..<rectW { rect[ry * rectW + rx] = pix[s + rx] }
+            }
+            var wp = WeightedPredictor(header: .default, xsize: max(1, rectW))
+            var out: [(wpProp: Int32, token: UInt32)] = []
+            out.reserveCapacity(rectW * rectH)
+            for ry in 0..<rectH {
+                for rx in 0..<rectW {
+                    let nbh = Neighbourhood(at: rx, ry, in: rect, width: rectW)
+                    let wpProp = wp.propertyValue(x: rx, y: ry, xsize: rectW)
+                    let pred = wp.predict(
+                        x: rx, y: ry, xsize: rectW,
+                        n: nbh.n, w: nbh.w, ne: nbh.ne,
+                        nw: nbh.nw, nn: nbh.nn)
+                    let actual = rect[ry * rectW + rx]
+                    out.append((wpProp, ZigZag.pack(actual &- pred)))
+                    wp.update(actual: actual, x: rx, y: ry, xsize: rectW)
+                }
+            }
+            return out
+        }
         var perGroupPixels: [[(wpProp: Int32, token: UInt32)]] =
             Array(repeating: [], count: numGroups)
         var allProps: [Int32] = []
-        allProps.reserveCapacity(width * height * channels.count)
-        for ci in 0..<channels.count {
-            let pix = channels[ci]
-            for gy in 0..<numGroupsY {
-                for gx in 0..<numGroupsX {
-                    let rectX0 = gx * groupDim, rectY0 = gy * groupDim
-                    let rectW = min(groupDim, width - rectX0)
-                    let rectH = min(groupDim, height - rectY0)
-                    var rect = [Int32](repeating: 0, count: rectW * rectH)
-                    for ry in 0..<rectH {
-                        let s = (rectY0 + ry) * width + rectX0
-                        for rx in 0..<rectW { rect[ry * rectW + rx] = pix[s + rx] }
-                    }
-                    var wp = WeightedPredictor(
-                        header: .default, xsize: max(1, rectW))
-                    let gi = gy * numGroupsX + gx
-                    for ry in 0..<rectH {
-                        for rx in 0..<rectW {
-                            let nbh = Neighbourhood(
-                                at: rx, ry, in: rect, width: rectW)
-                            let wpProp = wp.propertyValue(
-                                x: rx, y: ry, xsize: rectW)
-                            let pred = wp.predict(
-                                x: rx, y: ry, xsize: rectW,
-                                n: nbh.n, w: nbh.w, ne: nbh.ne,
-                                nw: nbh.nw, nn: nbh.nn)
-                            let actual = rect[ry * rectW + rx]
-                            perGroupPixels[gi].append(
-                                (wpProp, ZigZag.pack(actual &- pred)))
-                            allProps.append(wpProp)
-                            wp.update(actual: actual, x: rx, y: ry, xsize: rectW)
-                        }
-                    }
-                }
+        allProps.reserveCapacity(width * height * chCount)
+        for ci in 0..<chCount {
+            for gi in 0..<numGroups {
+                let run = rectPixels[ci * numGroups + gi]
+                perGroupPixels[gi].append(contentsOf: run)
+                for p in run { allProps.append(p.wpProp) }
             }
         }
         guard !allProps.isEmpty else { return nil }
@@ -1586,20 +1638,48 @@ package enum SpecModularEncoder {
         // local structure where ClampedGradient under-predicts; rANS
         // lifts the ≥1 bit/symbol Huffman floor. Both are decisive for
         // the lossless ratio on structured medical data.
-        let grad = computeModularResiduals(
-            width: width, height: height, channels: channels,
-            sampleHi: sampleHi, postCfg: postCfg, useWP: false)
-        let gradBest = try bestModularPostCodebook(
-            histo: grad.histo, alphabetSize: grad.alphabetSize,
-            postCfg: postCfg, symbolsPerChannel: grad.symbolsPerChannel,
-            totalExtraNBits: grad.totalExtraNBits)
-        let wp = computeModularResiduals(
-            width: width, height: height, channels: channels,
-            sampleHi: sampleHi, postCfg: postCfg, useWP: true)
-        let wpBest = try bestModularPostCodebook(
-            histo: wp.histo, alphabetSize: wp.alphabetSize,
-            postCfg: postCfg, symbolsPerChannel: wp.symbolsPerChannel,
-            totalExtraNBits: wp.totalExtraNBits)
+        //
+        // Stage A — the up-to-three independent full-image passes run
+        // concurrently: gradient residuals + gate, WP residuals + gate,
+        // and (effort ≥ 4) the shared WP per-pixel property pass that
+        // feeds both split candidates. Results are consumed in the old
+        // sequential order, so surfaced errors and every selection are
+        // unchanged.
+        typealias Gate = (header: EntropySectionHeader,
+                          codebook: MultiClusterCodebook,
+                          usePrefix: Bool, bits: Int)
+        typealias Resid = (packedPerChannel: [[UInt32]], histo: [Int],
+                           alphabetSize: Int, symbolsPerChannel: [[UInt16]],
+                           totalExtraNBits: Int)
+        typealias Shared = (propsFlat: [Int32], tokens: [UInt32],
+                            tokBucket: [Int], maxTok: Int)
+        enum StageA: Sendable {
+            case gate(Resid, Result<Gate, any Error>)
+            case shared(Shared)
+        }
+        let stageA = parallelMap(effort >= 4 ? 3 : 2) { (i: Int) -> StageA in
+            switch i {
+            case 0, 1:
+                let r = computeModularResiduals(
+                    width: width, height: height, channels: channels,
+                    sampleHi: sampleHi, postCfg: postCfg, useWP: i == 1)
+                return .gate(r, Result { try bestModularPostCodebook(
+                    histo: r.histo, alphabetSize: r.alphabetSize,
+                    postCfg: postCfg, symbolsPerChannel: r.symbolsPerChannel,
+                    totalExtraNBits: r.totalExtraNBits) })
+            default:
+                return .shared(wpGreedyPerPixel(
+                    width: width, height: height,
+                    channels: channels, postCfg: postCfg))
+            }
+        }
+        guard case let .gate(grad, gradRes) = stageA[0],
+              case let .gate(wp, wpRes) = stageA[1] else {
+            throw SpecModularEncoderError.unsupportedFrame(
+                "internal: stage layout")
+        }
+        let gradBest = try gradRes.get()
+        let wpBest = try wpRes.get()
         let useWP = wpBest.bits < gradBest.bits
         let chosen = useWP ? wpBest : gradBest
         let postHeader = chosen.header
@@ -1609,100 +1689,128 @@ package enum SpecModularEncoder {
             ? wp.packedPerChannel : grad.packedPerChannel
         let rawPredictor: UInt32 = useWP ? 6 : 5
 
-        var sec = BitWriter()
-        sec.writeBit(true)            // matrices_dc_default
-        sec.writeBit(true)            // has_tree
-        // Tree section — 6 contexts, 16-symbol flat tree-token
-        // alphabet. splitExponent=0 keeps any pack(rawPredictor=5)
-        // inside the token range 0..3.
-        let treeUintCfg = HybridUintConfig(
-            splitExponent: 0, msbInToken: 0, lsbInToken: 0
-        )
-        let treeAlphabet = 16
-        let treeLengths: [UInt8] = Array(repeating: 4, count: treeAlphabet)
-        let treeTable = try PrefixCodeTable(lengths: treeLengths)
-        let treeCodebook = MultiClusterCodebook(
-            huffmanTables: [treeTable], ansCounts: [],
-            alphabetSizes: [treeAlphabet]
-        )
-        let treeHeader = EntropySectionHeader(
-            lz77: .disabled,
-            contextMap: ContextMap.trivial(numContexts: 6),
-            usePrefixCode: true, logAlphaSize: 15,
-            uintConfigs: [treeUintCfg]
-        )
-        try treeHeader.write(to: &sec, numContexts: 6)
-        try treeCodebook.write(to: &sec, header: treeHeader)
-        let tree = ModularTree(nodes: [
-            ModularTreeNode(
-                property: -1, splitVal: 0,
-                leftChildOrLeafId: 0, rightChild: 0,
-                predictor: .gradient,   // enum field unused on wire
-                predictorOffset: 0,
-                multiplier: 1,
-                rawPredictor: rawPredictor
-            )
-        ])
-        let treeWriter = TokenStreamWriter(
-            header: treeHeader, codebook: treeCodebook
-        )
-        try tree.encode { ctx, val in
-            try treeWriter.writeToken(context: ctx, value: val, to: &sec)
-        }
-        try postHeader.write(to: &sec, numContexts: 1)
-        try postCodebook.write(to: &sec, header: postHeader)
-        try GroupHeader.default.write(to: &sec)
-        // All channels' residuals route through tree leaf 0 (context 0)
-        // and share the post codebook. Huffman writes inline; rANS
-        // buffers the whole sub-image and emits one interleaved stream —
-        // matching the decoder's single `TokenStreamReader` for the
-        // modular sub-image.
-        if postUsePrefix {
-            let postWriter = TokenStreamWriter(
-                header: postHeader, codebook: postCodebook)
-            for packed in packedPerChannel {
-                for v in packed {
-                    try postWriter.writeToken(context: 0, value: v, to: &sec)
+        // Baseline single-context emission (tree section + post codebook
+        // + the winner's token stream). A @Sendable closure so stage B
+        // can overlap it with the split candidates at effort ≥ 4.
+        let emitBaseline: @Sendable () -> Result<Data, any Error> = {
+            Result {
+                var sec = BitWriter()
+                sec.writeBit(true)            // matrices_dc_default
+                sec.writeBit(true)            // has_tree
+                // Tree section — 6 contexts, 16-symbol flat tree-token
+                // alphabet. splitExponent=0 keeps any pack(rawPredictor=5)
+                // inside the token range 0..3.
+                let treeUintCfg = HybridUintConfig(
+                    splitExponent: 0, msbInToken: 0, lsbInToken: 0
+                )
+                let treeAlphabet = 16
+                let treeLengths: [UInt8] = Array(repeating: 4, count: treeAlphabet)
+                let treeTable = try PrefixCodeTable(lengths: treeLengths)
+                let treeCodebook = MultiClusterCodebook(
+                    huffmanTables: [treeTable], ansCounts: [],
+                    alphabetSizes: [treeAlphabet]
+                )
+                let treeHeader = EntropySectionHeader(
+                    lz77: .disabled,
+                    contextMap: ContextMap.trivial(numContexts: 6),
+                    usePrefixCode: true, logAlphaSize: 15,
+                    uintConfigs: [treeUintCfg]
+                )
+                try treeHeader.write(to: &sec, numContexts: 6)
+                try treeCodebook.write(to: &sec, header: treeHeader)
+                let tree = ModularTree(nodes: [
+                    ModularTreeNode(
+                        property: -1, splitVal: 0,
+                        leftChildOrLeafId: 0, rightChild: 0,
+                        predictor: .gradient,   // enum field unused on wire
+                        predictorOffset: 0,
+                        multiplier: 1,
+                        rawPredictor: rawPredictor
+                    )
+                ])
+                let treeWriter = TokenStreamWriter(
+                    header: treeHeader, codebook: treeCodebook
+                )
+                try tree.encode { ctx, val in
+                    try treeWriter.writeToken(context: ctx, value: val, to: &sec)
                 }
+                try postHeader.write(to: &sec, numContexts: 1)
+                try postCodebook.write(to: &sec, header: postHeader)
+                try GroupHeader.default.write(to: &sec)
+                // All channels' residuals route through tree leaf 0
+                // (context 0) and share the post codebook. Huffman writes
+                // inline; rANS buffers the whole sub-image and emits one
+                // interleaved stream — matching the decoder's single
+                // `TokenStreamReader` for the modular sub-image.
+                if postUsePrefix {
+                    let postWriter = TokenStreamWriter(
+                        header: postHeader, codebook: postCodebook)
+                    for packed in packedPerChannel {
+                        for v in packed {
+                            try postWriter.writeToken(context: 0, value: v, to: &sec)
+                        }
+                    }
+                } else {
+                    var aw = try ANSTokenStreamWriter(
+                        header: postHeader, codebook: postCodebook)
+                    aw.reserveCapacity(width * height * channels.count)
+                    for packed in packedPerChannel {
+                        for v in packed { try aw.writeToken(context: 0, value: v) }
+                    }
+                    try aw.finish(to: &sec)
+                }
+                sec.alignToByte()
+                return sec.finishToData()
             }
-        } else {
-            var aw = try ANSTokenStreamWriter(
-                header: postHeader, codebook: postCodebook)
-            for packed in packedPerChannel {
-                for v in packed { try aw.writeToken(context: 0, value: v) }
-            }
-            try aw.finish(to: &sec)
         }
-        sec.alignToByte()
         // Candidates, smallest wins (all byte-exact through djxl):
-        //  • single-context (above) — always,
+        //  • single-context baseline — always,
         //  • activity split — property-15 WP-activity bins (effort ≥ 4),
         //  • greedy multi-property MA-tree (effort ≥ 7).
-        // The extra candidates are full encodes, so `effort` gates them;
-        // each is cost-gated by actual section bytes.
-        var best = sec.finishToData()
-        // The activity-split (effort ≥ 4) and greedy (effort ≥ 7) candidates
-        // both need the same full-image WP per-pixel pass — compute it ONCE
-        // and share it, eliminating two redundant WP passes. Byte-identical:
-        // each builder consumes exactly the values it used to compute inline.
-        if effort >= 4 {
-            let wpShared = wpGreedyPerPixel(
-                width: width, height: height,
-                channels: channels, postCfg: postCfg)
-            if let multiData = try? buildSingleSectionMultiContext(
-                width: width, height: height,
-                channels: channels, sampleHi: sampleHi,
-                precomputed: (wpShared.propsFlat, wpShared.tokens)),
-               multiData.count < best.count {
-                best = multiData
+        // The extra candidates are full encodes gated by `effort`; both
+        // consume the stage-A shared WP pass. Stage B runs the baseline
+        // emission and the candidates concurrently; the size comparisons
+        // happen afterwards in the old order, so output is unchanged.
+        if effort < 4 {
+            return try emitBaseline().get()
+        }
+        guard case let .shared(wpShared) = stageA[2] else {
+            throw SpecModularEncoderError.unsupportedFrame(
+                "internal: stage layout")
+        }
+        enum StageB: Sendable {
+            case base(Result<Data, any Error>)
+            case cand(Data?)
+        }
+        let stageB = parallelMap(effort >= 7 ? 3 : 2) { (i: Int) -> StageB in
+            switch i {
+            case 0:
+                return .base(emitBaseline())
+            case 1:
+                let d = try? buildSingleSectionMultiContext(
+                    width: width, height: height,
+                    channels: channels, sampleHi: sampleHi,
+                    precomputed: (wpShared.propsFlat, wpShared.tokens))
+                return .cand(d ?? nil)
+            default:
+                return .cand(buildSingleSectionGreedyTree(
+                    width: width, height: height,
+                    channels: channels, sampleHi: sampleHi,
+                    precomputed: wpShared))
             }
-            if effort >= 7, let greedyData = buildSingleSectionGreedyTree(
-                width: width, height: height,
-                channels: channels, sampleHi: sampleHi,
-                precomputed: wpShared),
-               greedyData.count < best.count {
-                best = greedyData
-            }
+        }
+        guard case let .base(baseRes) = stageB[0] else {
+            throw SpecModularEncoderError.unsupportedFrame(
+                "internal: stage layout")
+        }
+        var best = try baseRes.get()
+        if case let .cand(multiData) = stageB[1], let multiData,
+           multiData.count < best.count {
+            best = multiData
+        }
+        if stageB.count > 2, case let .cand(greedyData) = stageB[2],
+           let greedyData, greedyData.count < best.count {
+            best = greedyData
         }
         return best
     }
