@@ -1,5 +1,30 @@
 # Optimisation plan — June 2026 (v1.0.1 baseline)
 
+> ## Outcome (2026-06-12, branch `optimisation-2026-06`)
+>
+> Phases 0–5 executed; every speed change byte-identical until the
+> Phase-4 wave (one commit, djxl-validated). Measured on the 512×512
+> 16-bit CT-like reference unless noted (quiet machine, Apple Silicon):
+>
+> | Metric | v1.0.1 | now | Δ |
+> |---|---|---|---|
+> | Encode, default effort 7 | 538 ms | **76 ms** | **7.1×** |
+> | Encode, effort 1 | ~49 ms | 23.8 ms | 2.1× |
+> | Encode, effort 9 (best ratio) | 542 ms | 212 ms | 2.6× — and smaller files |
+> | Best ratio (e9 vs old e7/9) | 223 723 B | 222 857 B | −0.4 % gray, **−8.7 % RGB16** |
+> | Decode 512² | ~23.5 ms | ~21 ms | −10 % |
+> | 2080² encode e4 / decode | 1 714 / 427 ms | 1 149 / **84 ms** | 1.5× / **4.5×** |
+> | 64-slice CT stack, default (batch) | ~34 s | **1.7 s** | **~20×** |
+> | Test-suite gate | ~70 s | 21 s | 3.3× |
+>
+> Phase 3 (JXLPerfC C port): **deferred with grounds** — see the decision
+> note in the Phase 3 section. Remaining follow-ups: learner
+> presort+partition (1.2 step 2), multi-group WP-pass dedup (now
+> wall-clock-mooted by per-rect parallelism), property-whitelist widening
+> + per-leaf predictors + per-context hybrid-uint (4.3, needs
+> `fillModularProperties`↔libjxl reconciliation), forward RCT (4.4),
+> LZ77 (4.5), `decode()` triple header parse (5.3).
+
 A prioritised, risk-assessed optimisation plan for the lossless codec, built from
 (a) a fresh re-profile of v1.0.1 on Apple Silicon and (b) a deep audit of every
 subsystem with each finding adversarially verified against the actual code.
