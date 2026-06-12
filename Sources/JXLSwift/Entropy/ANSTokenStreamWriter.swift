@@ -111,6 +111,12 @@ package struct ANSTokenStreamWriter {
         self.clusters = built
     }
 
+    /// Pre-reserve buffer capacity for `count` tokens (callers usually
+    /// know the pixel/token count up front; avoids growth reallocations).
+    package mutating func reserveCapacity(_ count: Int) {
+        pending.reserveCapacity(count)
+    }
+
     /// Buffer one token at context `ctx`. Order matters — tokens are
     /// emitted (and the decoder reads them) in this call order.
     package mutating func writeToken(
@@ -134,14 +140,11 @@ package struct ANSTokenStreamWriter {
     /// 32-bit state init immediately after the per-cluster codebook).
     package mutating func finish(to w: inout BitWriter) throws {
         let range = UInt32(ANSConstants.tabSize)
-        // Per-token forward segment: an optional 16-bit refill word
-        // followed by the token's extra bits.
-        struct Seg { var hasRefill: Bool; var refill: UInt32
-                     var extraBits: UInt32; var extraNBits: Int }
-        var segs = [Seg](
-            repeating: Seg(hasRefill: false, refill: 0,
-                           extraBits: 0, extraNBits: 0),
-            count: pending.count)
+        // Per-token refill word, or `noRefill` when the state needed no
+        // renorm before encoding that token. The extra bits live in
+        // `pending` already — duplicating them here cost 24 B/token.
+        let noRefill: UInt32 = .max
+        var refills = [UInt32](repeating: noRefill, count: pending.count)
         // Reverse-order rANS encode, starting from libjxl's initial
         // state (`ANS_SIGNATURE << 16`). The decoder's forward pass ends
         // at this exact value, which libjxl/djxl verifies — using the
@@ -156,32 +159,28 @@ package struct ANSTokenStreamWriter {
                 throw ANSTokenStreamWriterError.symbolHasZeroFrequency(
                     cluster: t.cluster, symbol: Int(t.symbol))
             }
-            var hasRefill = false
-            var refill: UInt32 = 0
             // Renorm: emit a 16-bit word while the state would push the
             // post-encode value past 2^32. `bound = freq << (32 - logTab)`.
             let bound = UInt64(f) << UInt64(32 - ANSConstants.logTabSize)
             if UInt64(state) >= bound {
-                refill = state & 0xFFFF
+                refills[i] = state & 0xFFFF
                 state >>= 16
-                hasRefill = true
             }
             // Encode step (inverse of the alias decode step).
             let offset = state % f
             let q = state / f
             let slot = enc.slotForResidue[Int(t.symbol)][Int(offset)]
             state = q &* range &+ slot
-            segs[i] = Seg(hasRefill: hasRefill, refill: refill,
-                          extraBits: t.extraBits, extraNBits: t.extraNBits)
             i -= 1
         }
         // Forward layout: 32-bit init (the final encoder state) then,
         // per token, [refill?][extra bits].
         w.write(bits: 32, value: state)
-        for seg in segs {
-            if seg.hasRefill { w.write(bits: 16, value: seg.refill) }
-            if seg.extraNBits > 0 {
-                w.write(bits: seg.extraNBits, value: seg.extraBits)
+        for (j, t) in pending.enumerated() {
+            let refill = refills[j]
+            if refill != noRefill { w.write(bits: 16, value: refill) }
+            if t.extraNBits > 0 {
+                w.write(bits: t.extraNBits, value: t.extraBits)
             }
         }
     }

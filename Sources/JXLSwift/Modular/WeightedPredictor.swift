@@ -67,21 +67,24 @@ package struct WeightedPredictor: Sendable {
 
     package let header: WeightedPredictorHeader
     private let stride: Int  // (xsize + 2) — per-row span in error/predErrors.
-    private var predErrors: [[UInt32]]   // [4][2 * stride]
+    private let planeSize: Int           // 2 * stride — one predictor's span.
+    private var predErrors: [UInt32]     // 4 planes of `planeSize`, flat.
     private var error: [Int64]           // [2 * stride]
-    private(set) package var prediction: [Int64]  // [4] — last-pixel sub-predictions.
-    private(set) package var pred: Int64           // last combined pred (shifted-up domain).
+    // Last-pixel sub-predictions (read back by `update`). Scalars, not an
+    // array: these are touched per pixel and array storage cost a
+    // uniqueness check + bounds check per access.
+    private var p0: Int64 = 0, p1: Int64 = 0, p2: Int64 = 0, p3: Int64 = 0
+    private var pred: Int64              // last combined pred (shifted-up domain).
 
     package init(header: WeightedPredictorHeader, xsize: Int) {
         self.header = header
         self.stride = xsize + 2
         let total = 2 * stride
-        self.predErrors = Array(
-            repeating: [UInt32](repeating: 0, count: total),
-            count: WeightedPredictor.kNumPredictors
-        )
+        self.planeSize = total
+        self.predErrors = [UInt32](
+            repeating: 0,
+            count: WeightedPredictor.kNumPredictors * total)
         self.error = [Int64](repeating: 0, count: total)
-        self.prediction = [Int64](repeating: 0, count: WeightedPredictor.kNumPredictors)
         self.pred = 0
     }
 
@@ -107,24 +110,22 @@ package struct WeightedPredictor: Sendable {
     /// libjxl's division-avoiding `WeightedAverage`.
     @inline(__always)
     private func weightedAverage(
-        _ p: [Int64], _ wIn: (UInt32, UInt32, UInt32, UInt32)
+        _ q0: Int64, _ q1: Int64, _ q2: Int64, _ q3: Int64,
+        _ wIn: (UInt32, UInt32, UInt32, UInt32)
     ) -> Int64 {
-        var w = [wIn.0, wIn.1, wIn.2, wIn.3]
-        var weightSum: UInt32 = 0
-        for v in w { weightSum &+= v }
+        var w0 = wIn.0, w1 = wIn.1, w2 = wIn.2, w3 = wIn.3
+        var weightSum: UInt32 = w0 &+ w1 &+ w2 &+ w3
         // Spec / libjxl invariant: weightSum > 15 (each w[i] is 4..16).
         let logWeight: UInt32 = weightSum == 0 ? 0
             : UInt32(31 - weightSum.leadingZeroBitCount)
-        weightSum = 0
-        let shift = Int(logWeight) - 4
-        for i in 0..<WeightedPredictor.kNumPredictors {
-            w[i] = w[i] &>> UInt32(max(0, shift))
-            weightSum &+= w[i]
-        }
+        let shift = UInt32(max(0, Int(logWeight) - 4))
+        w0 &>>= shift; w1 &>>= shift; w2 &>>= shift; w3 &>>= shift
+        weightSum = w0 &+ w1 &+ w2 &+ w3
         var sum: Int64 = Int64(weightSum >> 1) &- 1
-        for i in 0..<WeightedPredictor.kNumPredictors {
-            sum &+= p[i] &* Int64(w[i])
-        }
+        sum &+= q0 &* Int64(w0)
+        sum &+= q1 &* Int64(w1)
+        sum &+= q2 &* Int64(w2)
+        sum &+= q3 &* Int64(w3)
         let lookupIdx = Int(weightSum &- 1) & 0x3F
         let div = Int64(WeightedPredictor.divLookup[lookupIdx])
         return (sum &* div) >> 24
@@ -165,32 +166,36 @@ package struct WeightedPredictor: Sendable {
         let posNW = (x > 0) ? posN - 1 : posN
 
         // Compute weights from per-predictor running error.
-        let weights: (UInt32, UInt32, UInt32, UInt32) = (
-            errorWeight(
-                UInt64(predErrors[0][posN])
-                &+ UInt64(predErrors[0][posNE])
-                &+ UInt64(predErrors[0][posNW]),
-                maxWeight: header.weights.0
-            ),
-            errorWeight(
-                UInt64(predErrors[1][posN])
-                &+ UInt64(predErrors[1][posNE])
-                &+ UInt64(predErrors[1][posNW]),
-                maxWeight: header.weights.1
-            ),
-            errorWeight(
-                UInt64(predErrors[2][posN])
-                &+ UInt64(predErrors[2][posNE])
-                &+ UInt64(predErrors[2][posNW]),
-                maxWeight: header.weights.2
-            ),
-            errorWeight(
-                UInt64(predErrors[3][posN])
-                &+ UInt64(predErrors[3][posNE])
-                &+ UInt64(predErrors[3][posNW]),
-                maxWeight: header.weights.3
-            )
-        )
+        let weights: (UInt32, UInt32, UInt32, UInt32) = predErrors
+            .withUnsafeBufferPointer { pe in
+                let pl0 = 0, pl1 = planeSize, pl2 = 2 * planeSize, pl3 = 3 * planeSize
+                return (
+                    errorWeight(
+                        UInt64(pe[pl0 + posN])
+                        &+ UInt64(pe[pl0 + posNE])
+                        &+ UInt64(pe[pl0 + posNW]),
+                        maxWeight: header.weights.0
+                    ),
+                    errorWeight(
+                        UInt64(pe[pl1 + posN])
+                        &+ UInt64(pe[pl1 + posNE])
+                        &+ UInt64(pe[pl1 + posNW]),
+                        maxWeight: header.weights.1
+                    ),
+                    errorWeight(
+                        UInt64(pe[pl2 + posN])
+                        &+ UInt64(pe[pl2 + posNE])
+                        &+ UInt64(pe[pl2 + posNW]),
+                        maxWeight: header.weights.2
+                    ),
+                    errorWeight(
+                        UInt64(pe[pl3 + posN])
+                        &+ UInt64(pe[pl3 + posNE])
+                        &+ UInt64(pe[pl3 + posNW]),
+                        maxWeight: header.weights.3
+                    )
+                )
+            }
 
         let nB = WeightedPredictor.addBits(Int64(n))
         let wB = WeightedPredictor.addBits(Int64(w))
@@ -204,16 +209,16 @@ package struct WeightedPredictor: Sendable {
         let sumWN: Int64 = teN &+ teW
         let teNE: Int64 = error[posNE]
 
-        prediction[0] = wB &+ neB &- nB
-        prediction[1] = nB &- (((sumWN &+ teNE) &* Int64(header.p1C)) &>> 5)
-        prediction[2] = wB &- (((sumWN &+ teNW) &* Int64(header.p2C)) &>> 5)
-        prediction[3] = nB &- ((teNW &* Int64(header.p3Ca)
-                              &+ teN  &* Int64(header.p3Cb)
-                              &+ teNE &* Int64(header.p3Cc)
-                              &+ (nnB &- nB) &* Int64(header.p3Cd)
-                              &+ (nwB &- wB) &* Int64(header.p3Ce)) &>> 5)
+        p0 = wB &+ neB &- nB
+        p1 = nB &- (((sumWN &+ teNE) &* Int64(header.p1C)) &>> 5)
+        p2 = wB &- (((sumWN &+ teNW) &* Int64(header.p2C)) &>> 5)
+        p3 = nB &- ((teNW &* Int64(header.p3Ca)
+                   &+ teN  &* Int64(header.p3Cb)
+                   &+ teNE &* Int64(header.p3Cc)
+                   &+ (nnB &- nB) &* Int64(header.p3Cd)
+                   &+ (nwB &- wB) &* Int64(header.p3Ce)) &>> 5)
 
-        pred = weightedAverage(prediction, weights)
+        pred = weightedAverage(p0, p1, p2, p3, weights)
 
         // If all three errors agree in sign, skip clamping.
         let mixed = (teN ^ teW) | (teN ^ teNW)
@@ -241,19 +246,29 @@ package struct WeightedPredictor: Sendable {
         let prevRowOff = (y & 1 == 1) ? stride : 0
         let valShifted = WeightedPredictor.addBits(Int64(actual))
         error[curRowOff + x] = pred &- valShifted
-        for i in 0..<WeightedPredictor.kNumPredictors {
-            let diff = abs(prediction[i] &- valShifted)
-            let err = UInt32(truncatingIfNeeded:
-                (diff &+ WeightedPredictor.kPredictionRound)
-                    &>> Int64(WeightedPredictor.kPredExtraBits))
-            // For predicting next row.
-            predErrors[i][curRowOff + x] = err
-            // Add error on this pixel to the position of NE in next row
-            // (which is the E neighbour in the *current* row of the
-            // already-shifted layout — see the libjxl comment).
-            if x + 1 < stride {
-                predErrors[i][prevRowOff + x + 1] &+= err
+        let q0 = p0, q1 = p1, q2 = p2, q3 = p3
+        let plane = planeSize
+        let cur = curRowOff + x
+        let nextNE = x + 1 < stride ? prevRowOff + x + 1 : -1
+        predErrors.withUnsafeMutableBufferPointer { pe in
+            // Per sub-predictor: record this pixel's error for the next
+            // row, and add it to NE's slot in the next row (the E
+            // neighbour in the current row of the already-shifted
+            // layout — see the libjxl comment). Unrolled: a 4-element
+            // loop array here would heap-allocate per pixel.
+            @inline(__always)
+            func fold(_ q: Int64, _ sub: Int) {
+                let diff = abs(q &- valShifted)
+                let err = UInt32(truncatingIfNeeded:
+                    (diff &+ WeightedPredictor.kPredictionRound)
+                        &>> Int64(WeightedPredictor.kPredExtraBits))
+                pe[sub + cur] = err
+                if nextNE >= 0 { pe[sub + nextNE] &+= err }
             }
+            fold(q0, 0)
+            fold(q1, plane)
+            fold(q2, 2 * plane)
+            fold(q3, 3 * plane)
         }
     }
 }
