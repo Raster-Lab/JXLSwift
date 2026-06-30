@@ -9,6 +9,58 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## [1.2.0] — 2026-06-30 (release)
+
+**JPEG-XL transfer-syntax completion + lossless ratio.** Three additions: the
+reverse half of JPEG recompression is now public API, the lossless Modular path
+gains the YCoCg-R reversible colour transform (a large ratio win on RGB/RGBA),
+and the `async` facade reaches parity for the recompression pair. **Encoded
+bytes change for RGB/RGBA lossless** (RCT — see *Changed*); grayscale, the JPEG
+bridge, and every decode path are unchanged. RCT output is `djxl 0.11.2`
+byte-exact (reference-verified), and the JPEG-recompression round trip is
+byte-identical against `cjxl`/`djxl` in both directions.
+
+### Added
+
+- **Public reverse JPEG recompression** — `JXLDecoder.decodeLosslessJPEG(_:)
+  throws -> Data`, the symmetric mirror of the existing public
+  `encodeLosslessJPEG(_:)`. Reconstructs the byte-identical original JPEG from a
+  JPEG-bridge JXL (baseline + common progressive; 4:4:4 / 4:2:2 / 4:2:0 /
+  grayscale; APP / ICC metadata). The reverse pipeline's adapter/bridge types
+  stay `package`; only the one-call wrapper is public. `jxl transcode --mode
+  reverse` is now a thin client over it.
+- **`async` overloads** for `encodeLosslessJPEG` / `decodeLosslessJPEG`,
+  completing the J2KSwift async-facade parity for the recompression syntax.
+
+### Changed
+
+- **Lossless RGB/RGBA now uses the YCoCg-R reversible colour transform**
+  (§C.7.7), single- and multi-group. R, G, B are decorrelated to Y, Co, Cg
+  before prediction and inverted by the decoder from the global-header
+  transform list. **Encoded bytes change for RGB/RGBA lossless** (smaller);
+  grayscale and all decode output are unchanged. Measured **21–66 % smaller**
+  on correlated RGB/RGBA versus the previous independent-channel coding.
+- **RCT is cost-gated** — applied only when its estimated residual cost beats
+  raw R, G, B, so it can never inflate a frame (already-decorrelated /
+  independent-channel content keeps the identity path). Round-trips stay
+  pixel-exact either way.
+
+### Fixed
+
+- The modular gradient predictor's redundant `[0, sampleHi]` clamp is dropped in
+  the residual paths — a no-op for in-range channels (existing byte-exact output
+  preserved) but it diverged from the decoder's ClampedGradient for the
+  RCT-transformed (signed / over-range) chroma channels, which would otherwise
+  break the round trip.
+
+### Verification
+
+- RCT lossless output decodes **byte-exact** through reference `djxl 0.11.2`
+  across single/multi-group, 8/16-bit RGB/RGBA, correlated + random content.
+- JPEG recompression: `cjxl --lossless_jpeg=1` → `decodeLosslessJPEG` →
+  byte-identical original, and forward bridge → `djxl` → byte-identical, across
+  4:4:4 / 4:2:2 / 4:2:0 / grayscale.
+
 ## [1.1.0] — 2026-06-12 (release)
 
 **Performance-programme release.** Default-effort lossless encode is

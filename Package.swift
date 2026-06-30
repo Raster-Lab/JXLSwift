@@ -8,12 +8,12 @@ import PackageDescription
 // amended 2026-05) — currently scaffolding only; functions added there must
 // be byte-equivalent to a scalar Swift reference and gate-tested.
 //
-// Status: v1.1.0 production-ready lossless JPEG XL codec — medical-grade
-// (DICOM + CID22 byte-exact via djxl), API frozen, Swift-first with the
-// `JXLPerfC` boundary scaffolded for future C/C++ hot-path work. v1.1.0
-// is the performance-programme release (7.1× default-effort encode,
-// parallel batch/groups, retuned effort ladder — see CHANGELOG.md and
-// Documentation/OPTIMISATION-PLAN-2026-06.md).
+// Status: v1.2.0 production-ready lossless JPEG XL codec — medical-grade
+// (DICOM + CID22 byte-exact via djxl), Swift-first with the `JXLPerfC`
+// boundary scaffolded for future C/C++ hot-path work. v1.2.0 adds the
+// public reverse JPEG-recompression API (`JXLDecoder.decodeLosslessJPEG`)
+// and the YCoCg-R lossless colour transform (21–66 % smaller RGB/RGBA,
+// cost-gated, djxl-byte-exact — see CHANGELOG.md).
 
 // JXLSwift is fully self-contained: no shared-protocol package. The only
 // dependency is swift-argument-parser, and that is CLI-only (the JXLSwift
