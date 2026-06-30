@@ -223,6 +223,44 @@ struct Transcode: ParsableCommand {
             // Continue.
             break
         }
+        // Primary path: the public autonomous reverse-transcode API
+        // (`JXLDecoder.decodeLosslessJPEG`). It re-parses the container
+        // internally and recovers everything from the JXL itself
+        // (coefficients, RAW quant, chroma, ICC) plus the jbrd box, then
+        // reconstructs the byte-identical JPEG. The source-driven
+        // fallback runs only when this can't handle the frame AND
+        // `--source` was supplied.
+        do {
+            let out = try JXLDecoder().decodeLosslessJPEG(jxlBytes)
+            try writeReverseOutput(out, to: outputURL, sourceBytes: nil)
+            return
+        } catch let e as DecoderError {
+            guard sourceJPEGPath != nil else {
+                print("error: autonomous JXL → JPEG reverse transcode "
+                    + "failed: \(e.errorDescription ?? "\(e)"). Supply "
+                    + "`--source <orig.jpg>` to fall back to the "
+                    + "source-driven path.", to: &standardError)
+                throw JXLExitCode.notImplemented
+            }
+            print("note: autonomous decode unavailable "
+                + "(\(e.errorDescription ?? "\(e)")); falling back to "
+                + "--source.", to: &standardError)
+        }
+
+        // Source-driven fallback (only reached when `--source` present).
+        try transcodeJXLtoJPEGFromSource(
+            jxlBytes: jxlBytes, outputURL: outputURL,
+            sourcePath: sourceJPEGPath!)
+    }
+
+    /// Source-driven reverse transcode — used when the autonomous
+    /// `JXLDecoder.decodeLosslessJPEG` can't handle the frame. Re-parses
+    /// the jbrd box from the JXL, then fills the quant-table values and
+    /// per-component sampling factors from the supplied original JPEG
+    /// before reconstructing.
+    private func transcodeJXLtoJPEGFromSource(
+        jxlBytes: Data, outputURL: URL, sourcePath: String
+    ) throws {
         // Parse the JXL container to find the jbrd box.
         let form: JXLContainerForm
         do { form = try parseJXLContainer(jxlBytes) }
@@ -309,15 +347,9 @@ struct Transcode: ParsableCommand {
                   to: &standardError)
             throw JXLExitCode.generalError
         }
-        // Autonomous path (v0.12.0hc / v0.12.0hd): decode the
-        // coefficients + RAW quant table + chroma info + codestream
-        // ICC from the JXL itself and reconstruct with no `--source`.
-        // Decode the bridge BEFORE distributing the jbrd payload so
-        // the recovered ICC can be spliced into the APP2 marker.
-        // Falls back to the source path only when the autonomous
-        // decode can't handle the frame (non-VarDCT, progressive,
-        // etc.) AND `--source` was supplied.
-        var rebuilt: Data? = nil
+        // Opportunistically recover the codestream ICC for the APP2
+        // marker (the autonomous bridge decode that failed upstream may
+        // still surface the ICC).
         let bridge = try? JXLDecoder().decodeJPEGBridgeData(jxlBytes)
         let external = JBRDBox.ExternalMetadata(
             exif: exifBox, xmp: xmpBox, icc: bridge?.icc)
@@ -330,102 +362,67 @@ struct Transcode: ParsableCommand {
                   to: &standardError)
             throw JXLExitCode.generalError
         }
+        // Read the source JPEG and patch quant values + sampling factors.
+        let sourceBytes: Data
         do {
-            guard let bridge = bridge else {
-                throw DecoderError.notImplemented(
-                    "autonomous coefficient decode unavailable")
-            }
-            rebuilt = try JXLToJPEGAdapter.reconstruct(
-                bridgeData: bridge, jbrd: box)
-        } catch let e as DecoderError {
-            if case .notImplemented(let msg) = e, sourceJPEGPath != nil {
-                print("note: autonomous decode unavailable "
-                    + "(\(msg)); falling back to --source.",
-                    to: &standardError)
-            } else if sourceJPEGPath == nil {
-                print("error: autonomous JXL → JPEG reverse "
-                    + "transcode failed: \(e). Supply `--source "
-                    + "<orig.jpg>` to fall back to the "
-                    + "source-driven path.", to: &standardError)
-                throw JXLExitCode.notImplemented
-            }
+            sourceBytes = try Data(
+                contentsOf: URL(fileURLWithPath: sourcePath))
         } catch {
-            if sourceJPEGPath == nil {
-                print("error: autonomous reverse transcode "
-                    + "failed: \(error)", to: &standardError)
-                throw JXLExitCode.generalError
-            }
+            print("error reading source JPEG \(sourcePath): "
+                + "\(error)", to: &standardError)
+            throw JXLExitCode.generalError
         }
-
-        // Source-driven fallback (only when autonomous didn't
-        // produce output and `--source` is present).
-        var sourceBytes: Data? = nil
-        if rebuilt == nil {
-            guard let sourcePath = sourceJPEGPath else {
-                print("error: JXL → JPEG reverse transcode failed "
-                    + "and no `--source` fallback was provided.",
-                    to: &standardError)
-                throw JXLExitCode.notImplemented
-            }
-            let sb: Data
-            do {
-                sb = try Data(
-                    contentsOf: URL(fileURLWithPath: sourcePath))
-            } catch {
-                print("error reading source JPEG \(sourcePath): "
-                    + "\(error)", to: &standardError)
-                throw JXLExitCode.generalError
-            }
-            sourceBytes = sb
-            let originalCoeffs: JPEGCoefficientImage
-            do {
-                originalCoeffs = try JPEGDecoder
-                    .decodeToCoefficients(sb)
-            } catch let e as JPEGDecoderError {
-                print("error: source JPEG decode failed: "
-                    + (e.errorDescription ?? "\(e)"),
-                    to: &standardError)
-                throw JXLExitCode.generalError
-            }
-            for i in 0..<box.quant.count
-            where i < originalCoeffs.quantTables.count {
-                box.quant[i].values =
-                    originalCoeffs.quantTables[i]
-                    .zigZagValues.map { Int32($0) }
-            }
-            for i in 0..<box.components.count
-            where i < originalCoeffs.frameComponents.count {
-                box.components[i].hSampFactor =
-                    originalCoeffs.frameComponents[i].hSamplingFactor
-                box.components[i].vSampFactor =
-                    originalCoeffs.frameComponents[i].vSamplingFactor
-            }
-            let planes: JXLCoefficientPlanes
-            do {
-                planes = try originalCoeffs.toJXLCoefficientPlanes()
-            } catch let e as JPEGToJXLAdapterError {
-                print("error: source JPEG → JXL planes adapter "
-                    + "failed: \(e)", to: &standardError)
-                throw JXLExitCode.generalError
-            }
-            do {
-                rebuilt = try JXLToJPEGAdapter.reconstruct(
-                    coefficients: planes.remappedForJXLBridge(
-                        colorTransform: .ycbcr),
-                    jbrd: box, colorTransform: .ycbcr)
-            } catch let e as JXLToJPEGAdapterError {
-                print("error: reconstruct failed: \(e)",
-                      to: &standardError)
-                throw JXLExitCode.generalError
-            }
+        let originalCoeffs: JPEGCoefficientImage
+        do {
+            originalCoeffs = try JPEGDecoder
+                .decodeToCoefficients(sourceBytes)
+        } catch let e as JPEGDecoderError {
+            print("error: source JPEG decode failed: "
+                + (e.errorDescription ?? "\(e)"),
+                to: &standardError)
+            throw JXLExitCode.generalError
         }
-
-        guard let out = rebuilt else {
-            print("error: reverse transcode produced no output.",
+        for i in 0..<box.quant.count
+        where i < originalCoeffs.quantTables.count {
+            box.quant[i].values =
+                originalCoeffs.quantTables[i]
+                .zigZagValues.map { Int32($0) }
+        }
+        for i in 0..<box.components.count
+        where i < originalCoeffs.frameComponents.count {
+            box.components[i].hSampFactor =
+                originalCoeffs.frameComponents[i].hSamplingFactor
+            box.components[i].vSampFactor =
+                originalCoeffs.frameComponents[i].vSamplingFactor
+        }
+        let planes: JXLCoefficientPlanes
+        do {
+            planes = try originalCoeffs.toJXLCoefficientPlanes()
+        } catch let e as JPEGToJXLAdapterError {
+            print("error: source JPEG → JXL planes adapter "
+                + "failed: \(e)", to: &standardError)
+            throw JXLExitCode.generalError
+        }
+        let rebuilt: Data
+        do {
+            rebuilt = try JXLToJPEGAdapter.reconstruct(
+                coefficients: planes.remappedForJXLBridge(
+                    colorTransform: .ycbcr),
+                jbrd: box, colorTransform: .ycbcr)
+        } catch let e as JXLToJPEGAdapterError {
+            print("error: reconstruct failed: \(e)",
                   to: &standardError)
             throw JXLExitCode.generalError
         }
-        // Write output.
+        try writeReverseOutput(
+            rebuilt, to: outputURL, sourceBytes: sourceBytes)
+    }
+
+    /// Write reverse-transcode output, and — when a source JPEG is
+    /// supplied — report whether the result is byte-identical to it.
+    private func writeReverseOutput(
+        _ out: Data, to outputURL: URL, sourceBytes: Data?
+    ) throws {
         do {
             try out.write(to: outputURL)
         } catch {
