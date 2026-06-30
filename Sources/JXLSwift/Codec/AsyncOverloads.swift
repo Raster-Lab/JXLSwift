@@ -38,6 +38,15 @@ extension JXLEncoder {
         let syncEncode: ([ImageFrame]) throws -> EncodedImage = self.encode
         return try syncEncode(frames)
     }
+
+    /// Async overload of ``encodeLosslessJPEG(_:)`` — forward JPEG
+    /// recompression (JPEG → JXL). Completes the `async` family-parity
+    /// surface for the recompression transfer syntax; thin wrapper
+    /// around the synchronous implementation.
+    public func encodeLosslessJPEG(_ jpegBytes: Data) async throws -> EncodedImage {
+        let sync: (Data) throws -> EncodedImage = self.encodeLosslessJPEG
+        return try sync(jpegBytes)
+    }
 }
 
 extension JXLDecoder {
@@ -53,5 +62,14 @@ extension JXLDecoder {
     public func decodeAll(_ data: Data) async throws -> [ImageFrame] {
         let syncDecodeAll: (Data) throws -> [ImageFrame] = self.decodeAll
         return try syncDecodeAll(data)
+    }
+
+    /// Async overload of ``decodeLosslessJPEG(_:)`` — reverse JPEG
+    /// recompression (JXL → byte-identical JPEG). Completes the `async`
+    /// family-parity surface for the recompression transfer syntax;
+    /// thin wrapper around the synchronous implementation.
+    public func decodeLosslessJPEG(_ jxlBytes: Data) async throws -> Data {
+        let sync: (Data) throws -> Data = self.decodeLosslessJPEG
+        return try sync(jxlBytes)
     }
 }
