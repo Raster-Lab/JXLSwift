@@ -541,7 +541,7 @@ package enum SpecModularEncoder {
         let built = try buildSections(
             width: width, height: height,
             channels: [r, g, b].map { $0.map { Int32($0) } },
-            sampleHi: sampleHi, effort: effort
+            sampleHi: sampleHi, effort: effort, applyRCT: true
         )
         return try writeOuterCodestream(
             width: width, height: height,
@@ -582,7 +582,7 @@ package enum SpecModularEncoder {
         let built = try buildSections(
             width: width, height: height,
             channels: [r, g, b, a].map { $0.map { Int32($0) } },
-            sampleHi: sampleHi, effort: effort
+            sampleHi: sampleHi, effort: effort, applyRCT: true
         )
         return try writeOuterCodestream(
             width: width, height: height,
@@ -632,7 +632,7 @@ package enum SpecModularEncoder {
         let built = try buildSections(
             width: width, height: height,
             channels: [r, g, b].map { $0.map { Int32($0) } },
-            sampleHi: 255, effort: effort
+            sampleHi: 255, effort: effort, applyRCT: true
         )
         return try writeOuterCodestream(
             width: width, height: height,
@@ -670,7 +670,7 @@ package enum SpecModularEncoder {
         let built = try buildSections(
             width: width, height: height,
             channels: [r, g, b, a].map { $0.map { Int32($0) } },
-            sampleHi: 255, effort: effort
+            sampleHi: 255, effort: effort, applyRCT: true
         )
         return try writeOuterCodestream(
             width: width, height: height,
@@ -690,6 +690,30 @@ package enum SpecModularEncoder {
         let sections: [Data]
     }
 
+    /// Cheap entropy proxy used by the RCT cost-gate: the total number of
+    /// significant bits of the zig-zag-packed ClampedGradient residuals
+    /// over a channel (bit-length of each packed residual; 0 for an exact
+    /// prediction). Larger / less-predictable residuals cost more bits, so
+    /// summing this across the colour channels gives a predictor-agnostic
+    /// estimate that tracks the entropy-coded size closely enough to
+    /// decide whether YCoCg-R decorrelation pays off. Uses the same
+    /// unclamped gradient the encode path uses, so the relative ordering
+    /// matches what the real coder would produce.
+    private static func estimateGradientResidualBits(
+        _ ch: [Int32], width: Int, height: Int
+    ) -> Int {
+        var bits = 0
+        for y in 0..<height {
+            for x in 0..<width {
+                let nbh = Neighbourhood(at: x, y, in: ch, width: width)
+                let pred = Predictor.gradient.apply(to: nbh)
+                let packed = ZigZag.pack(ch[y * width + x] &- pred)
+                bits += packed == 0 ? 0 : (32 - packed.leadingZeroBitCount)
+            }
+        }
+        return bits
+    }
+
     /// Build the codestream sections for an N-channel single-pass
     /// modular frame. Picks `groupSizeShift = 2` (group_dim=512). If
     /// the image fits inside one group, returns the single-section
@@ -700,7 +724,7 @@ package enum SpecModularEncoder {
     private static func buildSections(
         width: Int, height: Int,
         channels: [[Int32]], sampleHi: Int32,
-        effort: Int = 9
+        effort: Int = 9, applyRCT: Bool = false
     ) throws -> EncodedSections {
         let groupSizeShift: UInt32 = 2
         let groupDim = 128 << Int(groupSizeShift)   // 512
@@ -715,10 +739,64 @@ package enum SpecModularEncoder {
         let numDcGroupsY = (height + dcGroupDim - 1) / dcGroupDim
         let numDcGroups = numDcGroupsX * numDcGroupsY
 
+        // YCoCg-R reversible colour transform (§C.7.7). For RGB/RGBA
+        // (`applyRCT`, ≥ 3 colour channels) decorrelate R,G,B → Y,Co,Cg
+        // before prediction so the chroma channels carry small differences
+        // that compress to near-nothing; the decoder inverts it from the
+        // GroupHeader transform list (`SpecRCT.inverse`).
+        // `RCT.forwardPixel(.ycocgR)` is the exact inverse of
+        // `SpecRCT.inverse(rctType: 6)` (YCoCg-R, permutation 0).
+        //
+        // Applied identically for single- and multi-group frames: the
+        // transform descriptor is written in the section-0 / DC-global
+        // GroupHeader, the per-AC-group headers stay empty, and the decoder
+        // applies the inverse on the assembled image (libjxl-canonical —
+        // transforms live in the global modular header). RCT is computed
+        // into an immutable `let` so the concurrent multi-group residual
+        // closures can capture it.
+        let rctChannels: [[Int32]]
+        let modularTransforms: [ModularTransform]
+        if applyRCT, channels.count >= 3 {
+            // Cost-gate RCT: estimate the gradient-residual bit cost of the
+            // colour channels as-is (R,G,B) vs YCoCg-R-transformed
+            // (Y,Co,Cg) and apply RCT only when it's estimated to help.
+            // Correlated content collapses Co/Cg to near-zero (large win);
+            // already-decorrelated content would pay the +1-bit chroma
+            // range for no gain, so the identity (no-RCT) path is kept
+            // there — RCT can then never make a frame larger.
+            var c0 = channels[0]
+            var c1 = channels[1]
+            var c2 = channels[2]
+            RCT.forward(.ycocgR, channel0: &c0, channel1: &c1, channel2: &c2)
+            let rgbCost =
+                estimateGradientResidualBits(channels[0], width: width, height: height)
+                + estimateGradientResidualBits(channels[1], width: width, height: height)
+                + estimateGradientResidualBits(channels[2], width: width, height: height)
+            let ycocgCost =
+                estimateGradientResidualBits(c0, width: width, height: height)
+                + estimateGradientResidualBits(c1, width: width, height: height)
+                + estimateGradientResidualBits(c2, width: width, height: height)
+            if ycocgCost < rgbCost {
+                var c = channels
+                c[0] = c0; c[1] = c1; c[2] = c2
+                rctChannels = c
+                modularTransforms = [
+                    ModularTransform(id: .rct, beginC: 0, rctType: 6)
+                ]
+            } else {
+                rctChannels = channels
+                modularTransforms = []
+            }
+        } else {
+            rctChannels = channels
+            modularTransforms = []
+        }
+
         if numGroups == 1 {
             let sec0 = try buildSingleSection(
                 width: width, height: height,
-                channels: channels, sampleHi: sampleHi, effort: effort
+                channels: rctChannels, sampleHi: sampleHi, effort: effort,
+                transforms: modularTransforms
             )
             return EncodedSections(
                 groupSizeShift: groupSizeShift, sections: [sec0]
@@ -758,7 +836,7 @@ package enum SpecModularEncoder {
                 let ci = slot / numGroups
                 let gi = slot % numGroups
                 let gy = gi / numGroupsX, gx = gi % numGroupsX
-                let pix = channels[ci]
+                let pix = rctChannels[ci]
                 let rectX0 = gx * groupDim, rectY0 = gy * groupDim
                 let rectW = min(groupDim, width - rectX0)
                 let rectH = min(groupDim, height - rectY0)
@@ -798,7 +876,11 @@ package enum SpecModularEncoder {
                     for ry in 0..<rectH {
                         for rx in 0..<rectW {
                             let nbh = Neighbourhood(at: rx, ry, in: rect, width: rectW)
-                            let pred = Predictor.gradient.apply(to: nbh, lo: 0, hi: sampleHi)
+                            // No [0, sampleHi] clamp — match the decoder's
+                            // ClampedGradient (id 5, local clamp only) so the
+                            // RCT-transformed Co/Cg channels (signed / >
+                            // sampleHi) round-trip. No-op for in-range data.
+                            let pred = Predictor.gradient.apply(to: nbh)
                             let p = ZigZag.pack(rect[ry * rectW + rx] &- pred)
                             let exp = postCfg.encode(p)
                             let t = Int(exp.token)
@@ -867,7 +949,7 @@ package enum SpecModularEncoder {
             postHeader: postHeader, postCodebook: postCodebook,
             rawPredictor: rawPredictor
         )
-        try GroupHeader.default.write(to: &dcGlobal)
+        try GroupHeader(transforms: modularTransforms).write(to: &dcGlobal)
         dcGlobal.alignToByte()
         let dcGlobalData = dcGlobal.finishToData()
 
@@ -938,19 +1020,19 @@ package enum SpecModularEncoder {
         // single-context baseline only.
         if effort >= 4, let multi = try? buildSectionsMultiContext(
             width: width, height: height,
-            channels: channels, sampleHi: sampleHi,
+            channels: rctChannels, sampleHi: sampleHi,
             numGroupsX: numGroupsX, numGroupsY: numGroupsY,
             numGroups: numGroups, numDcGroups: numDcGroups,
-            groupDim: groupDim),
+            groupDim: groupDim, transforms: modularTransforms),
            total(multi) < total(best) {
             best = multi
         }
         if effort >= 8, let greedy = buildSectionsGreedyTree(
             width: width, height: height,
-            channels: channels, sampleHi: sampleHi, effort: effort,
+            channels: rctChannels, sampleHi: sampleHi, effort: effort,
             numGroupsX: numGroupsX, numGroupsY: numGroupsY,
             numGroups: numGroups, numDcGroups: numDcGroups,
-            groupDim: groupDim),
+            groupDim: groupDim, transforms: modularTransforms),
            total(greedy) < total(best) {
             best = greedy
         }
@@ -1123,7 +1205,8 @@ package enum SpecModularEncoder {
     private static func costMultiGroupSections(
         tree: ModularTree, numContexts n: Int,
         perGroupOrdered: [[(ctx: Int, val: UInt32)]],
-        numDcGroups: Int, postCfg: HybridUintConfig
+        numDcGroups: Int, postCfg: HybridUintConfig,
+        transforms: [ModularTransform] = []
     ) -> (bytes: Int, header: EntropySectionHeader,
           codebook: MultiClusterCodebook)? {
         let numGroups = perGroupOrdered.count
@@ -1184,7 +1267,7 @@ package enum SpecModularEncoder {
                 try writeModularTreeSectionOnly(to: &dcGlobal, tree: tree)
                 try h.write(to: &dcGlobal, numContexts: n)
                 try c.write(to: &dcGlobal, header: h)
-                try GroupHeader.default.write(to: &dcGlobal)
+                try GroupHeader(transforms: transforms).write(to: &dcGlobal)
             } catch { return Int.max }
             dcGlobal.alignToByte()
             var total = dcGlobal.bitCount / 8
@@ -1274,7 +1357,8 @@ package enum SpecModularEncoder {
         tree: ModularTree, numContexts n: Int,
         perGroupOrdered: [[(ctx: Int, val: UInt32)]],
         numDcGroups: Int,
-        header h: EntropySectionHeader, codebook c: MultiClusterCodebook
+        header h: EntropySectionHeader, codebook c: MultiClusterCodebook,
+        transforms: [ModularTransform] = []
     ) -> [Data]? {
         let numGroups = perGroupOrdered.count
         var dcGlobal = BitWriter()
@@ -1284,7 +1368,7 @@ package enum SpecModularEncoder {
             try writeModularTreeSectionOnly(to: &dcGlobal, tree: tree)
             try h.write(to: &dcGlobal, numContexts: n)
             try c.write(to: &dcGlobal, header: h)
-            try GroupHeader.default.write(to: &dcGlobal)
+            try GroupHeader(transforms: transforms).write(to: &dcGlobal)
         } catch { return nil }
         dcGlobal.alignToByte()
         var sections = [Data]()
@@ -1329,14 +1413,17 @@ package enum SpecModularEncoder {
     private static func assembleMultiGroupContextSections(
         tree: ModularTree, numContexts n: Int,
         perGroupOrdered: [[(ctx: Int, val: UInt32)]],
-        numDcGroups: Int, postCfg: HybridUintConfig
+        numDcGroups: Int, postCfg: HybridUintConfig,
+        transforms: [ModularTransform] = []
     ) -> [Data]? {
         guard let cost = costMultiGroupSections(
             tree: tree, numContexts: n, perGroupOrdered: perGroupOrdered,
-            numDcGroups: numDcGroups, postCfg: postCfg) else { return nil }
+            numDcGroups: numDcGroups, postCfg: postCfg,
+            transforms: transforms) else { return nil }
         return emitMultiGroupSections(
             tree: tree, numContexts: n, perGroupOrdered: perGroupOrdered,
-            numDcGroups: numDcGroups, header: cost.header, codebook: cost.codebook)
+            numDcGroups: numDcGroups, header: cost.header, codebook: cost.codebook,
+            transforms: transforms)
     }
 
     /// Multi-context candidate for the multi-group path — the analogue of
@@ -1355,7 +1442,8 @@ package enum SpecModularEncoder {
         width: Int, height: Int,
         channels: [[Int32]], sampleHi: Int32,
         numGroupsX: Int, numGroupsY: Int,
-        numGroups: Int, numDcGroups: Int, groupDim: Int
+        numGroups: Int, numDcGroups: Int, groupDim: Int,
+        transforms: [ModularTransform] = []
     ) throws -> [Data]? {
         guard width > 0, height > 0, !channels.isEmpty else { return nil }
         let postCfg = HybridUintConfig.raw4
@@ -1436,7 +1524,8 @@ package enum SpecModularEncoder {
             }
             guard let cost = costMultiGroupSections(
                 tree: tree, numContexts: n, perGroupOrdered: perGroupOrdered,
-                numDcGroups: numDcGroups, postCfg: postCfg) else { return nil }
+                numDcGroups: numDcGroups, postCfg: postCfg,
+                transforms: transforms) else { return nil }
             return (cost.bytes, tree, n, perGroupOrdered,
                     cost.header, cost.codebook)
         }
@@ -1475,7 +1564,8 @@ package enum SpecModularEncoder {
             tree: win.tree, numContexts: win.n,
             perGroupOrdered: win.perGroupOrdered,
             numDcGroups: numDcGroups,
-            header: win.header, codebook: win.codebook)
+            header: win.header, codebook: win.codebook,
+            transforms: transforms)
     }
 
     /// Greedy multi-property MA-tree candidate for the **multi-group** path
@@ -1493,7 +1583,8 @@ package enum SpecModularEncoder {
         width: Int, height: Int,
         channels: [[Int32]], sampleHi: Int32, effort: Int = 9,
         numGroupsX: Int, numGroupsY: Int,
-        numGroups: Int, numDcGroups: Int, groupDim: Int
+        numGroups: Int, numDcGroups: Int, groupDim: Int,
+        transforms: [ModularTransform] = []
     ) -> [Data]? {
         guard width > 0, height > 0, !channels.isEmpty else { return nil }
         let n = width * height * channels.count
@@ -1603,7 +1694,8 @@ package enum SpecModularEncoder {
         }
         return assembleMultiGroupContextSections(
             tree: tree, numContexts: numCtx, perGroupOrdered: perGroupOrdered,
-            numDcGroups: numDcGroups, postCfg: postCfg)
+            numDcGroups: numDcGroups, postCfg: postCfg,
+            transforms: transforms)
     }
 
     /// Write the global tree section + global post-tree codebook the
@@ -1666,7 +1758,7 @@ package enum SpecModularEncoder {
     private static func buildSingleSection(
         width: Int, height: Int,
         channels: [[Int32]], sampleHi: Int32,
-        effort: Int = 9
+        effort: Int = 9, transforms: [ModularTransform] = []
     ) throws -> Data {
         let postCfg = HybridUintConfig.raw4
         // Cost-gate the predictor (ClampedGradient=5 vs Weighted
@@ -1773,7 +1865,7 @@ package enum SpecModularEncoder {
                 }
                 try postHeader.write(to: &sec, numContexts: 1)
                 try postCodebook.write(to: &sec, header: postHeader)
-                try GroupHeader.default.write(to: &sec)
+                try GroupHeader(transforms: transforms).write(to: &sec)
                 // All channels' residuals route through tree leaf 0
                 // (context 0) and share the post codebook. Huffman writes
                 // inline; rANS buffers the whole sub-image and emits one
@@ -1830,12 +1922,14 @@ package enum SpecModularEncoder {
                 let d = try? buildSingleSectionMultiContext(
                     width: width, height: height,
                     channels: channels, sampleHi: sampleHi,
+                    transforms: transforms,
                     precomputed: (wpShared.propsFlat, wpShared.tokens))
                 return .cand(d ?? nil)
             default:
                 return .cand(buildSingleSectionGreedyTree(
                     width: width, height: height,
                     channels: channels, sampleHi: sampleHi, effort: effort,
+                    transforms: transforms,
                     precomputed: wpShared))
             }
         }
@@ -1907,7 +2001,8 @@ package enum SpecModularEncoder {
     /// `Data.count`s) and emits only the winner.
     private static func costMultiContextSection(
         tree: ModularTree, numContexts n: Int,
-        ordered: [(ctx: Int, val: UInt32)], postCfg: HybridUintConfig
+        ordered: [(ctx: Int, val: UInt32)], postCfg: HybridUintConfig,
+        transforms: [ModularTransform] = []
     ) -> (bytes: Int, header: EntropySectionHeader,
           codebook: MultiClusterCodebook)? {
         guard n >= 1, !ordered.isEmpty else { return nil }
@@ -1947,7 +2042,7 @@ package enum SpecModularEncoder {
                 try writeModularTreeSectionOnly(to: &w, tree: tree)
                 try h.write(to: &w, numContexts: n)
                 try c.write(to: &w, header: h)
-                try GroupHeader.default.write(to: &w)
+                try GroupHeader(transforms: transforms).write(to: &w)
             } catch { return Int.max }
             return w.bitCount
         }
@@ -2032,7 +2127,8 @@ package enum SpecModularEncoder {
         tree: ModularTree, numContexts n: Int,
         ordered: [(ctx: Int, val: UInt32)],
         header postHeader: EntropySectionHeader,
-        codebook postCodebook: MultiClusterCodebook
+        codebook postCodebook: MultiClusterCodebook,
+        transforms: [ModularTransform] = []
     ) -> Data? {
         var sec = BitWriter()
         sec.writeBit(true)            // matrices_dc_default
@@ -2041,7 +2137,7 @@ package enum SpecModularEncoder {
             try writeModularTreeSectionOnly(to: &sec, tree: tree)
             try postHeader.write(to: &sec, numContexts: n)
             try postCodebook.write(to: &sec, header: postHeader)
-            try GroupHeader.default.write(to: &sec)
+            try GroupHeader(transforms: transforms).write(to: &sec)
             if postHeader.usePrefixCode {
                 let tw = TokenStreamWriter(header: postHeader, codebook: postCodebook)
                 for (ctx, v) in ordered {
@@ -2062,14 +2158,17 @@ package enum SpecModularEncoder {
     /// (the greedy-tree path), so the winner emission is the only one.
     private static func assembleMultiContextSection(
         tree: ModularTree, numContexts n: Int,
-        ordered: [(ctx: Int, val: UInt32)], postCfg: HybridUintConfig
+        ordered: [(ctx: Int, val: UInt32)], postCfg: HybridUintConfig,
+        transforms: [ModularTransform] = []
     ) -> Data? {
         guard let cost = costMultiContextSection(
-            tree: tree, numContexts: n, ordered: ordered, postCfg: postCfg)
+            tree: tree, numContexts: n, ordered: ordered, postCfg: postCfg,
+            transforms: transforms)
         else { return nil }
         return emitMultiContextSection(
             tree: tree, numContexts: n, ordered: ordered,
-            header: cost.header, codebook: cost.codebook)
+            header: cost.header, codebook: cost.codebook,
+            transforms: transforms)
     }
 
     /// Multi-context single-section candidate: split residuals by the
@@ -2085,6 +2184,7 @@ package enum SpecModularEncoder {
     /// `propertyValue` in the decoder's order) assigns identical contexts.
     private static func buildSingleSectionMultiContext(
         width: Int, height: Int, channels: [[Int32]], sampleHi: Int32,
+        transforms: [ModularTransform] = [],
         precomputed: (propsFlat: [Int32], tokens: [UInt32])? = nil
     ) throws -> Data? {
         guard width > 0, height > 0, !channels.isEmpty else { return nil }
@@ -2143,7 +2243,8 @@ package enum SpecModularEncoder {
             ordered.reserveCapacity(perPixel.count)
             for (wpProp, tok) in perPixel { ordered.append((ctxOf(wpProp), tok)) }
             guard let cost = costMultiContextSection(
-                tree: tree, numContexts: n, ordered: ordered, postCfg: postCfg)
+                tree: tree, numContexts: n, ordered: ordered, postCfg: postCfg,
+                transforms: transforms)
             else { return nil }
             return (cost.bytes, tree, n, ordered, cost.header, cost.codebook)
         }
@@ -2180,7 +2281,8 @@ package enum SpecModularEncoder {
         guard let win = best else { return nil }
         return emitMultiContextSection(
             tree: win.tree, numContexts: win.n, ordered: win.ordered,
-            header: win.header, codebook: win.codebook)
+            header: win.header, codebook: win.codebook,
+            transforms: transforms)
     }
 
     /// Sorts the first `m` elements of `a` ascending (signed `Int64`) by LSD
@@ -2515,7 +2617,7 @@ package enum SpecModularEncoder {
 
     private static func buildSingleSectionGreedyTree(
         width: Int, height: Int, channels: [[Int32]], sampleHi: Int32,
-        effort: Int = 9,
+        effort: Int = 9, transforms: [ModularTransform] = [],
         precomputed: (propsFlat: [Int32], tokens: [UInt32],
                       tokBucket: [Int], maxTok: Int)? = nil
     ) -> Data? {
@@ -2590,7 +2692,8 @@ package enum SpecModularEncoder {
             ordered.append((leaf.leafId, tokens[i]))
         }
         return assembleMultiContextSection(
-            tree: tree, numContexts: numCtx, ordered: ordered, postCfg: postCfg)
+            tree: tree, numContexts: numCtx, ordered: ordered, postCfg: postCfg,
+            transforms: transforms)
     }
 
     /// Pick the smaller of a Huffman or rANS post codebook for one
@@ -2767,8 +2870,14 @@ package enum SpecModularEncoder {
                 for y in 0..<height {
                     for x in 0..<width {
                         let nbh = Neighbourhood(at: x, y, in: pix32, width: width)
-                        let pred = Predictor.gradient.apply(
-                            to: nbh, lo: 0, hi: sampleHi)
+                        // No [0, sampleHi] clamp here: the gradient's own
+                        // [min(W,N), max(W,N)] clamp IS the decoder/libjxl
+                        // semantics (`applyLibjxlPredictor` id 5). The extra
+                        // bound was a no-op for in-range channels but would
+                        // diverge from the decoder for the RCT-transformed
+                        // chroma channels (signed / > sampleHi), breaking the
+                        // round trip.
+                        let pred = Predictor.gradient.apply(to: nbh)
                         let p = ZigZag.pack(pix32[y * width + x] &- pred)
                         let exp = postCfg.encode(p)
                         let t = Int(exp.token)

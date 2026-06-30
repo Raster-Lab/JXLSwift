@@ -169,6 +169,38 @@ final class RobustnessTests: XCTestCase {
         print("[sweep] \(cases) lossless round-trip cases passed across \(dims.count) dims × \(Content.allCases.count) content types")
     }
 
+    /// YCoCg-R RCT regression guard (single-group RGB lossless). RCT is
+    /// applied unconditionally to single-group RGB/RGBA, so a *silent*
+    /// regression that drops it would still round-trip (and thus slip
+    /// past the sweep). This pins the behaviour via RCT's defining
+    /// property: for identical R = G = B the forward transform yields
+    /// Co = Cg = 0, so the two chroma channels cost ~nothing and the RGB
+    /// codestream collapses to roughly the single-channel (grayscale)
+    /// size. Without RCT the three identical channels would each cost the
+    /// full grayscale size (≈ 3×). High-entropy (random) content is used
+    /// so the channel payload — not fixed header/codebook overhead —
+    /// dominates the byte count, making the two regimes ≈ 1× (RCT) vs
+    /// ≈ 3× (no RCT); the `< 2×` bound separates them with a wide margin
+    /// independent of the exact entropy coder.
+    func testRCT_LosslessRGB_DecorrelatesIdenticalChannels() throws {
+        let w = 128, h = 96
+        let noise = channel8(w, h, .random, salt: 1)
+        let gray = try SpecModularEncoder.encodeGrayscale8(
+            width: w, height: h, pixels: noise, effort: 7)
+        let rgb = try SpecModularEncoder.encodeRGB8(
+            width: w, height: h, r: noise, g: noise, b: noise, effort: 7)
+        // Correctness: the RGB codestream must still round-trip exactly.
+        try roundTrip(
+            rgb, expected: interleaved8([noise, noise, noise], w, h),
+            w: w, h: h, channels: 3, "rct rgb R=G=B")
+        // RCT engaged: identical R=G=B ⇒ Co=Cg=0 ⇒ RGB ≈ grayscale, not 3×.
+        XCTAssertLessThan(
+            rgb.count, gray.count * 2,
+            "RCT should decorrelate identical R=G=B to near grayscale size "
+            + "(rgb=\(rgb.count)B vs gray=\(gray.count)B); a ≈3× size means "
+            + "RCT is not being applied")
+    }
+
     /// The full effort ladder (1…9) must stay lossless — efforts 2,3,5,6,8 were
     /// never exercised end-to-end before. Fixed mixed-content 16-bit image.
     func testRobustness_EffortLadder_AllLossless() throws {
