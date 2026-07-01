@@ -3514,52 +3514,131 @@ extension JXLDecoder {
             }
         }
 
-        // Per-pixel XYB → linear RGB → sRGB → 8-bit. Crop the W*H plane
-        // back to the frame's actual `xsize × ysize` (the plane is
-        // padded out to a multiple of 8).
-        var rgb8 = [UInt8](repeating: 0, count: xsize * ysize * 3)
+        // Bit depth drives the output sample width. Mirrors
+        // `assembleImageFrame`'s existing (bps<=8 ? .uint8 : .uint16)
+        // split for the Modular path — VarDCT frames declare the
+        // same `ImageMetadata.bitDepth` field.
+        let bps = metadata.bitDepth.bitsPerSample
+        guard !metadata.bitDepth.floatingPoint else {
+            throw DecoderError.notImplemented(
+                "VarDCT decode: float-sample bit depth not supported"
+            )
+        }
+        guard bps >= 1 && bps <= 16 else {
+            throw DecoderError.notImplemented(
+                "VarDCT decode of \(bps)-bit samples "
+                + "(only 1..16 supported today)"
+            )
+        }
+        let pixelType: PixelType = (bps <= 8) ? .uint8 : .uint16
+        let _ = (kRequiredSizeX, kRequiredSizeY)
+
+        // Per-pixel XYB → linear RGB → sRGB → output samples. Crop
+        // the W*H plane back to the frame's actual `xsize × ysize`
+        // (the plane is padded out to a multiple of 8).
+        //
+        // The 8-bit branch is the original, unmodified code path
+        // (byte-identical output — no regression risk to the
+        // existing default decode). The 16-bit branch is new: it
+        // shares `linearToSRGBCode`, the bit-depth-generalised form
+        // of `linearToSRGB8`, but keeps its own buffer/loop rather
+        // than unifying with the 8-bit path, so the 8-bit case never
+        // pays for the extra branch or the wider buffer.
+        if pixelType == .uint8 {
+            var rgb8 = [UInt8](repeating: 0, count: xsize * ysize * 3)
+            for y in 0..<ysize {
+                for x in 0..<xsize {
+                    let pi = y * planeWidth + x
+                    let lin = OpsinXYB.inverse(
+                        (X: planeX[pi], Y: planeY[pi], B: planeB[pi])
+                    )
+                    let oi = (y * xsize + x) * 3
+                    rgb8[oi + 0] = linearToSRGB8(lin.R)
+                    rgb8[oi + 1] = linearToSRGB8(lin.G)
+                    rgb8[oi + 2] = linearToSRGB8(lin.B)
+                }
+            }
+            if trace {
+                for y in 0..<min(3, ysize) {
+                    var row = "TRACE RGB row \(y):"
+                    for x in 0..<min(3, xsize) {
+                        let i = (y * xsize + x) * 3
+                        row += " (\(rgb8[i]),\(rgb8[i+1]),\(rgb8[i+2]))"
+                    }
+                    FileHandle.standardError.write(Data((row + "\n").utf8))
+                }
+            }
+
+            // (17) Wire RGB into ImageFrame. Multi-block (v0.7.0) — for
+            // frames that span multiple AC groups the AC decode loop
+            // would need to be repeated per group with separate ANS
+            // state; that's the v0.7.0+ multi-group milestone. For
+            // single-AC-group frames (xsize, ysize ≤ group_dim, default
+            // 256), the current pipeline is sufficient.
+            // Multi-AC-group and multi-DC-group (frames > ~2048 px) are
+            // both wired up — each DC group is decoded into its sub-region
+            // of the full-frame planes above.
+            if nbExtraChannels == 0 {
+                var frame = ImageFrame(width: xsize, height: ysize, channels: 3)
+                frame.data = rgb8
+                return frame
+            }
+            // A single alpha extra channel → RGBA output. The modular-
+            // decoded extra-channel samples are the alpha values directly
+            // (extra channels carry no colour transform); interleave them
+            // behind the VarDCT-decoded RGB.
+            guard nbExtraChannels == 1,
+                  metadata.extraChannels[0].type == .alpha else {
+                throw DecoderError.notImplemented(
+                    "VarDCT decode: \(nbExtraChannels) extra channel(s) of "
+                    + "types \(metadata.extraChannels.map { $0.type }) — "
+                    + "only a single alpha channel is wired to output")
+            }
+            let alpha = extraChannelPlanes[0]
+            var rgba = [UInt8](repeating: 0, count: xsize * ysize * 4)
+            for i in 0..<(xsize * ysize) {
+                rgba[i * 4 + 0] = rgb8[i * 3 + 0]
+                rgba[i * 4 + 1] = rgb8[i * 3 + 1]
+                rgba[i * 4 + 2] = rgb8[i * 3 + 2]
+                rgba[i * 4 + 3] = i < alpha.count
+                    ? UInt8(clamping: alpha[i]) : 255
+            }
+            var frame = ImageFrame(
+                width: xsize, height: ysize, channels: 4, alphaChannels: 1)
+            frame.data = rgba
+            return frame
+        }
+
+        // 16-bit path (bps 9...16). Little-endian sample pairs,
+        // matching `ImageFrame`'s internal `.uint16` convention
+        // (`getPixel`/`setPixel`).
+        let sampleMax = UInt32((1 << bps) - 1)
+        let maxValueF = Float(sampleMax)
+        var rgb16 = [UInt8](repeating: 0, count: xsize * ysize * 3 * 2)
         for y in 0..<ysize {
             for x in 0..<xsize {
                 let pi = y * planeWidth + x
                 let lin = OpsinXYB.inverse(
                     (X: planeX[pi], Y: planeY[pi], B: planeB[pi])
                 )
-                let oi = (y * xsize + x) * 3
-                rgb8[oi + 0] = linearToSRGB8(lin.R)
-                rgb8[oi + 1] = linearToSRGB8(lin.G)
-                rgb8[oi + 2] = linearToSRGB8(lin.B)
+                let oi = (y * xsize + x) * 3 * 2
+                let rv = linearToSRGBCode(lin.R, maxValue: maxValueF)
+                let gv = linearToSRGBCode(lin.G, maxValue: maxValueF)
+                let bv = linearToSRGBCode(lin.B, maxValue: maxValueF)
+                rgb16[oi + 0] = UInt8(rv & 0xff)
+                rgb16[oi + 1] = UInt8((rv >> 8) & 0xff)
+                rgb16[oi + 2] = UInt8(gv & 0xff)
+                rgb16[oi + 3] = UInt8((gv >> 8) & 0xff)
+                rgb16[oi + 4] = UInt8(bv & 0xff)
+                rgb16[oi + 5] = UInt8((bv >> 8) & 0xff)
             }
         }
-        if trace {
-            for y in 0..<min(3, ysize) {
-                var row = "TRACE RGB row \(y):"
-                for x in 0..<min(3, xsize) {
-                    let i = (y * xsize + x) * 3
-                    row += " (\(rgb8[i]),\(rgb8[i+1]),\(rgb8[i+2]))"
-                }
-                FileHandle.standardError.write(Data((row + "\n").utf8))
-            }
-        }
-
-        // (17) Wire RGB into ImageFrame. Multi-block (v0.7.0) — for
-        // frames that span multiple AC groups the AC decode loop
-        // would need to be repeated per group with separate ANS
-        // state; that's the v0.7.0+ multi-group milestone. For
-        // single-AC-group frames (xsize, ysize ≤ group_dim, default
-        // 256), the current pipeline is sufficient.
-        // Multi-AC-group and multi-DC-group (frames > ~2048 px) are
-        // both wired up — each DC group is decoded into its sub-region
-        // of the full-frame planes above.
-        let _ = (kRequiredSizeX, kRequiredSizeY)
         if nbExtraChannels == 0 {
-            var frame = ImageFrame(width: xsize, height: ysize, channels: 3)
-            frame.data = rgb8
+            var frame = ImageFrame(
+                width: xsize, height: ysize, channels: 3, pixelType: .uint16)
+            frame.data = rgb16
             return frame
         }
-        // A single alpha extra channel → RGBA output. The modular-
-        // decoded extra-channel samples are the alpha values directly
-        // (extra channels carry no colour transform); interleave them
-        // behind the VarDCT-decoded RGB.
         guard nbExtraChannels == 1,
               metadata.extraChannels[0].type == .alpha else {
             throw DecoderError.notImplemented(
@@ -3568,17 +3647,25 @@ extension JXLDecoder {
                 + "only a single alpha channel is wired to output")
         }
         let alpha = extraChannelPlanes[0]
-        var rgba = [UInt8](repeating: 0, count: xsize * ysize * 4)
+        var rgba16 = [UInt8](repeating: 0, count: xsize * ysize * 4 * 2)
         for i in 0..<(xsize * ysize) {
-            rgba[i * 4 + 0] = rgb8[i * 3 + 0]
-            rgba[i * 4 + 1] = rgb8[i * 3 + 1]
-            rgba[i * 4 + 2] = rgb8[i * 3 + 2]
-            rgba[i * 4 + 3] = i < alpha.count
-                ? UInt8(clamping: alpha[i]) : 255
+            let src = i * 3 * 2
+            let dst = i * 4 * 2
+            rgba16[dst + 0] = rgb16[src + 0]
+            rgba16[dst + 1] = rgb16[src + 1]
+            rgba16[dst + 2] = rgb16[src + 2]
+            rgba16[dst + 3] = rgb16[src + 3]
+            rgba16[dst + 4] = rgb16[src + 4]
+            rgba16[dst + 5] = rgb16[src + 5]
+            let av: UInt32 = i < alpha.count
+                ? min(UInt32(max(0, alpha[i])), sampleMax) : sampleMax
+            rgba16[dst + 6] = UInt8(av & 0xff)
+            rgba16[dst + 7] = UInt8((av >> 8) & 0xff)
         }
         var frame = ImageFrame(
-            width: xsize, height: ysize, channels: 4, alphaChannels: 1)
-        frame.data = rgba
+            width: xsize, height: ysize, channels: 4,
+            pixelType: .uint16, alphaChannels: 1)
+        frame.data = rgba16
         return frame
     }
 
@@ -3595,10 +3682,12 @@ extension JXLDecoder {
         }
     }
 
-    /// Per-IEC 61966-2-1 sRGB OETF: linear-light [0,1] → 8-bit code
-    /// value. Clamps to [0, 255].
+    /// Per-IEC 61966-2-1 sRGB OETF: linear-light [0,1] → code value,
+    /// generalised over bit depth via `maxValue` (`255` for 8-bit,
+    /// `65535`/`(2^bps - 1)` for wider depths). Clamps to
+    /// `[0, maxValue]`.
     @inline(__always)
-    private func linearToSRGB8(_ linear: Float) -> UInt8 {
+    private func linearToSRGBCode(_ linear: Float, maxValue: Float) -> UInt32 {
         let clamped = max(0, min(linear, 1))
         let encoded: Float
         if clamped <= 0.0031308 {
@@ -3606,8 +3695,15 @@ extension JXLDecoder {
         } else {
             encoded = 1.055 * powf(clamped, 1.0 / 2.4) - 0.055
         }
-        let rounded = (encoded * 255.0).rounded()
-        return UInt8(max(0, min(rounded, 255)))
+        let rounded = (encoded * maxValue).rounded()
+        return UInt32(max(0, min(rounded, maxValue)))
+    }
+
+    /// Per-IEC 61966-2-1 sRGB OETF: linear-light [0,1] → 8-bit code
+    /// value. Clamps to [0, 255].
+    @inline(__always)
+    private func linearToSRGB8(_ linear: Float) -> UInt8 {
+        UInt8(linearToSRGBCode(linear, maxValue: 255.0))
     }
 
     /// Best-effort container unwrap: returns the naked codestream

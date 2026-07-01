@@ -1,12 +1,12 @@
 // `jxl-tool encode` — pure-Swift JPEG XL encoder front-end.
 //
 // Routes through `JXLEncoder`. The default mode is **lossy** VarDCT
-// (`--quality`, default 90), which the encoder applies to 8-bit
-// RGB/RGBA frames; for inputs VarDCT can't take (grayscale, 16-bit)
+// (`--quality`, default 90), which the encoder applies to 8-bit and
+// 16-bit RGB/RGBA frames; for inputs VarDCT can't take (grayscale)
 // `JXLEncoder` falls back to the lossless Modular path. `--lossless`
-// forces the Modular path. Supported inputs: 8-bit grayscale (PGM),
-// 8-bit RGB (PPM), 8-bit RGBA (PAM), 16-bit grayscale (PGM with
-// maxval > 255). Output is a real `.jxl` codestream that
+// forces the Modular path. Supported inputs: 8-bit/16-bit grayscale
+// (PGM, maxval > 255 selects 16-bit), 8-bit/16-bit RGB (PPM),
+// 8-bit/16-bit RGBA (PAM). Output is a real `.jxl` codestream that
 // round-trips through `djxl`.
 
 import ArgumentParser
@@ -161,7 +161,7 @@ struct Encode: ParsableCommand {
         let pct = Double(encSize) * 100 / Double(rawTotal)
         // Report the mode that *actually* ran, not just what was asked.
         // The encoder falls back to lossless Modular for inputs the lossy
-        // VarDCT codec can't take (e.g. 16-bit) — important for medical
+        // VarDCT codec can't take (e.g. grayscale) — important for medical
         // users not to see a lossless result mislabelled "lossy".
         let modeLabel: String
         if encoded.stats.wasLossless {

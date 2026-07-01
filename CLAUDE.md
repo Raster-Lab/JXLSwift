@@ -89,7 +89,7 @@ swift test  -c release           # ~688 tests, ~70 s (many shell out to djxl)
 | E6 | LZ77 hybrid header (§C.6.5) | ✅ header; back-references decoded by the JPEG bridge entropy path (`djxl`-validated via the `lz77_flower` conformance vector) |
 | M0 | Project-internal vertical slice via `MinimalLosslessCodec` | ✅ |
 | M  | Modular sub-codec (lossless path, real frame header §C.8.1) | ✅ — `SpecModularEncoder`: 8/16-bit gray / gray+alpha / RGB / RGBA, arbitrary dims ≤ 16384 (multi-group + multi-DC-group), multi-property MA-trees + learned thresholds, effort knob, `djxl`-byte-exact |
-| V  | VarDCT (lossy path) | ✅ **decode** (`djxl`-matching, Phase R filters incl.); lossy *encode* deferred to the last phase (project focus is lossless) |
+| V  | VarDCT (lossy path) | ✅ **encode + decode**, 8-bit and 16-bit RGB/RGBA (`djxl`-matching, Phase R filters incl.); lossy VarDCT is the CLI/API default. Grayscale VarDCT not yet wired (falls back to lossless Modular) |
 | R  | Restoration filters (Gaborish + EPF) | ✅ (decode) |
 | J  | JPEG-XL ↔ JPEG reversible transcoding (no generational loss) | ✅ forward (JPEG→JXL, ~1.03–1.05× cjxl, ≤ 2048 px/side) + reverse (JXL→JPEG, byte-identical: baseline + progressive + ICC) |
 
