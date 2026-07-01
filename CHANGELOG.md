@@ -9,6 +9,53 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## [1.3.0] — 2026-07-01 (release)
+
+**16-bit lossy VarDCT.** The lossy VarDCT codec now accepts 16-bit RGB/RGBA
+input (previously 8-bit only), matching the bit-depth range the lossless
+Modular codec has supported since v1.0. A lossy encode request on a 16-bit
+frame now routes to VarDCT instead of silently falling back to lossless
+Modular. Encoded bytes for existing 8-bit lossy VarDCT and all lossless paths
+are unchanged — byte-for-byte regression-checked against the pre-change build.
+
+### Added
+
+- **16-bit lossy VarDCT encode + decode**, RGB and RGBA. `VarDCTEncoder.forward`
+  accepts `.uint16` frames; the sRGB↔linear conversion generalises to any bit
+  depth via a `maxValue` parameter, with the 8-bit code path left untouched (no
+  per-pixel branch added to the default hot path). `VarDCTBitstreamWriter`
+  threads the real bit depth into `ImageMetadata`/`ExtraChannelInfo` instead of
+  hardcoding 8; `JXLDecoder`'s VarDCT reconstruction reads the declared bit
+  depth and emits a `uint16` `ImageFrame` when appropriate. Grayscale VarDCT
+  remains unsupported at any bit depth (falls back to lossless Modular,
+  unchanged from before).
+
+### Fixed
+
+- **16-bit RGBA alpha-channel corruption in VarDCT encode** — `buildFrameSections`
+  read the alpha channel with a byte stride only correct for 8-bit samples; a
+  16-bit RGBA frame would read the wrong bytes entirely. Alpha now round-trips
+  bit-exact (verified against `djxl`).
+- `VarDCTBitstreamWriter.encodeAnimation` now rejects frames that disagree on
+  bit depth, extending the pre-existing xsize/ysize/hasAlpha agreement guard,
+  instead of silently misdeclaring the shared `ImageMetadata`.
+
+### Verification
+
+- `djxl 0.11.2` oracle: our 16-bit RGB/RGBA/multi-group VarDCT bitstreams
+  decode via djxl within 3–16 (out of 65535) max-diff of our own decoder on
+  the same bytes, with the alpha channel bit-exact; djxl accepts every
+  generated bitstream (exit 0).
+- Byte-for-byte regression check against a pre-change build (isolated git
+  worktree): 8-bit lossy VarDCT, 8/16-bit lossless Modular, and multi-frame
+  animation encode all produce **identical** output — zero drift on the
+  existing default path.
+- `swift build -c release` clean. The full XCTest suite needs an Xcode host
+  (this dev env has only CommandLineTools); the djxl byte-exact spec gate was
+  exercised directly via CLI round-trips, and the new tests' logic was
+  additionally verified by running the identical API calls through a
+  throwaway executable target linked against the built library (then removed).
+
 ## [1.2.0] — 2026-06-30 (release)
 
 **JPEG-XL transfer-syntax completion + lossless ratio.** Three additions: the
