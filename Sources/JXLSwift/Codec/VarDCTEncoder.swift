@@ -86,9 +86,9 @@ package enum VarDCTEncoder {
         case unsupported(String)
     }
 
-    /// Run the forward transform. `frame` must be 8-bit RGB or RGBA
-    /// (alpha is ignored by this DSP core — extra channels are a
-    /// bitstream-layer concern).
+    /// Run the forward transform. `frame` must be 8-bit or 16-bit
+    /// RGB or RGBA (alpha is ignored by this DSP core — extra
+    /// channels are a bitstream-layer concern).
     /// Map a quality `distance` to the frame's global quantiser.
     /// `distance` is a monotone quality knob in the spirit of cjxl's
     /// `-d` (0.5 ≈ near-lossless, larger = smaller/lossier) — but a
@@ -108,9 +108,10 @@ package enum VarDCTEncoder {
         let globalScale = globalScale(forDistance: distance)
         let quantDC: UInt32 = 17
         let qf: Int32 = 5
-        guard frame.pixelType == .uint8, frame.channels >= 3 else {
+        guard frame.pixelType == .uint8 || frame.pixelType == .uint16,
+              frame.channels >= 3 else {
             throw EncoderError.unsupported(
-                "VarDCT encode: only 8-bit RGB/RGBA frames "
+                "VarDCT encode: only 8-bit/16-bit RGB/RGBA frames "
                 + "(got \(frame.pixelType)/\(frame.channels)ch)")
         }
         let xsize = frame.width
@@ -121,23 +122,53 @@ package enum VarDCTEncoder {
         let ph = blocksY * 8
         let ch = frame.channels
 
-        // (1) sRGB8 → linear → XYB, into three padded planes.
+        // (1) sRGB → linear → XYB, into three padded planes. The
+        // 8-bit branch keeps its original straight-line byte
+        // indexing untouched (design priority #1 is speed on the
+        // default hot path — this is a call-site-once branch, not a
+        // per-pixel one, so the 8-bit case pays zero extra cost).
+        // The 16-bit branch reuses `ImageFrame.getPixel` — safe here
+        // since it's new code with no prior baseline to regress.
         var planeX = [Float](repeating: 0, count: pw * ph)
         var planeY = [Float](repeating: 0, count: pw * ph)
         var planeB = [Float](repeating: 0, count: pw * ph)
-        for y in 0..<ph {
-            let sy = min(y, ysize - 1)
-            for x in 0..<pw {
-                let sx = min(x, xsize - 1)
-                let p = (sy * xsize + sx) * ch
-                let r = srgb8ToLinear(frame.data[p + 0])
-                let g = srgb8ToLinear(frame.data[p + 1])
-                let b = srgb8ToLinear(frame.data[p + 2])
-                let xyb = OpsinXYB.forward((r, g, b))
-                let i = y * pw + x
-                planeX[i] = xyb.X
-                planeY[i] = xyb.Y
-                planeB[i] = xyb.B
+        if frame.pixelType == .uint8 {
+            for y in 0..<ph {
+                let sy = min(y, ysize - 1)
+                for x in 0..<pw {
+                    let sx = min(x, xsize - 1)
+                    let p = (sy * xsize + sx) * ch
+                    let r = srgb8ToLinear(frame.data[p + 0])
+                    let g = srgb8ToLinear(frame.data[p + 1])
+                    let b = srgb8ToLinear(frame.data[p + 2])
+                    let xyb = OpsinXYB.forward((r, g, b))
+                    let i = y * pw + x
+                    planeX[i] = xyb.X
+                    planeY[i] = xyb.Y
+                    planeB[i] = xyb.B
+                }
+            }
+        } else {
+            let maxValue = Float((1 << frame.pixelType.bitsPerSample) - 1)
+            for y in 0..<ph {
+                let sy = min(y, ysize - 1)
+                for x in 0..<pw {
+                    let sx = min(x, xsize - 1)
+                    let r = srgbToLinear(
+                        UInt32(frame.getPixel(x: sx, y: sy, channel: 0)),
+                        maxValue: maxValue)
+                    let g = srgbToLinear(
+                        UInt32(frame.getPixel(x: sx, y: sy, channel: 1)),
+                        maxValue: maxValue)
+                    let b = srgbToLinear(
+                        UInt32(frame.getPixel(x: sx, y: sy, channel: 2)),
+                        maxValue: maxValue)
+                    let xyb = OpsinXYB.forward((r, g, b))
+                    let i = y * pw + x
+                    planeX[i] = xyb.X
+                    planeY[i] = xyb.Y
+                    planeB[i] = xyb.B
+                }
             }
         }
 
@@ -1398,13 +1429,22 @@ package enum VarDCTEncoder {
         return Int32(v.rounded())
     }
 
-    /// IEC 61966-2-1 sRGB inverse OETF — 8-bit code → linear [0,1].
+    /// IEC 61966-2-1 sRGB inverse OETF — code value → linear [0,1],
+    /// generalised over bit depth via `maxValue` (`255` for 8-bit,
+    /// `65535` for 16-bit). The transform itself is bit-depth
+    /// invariant; only the code-value normalisation changes.
     @inline(__always)
-    static func srgb8ToLinear(_ v: UInt8) -> Float {
-        let s = Float(v) / 255.0
+    static func srgbToLinear(_ v: UInt32, maxValue: Float) -> Float {
+        let s = Float(v) / maxValue
         return s <= 0.04045
             ? s / 12.92
             : powf((s + 0.055) / 1.055, 2.4)
+    }
+
+    /// IEC 61966-2-1 sRGB inverse OETF — 8-bit code → linear [0,1].
+    @inline(__always)
+    static func srgb8ToLinear(_ v: UInt8) -> Float {
+        srgbToLinear(UInt32(v), maxValue: 255.0)
     }
 
     /// In-place 8×8 transpose.

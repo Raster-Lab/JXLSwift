@@ -44,13 +44,16 @@ package enum VarDCTBitstreamWriter {
         let ysize: Int
         let hasAlpha: Bool
         let gaborish: Bool
+        /// `frame.pixelType.bitsPerSample` (8 or 16) — threaded into
+        /// the outer codestream's `ImageMetadata.bitDepth`.
+        let bitsPerSample: Int
     }
 
-    /// Encode an 8-bit RGB/RGBA `ImageFrame` as a VarDCT JPEG XL
-    /// file (naked codestream). Frames up to the 8192-px encoder cap
-    /// are supported: ≤ 256 px as a single contiguous section, larger
-    /// frames as a multi-section codestream with one AC group per
-    /// 256-px tile and one DC group per 2048-px tile.
+    /// Encode an 8-bit or 16-bit RGB/RGBA `ImageFrame` as a VarDCT
+    /// JPEG XL file (naked codestream). Frames up to the 8192-px
+    /// encoder cap are supported: ≤ 256 px as a single contiguous
+    /// section, larger frames as a multi-section codestream with one
+    /// AC group per 256-px tile and one DC group per 2048-px tile.
     package static func encode(
         frame: ImageFrame, distance: Float = 1.0,
         gaborish: Bool = true, adaptiveQF: Bool = true
@@ -61,6 +64,9 @@ package enum VarDCTBitstreamWriter {
         return try writeOuterCodestream(
             xsize: chunk.xsize, ysize: chunk.ysize,
             hasAlpha: chunk.hasAlpha, gaborish: chunk.gaborish,
+            bitDepth: BitDepth(
+                floatingPoint: false,
+                bitsPerSample: UInt32(chunk.bitsPerSample)),
             sections: chunk.sections)
     }
 
@@ -99,10 +105,16 @@ package enum VarDCTBitstreamWriter {
         let hasAlpha = frame.channels >= 4
         var alphaPix = [Int32]()
         if hasAlpha {
-            let ch = frame.channels
+            // `getPixel` is bit-depth-generic (unlike a raw
+            // `frame.data[i * ch + 3]` byte read, which only gives
+            // the right stride/width for 8-bit — for 16-bit it reads
+            // the wrong byte entirely since each sample is 2 bytes).
             alphaPix = [Int32](repeating: 0, count: q.xsize * q.ysize)
-            for i in 0..<(q.xsize * q.ysize) {
-                alphaPix[i] = Int32(frame.data[i * ch + 3])
+            for y in 0..<q.ysize {
+                for x in 0..<q.xsize {
+                    alphaPix[y * q.xsize + x] =
+                        Int32(frame.getPixel(x: x, y: y, channel: 3))
+                }
             }
         }
 
@@ -540,7 +552,8 @@ package enum VarDCTBitstreamWriter {
 
         return EncodedFrameSections(
             sections: sections, xsize: q.xsize, ysize: q.ysize,
-            hasAlpha: hasAlpha, gaborish: q.gaborish)
+            hasAlpha: hasAlpha, gaborish: q.gaborish,
+            bitsPerSample: frame.pixelType.bitsPerSample)
     }
 
     // MARK: - Modular residual tokenisation
@@ -765,25 +778,27 @@ package enum VarDCTBitstreamWriter {
     /// 100 tps `AnimationHeader` for multi-frame).
     static func writeCodestreamPrelude(
         xsize: Int, ysize: Int, hasAlpha: Bool,
-        animation: AnimationHeader?
+        animation: AnimationHeader?,
+        bitDepth: BitDepth = BitDepth(floatingPoint: false, bitsPerSample: 8)
     ) throws -> Data {
         var w = BitWriter()
         w.write(bits: 8, value: 0xFF)
         w.write(bits: 8, value: 0x0A)
         try SizeHeader(
             xsize: UInt32(xsize), ysize: UInt32(ysize)).write(to: &w)
-        // One default 8-bit alpha extra channel when the frame is RGBA.
+        // The alpha extra channel matches the main image's bit depth
+        // (the alpha extra channel carries the frame's own samples,
+        // not a colour transform, so it shares the source precision).
         let extraChannels: [ExtraChannelInfo] = hasAlpha
             ? [ExtraChannelInfo(
                 type: .alpha,
-                bitDepth: BitDepth(floatingPoint: false, bitsPerSample: 8),
+                bitDepth: bitDepth,
                 dimShift: 0, name: "")]
             : []
         let meta = ImageMetadata(
             allDefault: false, orientation: 1,
             intrinsicSize: nil, preview: nil, animation: animation,
-            bitDepth: BitDepth(
-                floatingPoint: false, bitsPerSample: 8),
+            bitDepth: bitDepth,
             modular16BitBufferSufficient: true,
             extraChannels: extraChannels,
             xybEncoded: true,
@@ -853,11 +868,13 @@ package enum VarDCTBitstreamWriter {
     /// 8-bit alpha extra channel (RGBA frames).
     static func writeOuterCodestream(
         xsize: Int, ysize: Int, hasAlpha: Bool,
-        gaborish: Bool, sections: [Data]
+        gaborish: Bool,
+        bitDepth: BitDepth = BitDepth(floatingPoint: false, bitsPerSample: 8),
+        sections: [Data]
     ) throws -> Data {
         var out = try writeCodestreamPrelude(
             xsize: xsize, ysize: ysize,
-            hasAlpha: hasAlpha, animation: nil)
+            hasAlpha: hasAlpha, animation: nil, bitDepth: bitDepth)
         out.append(try writeFrameChunk(
             hasAlpha: hasAlpha, gaborish: gaborish, isLast: true,
             animationFrame: .default, haveAnimation: false,
@@ -2086,17 +2103,22 @@ package enum VarDCTBitstreamWriter {
                 frame: frame, distance: distance,
                 gaborish: gaborish, adaptiveQF: adaptiveQF))
         }
-        // All frames must agree on dimensions + alpha presence.
+        // All frames must agree on dimensions, alpha presence, and
+        // bit depth — the codestream declares one `ImageMetadata`
+        // shared by every frame, so a per-frame mismatch would be
+        // silently misdeclared rather than rejected.
         let first = chunks[0]
         for (i, c) in chunks.enumerated() where i > 0 {
             guard c.xsize == first.xsize, c.ysize == first.ysize,
-                  c.hasAlpha == first.hasAlpha else {
+                  c.hasAlpha == first.hasAlpha,
+                  c.bitsPerSample == first.bitsPerSample else {
                 throw WriterError.unsupported(
                     "encodeAnimation: frame \(i) "
-                    + "\(c.xsize)×\(c.ysize)/\(c.hasAlpha) "
+                    + "\(c.xsize)×\(c.ysize)/\(c.hasAlpha)/"
+                    + "\(c.bitsPerSample)bpp "
                     + "differs from frame 0 "
                     + "\(first.xsize)×\(first.ysize)/"
-                    + "\(first.hasAlpha)")
+                    + "\(first.hasAlpha)/\(first.bitsPerSample)bpp")
             }
         }
         // libjxl-default 100 tps timestamp resolution, infinite
@@ -2106,7 +2128,10 @@ package enum VarDCTBitstreamWriter {
             numLoops: 0, haveTimecodes: false)
         var out = try writeCodestreamPrelude(
             xsize: first.xsize, ysize: first.ysize,
-            hasAlpha: first.hasAlpha, animation: animation)
+            hasAlpha: first.hasAlpha, animation: animation,
+            bitDepth: BitDepth(
+                floatingPoint: false,
+                bitsPerSample: UInt32(first.bitsPerSample)))
         for (i, c) in chunks.enumerated() {
             let isLast = (i == chunks.count - 1)
             let af = AnimationFrame(

@@ -8493,6 +8493,288 @@ extension FoundationTests {
             + "(got max diff \(maxA))")
     }
 
+    /// **16-bit lossy VarDCT — the gap this suite pins down.**
+    /// Cross-validates OUR encoder's 16-bit RGB VarDCT bitstream
+    /// against `djxl`: a spec-valid bitstream must decode to
+    /// (approximately) the same values whether read by djxl or by
+    /// our own decoder — the "our 16-bit bitstream is spec-valid"
+    /// gate, analogous to `testSpecModularEncoder_RGB16_DjxlRoundTrip`
+    /// for the lossless path.
+    func testVarDCT_16BitRGB_DjxlByteEquality() throws {
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("djxl not available at \(djxl)")
+        }
+        let w = 64, h = 64
+        var frame = ImageFrame(
+            width: w, height: h, channels: 3,
+            pixelType: .uint16, colorSpace: .sRGB)
+        for y in 0..<h {
+            for x in 0..<w {
+                frame.setPixel(x: x, y: y, channel: 0,
+                    value: UInt16((x * 65535) / (w - 1)))
+                frame.setPixel(x: x, y: y, channel: 1,
+                    value: UInt16((y * 65535) / (h - 1)))
+                frame.setPixel(x: x, y: y, channel: 2,
+                    value: UInt16(((x + y) * 65535) / (w + h - 2)))
+            }
+        }
+        let bytes = try VarDCTBitstreamWriter.encode(
+            frame: frame, distance: 1.0)
+
+        let inPath = NSTemporaryDirectory() + "jxlswift_vdt_rgb16.jxl"
+        let outPath = NSTemporaryDirectory() + "jxlswift_vdt_rgb16.ppm"
+        try bytes.write(to: URL(fileURLWithPath: inPath))
+        let p = Process()
+        p.launchPath = djxl
+        p.arguments = [inPath, outPath]
+        let errPipe = Pipe()
+        p.standardOutput = Pipe(); p.standardError = errPipe
+        try p.run(); p.waitUntilExit()
+        let err = String(
+            data: errPipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8) ?? ""
+        XCTAssertEqual(p.terminationStatus, 0,
+            "djxl rejected our \(w)x\(h) 16-bit VarDCT bytes; "
+            + "stderr: \(err)")
+
+        // djxl's 16-bit PPM samples are big-endian.
+        let ppm = try Data(contentsOf: URL(fileURLWithPath: outPath))
+        var nlCount = 0
+        var pixelStart = 0
+        for (i, byte) in ppm.enumerated() {
+            if byte == 0x0a {
+                nlCount += 1
+                if nlCount == 3 { pixelStart = i + 1; break }
+            }
+        }
+        XCTAssertEqual(ppm.count - pixelStart, w * h * 3 * 2,
+            "djxl PPM size mismatch")
+
+        let ours = try JXLDecoder().decode(bytes)
+        XCTAssertEqual(ours.pixelType, .uint16,
+            "16-bit VarDCT must decode to a uint16 ImageFrame")
+        XCTAssertEqual(ours.channels, 3)
+
+        var maxDiffVsDjxl = 0
+        var maxDiffVsSource = 0
+        for y in 0..<h {
+            for x in 0..<w {
+                let pi = (y * w + x) * 3
+                for c in 0..<3 {
+                    let hi = Int(ppm[pixelStart + (pi + c) * 2 + 0])
+                    let lo = Int(ppm[pixelStart + (pi + c) * 2 + 1])
+                    let djxlVal = (hi << 8) | lo
+                    let ourVal = Int(ours.getPixel(x: x, y: y, channel: c))
+                    maxDiffVsDjxl = max(maxDiffVsDjxl, abs(djxlVal - ourVal))
+                    let srcVal = Int(frame.getPixel(x: x, y: y, channel: c))
+                    maxDiffVsSource = max(
+                        maxDiffVsSource, abs(srcVal - ourVal))
+                }
+            }
+        }
+        // Two independent decoders (ours + libjxl) reading the SAME
+        // bitstream must land within float-rounding distance of each
+        // other — a wrong bit-depth constant would blow this into the
+        // thousands, not sit near-zero.
+        XCTAssertLessThanOrEqual(maxDiffVsDjxl, 64,
+            "16-bit RGB: our decoder vs djxl on the same bitstream "
+            + "diverges too much (max=\(maxDiffVsDjxl))")
+        // Lossy at distance 1.0 — bounded but not tiny; pins the
+        // round-trip to a plausible range (catches a wrong
+        // normalisation constant, which would blow this into the
+        // tens of thousands).
+        XCTAssertLessThan(maxDiffVsSource, 20000,
+            "16-bit RGB VarDCT lossy round-trip error implausibly "
+            + "large (max=\(maxDiffVsSource))")
+    }
+
+    /// RGBA variant of the above — the alpha extra channel is
+    /// lossless Modular, so it must be byte-exact vs djxl even
+    /// though the RGB colour planes are lossy. This is also the
+    /// regression guard for the `buildFrameSections` alpha-unpack
+    /// fix (the pre-fix code read the wrong byte stride for 16-bit
+    /// alpha; a regression here would corrupt the alpha channel).
+    func testVarDCT_16BitRGBA_DjxlByteEquality() throws {
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("djxl not available at \(djxl)")
+        }
+        let w = 64, h = 64
+        var frame = ImageFrame(
+            width: w, height: h, channels: 4,
+            pixelType: .uint16, colorSpace: .sRGB, alphaChannels: 1)
+        for y in 0..<h {
+            for x in 0..<w {
+                frame.setPixel(x: x, y: y, channel: 0,
+                    value: UInt16((x * 65535) / (w - 1)))
+                frame.setPixel(x: x, y: y, channel: 1,
+                    value: UInt16((y * 65535) / (h - 1)))
+                frame.setPixel(x: x, y: y, channel: 2,
+                    value: UInt16(((x + y) * 65535) / (w + h - 2)))
+                frame.setPixel(x: x, y: y, channel: 3,
+                    value: UInt16(((w - 1 - x) * 65535) / (w - 1)))
+            }
+        }
+        let bytes = try VarDCTBitstreamWriter.encode(
+            frame: frame, distance: 1.0)
+
+        let inPath = NSTemporaryDirectory() + "jxlswift_vdt_rgba16.jxl"
+        let outPath = NSTemporaryDirectory() + "jxlswift_vdt_rgba16.pam"
+        try bytes.write(to: URL(fileURLWithPath: inPath))
+        let p = Process()
+        p.launchPath = djxl
+        p.arguments = [inPath, outPath]
+        let errPipe = Pipe()
+        p.standardOutput = Pipe(); p.standardError = errPipe
+        try p.run(); p.waitUntilExit()
+        let err = String(
+            data: errPipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8) ?? ""
+        XCTAssertEqual(p.terminationStatus, 0,
+            "djxl rejected our \(w)x\(h) 16-bit RGBA VarDCT bytes; "
+            + "stderr: \(err)")
+
+        let pamData = try Data(contentsOf: URL(fileURLWithPath: outPath))
+        guard let hdrEnd = pamData.range(of: Data("ENDHDR\n".utf8)) else {
+            throw XCTSkip("djxl PAM header not found")
+        }
+        let ref = pamData.subdata(in: hdrEnd.upperBound..<pamData.count)
+        XCTAssertEqual(ref.count, w * h * 4 * 2, "djxl PAM size mismatch")
+
+        let ours = try JXLDecoder().decode(bytes)
+        XCTAssertEqual(ours.pixelType, .uint16)
+        XCTAssertEqual(ours.channels, 4)
+        XCTAssertEqual(ours.alphaChannels, 1)
+
+        var maxRGBDiffVsDjxl = 0
+        var maxADiffVsDjxl = 0
+        for y in 0..<h {
+            for x in 0..<w {
+                let pi = (y * w + x) * 4
+                for c in 0..<4 {
+                    let hi = Int(ref[(pi + c) * 2 + 0])
+                    let lo = Int(ref[(pi + c) * 2 + 1])
+                    let djxlVal = (hi << 8) | lo
+                    let ourVal = Int(ours.getPixel(x: x, y: y, channel: c))
+                    if c < 3 {
+                        maxRGBDiffVsDjxl = max(
+                            maxRGBDiffVsDjxl, abs(djxlVal - ourVal))
+                    } else {
+                        maxADiffVsDjxl = max(
+                            maxADiffVsDjxl, abs(djxlVal - ourVal))
+                    }
+                }
+            }
+        }
+        XCTAssertLessThanOrEqual(maxRGBDiffVsDjxl, 64,
+            "RGBA16 colour: our decoder vs djxl diverges too much "
+            + "(max=\(maxRGBDiffVsDjxl))")
+        XCTAssertEqual(maxADiffVsDjxl, 0,
+            "RGBA16: modular alpha must be byte-exact vs djxl "
+            + "(got max diff \(maxADiffVsDjxl))")
+    }
+
+    /// Multi-group 16-bit RGB (320×320 → 2×2 AC-group grid, multiple
+    /// DC groups too at this size) — exercises the per-group alpha
+    /// unpack and decoder reconstruction across group boundaries at
+    /// 16-bit, not just a single-section fixture.
+    func testVarDCT_16BitRGBLarge_MultiGroup_DjxlByteEquality() throws {
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("djxl not available at \(djxl)")
+        }
+        let w = 320, h = 320
+        var frame = ImageFrame(
+            width: w, height: h, channels: 3,
+            pixelType: .uint16, colorSpace: .sRGB)
+        for y in 0..<h {
+            for x in 0..<w {
+                frame.setPixel(x: x, y: y, channel: 0,
+                    value: UInt16((x * 65535) / (w - 1)))
+                frame.setPixel(x: x, y: y, channel: 1,
+                    value: UInt16((y * 65535) / (h - 1)))
+                let sawtooth = (x * 3 + y * 5) % (w + h)
+                frame.setPixel(x: x, y: y, channel: 2,
+                    value: UInt16((sawtooth * 65535) / (w + h - 1)))
+            }
+        }
+        let bytes = try VarDCTBitstreamWriter.encode(
+            frame: frame, distance: 1.0)
+
+        let inPath = NSTemporaryDirectory() + "jxlswift_vdt_rgb16_large.jxl"
+        let outPath = NSTemporaryDirectory() + "jxlswift_vdt_rgb16_large.ppm"
+        try bytes.write(to: URL(fileURLWithPath: inPath))
+        let p = Process()
+        p.launchPath = djxl
+        p.arguments = [inPath, outPath]
+        let errPipe = Pipe()
+        p.standardOutput = Pipe(); p.standardError = errPipe
+        try p.run(); p.waitUntilExit()
+        let err = String(
+            data: errPipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8) ?? ""
+        XCTAssertEqual(p.terminationStatus, 0,
+            "djxl rejected our \(w)x\(h) multi-group 16-bit VarDCT "
+            + "bytes; stderr: \(err)")
+
+        let ppm = try Data(contentsOf: URL(fileURLWithPath: outPath))
+        var nlCount = 0
+        var pixelStart = 0
+        for (i, byte) in ppm.enumerated() {
+            if byte == 0x0a {
+                nlCount += 1
+                if nlCount == 3 { pixelStart = i + 1; break }
+            }
+        }
+        XCTAssertEqual(ppm.count - pixelStart, w * h * 3 * 2)
+
+        let ours = try JXLDecoder().decode(bytes)
+        XCTAssertEqual(ours.pixelType, .uint16)
+
+        var maxDiffVsDjxl = 0
+        for y in 0..<h {
+            for x in 0..<w {
+                let pi = (y * w + x) * 3
+                for c in 0..<3 {
+                    let hi = Int(ppm[pixelStart + (pi + c) * 2 + 0])
+                    let lo = Int(ppm[pixelStart + (pi + c) * 2 + 1])
+                    let djxlVal = (hi << 8) | lo
+                    let ourVal = Int(ours.getPixel(x: x, y: y, channel: c))
+                    maxDiffVsDjxl = max(maxDiffVsDjxl, abs(djxlVal - ourVal))
+                }
+            }
+        }
+        XCTAssertLessThanOrEqual(maxDiffVsDjxl, 128,
+            "multi-group 16-bit VarDCT: our decoder vs djxl diverges "
+            + "too much (max=\(maxDiffVsDjxl))")
+    }
+
+    /// `encodeAnimation` must reject frames that disagree on bit
+    /// depth rather than silently misdeclaring the shared
+    /// `ImageMetadata` — mirrors the pre-existing xsize/ysize/
+    /// hasAlpha agreement guard, extended for the 16-bit fix.
+    func testVarDCTBitstreamWriter_EncodeAnimation_MixedBitDepthThrows() throws {
+        var f8 = ImageFrame(
+            width: 16, height: 16, channels: 3, pixelType: .uint8)
+        for i in 0..<f8.data.count { f8.data[i] = UInt8(i & 0xff) }
+        var f16 = ImageFrame(
+            width: 16, height: 16, channels: 3, pixelType: .uint16)
+        for y in 0..<16 {
+            for x in 0..<16 {
+                for c in 0..<3 {
+                    f16.setPixel(x: x, y: y, channel: c,
+                        value: UInt16((x + y + c) * 1000))
+                }
+            }
+        }
+        XCTAssertThrowsError(
+            try VarDCTBitstreamWriter.encodeAnimation(frames: [f8, f16]),
+            "mixed 8-bit/16-bit frames in one animation must throw, "
+            + "not silently misencode"
+        )
+    }
+
     /// `VarDCTEncoder` forward-transform round-trip. Runs the
     /// encoder's RGB→XYB→DCT8×8→quantise pipeline, then reconstructs
     /// with the *decoder's* exact dequant + IDCT + inverse-XYB math.
@@ -13383,6 +13665,124 @@ extension FoundationTests {
         let inspect = JXLDecoder().inspectFrameStructure(encoded.data)
         XCTAssertEqual(inspect.encoding, FrameEncoding.modular,
             "lossy grayscale must fall back to the Modular codec")
+        let decoded = try JXLDecoder().decode(encoded.data)
+        XCTAssertEqual(decoded.data, frame.data,
+            "Modular fallback must round-trip bit-exact")
+    }
+
+    /// Pins down the bug this test suite was written for: a lossy
+    /// (default) request on a 16-bit RGB frame used to silently fall
+    /// back to lossless Modular (the only bit depth VarDCT accepted
+    /// was 8-bit) — lossless already worked at both 8-bit and
+    /// 16-bit, but lossy did not. This must now route to VarDCT.
+    func testJXLEncoder_Lossy16BitRGBRoutesToVarDCT() throws {
+        let dim = 64
+        var frame = ImageFrame(
+            width: dim, height: dim, channels: 3,
+            pixelType: .uint16, colorSpace: .sRGB)
+        for y in 0..<dim {
+            for x in 0..<dim {
+                frame.setPixel(x: x, y: y, channel: 0,
+                    value: UInt16(30 * 257 + x * 500))
+                frame.setPixel(x: x, y: y, channel: 1,
+                    value: UInt16(40 * 257 + y * 500))
+                frame.setPixel(x: x, y: y, channel: 2,
+                    value: UInt16(60 * 257 + (x + y) * 250))
+            }
+        }
+
+        let lossy = try JXLEncoder().encode(frame)
+        let lossyInspect = JXLDecoder().inspectFrameStructure(lossy.data)
+        XCTAssertEqual(lossyInspect.encoding, FrameEncoding.varDCT,
+            "a lossy mode must route a 16-bit RGB frame to VarDCT")
+        let lossyDecoded = try JXLDecoder().decode(lossy.data)
+        XCTAssertEqual(lossyDecoded.pixelType, .uint16,
+            "16-bit VarDCT must decode back to a uint16 ImageFrame")
+        var lossyErr = 0
+        for y in 0..<dim {
+            for x in 0..<dim {
+                for c in 0..<3 {
+                    lossyErr += abs(
+                        Int(lossyDecoded.getPixel(x: x, y: y, channel: c))
+                        - Int(frame.getPixel(x: x, y: y, channel: c)))
+                }
+            }
+        }
+        XCTAssertLessThan(
+            Double(lossyErr) / Double(dim * dim * 3), 2000.0,
+            "16-bit VarDCT lossy round-trip error too large")
+
+        // Lossless still routes to Modular and is bit-exact — this
+        // pins that the 16-bit lossless path (already working) has
+        // not regressed alongside the lossy fix.
+        let lossless = try JXLEncoder(
+            options: EncodingOptions(mode: .lossless)).encode(frame)
+        let llInspect = JXLDecoder().inspectFrameStructure(lossless.data)
+        XCTAssertEqual(llInspect.encoding, FrameEncoding.modular)
+        let llDecoded = try JXLDecoder().decode(lossless.data)
+        XCTAssertEqual(llDecoded.data, frame.data,
+            "16-bit Modular lossless must round-trip bit-exact")
+    }
+
+    /// RGBA variant — also confirms the alpha extra channel (which
+    /// depends on the `buildFrameSections` alpha-unpack fix) routes
+    /// and round-trips correctly at 16-bit through the full
+    /// `JXLEncoder`/`JXLDecoder` public API, not just the raw
+    /// `VarDCTBitstreamWriter`.
+    func testJXLEncoder_Lossy16BitRGBARoutesToVarDCT() throws {
+        let dim = 48
+        var frame = ImageFrame(
+            width: dim, height: dim, channels: 4,
+            pixelType: .uint16, colorSpace: .sRGB, alphaChannels: 1)
+        for y in 0..<dim {
+            for x in 0..<dim {
+                frame.setPixel(x: x, y: y, channel: 0,
+                    value: UInt16(x * 1000))
+                frame.setPixel(x: x, y: y, channel: 1,
+                    value: UInt16(y * 1000))
+                frame.setPixel(x: x, y: y, channel: 2,
+                    value: UInt16((x + y) * 500))
+                frame.setPixel(x: x, y: y, channel: 3,
+                    value: UInt16((dim - 1 - x) * 1000))
+            }
+        }
+        let lossy = try JXLEncoder().encode(frame)
+        let lossyInspect = JXLDecoder().inspectFrameStructure(lossy.data)
+        XCTAssertEqual(lossyInspect.encoding, FrameEncoding.varDCT,
+            "a lossy mode must route a 16-bit RGBA frame to VarDCT")
+        let decoded = try JXLDecoder().decode(lossy.data)
+        XCTAssertEqual(decoded.pixelType, .uint16)
+        XCTAssertEqual(decoded.channels, 4)
+        XCTAssertEqual(decoded.alphaChannels, 1)
+        // Alpha is lossless Modular — must be bit-exact.
+        for y in 0..<dim {
+            for x in 0..<dim {
+                XCTAssertEqual(
+                    decoded.getPixel(x: x, y: y, channel: 3),
+                    frame.getPixel(x: x, y: y, channel: 3),
+                    "16-bit alpha must round-trip bit-exact at (\(x),\(y))")
+            }
+        }
+    }
+
+    /// The 16-bit fix only widens VarDCT to accept RGB/RGBA —
+    /// grayscale (at any bit depth) still falls back to Modular.
+    /// This pins that narrower-than-RGB gap as intentional, not an
+    /// accidental regression from the 16-bit change.
+    func testJXLEncoder_Lossy16BitGrayscaleFallsBackToModular() throws {
+        var frame = ImageFrame(
+            width: 24, height: 24, channels: 1,
+            pixelType: .uint16, colorSpace: .grayscale)
+        for y in 0..<24 {
+            for x in 0..<24 {
+                frame.setPixel(x: x, y: y, channel: 0,
+                    value: UInt16((x * 24 + y) * 111))
+            }
+        }
+        let encoded = try JXLEncoder().encode(frame)
+        let inspect = JXLDecoder().inspectFrameStructure(encoded.data)
+        XCTAssertEqual(inspect.encoding, FrameEncoding.modular,
+            "lossy 16-bit grayscale must still fall back to Modular")
         let decoded = try JXLDecoder().decode(encoded.data)
         XCTAssertEqual(decoded.data, frame.data,
             "Modular fallback must round-trip bit-exact")
