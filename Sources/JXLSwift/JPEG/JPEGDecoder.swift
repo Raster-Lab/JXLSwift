@@ -9,16 +9,17 @@
 // to `PNM.write`, `ImageMetrics.compute`, the JXL encoder, etc.
 //
 // Scope:
-//   - Baseline-sequential JPEGs (SOF0) with arbitrary sampling
-//     factors (4:4:4, 4:2:2, 4:2:0, etc.).
+//   - Baseline (SOF0), extended-sequential (SOF1), and progressive
+//     (SOF2) DCT JPEGs with arbitrary sampling factors (4:4:4,
+//     4:2:2, 4:2:0, etc.), plus lossless (SOF3) via
+//     `JPEGLosslessDecoder` (routed automatically).
 //   - 1-component grayscale (returned as `channels: 1`) and
 //     3-component YCbCr (returned as `channels: 3, ColorSpace.sRGB`,
 //     YCbCr → RGB via JFIF BT.601 full-range).
-//   - 8-bit precision.
+//   - 8-bit precision (`.uint8` output) and 12-bit / 16-bit
+//     precision (`.uint16` output carrying the raw sample values).
 //
 // Not yet supported (throws `JPEGDecoderError.unsupported`):
-//   - Progressive / extended-sequential / lossless (SOF1/2/3+)
-//   - 12-bit precision
 //   - 4-component CMYK / YCCK (Adobe APP14)
 //   - Arithmetic coding (DAC segments)
 //
@@ -58,142 +59,135 @@ package enum JPEGDecoderError: Error, Sendable, Equatable,
 /// High-level "JPEG bytes → ImageFrame" decoder.
 package enum JPEGDecoder {
 
-    /// Decode a JPEG file. Returns an 8-bit ImageFrame:
-    /// `channels: 1` for grayscale, `channels: 3` for YCbCr.
+    /// Decode a JPEG file to an `ImageFrame`.
+    ///
+    /// Handles baseline (SOF0), extended-sequential (SOF1), and
+    /// progressive (SOF2) DCT frames, 1-component grayscale and
+    /// 3-component YCbCr, at 8-bit and 12-bit precision. 8-bit frames
+    /// return a `.uint8` frame; 12-bit frames return a `.uint16` frame
+    /// carrying raw `0…4095` sample values (djpeg's convention — the
+    /// values are not rescaled to the 16-bit range). SOF3 lossless is
+    /// decoded by ``decodeLossless(_:)``; this entry point routes to it
+    /// automatically.
     package static func decode(_ data: Data) throws -> ImageFrame {
-        // Walk every segment, collecting state.
-        var reader = JPEGSegmentReader(data)
-        var dcMap = JPEGHuffmanCodebookMap()
-        var acMap = JPEGHuffmanCodebookMap()
-        var quantTables: [JPEGQuantTable] = []
-        var frameComponents: [JPEGFrameComponent] = []
-        var width = 0, height = 0
-        var precision = 0
-        var frameKind: JPEGStructure.FrameKind = .baselineDCT
-        var scanHeader: JPEGScanHeader?
-        var restartInterval = 0
-        var entropyStartOffset = 0
-
-        while let seg = try reader.next() {
-            switch seg.kind {
-            case .startOfFrame(let nibble):
-                frameKind = JPEGStructure.FrameKind(
-                    nibble: nibble)
-                precision = Int(seg.payload[0])
-                height = (Int(seg.payload[1]) << 8)
-                    | Int(seg.payload[2])
-                width = (Int(seg.payload[3]) << 8)
-                    | Int(seg.payload[4])
-                frameComponents = try JPEGFrameComponent
-                    .parseSOFComponents(sofPayload: seg.payload)
-            case .defineQuantizationTable:
-                quantTables.append(contentsOf:
-                    try JPEGQuantTable.parse(
-                        dqtPayload: seg.payload))
-            case .defineHuffmanTable:
-                for t in try JPEGHuffmanTable.parse(
-                    dhtPayload: seg.payload)
-                {
-                    let book = try t.buildCodebook()
-                    if t.class == .dc {
-                        dcMap[t.tableId] = (book, t.huffvals)
-                    } else {
-                        acMap[t.tableId] = (book, t.huffvals)
-                    }
-                }
-            case .defineArithmeticConditioning:
-                throw JPEGDecoderError.unsupported(
-                    "arithmetic-coded JPEG")
-            case .defineRestartInterval:
-                if seg.payload.count == 2 {
-                    restartInterval = (Int(seg.payload[0]) << 8)
-                        | Int(seg.payload[1])
-                }
-            case .startOfScan:
-                scanHeader = try JPEGScanHeader.parse(
-                    sosPayload: seg.payload)
-                entropyStartOffset = reader.byteOffset
-            default:
-                break
-            }
-            if seg.kind == .startOfScan { break }
-            if seg.kind == .endOfImage { break }
+        // SOF3 (lossless) is a predictive codec with no DCT — route it
+        // to the dedicated decoder rather than the DCT coefficient path.
+        if try frameKind(of: data) == .lossless {
+            return try decodeLossless(data)
         }
-
-        guard !frameComponents.isEmpty else {
-            throw JPEGDecoderError.missingFrame
-        }
-        guard let scan = scanHeader else {
-            throw JPEGDecoderError.missingScan
-        }
-        guard precision == 8 else {
-            throw JPEGDecoderError.unsupported(
-                "\(precision)-bit precision (only 8-bit supported)")
-        }
-        guard frameKind == .baselineDCT else {
-            throw JPEGDecoderError.unsupported(
-                "non-baseline frame: \(frameKind.label)")
-        }
-        let nComponents = frameComponents.count
+        // Decode to quantised DCT coefficients — this covers baseline
+        // (SOF0), extended-sequential (SOF1), and progressive (SOF2) at
+        // 8-bit and 12-bit. The pixel path then dequantises, runs the
+        // IDCT, and colour-converts.
+        let coef = try decodeToCoefficients(data)
+        let nComponents = coef.frameComponents.count
         guard nComponents == 1 || nComponents == 3 else {
             throw JPEGDecoderError.unsupported(
                 "\(nComponents)-component frame "
                 + "(only 1 or 3 supported)")
         }
-
-        // Drive the scan.
-        var bitReader = JPEGBitReader(data,
-            startingAt: entropyStartOffset)
-        let comps = try JPEGScanDecoder.decodeBaselineSequential(
-            from: &bitReader,
-            scanHeader: scan,
-            frameComponents: frameComponents,
-            imageWidth: width, imageHeight: height,
-            dcCodebooks: dcMap, acCodebooks: acMap,
-            restartInterval: restartInterval)
-
         // Dequantise + IDCT every block per component, producing
         // per-component sample planes at their native (possibly
         // chroma-subsampled) resolution.
         let planes = try JPEGPixelAssembler.assemble(
-            componentBlocks: comps,
-            frameComponents: frameComponents,
-            quantTables: quantTables,
-            precision: precision)
+            componentBlocks: coef.quantisedComponents,
+            frameComponents: coef.frameComponents,
+            quantTables: coef.quantTables,
+            precision: coef.precision)
+        let width = coef.width, height = coef.height
 
-        // For 3-component YCbCr, upsample chroma to luma's
-        // resolution, then run YCbCr → RGB. For 1-component
-        // grayscale, just convert the plane to UInt8.
-        if nComponents == 1 {
-            let plane = planes[0]
-            let buf = JPEGColorConversion
-                .grayscaleToBuffer(plane)
+        if coef.precision <= 8 {
+            // ---- 8-bit output (unchanged from the baseline path) ----
+            if nComponents == 1 {
+                let buf = JPEGColorConversion
+                    .grayscaleToBuffer(planes[0])
+                return try cropToFrame(
+                    rawBuffer: buf, planeWidth: planes[0].width,
+                    planeHeight: planes[0].height,
+                    visibleWidth: width, visibleHeight: height,
+                    channels: 1)
+            }
+            // 3-component YCbCr. Scan order matches frame order (the
+            // JFIF Y, Cb, Cr convention).
+            let yPlane = planes[0]
+            let cb = JPEGPixelAssembler.upsampleNearest(
+                planes[1], toWidth: yPlane.width, height: yPlane.height)
+            let cr = JPEGPixelAssembler.upsampleNearest(
+                planes[2], toWidth: yPlane.width, height: yPlane.height)
+            let rgb = JPEGColorConversion.ycbcrToRGB8(
+                y: yPlane, cb: cb, cr: cr)
             return try cropToFrame(
-                rawBuffer: buf, planeWidth: plane.width,
-                planeHeight: plane.height,
+                rawBuffer: rgb, planeWidth: yPlane.width,
+                planeHeight: yPlane.height,
                 visibleWidth: width, visibleHeight: height,
-                channels: 1)
+                channels: 3)
         }
 
-        // 3-component case. We assume scan order matches frame
-        // order, which is the JFIF convention (Y, Cb, Cr); a
-        // strict implementation would re-order by component ID.
+        // ---- 12-bit output → uint16 frame (raw 0…4095 values) ----
+        if nComponents == 1 {
+            return cropToFrame16(
+                samples: planes[0].samples, channels: 1,
+                planeWidth: planes[0].width, planeHeight: planes[0].height,
+                visibleWidth: width, visibleHeight: height)
+        }
         let yPlane = planes[0]
-        let cbRaw = planes[1]
-        let crRaw = planes[2]
         let cb = JPEGPixelAssembler.upsampleNearest(
-            cbRaw, toWidth: yPlane.width,
-            height: yPlane.height)
+            planes[1], toWidth: yPlane.width, height: yPlane.height)
         let cr = JPEGPixelAssembler.upsampleNearest(
-            crRaw, toWidth: yPlane.width,
-            height: yPlane.height)
-        let rgb = JPEGColorConversion.ycbcrToRGB8(
-            y: yPlane, cb: cb, cr: cr)
-        return try cropToFrame(
-            rawBuffer: rgb, planeWidth: yPlane.width,
-            planeHeight: yPlane.height,
-            visibleWidth: width, visibleHeight: height,
-            channels: 3)
+            planes[2], toWidth: yPlane.width, height: yPlane.height)
+        let rgb = JPEGColorConversion.ycbcrToRGB(
+            y: yPlane, cb: cb, cr: cr, precision: coef.precision)
+        return cropToFrame16(
+            samples: rgb, channels: 3,
+            planeWidth: yPlane.width, planeHeight: yPlane.height,
+            visibleWidth: width, visibleHeight: height)
+    }
+
+    /// Peek at the SOFn marker to classify the frame without a full
+    /// decode — used to route SOF3 (lossless) away from the DCT path.
+    static func frameKind(
+        of data: Data
+    ) throws -> JPEGStructure.FrameKind {
+        var reader = JPEGSegmentReader(data)
+        while let seg = try reader.next() {
+            if case .startOfFrame(let nibble) = seg.kind {
+                return JPEGStructure.FrameKind(nibble: nibble)
+            }
+            if seg.kind == .startOfScan || seg.kind == .endOfImage {
+                break
+            }
+        }
+        throw JPEGDecoderError.missingFrame
+    }
+
+    /// Decode a SOF3 lossless JPEG (ITU-T T.81 §H — predictive, no
+    /// DCT) to an `ImageFrame`. Implemented in `JPEGLosslessDecoder`.
+    static func decodeLossless(_ data: Data) throws -> ImageFrame {
+        try JPEGLosslessDecoder.decode(data)
+    }
+
+    /// Pack interleaved `Int32` samples (range `0…65535`, `channels`
+    /// values per pixel) into a little-endian `.uint16` `ImageFrame`
+    /// cropped to the visible dimensions.
+    private static func cropToFrame16(
+        samples: [Int32], channels: Int,
+        planeWidth pw: Int, planeHeight ph: Int,
+        visibleWidth vw: Int, visibleHeight vh: Int
+    ) -> ImageFrame {
+        var frame = ImageFrame(
+            width: vw, height: vh, channels: channels,
+            pixelType: .uint16,
+            colorSpace: channels == 1 ? .grayscale : .sRGB)
+        for y in 0..<vh {
+            let srcRow = y * pw * channels
+            let dstRow = y * vw * channels
+            for x in 0..<(vw * channels) {
+                let v = UInt16(clamping: samples[srcRow + x])
+                frame.data[(dstRow + x) * 2]     = UInt8(v & 0xFF)
+                frame.data[(dstRow + x) * 2 + 1] = UInt8((v >> 8) & 0xFF)
+            }
+        }
+        return frame
     }
 
     /// Wrap a buffer-aligned-to-block-grid sample array into an
