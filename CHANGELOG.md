@@ -9,6 +9,77 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+## [1.4.0] — 2026-07-06 (release)
+
+**VarDCT coverage (grayscale, oversized, signed 16-bit) + broader JPEG decode.**
+Three lossy-encode gaps that previously caused a supported request to silently
+fall back to lossless Modular are closed — grayscale, images beyond the old
+8192-px cap, and signed 16-bit input — and the pure-Swift JPEG decoder is
+widened to progressive (SOF2), extended-sequential (SOF1), 12-bit precision,
+and SOF3 lossless. Existing 8-/16-bit RGB/RGBA VarDCT and all lossless paths are
+unchanged (byte-for-byte regression-checked); the full test suite stays green
+(717 tests). Verified against reference libjxl 0.11.2 (`djxl`) and libjpeg-turbo
+3.1.4 (`djpeg`).
+
+### Added
+
+- **Grayscale lossy VarDCT** — 1-channel grayscale and 2-channel
+  grayscale+alpha, at 8-bit and 16-bit. Grayscale is encoded the way libjxl
+  does it: a 3-channel XYB frame whose X plane is ≈ 0 (so R = G = B after the
+  inverse opsin), carrying a grayscale `ColorEncoding`. `VarDCTEncoder.forward`
+  broadcasts the luma to R = G = B; `VarDCTBitstreamWriter` writes
+  `colorEncoding = .grayscaleD65`; and `JXLDecoder`'s VarDCT output stage
+  collapses the reconstructed RGB back to a single luma channel (plus optional
+  alpha) when the colour space is grayscale. Multi-group and multi-frame
+  (animation) grayscale are covered. Output decodes as grayscale under `djxl`.
+- **Oversized VarDCT** — the encoder's per-frame size limit is raised from 8192
+  to 16384 px/side (matching the lossless `SpecModularEncoder` envelope). The
+  8192 cap was a conservative resource-safety limit, not a correctness one; the
+  multi-AC-group + multi-DC-group machinery indexes groups with `Int` and is
+  correct for arbitrarily many groups. Verified wide (8704×256), tall
+  (256×8448), and square (8256×8256) beyond the old cap.
+- **Signed 16-bit pixels (`PixelType.int16`)** — the primary DICOM CT case.
+  Callers no longer need to pre-shift signed data into an unsigned range: the
+  encoder level-shifts `.int16` into unsigned offset-binary (sample + 32768,
+  the JPEG convention) up front, so both the VarDCT and Modular paths handle it
+  unchanged, and the codestream stays a standard unsigned-16 JPEG XL that any
+  decoder (including `djxl`) reads. `JXLDecoder.decode(_:signedOutput:)`
+  reconstructs an `.int16` frame for a full int16 → int16 round-trip within
+  JXLSwift (byte-exact through the lossless Modular path). `ImageFrame` gains
+  `levelShiftedToUnsigned16()` / `reinterpretedAsSignedInt16()` helpers.
+- **Broader JPEG decode** (`JPEGDecoder.decode`) — the pixel decoder now covers
+  progressive (SOF2) and extended-sequential (SOF1) DCT frames and 12-bit
+  precision (returned as a `.uint16` frame with raw 0…4095 values), in addition
+  to baseline 8-bit. `decode(_:)` now delegates to `decodeToCoefficients` (which
+  already handled SOF1/SOF2) plus dequant/IDCT/colour, with a precision-
+  generalised YCbCr→RGB. Verified pixel-for-pixel against libjpeg's
+  `djpeg -nosmooth` (≤ 6 LSB, pure IDCT rounding). NB: the JPEG→JXL *lossless
+  recompression* bridge remains 8-bit-DCT-only — 12-bit and lossless JPEGs
+  cannot be jbrd-recompressed (a JXL-format limitation libjxl shares), so this
+  is pixel decode, not recompression.
+- **Lossless JPEG (SOF3) decode** (`JPEGLosslessDecoder`) — a new predictive
+  decoder (ITU-T T.81 Annex H) for DICOM Lossless JPEG (.70): all seven
+  selection-value predictors, 2…16-bit precision, 1-component grayscale and
+  3-component (stored-component, no colour transform) frames, interleaved and
+  non-interleaved scans, and restart intervals (including the subtle
+  first-line-after-reset horizontal-prediction rule). `JPEGDecoder.decode`
+  routes SOF3 frames to it automatically. Reconstruction is **byte-exact**
+  against `djpeg` across the full predictor / precision / restart sweep.
+
+### Fixed
+
+- **Multi-frame lossy `CompressionStats.wasLossless`** — the VarDCT animation
+  path (`encode(_ frames:)`) built its stats without `wasLossless: false`, so
+  the CLI mislabelled every VarDCT animation as a lossless encode. Now reports
+  lossy correctly.
+
+### Changed
+
+- `JXLEncoder`/`VarDCTEncoder`/`VarDCTBitstreamWriter` infer colour type + alpha
+  from the channel count (1 → gray, 2 → gray+alpha, 3 → RGB, 4 → RGBA),
+  extending the pre-existing `channels >= 4` alpha rule to grayscale. Backward
+  compatible with callers that leave `alphaChannels` at its default.
+
 ## [1.3.0] — 2026-07-01 (release)
 
 **16-bit lossy VarDCT.** The lossy VarDCT codec now accepts 16-bit RGB/RGBA

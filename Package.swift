@@ -8,11 +8,13 @@ import PackageDescription
 // amended 2026-05) — currently scaffolding only; functions added there must
 // be byte-equivalent to a scalar Swift reference and gate-tested.
 //
-// Status: v1.3.0 production-ready lossless JPEG XL codec — medical-grade
+// Status: v1.4.0 production-ready lossless JPEG XL codec — medical-grade
 // (DICOM + CID22 byte-exact via djxl), Swift-first with the `JXLPerfC`
-// boundary scaffolded for future C/C++ hot-path work. v1.3.0 extends the
-// lossy VarDCT codec to 16-bit RGB/RGBA (previously 8-bit only), matching
-// the lossless Modular path's bit-depth range — see CHANGELOG.md.
+// boundary scaffolded for future C/C++ hot-path work. v1.4.0 widens the
+// lossy VarDCT codec to grayscale / grayscale+alpha and to images beyond
+// the old 8192-px cap, adds a signed 16-bit pixel type (`.int16`), and
+// broadens the JPEG decoder to progressive / extended-sequential / 12-bit
+// and SOF3 lossless — see CHANGELOG.md.
 
 // JXLSwift is fully self-contained: no shared-protocol package. The only
 // dependency is swift-argument-parser, and that is CLI-only (the JXLSwift
