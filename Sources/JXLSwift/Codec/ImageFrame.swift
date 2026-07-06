@@ -6,23 +6,33 @@ import Foundation
 public enum PixelType: Sendable, Equatable {
     case uint8
     case uint16
+    /// Signed 16-bit samples (two's-complement, little-endian in
+    /// `data`). JPEG XL codestreams have no native signed-sample
+    /// type, so the encoder level-shifts `.int16` into unsigned
+    /// offset-binary (sample + 32768, the JPEG convention) before
+    /// encoding; ``JXLDecoder/decode(_:signedOutput:)`` recovers the
+    /// signed frame. The primary DICOM use case is signed 16-bit CT.
+    case int16
     case float32
 
     public var bitsPerSample: Int {
         switch self {
-        case .uint8:   return 8
-        case .uint16:  return 16
-        case .float32: return 32
+        case .uint8:          return 8
+        case .uint16, .int16: return 16
+        case .float32:        return 32
         }
     }
 
     public var bytesPerSample: Int {
         switch self {
-        case .uint8:   return 1
-        case .uint16:  return 2
-        case .float32: return 4
+        case .uint8:          return 1
+        case .uint16, .int16: return 2
+        case .float32:        return 4
         }
     }
+
+    /// True for signed sample types (currently only ``int16``).
+    public var isSigned: Bool { self == .int16 }
 }
 
 /// Colour space tag carried alongside the pixel data. JXLSwift currently
@@ -96,6 +106,14 @@ public struct ImageFrame: Sendable {
             let lo = UInt16(data[i * 2])
             let hi = UInt16(data[i * 2 + 1])
             return (hi << 8) | lo
+        case .int16:
+            // Stored two's-complement; return offset-binary
+            // (sample + 32768) so the value is always 0…65535. XOR of
+            // the sign bit is exactly the two's-complement ↔
+            // offset-binary conversion.
+            let lo = UInt16(data[i * 2])
+            let hi = UInt16(data[i * 2 + 1])
+            return ((hi << 8) | lo) ^ 0x8000
         case .float32:
             let bytes = Array(data[(i * 4)..<(i * 4 + 4)])
             let bits = bytes.withUnsafeBytes { $0.load(as: UInt32.self) }
@@ -117,6 +135,13 @@ public struct ImageFrame: Sendable {
         case .uint16:
             data[i * 2]     = UInt8(value & 0xFF)
             data[i * 2 + 1] = UInt8((value >> 8) & 0xFF)
+        case .int16:
+            // `value` is offset-binary (sample + 32768); store the
+            // two's-complement sample (XOR of the sign bit inverts
+            // the conversion applied in `getPixel`).
+            let raw = value ^ 0x8000
+            data[i * 2]     = UInt8(raw & 0xFF)
+            data[i * 2 + 1] = UInt8((raw >> 8) & 0xFF)
         case .float32:
             let f = Float(value) / 65535.0
             let bits = f.bitPattern
@@ -128,6 +153,46 @@ public struct ImageFrame: Sendable {
     }
 
     public var hasAlpha: Bool { alphaChannels > 0 }
+
+    /// Level-shift a signed ``int16`` frame into an equivalent
+    /// ``uint16`` frame whose samples are offset-binary
+    /// (sample + 32768). This is the JPEG-style level shift the
+    /// encoder applies so signed data flows through the unsigned
+    /// VarDCT / Modular pipeline unchanged. Every 16-bit sample's
+    /// sign bit is flipped — the two's-complement ↔ offset-binary
+    /// conversion — which also level-shifts any alpha channel
+    /// symmetrically (harmless: alpha is lossless, so it un-shifts
+    /// exactly). Geometry, channel count, colour space and alpha
+    /// count are preserved. No-op label change if already unsigned.
+    public func levelShiftedToUnsigned16() -> ImageFrame {
+        guard pixelType == .int16 else { return self }
+        var out = ImageFrame(
+            width: width, height: height, channels: channels,
+            pixelType: .uint16, colorSpace: colorSpace,
+            alphaChannels: alphaChannels, iccProfile: iccProfile)
+        out.data = data
+        var i = 1
+        while i < out.data.count { out.data[i] ^= 0x80; i += 2 }
+        return out
+    }
+
+    /// Inverse of ``levelShiftedToUnsigned16()``: reinterpret a
+    /// ``uint16`` frame's offset-binary samples as signed ``int16``
+    /// (sample − 32768). Used by
+    /// ``JXLDecoder/decode(_:signedOutput:)`` to recover a signed
+    /// frame from an unsigned decode. No-op label change if the frame
+    /// is not ``uint16``.
+    public func reinterpretedAsSignedInt16() -> ImageFrame {
+        guard pixelType == .uint16 else { return self }
+        var out = ImageFrame(
+            width: width, height: height, channels: channels,
+            pixelType: .int16, colorSpace: colorSpace,
+            alphaChannels: alphaChannels, iccProfile: iccProfile)
+        out.data = data
+        var i = 1
+        while i < out.data.count { out.data[i] ^= 0x80; i += 2 }
+        return out
+    }
 }
 
 /// Family-parity alias for ``ImageFrame``. JXLSwift is part of a Swift

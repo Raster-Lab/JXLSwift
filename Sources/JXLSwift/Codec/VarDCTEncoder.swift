@@ -108,11 +108,34 @@ package enum VarDCTEncoder {
         let globalScale = globalScale(forDistance: distance)
         let quantDC: UInt32 = 17
         let qf: Int32 = 5
-        guard frame.pixelType == .uint8 || frame.pixelType == .uint16,
-              frame.channels >= 3 else {
+        guard frame.pixelType == .uint8 || frame.pixelType == .uint16 else {
             throw EncoderError.unsupported(
-                "VarDCT encode: only 8-bit/16-bit RGB/RGBA frames "
-                + "(got \(frame.pixelType)/\(frame.channels)ch)")
+                "VarDCT encode: only 8-bit/16-bit samples "
+                + "(got \(frame.pixelType))")
+        }
+        // Colour type is inferred from the total channel count —
+        // matching the bitstream writer's alpha handling and the
+        // pre-grayscale behaviour, which keyed alpha off the channel
+        // count (`>= 4`) rather than the `alphaChannels` field:
+        //   1 → grayscale, 2 → grayscale + alpha,
+        //   3 → RGB,       4 → RGB + alpha.
+        // Grayscale (1 colour channel) is broadcast to R=G=B and
+        // encoded as a standard 3-channel XYB frame — for a neutral
+        // pixel the opsin transform yields X = 0, so the frame is a
+        // normal XYB codestream whose only distinguishing mark is a
+        // grayscale `ImageMetadata.colorEncoding` (the representation
+        // libjxl itself uses for grayscale lossy; the frame stays
+        // 3-channel XYB internally). The trailing channel of an even
+        // count is a lossless alpha extra channel handled by the
+        // bitstream layer, not read here.
+        let isGrayscale: Bool
+        switch frame.channels {
+        case 1, 2: isGrayscale = true
+        case 3, 4: isGrayscale = false
+        default:
+            throw EncoderError.unsupported(
+                "VarDCT encode: channel count \(frame.channels) "
+                + "unsupported (expected 1…4)")
         }
         let xsize = frame.width
         let ysize = frame.height
@@ -133,41 +156,78 @@ package enum VarDCTEncoder {
         var planeY = [Float](repeating: 0, count: pw * ph)
         var planeB = [Float](repeating: 0, count: pw * ph)
         if frame.pixelType == .uint8 {
-            for y in 0..<ph {
-                let sy = min(y, ysize - 1)
-                for x in 0..<pw {
-                    let sx = min(x, xsize - 1)
-                    let p = (sy * xsize + sx) * ch
-                    let r = srgb8ToLinear(frame.data[p + 0])
-                    let g = srgb8ToLinear(frame.data[p + 1])
-                    let b = srgb8ToLinear(frame.data[p + 2])
-                    let xyb = OpsinXYB.forward((r, g, b))
-                    let i = y * pw + x
-                    planeX[i] = xyb.X
-                    planeY[i] = xyb.Y
-                    planeB[i] = xyb.B
+            if isGrayscale {
+                // Grayscale — colour channel 0 broadcast to R=G=B.
+                // Alpha (if any) is the trailing channel and is not
+                // read here; it is carried losslessly by the
+                // bitstream writer's extra-channel path.
+                for y in 0..<ph {
+                    let sy = min(y, ysize - 1)
+                    for x in 0..<pw {
+                        let sx = min(x, xsize - 1)
+                        let p = (sy * xsize + sx) * ch
+                        let gv = srgb8ToLinear(frame.data[p])
+                        let xyb = OpsinXYB.forward((gv, gv, gv))
+                        let i = y * pw + x
+                        planeX[i] = xyb.X
+                        planeY[i] = xyb.Y
+                        planeB[i] = xyb.B
+                    }
+                }
+            } else {
+                for y in 0..<ph {
+                    let sy = min(y, ysize - 1)
+                    for x in 0..<pw {
+                        let sx = min(x, xsize - 1)
+                        let p = (sy * xsize + sx) * ch
+                        let r = srgb8ToLinear(frame.data[p + 0])
+                        let g = srgb8ToLinear(frame.data[p + 1])
+                        let b = srgb8ToLinear(frame.data[p + 2])
+                        let xyb = OpsinXYB.forward((r, g, b))
+                        let i = y * pw + x
+                        planeX[i] = xyb.X
+                        planeY[i] = xyb.Y
+                        planeB[i] = xyb.B
+                    }
                 }
             }
         } else {
             let maxValue = Float((1 << frame.pixelType.bitsPerSample) - 1)
-            for y in 0..<ph {
-                let sy = min(y, ysize - 1)
-                for x in 0..<pw {
-                    let sx = min(x, xsize - 1)
-                    let r = srgbToLinear(
-                        UInt32(frame.getPixel(x: sx, y: sy, channel: 0)),
-                        maxValue: maxValue)
-                    let g = srgbToLinear(
-                        UInt32(frame.getPixel(x: sx, y: sy, channel: 1)),
-                        maxValue: maxValue)
-                    let b = srgbToLinear(
-                        UInt32(frame.getPixel(x: sx, y: sy, channel: 2)),
-                        maxValue: maxValue)
-                    let xyb = OpsinXYB.forward((r, g, b))
-                    let i = y * pw + x
-                    planeX[i] = xyb.X
-                    planeY[i] = xyb.Y
-                    planeB[i] = xyb.B
+            if isGrayscale {
+                for y in 0..<ph {
+                    let sy = min(y, ysize - 1)
+                    for x in 0..<pw {
+                        let sx = min(x, xsize - 1)
+                        let gv = srgbToLinear(
+                            UInt32(frame.getPixel(x: sx, y: sy, channel: 0)),
+                            maxValue: maxValue)
+                        let xyb = OpsinXYB.forward((gv, gv, gv))
+                        let i = y * pw + x
+                        planeX[i] = xyb.X
+                        planeY[i] = xyb.Y
+                        planeB[i] = xyb.B
+                    }
+                }
+            } else {
+                for y in 0..<ph {
+                    let sy = min(y, ysize - 1)
+                    for x in 0..<pw {
+                        let sx = min(x, xsize - 1)
+                        let r = srgbToLinear(
+                            UInt32(frame.getPixel(x: sx, y: sy, channel: 0)),
+                            maxValue: maxValue)
+                        let g = srgbToLinear(
+                            UInt32(frame.getPixel(x: sx, y: sy, channel: 1)),
+                            maxValue: maxValue)
+                        let b = srgbToLinear(
+                            UInt32(frame.getPixel(x: sx, y: sy, channel: 2)),
+                            maxValue: maxValue)
+                        let xyb = OpsinXYB.forward((r, g, b))
+                        let i = y * pw + x
+                        planeX[i] = xyb.X
+                        planeY[i] = xyb.Y
+                        planeB[i] = xyb.B
+                    }
                 }
             }
         }

@@ -1779,27 +1779,252 @@ final class JPEGFoundationTests: XCTestCase {
             "RGB max-error \(maxErr) too high for mid-grey q=90")
     }
 
-    func testJPEGDecoder_RejectsProgressive() throws {
-        // We don't have an easy progressive-JPEG generator
-        // available at test time, but we can construct a minimal
-        // SOF2 fixture by mutating the minimal fixture's SOF
-        // marker byte. The decoder should reject with .unsupported.
-        var data = minimalJPEG()
-        // Find the SOF0 byte (0xFF 0xC0) and change to SOF2.
-        for i in 0..<(data.count - 1) {
-            if data[i] == 0xFF && data[i + 1] == 0xC0 {
-                data[i + 1] = 0xC2
-                break
-            }
+    // Run a subprocess, returning true on exit status 0.
+    @discardableResult
+    private func runProc(_ path: String, _ args: [String]) -> Bool {
+        let p = Process()
+        p.launchPath = path
+        p.arguments = args
+        p.standardOutput = Pipe(); p.standardError = Pipe()
+        do { try p.run() } catch { return false }
+        p.waitUntilExit()
+        return p.terminationStatus == 0
+    }
+
+    /// Parse a binary PNM (P5 grayscale / P6 RGB). Returns width,
+    /// height, maxval, and sample values (big-endian 16-bit when
+    /// maxval > 255 — the PNM convention libjpeg's `djpeg` emits).
+    private func parsePNM(_ d: Data)
+        -> (w: Int, h: Int, maxval: Int, samples: [Int])
+    {
+        let bytes = [UInt8](d)
+        var i = 2, vals: [Int] = []
+        while vals.count < 3 {
+            while i < bytes.count,
+                  bytes[i] == 0x20 || bytes[i] == 0x0a
+                    || bytes[i] == 0x09 || bytes[i] == 0x0d { i += 1 }
+            var s = i
+            while i < bytes.count,
+                  !(bytes[i] == 0x20 || bytes[i] == 0x0a
+                    || bytes[i] == 0x09 || bytes[i] == 0x0d) { i += 1 }
+            vals.append(Int(String(decoding: bytes[s..<i],
+                as: UTF8.self)) ?? 0)
+            _ = s
         }
-        XCTAssertThrowsError(try JPEGDecoder.decode(data)) { err in
-            guard let e = err as? JPEGDecoderError else {
-                XCTFail("expected JPEGDecoderError, got \(err)")
-                return
+        i += 1  // single whitespace after maxval
+        let (w, h, mx) = (vals[0], vals[1], vals[2])
+        var samples: [Int] = []
+        if mx > 255 {
+            var k = i
+            while k + 1 < bytes.count {
+                samples.append((Int(bytes[k]) << 8) | Int(bytes[k + 1]))
+                k += 2
             }
-            if case .unsupported = e {} else {
-                XCTFail("expected .unsupported, got \(e)")
+        } else {
+            samples = bytes[i...].map { Int($0) }
+        }
+        return (w, h, mx, samples)
+    }
+
+    /// **Item 4a (DCT-family pixel decode).** `JPEGDecoder.decode`
+    /// now decodes progressive (SOF2) and 12-bit (SOF1) JPEGs, not
+    /// just baseline 8-bit. Each variant is generated with `cjpeg`,
+    /// decoded through our pure-Swift path, and compared pixel-for-
+    /// pixel against libjpeg's `djpeg -nosmooth` (nearest-neighbour
+    /// chroma upsampling, matching ours). A tiny bound absorbs IDCT
+    /// float-rounding differences between the two decoders. Replaces
+    /// the old `testJPEGDecoder_RejectsProgressive` (progressive is
+    /// now supported).
+    func testJPEGDecoder_DCTFamilyPixelDecode_MatchesDjpeg() throws {
+        let cjpeg = "/opt/homebrew/bin/cjpeg"
+        let djpeg = "/opt/homebrew/bin/djpeg"
+        guard FileManager.default.isExecutableFile(atPath: cjpeg),
+              FileManager.default.isExecutableFile(atPath: djpeg)
+        else { throw XCTSkip("cjpeg/djpeg required") }
+        let tmp = NSTemporaryDirectory()
+
+        struct V {
+            let label: String; let rgb: Bool
+            let cjpegArgs: [String]; let bit16: Bool; let bound: Int
+        }
+        let variants: [V] = [
+            V(label: "progressive gray", rgb: false,
+              cjpegArgs: ["-progressive"], bit16: false, bound: 4),
+            V(label: "progressive rgb 4:2:0", rgb: true,
+              cjpegArgs: ["-progressive", "-sample", "2x2,1x1,1x1"],
+              bit16: false, bound: 4),
+            V(label: "12-bit gray", rgb: false,
+              cjpegArgs: ["-precision", "12"], bit16: true, bound: 4),
+            V(label: "12-bit rgb", rgb: true,
+              cjpegArgs: ["-precision", "12", "-sample", "1x1,1x1,1x1"],
+              bit16: true, bound: 6),
+        ]
+        let w = 48, h = 48
+        for v in variants {
+            let srcP = tmp + "src-\(UUID().uuidString)."
+                + (v.rgb ? "ppm" : "pgm")
+            let jpgP = tmp + "j-\(UUID().uuidString).jpg"
+            let refP = tmp + "r-\(UUID().uuidString).pnm"
+            defer {
+                for p in [srcP, jpgP, refP] {
+                    try? FileManager.default.removeItem(atPath: p)
+                }
             }
+            var src = Data("\(v.rgb ? "P6" : "P5")\n\(w) \(h)\n255\n".utf8)
+            for y in 0..<h {
+                for x in 0..<w {
+                    if v.rgb {
+                        src.append(UInt8((x * 5) & 0xff))
+                        src.append(UInt8((y * 5) & 0xff))
+                        src.append(UInt8(((x + y) * 3) & 0xff))
+                    } else {
+                        src.append(UInt8((x * 7 + y * 13) & 0xff))
+                    }
+                }
+            }
+            try src.write(to: URL(fileURLWithPath: srcP))
+            guard runProc(cjpeg, v.cjpegArgs
+                + ["-quality", "88", "-outfile", jpgP, srcP]) else {
+                throw XCTSkip("cjpeg \(v.label) failed")
+            }
+            let jpg = try Data(contentsOf: URL(fileURLWithPath: jpgP))
+
+            let frame = try JPEGDecoder.decode(jpg)
+            XCTAssertEqual(frame.width, w, "\(v.label) width")
+            XCTAssertEqual(frame.height, h, "\(v.label) height")
+            XCTAssertEqual(frame.channels, v.rgb ? 3 : 1,
+                "\(v.label) channels")
+            XCTAssertEqual(frame.pixelType,
+                v.bit16 ? .uint16 : .uint8, "\(v.label) pixelType")
+
+            guard runProc(djpeg,
+                ["-nosmooth", "-pnm", "-outfile", refP, jpgP]) else {
+                throw XCTSkip("djpeg \(v.label) failed")
+            }
+            let ref = parsePNM(
+                try Data(contentsOf: URL(fileURLWithPath: refP)))
+            let ch = v.rgb ? 3 : 1
+            XCTAssertEqual(ref.samples.count, w * h * ch,
+                "\(v.label) djpeg sample count")
+            var maxErr = 0
+            for idx in 0..<(w * h * ch) {
+                let ours = Int(frame.getPixel(
+                    x: (idx / ch) % w, y: (idx / ch) / w,
+                    channel: idx % ch))
+                maxErr = max(maxErr, abs(ours - ref.samples[idx]))
+            }
+            XCTAssertLessThanOrEqual(maxErr, v.bound,
+                "\(v.label): our decode vs djpeg maxErr=\(maxErr)")
+        }
+    }
+
+    /// **Item 4b (SOF3 lossless).** `JPEGDecoder.decode` routes SOF3
+    /// (lossless, predictive) JPEGs to `JPEGLosslessDecoder`. Because
+    /// the codec is lossless, our reconstruction must be **byte-exact**
+    /// against libjpeg's `djpeg` — a stronger check than the DCT path's
+    /// bounded rounding. Sweeps all seven selection-value predictors,
+    /// 8-bit and 16-bit precision, grayscale and RGB, and restart
+    /// intervals (whose first-line-after-reset prediction is the
+    /// subtlest part). The primary target is DICOM Lossless JPEG (.70),
+    /// which is grayscale.
+    func testJPEGDecoder_LosslessSOF3_MatchesDjpeg() throws {
+        let cjpeg = "/opt/homebrew/bin/cjpeg"
+        let djpeg = "/opt/homebrew/bin/djpeg"
+        guard FileManager.default.isExecutableFile(atPath: cjpeg),
+              FileManager.default.isExecutableFile(atPath: djpeg)
+        else { throw XCTSkip("cjpeg/djpeg required") }
+        let tmp = NSTemporaryDirectory()
+        let w = 48, h = 48
+
+        struct V {
+            let label: String; let rgb: Bool
+            let cjpegArgs: [String]; let bit16: Bool
+        }
+        var variants: [V] = []
+        for psv in 1...7 {
+            variants.append(V(label: "gray psv\(psv)", rgb: false,
+                cjpegArgs: ["-lossless", "\(psv)"], bit16: false))
+        }
+        variants += [
+            V(label: "gray 16-bit", rgb: false,
+              cjpegArgs: ["-lossless", "1", "-precision", "16"],
+              bit16: true),
+            V(label: "gray restart", rgb: false,
+              cjpegArgs: ["-lossless", "4", "-restart", "1"],
+              bit16: false),
+            V(label: "rgb", rgb: true,
+              cjpegArgs: ["-lossless", "1"], bit16: false),
+            V(label: "rgb restart", rgb: true,
+              cjpegArgs: ["-lossless", "6", "-restart", "2"],
+              bit16: false),
+        ]
+
+        for v in variants {
+            let srcP = tmp + "ls-\(UUID().uuidString)."
+                + (v.rgb ? "ppm" : "pgm")
+            let jpgP = tmp + "ls-\(UUID().uuidString).jpg"
+            let refP = tmp + "ls-\(UUID().uuidString).pnm"
+            defer {
+                for p in [srcP, jpgP, refP] {
+                    try? FileManager.default.removeItem(atPath: p)
+                }
+            }
+            let maxv = v.bit16 ? 65535 : 255
+            var src = Data(
+                "\(v.rgb ? "P6" : "P5")\n\(w) \(h)\n\(maxv)\n".utf8)
+            for y in 0..<h {
+                for x in 0..<w {
+                    func put(_ val: Int) {
+                        if v.bit16 {
+                            src.append(UInt8((val >> 8) & 0xff))
+                            src.append(UInt8(val & 0xff))
+                        } else {
+                            src.append(UInt8(val & 0xff))
+                        }
+                    }
+                    if v.rgb {
+                        put((x * 5) & 0xff); put((y * 5) & 0xff)
+                        put(((x + y) * 3) & 0xff)
+                    } else {
+                        put(v.bit16 ? ((x * 263 + y * 517) & 0xffff)
+                            : ((x * 7 + y * 13) & 0xff))
+                    }
+                }
+            }
+            try src.write(to: URL(fileURLWithPath: srcP))
+            guard runProc(cjpeg,
+                v.cjpegArgs + ["-outfile", jpgP, srcP]) else {
+                throw XCTSkip("cjpeg \(v.label) failed")
+            }
+            let jpg = try Data(contentsOf: URL(fileURLWithPath: jpgP))
+
+            let frame = try JPEGDecoder.decode(jpg)
+            XCTAssertEqual(frame.width, w, "\(v.label) width")
+            XCTAssertEqual(frame.height, h, "\(v.label) height")
+            XCTAssertEqual(frame.channels, v.rgb ? 3 : 1,
+                "\(v.label) channels")
+            XCTAssertEqual(frame.pixelType,
+                v.bit16 ? .uint16 : .uint8, "\(v.label) pixelType")
+
+            guard runProc(djpeg,
+                ["-pnm", "-outfile", refP, jpgP]) else {
+                throw XCTSkip("djpeg \(v.label) failed")
+            }
+            let ref = parsePNM(
+                try Data(contentsOf: URL(fileURLWithPath: refP)))
+            let ch = v.rgb ? 3 : 1
+            XCTAssertEqual(ref.samples.count, w * h * ch,
+                "\(v.label) djpeg sample count")
+            var maxErr = 0
+            for idx in 0..<(w * h * ch) {
+                let ours = Int(frame.getPixel(
+                    x: (idx / ch) % w, y: (idx / ch) / w,
+                    channel: idx % ch))
+                maxErr = max(maxErr, abs(ours - ref.samples[idx]))
+            }
+            XCTAssertEqual(maxErr, 0,
+                "\(v.label): lossless decode must be byte-exact vs "
+                + "djpeg (maxErr=\(maxErr))")
         }
     }
 

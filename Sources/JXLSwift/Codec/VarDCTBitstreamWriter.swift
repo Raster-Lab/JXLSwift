@@ -10,12 +10,14 @@
 // then `ZeroDensityContext`-routed coefficient tokens — so the
 // frame is a genuine lossy compression, not just block averages.
 //
-// Scope: frames up to one DC group (≤ 2048 px) — single-section
-// when ≤ 256 px, otherwise a multi-section codestream of one AC
-// group per 256-px tile. RGB and RGBA (one lossless modular alpha
-// extra channel). DCT8×8 only, one pass, default colour-correlation
-// / quant matrices / block-context map, `used_orders = 0`,
-// `num_histograms = 1`.
+// Scope: single-section when ≤ 256 px, otherwise a multi-section
+// codestream of one AC group per 256-px tile and one DC group per
+// 2048-px tile — up to the 16384-px resource-safety cap. Grayscale,
+// grayscale+alpha, RGB and RGBA (the trailing channel of an even
+// channel count is one lossless modular alpha extra channel;
+// grayscale is a 3-channel XYB frame carrying grayscale colour
+// metadata). One pass, default colour-correlation / quant matrices /
+// block-context map, `used_orders = 0`, `num_histograms = 1`.
 //
 // Spec reference: ISO/IEC 18181-1 §K. libjxl: `enc_frame.cc`.
 
@@ -47,13 +49,20 @@ package enum VarDCTBitstreamWriter {
         /// `frame.pixelType.bitsPerSample` (8 or 16) — threaded into
         /// the outer codestream's `ImageMetadata.bitDepth`.
         let bitsPerSample: Int
+        /// True when the source frame is grayscale (1 colour channel).
+        /// The frame body is still a 3-channel XYB codestream (with
+        /// X ≈ 0); this flag only drives the outer codestream's
+        /// `ImageMetadata.colorEncoding` (grayscale vs sRGB), matching
+        /// how libjxl stores grayscale lossy.
+        let isGrayscale: Bool
     }
 
-    /// Encode an 8-bit or 16-bit RGB/RGBA `ImageFrame` as a VarDCT
-    /// JPEG XL file (naked codestream). Frames up to the 8192-px
-    /// encoder cap are supported: ≤ 256 px as a single contiguous
-    /// section, larger frames as a multi-section codestream with one
-    /// AC group per 256-px tile and one DC group per 2048-px tile.
+    /// Encode an 8-bit or 16-bit grayscale / grayscale+alpha / RGB /
+    /// RGBA `ImageFrame` as a VarDCT JPEG XL file (naked codestream).
+    /// Frames up to the 16384-px resource-safety cap are supported:
+    /// ≤ 256 px as a single contiguous section, larger frames as a
+    /// multi-section codestream with one AC group per 256-px tile and
+    /// one DC group per 2048-px tile.
     package static func encode(
         frame: ImageFrame, distance: Float = 1.0,
         gaborish: Bool = true, adaptiveQF: Bool = true
@@ -67,7 +76,8 @@ package enum VarDCTBitstreamWriter {
             bitDepth: BitDepth(
                 floatingPoint: false,
                 bitsPerSample: UInt32(chunk.bitsPerSample)),
-            sections: chunk.sections)
+            sections: chunk.sections,
+            isGrayscale: chunk.isGrayscale)
     }
 
     /// Run the encoder pipeline for one frame, returning the TOC
@@ -83,7 +93,16 @@ package enum VarDCTBitstreamWriter {
             frame: frame, distance: distance,
             gaborish: gaborish, adaptiveQF: adaptiveQF)
         let groupDim = 256
-        let sizeCap = 8192
+        // Resource-safety cap (not a correctness/spec limit): the
+        // multi-AC-group + multi-DC-group machinery below indexes
+        // groups with `Int`, so it is correct for arbitrarily many
+        // groups; the cap just bounds worst-case memory (three
+        // padded `Float` planes ≈ 12·w·h bytes). Matched to the
+        // lossless `SpecModularEncoder`'s 16384-px ceiling so the
+        // two codecs share the same dimension envelope. Raised from
+        // the earlier conservative 8192 (v0.11.0i) once the group
+        // indexing was audited for large `numGroups`.
+        let sizeCap = 16384
         guard q.xsize <= sizeCap, q.ysize <= sizeCap else {
             throw WriterError.unsupported(
                 "VarDCT encode: \(q.xsize)×\(q.ysize) exceeds the "
@@ -102,21 +121,32 @@ package enum VarDCTBitstreamWriter {
         // frames spanning more than one 256-px group the channel is
         // larger than a modular group, so it defers per-AC-group
         // (the decoder's `extraGiImage` deferred path).
-        let hasAlpha = frame.channels >= 4
+        // Colour type + alpha inferred from the channel count (the
+        // pre-grayscale writer keyed alpha off `channels >= 4`; this
+        // extends the same channel-count rule to grayscale, so it
+        // stays backward-compatible with callers that leave
+        // `alphaChannels` at its default):
+        //   1 → gray,        2 → gray + alpha,
+        //   3 → RGB,         4 → RGB  + alpha.
+        // Alpha, when present, is the trailing channel.
+        let hasAlpha = frame.channels == 2 || frame.channels == 4
+        let alphaChannelIndex = frame.channels - 1
         var alphaPix = [Int32]()
         if hasAlpha {
             // `getPixel` is bit-depth-generic (unlike a raw
-            // `frame.data[i * ch + 3]` byte read, which only gives
+            // `frame.data[i * ch + alpha]` byte read, which only gives
             // the right stride/width for 8-bit — for 16-bit it reads
             // the wrong byte entirely since each sample is 2 bytes).
             alphaPix = [Int32](repeating: 0, count: q.xsize * q.ysize)
             for y in 0..<q.ysize {
                 for x in 0..<q.xsize {
                     alphaPix[y * q.xsize + x] =
-                        Int32(frame.getPixel(x: x, y: y, channel: 3))
+                        Int32(frame.getPixel(
+                            x: x, y: y, channel: alphaChannelIndex))
                 }
             }
         }
+        let isGrayscale = frame.channels == 1 || frame.channels == 2
 
         // --- Modular DC + ACMeta sub-images, one set per DC group ---
         // A DC group covers up to 256×256 blocks (2048 px). Each
@@ -553,7 +583,8 @@ package enum VarDCTBitstreamWriter {
         return EncodedFrameSections(
             sections: sections, xsize: q.xsize, ysize: q.ysize,
             hasAlpha: hasAlpha, gaborish: q.gaborish,
-            bitsPerSample: frame.pixelType.bitsPerSample)
+            bitsPerSample: frame.pixelType.bitsPerSample,
+            isGrayscale: isGrayscale)
     }
 
     // MARK: - Modular residual tokenisation
@@ -779,7 +810,8 @@ package enum VarDCTBitstreamWriter {
     static func writeCodestreamPrelude(
         xsize: Int, ysize: Int, hasAlpha: Bool,
         animation: AnimationHeader?,
-        bitDepth: BitDepth = BitDepth(floatingPoint: false, bitsPerSample: 8)
+        bitDepth: BitDepth = BitDepth(floatingPoint: false, bitsPerSample: 8),
+        isGrayscale: Bool = false
     ) throws -> Data {
         var w = BitWriter()
         w.write(bits: 8, value: 0xFF)
@@ -802,7 +834,12 @@ package enum VarDCTBitstreamWriter {
             modular16BitBufferSufficient: true,
             extraChannels: extraChannels,
             xybEncoded: true,
-            colorEncoding: .srgb,
+            // Grayscale lossy is a 3-channel XYB frame with a grayscale
+            // colour encoding — exactly what libjxl emits. The decoder
+            // reconstructs 3 XYB planes (X ≈ 0 → R = G = B) then
+            // collapses to one luma channel because the colour space is
+            // grayscale. `xybEncoded` stays true either way.
+            colorEncoding: isGrayscale ? .grayscaleD65 : .srgb,
             intensityTarget: 255.0, minNits: 0.0,
             relativeToMaxDisplay: false, linearBelow: 0.0)
         try meta.write(to: &w)
@@ -870,11 +907,13 @@ package enum VarDCTBitstreamWriter {
         xsize: Int, ysize: Int, hasAlpha: Bool,
         gaborish: Bool,
         bitDepth: BitDepth = BitDepth(floatingPoint: false, bitsPerSample: 8),
-        sections: [Data]
+        sections: [Data],
+        isGrayscale: Bool = false
     ) throws -> Data {
         var out = try writeCodestreamPrelude(
             xsize: xsize, ysize: ysize,
-            hasAlpha: hasAlpha, animation: nil, bitDepth: bitDepth)
+            hasAlpha: hasAlpha, animation: nil, bitDepth: bitDepth,
+            isGrayscale: isGrayscale)
         out.append(try writeFrameChunk(
             hasAlpha: hasAlpha, gaborish: gaborish, isLast: true,
             animationFrame: .default, haveAnimation: false,
@@ -2111,14 +2150,16 @@ package enum VarDCTBitstreamWriter {
         for (i, c) in chunks.enumerated() where i > 0 {
             guard c.xsize == first.xsize, c.ysize == first.ysize,
                   c.hasAlpha == first.hasAlpha,
-                  c.bitsPerSample == first.bitsPerSample else {
+                  c.bitsPerSample == first.bitsPerSample,
+                  c.isGrayscale == first.isGrayscale else {
                 throw WriterError.unsupported(
                     "encodeAnimation: frame \(i) "
                     + "\(c.xsize)×\(c.ysize)/\(c.hasAlpha)/"
-                    + "\(c.bitsPerSample)bpp "
+                    + "\(c.bitsPerSample)bpp/gray=\(c.isGrayscale) "
                     + "differs from frame 0 "
                     + "\(first.xsize)×\(first.ysize)/"
-                    + "\(first.hasAlpha)/\(first.bitsPerSample)bpp")
+                    + "\(first.hasAlpha)/\(first.bitsPerSample)bpp/"
+                    + "gray=\(first.isGrayscale)")
             }
         }
         // libjxl-default 100 tps timestamp resolution, infinite
@@ -2131,7 +2172,8 @@ package enum VarDCTBitstreamWriter {
             hasAlpha: first.hasAlpha, animation: animation,
             bitDepth: BitDepth(
                 floatingPoint: false,
-                bitsPerSample: UInt32(first.bitsPerSample)))
+                bitsPerSample: UInt32(first.bitsPerSample)),
+            isGrayscale: first.isGrayscale)
         for (i, c) in chunks.enumerated() {
             let isLast = (i == chunks.count - 1)
             let af = AnimationFrame(

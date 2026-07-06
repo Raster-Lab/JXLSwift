@@ -162,10 +162,10 @@ extension JPEGDecoder {
                 guard !frameComponents.isEmpty else {
                     throw JPEGDecoderError.missingFrame
                 }
-                guard precision == 8 else {
+                guard precision == 8 || precision == 12 else {
                     throw JPEGDecoderError.unsupported(
                         "\(precision)-bit precision "
-                        + "(only 8-bit supported)")
+                        + "(only 8-bit and 12-bit supported)")
                 }
                 let nC = frameComponents.count
                 guard nC == 1 || nC == 3 else {
@@ -205,10 +205,10 @@ extension JPEGDecoder {
         guard let scan = scanHeader else {
             throw JPEGDecoderError.missingScan
         }
-        guard precision == 8 else {
+        guard precision == 8 || precision == 12 else {
             throw JPEGDecoderError.unsupported(
                 "\(precision)-bit precision "
-                + "(only 8-bit supported)")
+                + "(only 8-bit and 12-bit supported)")
         }
         let nComponents = frameComponents.count
         guard nComponents == 1 || nComponents == 3 else {
