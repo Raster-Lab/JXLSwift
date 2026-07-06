@@ -3,17 +3,21 @@
 // STATUS: both halves of the codec are wired up.
 //   • Lossless Modular — 8-bit and 16-bit integer samples (grayscale,
 //     RGB, RGBA), single-pass, any size up to the encoder's 8K cap.
-//   • Lossy VarDCT — 8-bit AND 16-bit RGB / RGBA via
-//     `VarDCTBitstreamWriter` (DCT8×8, multi-DC-group, ≤ 8192 px).
-//     Grayscale (< 3 channels) is not yet wired to VarDCT.
+//   • Lossy VarDCT — 8-bit AND 16-bit grayscale, grayscale+alpha,
+//     RGB, and RGBA via `VarDCTBitstreamWriter` (DCT8×8,
+//     multi-DC-group, ≤ 8192 px). Grayscale is encoded as a
+//     3-channel XYB frame (X ≈ 0) carrying grayscale colour
+//     metadata — the representation libjxl uses; the decoder
+//     collapses it back to one luma channel.
 // Output round-trips through `djxl 0.11.2`.
 //
 // Routing: `encode(_:)` picks the codec from `options.mode`.
 // `.lossless` always uses the Modular path. Lossy modes
 // (`.lossy` / `.distance`) use the VarDCT path when the frame is one
-// VarDCT can take; for frames it can't (grayscale, oversized) the
-// encoder **falls back to lossless Modular** so `encode` always
-// yields a valid codestream rather than failing. The Modular path
+// VarDCT can take; for frames it can't (e.g. oversized beyond the
+// writer's size cap) the encoder **falls back to lossless Modular**
+// so `encode` always yields a valid codestream rather than failing.
+// The Modular path
 // deinterleaves the caller's channel-interleaved `ImageFrame.data`
 // into per-channel buffers and dispatches into `SpecModularEncoder`.
 // `EncodingOptions.useM0Placeholder` still routes to the legacy M0
@@ -65,10 +69,10 @@ public struct JXLEncoder: Sendable {
     /// - `EncodingOptions.useM0Placeholder == true` routes through
     ///   `MinimalLosslessCodec` (the legacy M0 vertical slice).
     /// - A lossy `mode` (`.lossy` / `.distance`) routes to the VarDCT
-    ///   encoder when the frame is 8-bit or 16-bit RGB/RGBA within
-    ///   VarDCT's size limits; otherwise (grayscale, oversized) it
-    ///   **falls back** to the lossless Modular path (so the call
-    ///   still produces a valid codestream).
+    ///   encoder when the frame is 8-bit or 16-bit grayscale,
+    ///   grayscale+alpha, RGB, or RGBA within VarDCT's size limits;
+    ///   otherwise (e.g. oversized) it **falls back** to the lossless
+    ///   Modular path (so the call still produces a valid codestream).
     /// - `.lossless` always uses the Modular path, dispatched on the
     ///   frame's `pixelType`, `channels`, and `alphaChannels`.
     ///
@@ -76,6 +80,12 @@ public struct JXLEncoder: Sendable {
     /// `float32` and frames with `iccProfile` set throw
     /// `.notImplemented` for now.
     public func encode(_ frame: ImageFrame) throws -> EncodedImage {
+        // Signed 16-bit is level-shifted to unsigned offset-binary up
+        // front (JPEG convention) so both the VarDCT and Modular paths
+        // handle it unchanged; `JXLDecoder.decode(_:signedOutput:)`
+        // recovers the sign. Unsigned frames pass through untouched.
+        let frame = frame.pixelType == .int16
+            ? frame.levelShiftedToUnsigned16() : frame
         if options.useM0Placeholder {
             let start = Date()
             let data: Data
@@ -98,11 +108,13 @@ public struct JXLEncoder: Sendable {
         }
         let start = Date()
 
-        // Lossy modes encode through the VarDCT codec. When the frame
-        // is one VarDCT can't take (<3 or >4 channels, beyond the
-        // writer's size limits) `VarDCTBitstreamWriter` /
-        // `VarDCTEncoder` throw their `unsupported` case — caught here
-        // so the encode falls back to the lossless Modular path below.
+        // Lossy modes encode through the VarDCT codec. Grayscale (1),
+        // grayscale+alpha (2), RGB (3), and RGBA (4) frames are all
+        // accepted. When the frame is one VarDCT can't take (an
+        // unsupported colour-channel count, or dimensions beyond the
+        // writer's size cap) `VarDCTBitstreamWriter` / `VarDCTEncoder`
+        // throw their `unsupported` case — caught here so the encode
+        // falls back to the lossless Modular path below.
         if case .lossless = options.mode {
             // Lossless — skip VarDCT, use Modular directly.
         } else {
@@ -382,6 +394,11 @@ public struct JXLEncoder: Sendable {
     ///   `VarDCTBitstreamWriter.encodeAnimation`, with `isLast`
     ///   flipped on the final frame only.
     public func encode(_ frames: [ImageFrame]) throws -> EncodedImage {
+        // Level-shift any signed 16-bit frames up front (see the
+        // single-frame `encode(_:)`); unsigned frames are untouched.
+        let frames = frames.map {
+            $0.pixelType == .int16 ? $0.levelShiftedToUnsigned16() : $0
+        }
         switch frames.count {
         case 0:
             throw EncoderError.unsupportedFrame(
@@ -433,7 +450,8 @@ public struct JXLEncoder: Sendable {
             stats: CompressionStats(
                 originalSize: originalSize,
                 compressedSize: wrapped.count,
-                encodingTime: Date().timeIntervalSince(start)
+                encodingTime: Date().timeIntervalSince(start),
+                wasLossless: false   // multi-frame VarDCT (lossy)
             )
         )
     }

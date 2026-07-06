@@ -137,6 +137,31 @@ public struct JXLDecoder: Sendable {
         )
     }
 
+    /// Decode, optionally reinterpreting a 16-bit result as signed
+    /// ``PixelType/int16``.
+    ///
+    /// JPEG XL codestreams have no native signed-sample type, so a
+    /// signed 16-bit image is stored as unsigned offset-binary
+    /// (sample + 32768 — the level shift the encoder applies when
+    /// handed an ``PixelType/int16`` frame). Passing
+    /// `signedOutput: true` un-shifts a 16-bit decode back to a
+    /// signed ``PixelType/int16`` frame, giving a full int16 → int16
+    /// round-trip within JXLSwift. `djxl` (and any other decoder)
+    /// still sees a standard unsigned-16 codestream.
+    ///
+    /// The flag only affects 16-bit results; 8-bit / already-signed
+    /// frames are returned unchanged, so this is a strict superset of
+    /// ``decode(_:)`` — existing unsigned behaviour is untouched.
+    public func decode(
+        _ data: Data, signedOutput: Bool
+    ) throws -> ImageFrame {
+        let frame = try decode(data)
+        guard signedOutput, frame.pixelType == .uint16 else {
+            return frame
+        }
+        return frame.reinterpretedAsSignedInt16()
+    }
+
     /// Extract the **quantised** AC coefficient state from a JXL
     /// VarDCT frame, returning a `JXLCoefficientPlanes` suitable for
     /// the reverse-bridge (`JXLToJPEGAdapter.reconstruct`). This is
@@ -3533,6 +3558,15 @@ extension JXLDecoder {
         let pixelType: PixelType = (bps <= 8) ? .uint8 : .uint16
         let _ = (kRequiredSizeX, kRequiredSizeY)
 
+        // Grayscale lossy is a 3-channel XYB frame (X ≈ 0 → R = G = B
+        // after inverse opsin) carrying a grayscale colour encoding —
+        // the representation libjxl uses. The 3-channel XYB / CfL /
+        // IDCT / restoration machinery above is reused verbatim; here
+        // the RGB result is collapsed to a single luma channel (plus
+        // an optional alpha extra channel). Matches how `djxl`
+        // decodes the same codestream to grayscale output.
+        let isGray = metadata.colorEncoding.colorSpace == .grayscale
+
         // Per-pixel XYB → linear RGB → sRGB → output samples. Crop
         // the W*H plane back to the frame's actual `xsize × ysize`
         // (the plane is padded out to a multiple of 8).
@@ -3544,6 +3578,44 @@ extension JXLDecoder {
         // of `linearToSRGB8`, but keeps its own buffer/loop rather
         // than unifying with the 8-bit path, so the 8-bit case never
         // pays for the extra branch or the wider buffer.
+        if pixelType == .uint8 && isGray {
+            // Grayscale 8-bit: one luma sample per pixel (R = G = B).
+            var gray8 = [UInt8](repeating: 0, count: xsize * ysize)
+            for y in 0..<ysize {
+                for x in 0..<xsize {
+                    let pi = y * planeWidth + x
+                    let lin = OpsinXYB.inverse(
+                        (X: planeX[pi], Y: planeY[pi], B: planeB[pi])
+                    )
+                    gray8[y * xsize + x] = linearToSRGB8(lin.R)
+                }
+            }
+            if nbExtraChannels == 0 {
+                var frame = ImageFrame(
+                    width: xsize, height: ysize, channels: 1)
+                frame.data = gray8
+                return frame
+            }
+            guard nbExtraChannels == 1,
+                  metadata.extraChannels[0].type == .alpha else {
+                throw DecoderError.notImplemented(
+                    "VarDCT decode: \(nbExtraChannels) extra channel(s) of "
+                    + "types \(metadata.extraChannels.map { $0.type }) — "
+                    + "only a single alpha channel is wired to output")
+            }
+            let alpha = extraChannelPlanes[0]
+            var ga = [UInt8](repeating: 0, count: xsize * ysize * 2)
+            for i in 0..<(xsize * ysize) {
+                ga[i * 2 + 0] = gray8[i]
+                ga[i * 2 + 1] = i < alpha.count
+                    ? UInt8(clamping: alpha[i]) : 255
+            }
+            var frame = ImageFrame(
+                width: xsize, height: ysize,
+                channels: 2, alphaChannels: 1)
+            frame.data = ga
+            return frame
+        }
         if pixelType == .uint8 {
             var rgb8 = [UInt8](repeating: 0, count: xsize * ysize * 3)
             for y in 0..<ysize {
@@ -3614,6 +3686,52 @@ extension JXLDecoder {
         // (`getPixel`/`setPixel`).
         let sampleMax = UInt32((1 << bps) - 1)
         let maxValueF = Float(sampleMax)
+        if isGray {
+            // Grayscale 16-bit: one luma sample per pixel (R = G = B),
+            // little-endian.
+            var gray16 = [UInt8](repeating: 0, count: xsize * ysize * 2)
+            for y in 0..<ysize {
+                for x in 0..<xsize {
+                    let pi = y * planeWidth + x
+                    let lin = OpsinXYB.inverse(
+                        (X: planeX[pi], Y: planeY[pi], B: planeB[pi])
+                    )
+                    let gv = linearToSRGBCode(lin.R, maxValue: maxValueF)
+                    let oi = (y * xsize + x) * 2
+                    gray16[oi + 0] = UInt8(gv & 0xff)
+                    gray16[oi + 1] = UInt8((gv >> 8) & 0xff)
+                }
+            }
+            if nbExtraChannels == 0 {
+                var frame = ImageFrame(
+                    width: xsize, height: ysize,
+                    channels: 1, pixelType: .uint16)
+                frame.data = gray16
+                return frame
+            }
+            guard nbExtraChannels == 1,
+                  metadata.extraChannels[0].type == .alpha else {
+                throw DecoderError.notImplemented(
+                    "VarDCT decode: \(nbExtraChannels) extra channel(s) of "
+                    + "types \(metadata.extraChannels.map { $0.type }) — "
+                    + "only a single alpha channel is wired to output")
+            }
+            let alpha = extraChannelPlanes[0]
+            var ga16 = [UInt8](repeating: 0, count: xsize * ysize * 2 * 2)
+            for i in 0..<(xsize * ysize) {
+                ga16[i * 4 + 0] = gray16[i * 2 + 0]
+                ga16[i * 4 + 1] = gray16[i * 2 + 1]
+                let av: UInt32 = i < alpha.count
+                    ? min(UInt32(max(0, alpha[i])), sampleMax) : sampleMax
+                ga16[i * 4 + 2] = UInt8(av & 0xff)
+                ga16[i * 4 + 3] = UInt8((av >> 8) & 0xff)
+            }
+            var frame = ImageFrame(
+                width: xsize, height: ysize,
+                channels: 2, pixelType: .uint16, alphaChannels: 1)
+            frame.data = ga16
+            return frame
+        }
         var rgb16 = [UInt8](repeating: 0, count: xsize * ysize * 3 * 2)
         for y in 0..<ysize {
             for x in 0..<xsize {

@@ -13649,25 +13649,39 @@ extension FoundationTests {
         // (lossy→VarDCT, lossless→Modular) and per-mode correctness only.
     }
 
-    /// `JXLEncoder.encode(_:)` lossy-mode **fallback**: VarDCT can't
-    /// take an 8-bit grayscale frame, so a lossy request falls back
-    /// to the lossless Modular path rather than failing. The output
-    /// is a Modular frame that round-trips bit-exact.
-    func testJXLEncoder_LossyGrayscaleFallsBackToModular() throws {
+    /// **Regression (grayscale VarDCT).** A lossy request on an 8-bit
+    /// grayscale frame used to silently fall back to lossless Modular
+    /// (`VarDCTEncoder.forward` required ≥ 3 channels). Grayscale is
+    /// now encoded as a 3-channel XYB VarDCT frame (X ≈ 0) carrying
+    /// grayscale colour metadata — the representation libjxl uses —
+    /// and the decoder collapses it back to one luma channel. This
+    /// pins the routing (VarDCT, not Modular), a single-channel
+    /// grayscale decode, and a bounded lossy round-trip. Would have
+    /// caught the previous silent Modular fallback.
+    func testJXLEncoder_LossyGrayscaleRoutesToVarDCT() throws {
+        let dim = 32
         var frame = ImageFrame(
-            width: 24, height: 24, channels: 1,
+            width: dim, height: dim, channels: 1,
             pixelType: .uint8, colorSpace: .grayscale)
-        for i in 0..<frame.data.count {
-            frame.data[i] = UInt8((i * 7) & 0xff)
+        for y in 0..<dim {
+            for x in 0..<dim {
+                frame.setPixel(x: x, y: y, channel: 0,
+                    value: UInt16((x * 4 + y * 3) & 0xff))
+            }
         }
-        // Default options are lossy — VarDCT rejects grayscale.
         let encoded = try JXLEncoder().encode(frame)
+        XCTAssertFalse(encoded.stats.wasLossless,
+            "lossy grayscale must report a lossy (VarDCT) encode")
         let inspect = JXLDecoder().inspectFrameStructure(encoded.data)
-        XCTAssertEqual(inspect.encoding, FrameEncoding.modular,
-            "lossy grayscale must fall back to the Modular codec")
+        XCTAssertEqual(inspect.encoding, FrameEncoding.varDCT,
+            "lossy grayscale must route to VarDCT, not fall back to Modular")
         let decoded = try JXLDecoder().decode(encoded.data)
-        XCTAssertEqual(decoded.data, frame.data,
-            "Modular fallback must round-trip bit-exact")
+        XCTAssertEqual(decoded.channels, 1,
+            "grayscale VarDCT must decode back to a single-channel frame")
+        XCTAssertEqual(decoded.pixelType, .uint8)
+        let m = ImageMetrics.compute(reference: frame, test: decoded)
+        XCTAssertGreaterThan(m.overallPSNR, 30.0,
+            "grayscale VarDCT round-trip PSNR too low (\(m.overallPSNR) dB)")
     }
 
     /// Pins down the bug this test suite was written for: a lossy
@@ -13765,27 +13779,453 @@ extension FoundationTests {
         }
     }
 
-    /// The 16-bit fix only widens VarDCT to accept RGB/RGBA —
-    /// grayscale (at any bit depth) still falls back to Modular.
-    /// This pins that narrower-than-RGB gap as intentional, not an
-    /// accidental regression from the 16-bit change.
-    func testJXLEncoder_Lossy16BitGrayscaleFallsBackToModular() throws {
+    /// **Regression (16-bit grayscale VarDCT).** Companion to the
+    /// 8-bit case: a lossy request on a 16-bit grayscale frame now
+    /// routes to VarDCT (a 3-channel XYB frame with grayscale colour
+    /// metadata) and decodes back to a single 16-bit luma channel,
+    /// instead of the earlier silent Modular fallback.
+    func testJXLEncoder_Lossy16BitGrayscaleRoutesToVarDCT() throws {
+        let dim = 48
         var frame = ImageFrame(
-            width: 24, height: 24, channels: 1,
+            width: dim, height: dim, channels: 1,
             pixelType: .uint16, colorSpace: .grayscale)
-        for y in 0..<24 {
-            for x in 0..<24 {
+        for y in 0..<dim {
+            for x in 0..<dim {
                 frame.setPixel(x: x, y: y, channel: 0,
-                    value: UInt16((x * 24 + y) * 111))
+                    value: UInt16(truncatingIfNeeded: (x * dim + y) * 23))
+            }
+        }
+        let encoded = try JXLEncoder().encode(frame)
+        XCTAssertFalse(encoded.stats.wasLossless,
+            "lossy 16-bit grayscale must report a lossy (VarDCT) encode")
+        let inspect = JXLDecoder().inspectFrameStructure(encoded.data)
+        XCTAssertEqual(inspect.encoding, FrameEncoding.varDCT,
+            "lossy 16-bit grayscale must route to VarDCT, not Modular")
+        let decoded = try JXLDecoder().decode(encoded.data)
+        XCTAssertEqual(decoded.channels, 1,
+            "16-bit grayscale VarDCT must decode to a single channel")
+        XCTAssertEqual(decoded.pixelType, .uint16,
+            "16-bit grayscale VarDCT must decode to a uint16 frame")
+        let m = ImageMetrics.compute(reference: frame, test: decoded)
+        XCTAssertGreaterThan(m.overallPSNR, 40.0,
+            "16-bit grayscale VarDCT round-trip PSNR too low (\(m.overallPSNR) dB)")
+    }
+
+    /// **Regression (grayscale+alpha VarDCT).** A 2-channel
+    /// grayscale+alpha frame used to miss the old `channels >= 4`
+    /// alpha check and fall back to Modular. It now routes to VarDCT
+    /// with the luma carried lossily in the XYB frame and the alpha
+    /// carried as a lossless modular extra channel. Pins the routing,
+    /// a 2-channel decode, a bounded luma round-trip, and — critically
+    /// — a **bit-exact** alpha channel.
+    func testJXLEncoder_LossyGrayscaleAlphaRoutesToVarDCT() throws {
+        let dim = 40
+        var frame = ImageFrame(
+            width: dim, height: dim, channels: 2,
+            pixelType: .uint8, colorSpace: .grayscale, alphaChannels: 1)
+        for y in 0..<dim {
+            for x in 0..<dim {
+                frame.setPixel(x: x, y: y, channel: 0,
+                    value: UInt16((x * 5 + y * 3) & 0xff))
+                frame.setPixel(x: x, y: y, channel: 1,
+                    value: UInt16((200 - ((x + y) % 90)) & 0xff))
+            }
+        }
+        let encoded = try JXLEncoder().encode(frame)
+        XCTAssertFalse(encoded.stats.wasLossless)
+        let inspect = JXLDecoder().inspectFrameStructure(encoded.data)
+        XCTAssertEqual(inspect.encoding, FrameEncoding.varDCT,
+            "grayscale+alpha must route to VarDCT, not Modular")
+        let decoded = try JXLDecoder().decode(encoded.data)
+        XCTAssertEqual(decoded.channels, 2,
+            "grayscale+alpha VarDCT must decode to 2 channels")
+        XCTAssertEqual(decoded.alphaChannels, 1)
+        // Alpha (channel 1) is lossless — must match bit-exact.
+        for y in 0..<dim {
+            for x in 0..<dim {
+                XCTAssertEqual(
+                    decoded.getPixel(x: x, y: y, channel: 1),
+                    frame.getPixel(x: x, y: y, channel: 1),
+                    "alpha extra channel must round-trip bit-exact")
+            }
+        }
+        let m = ImageMetrics.compute(reference: frame, test: decoded)
+        XCTAssertGreaterThan(m.overallPSNR, 30.0,
+            "grayscale+alpha VarDCT round-trip PSNR too low (\(m.overallPSNR) dB)")
+    }
+
+    /// **Regression (multi-group grayscale VarDCT).** A grayscale
+    /// frame larger than one 256-px group (300×300 → multi-section
+    /// codestream) must still route to VarDCT and round-trip. Guards
+    /// the per-group DC/AC section layout for the grayscale case.
+    func testJXLEncoder_LossyGrayscaleMultiGroupVarDCT() throws {
+        let dim = 300
+        var frame = ImageFrame(
+            width: dim, height: dim, channels: 1,
+            pixelType: .uint8, colorSpace: .grayscale)
+        for y in 0..<dim {
+            for x in 0..<dim {
+                frame.setPixel(x: x, y: y, channel: 0,
+                    value: UInt16((x + y) & 0xff))
             }
         }
         let encoded = try JXLEncoder().encode(frame)
         let inspect = JXLDecoder().inspectFrameStructure(encoded.data)
-        XCTAssertEqual(inspect.encoding, FrameEncoding.modular,
-            "lossy 16-bit grayscale must still fall back to Modular")
+        XCTAssertEqual(inspect.encoding, FrameEncoding.varDCT,
+            "multi-group grayscale must route to VarDCT")
+        XCTAssertGreaterThan(inspect.tocSizes?.count ?? 0, 1,
+            "300×300 grayscale must be a multi-section codestream")
         let decoded = try JXLDecoder().decode(encoded.data)
+        XCTAssertEqual(decoded.channels, 1)
+        let m = ImageMetrics.compute(reference: frame, test: decoded)
+        XCTAssertGreaterThan(m.overallPSNR, 35.0,
+            "multi-group grayscale round-trip PSNR too low (\(m.overallPSNR) dB)")
+    }
+
+    /// **Regression (grayscale VarDCT animation).** Multi-frame lossy
+    /// grayscale must produce a VarDCT frame *per frame* via
+    /// `encodeAnimation`, not fall back. Pins that every frame of the
+    /// animation is VarDCT (`inspectFrames`), and that the stats
+    /// report a lossy encode.
+    func testJXLEncoder_LossyGrayscaleAnimationVarDCT() throws {
+        let dim = 64
+        func makeFrame(_ shift: Int) -> ImageFrame {
+            var f = ImageFrame(
+                width: dim, height: dim, channels: 1,
+                pixelType: .uint8, colorSpace: .grayscale)
+            for y in 0..<dim {
+                for x in 0..<dim {
+                    f.setPixel(x: x, y: y, channel: 0,
+                        value: UInt16((x * 3 + y * 2 + shift) & 0xff))
+                }
+            }
+            return f
+        }
+        let frames = [makeFrame(0), makeFrame(30), makeFrame(60)]
+        let encoded = try JXLEncoder().encode(frames)
+        XCTAssertFalse(encoded.stats.wasLossless,
+            "multi-frame grayscale lossy must report a lossy encode")
+        let summaries = try JXLDecoder().inspectFrames(encoded.data)
+        XCTAssertEqual(summaries.count, 3,
+            "animation must carry all 3 frames")
+        for s in summaries {
+            XCTAssertEqual(s.encoding, FrameEncoding.varDCT,
+                "frame \(s.index) of a grayscale animation must be VarDCT")
+        }
+        XCTAssertTrue(summaries.last?.isLast ?? false,
+            "final frame must flag isLast")
+    }
+
+    /// **djxl interop (grayscale VarDCT).** libjxl (`djxl`) must
+    /// accept our grayscale VarDCT codestream, decode it to a
+    /// single-channel PGM, and land within float-rounding distance of
+    /// our own decoder on the same bytes. This is the cross-decoder
+    /// proof that the grayscale frame is genuinely spec-compliant
+    /// (not merely self-consistent).
+    func testVarDCT_Grayscale_DjxlDecode() throws {
+        let djxl = "/opt/homebrew/bin/djxl"
+        guard FileManager.default.isExecutableFile(atPath: djxl) else {
+            throw XCTSkip("djxl not available at \(djxl)")
+        }
+        let w = 64, h = 64
+        var frame = ImageFrame(
+            width: w, height: h, channels: 1,
+            pixelType: .uint8, colorSpace: .grayscale)
+        for y in 0..<h {
+            for x in 0..<w {
+                frame.setPixel(x: x, y: y, channel: 0,
+                    value: UInt16((x * 4 + y * 3) & 0xff))
+            }
+        }
+        let bytes = try VarDCTBitstreamWriter.encode(
+            frame: frame, distance: 1.0)
+
+        let inPath = NSTemporaryDirectory() + "jxlswift_vdt_gray8.jxl"
+        let outPath = NSTemporaryDirectory() + "jxlswift_vdt_gray8.pgm"
+        try bytes.write(to: URL(fileURLWithPath: inPath))
+        let p = Process()
+        p.launchPath = djxl
+        p.arguments = [inPath, outPath]
+        let errPipe = Pipe()
+        p.standardOutput = Pipe(); p.standardError = errPipe
+        try p.run(); p.waitUntilExit()
+        let err = String(
+            data: errPipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8) ?? ""
+        XCTAssertEqual(p.terminationStatus, 0,
+            "djxl rejected our \(w)x\(h) grayscale VarDCT bytes; "
+            + "stderr: \(err)")
+
+        // djxl writes grayscale as a P5 PGM: 1 byte per pixel.
+        let pgm = try Data(contentsOf: URL(fileURLWithPath: outPath))
+        var nlCount = 0
+        var pixelStart = 0
+        for (i, byte) in pgm.enumerated() {
+            if byte == 0x0a {
+                nlCount += 1
+                if nlCount == 3 { pixelStart = i + 1; break }
+            }
+        }
+        XCTAssertEqual(pgm.count - pixelStart, w * h,
+            "djxl PGM size mismatch — expected 1 grayscale byte/pixel")
+
+        let ours = try JXLDecoder().decode(bytes)
+        XCTAssertEqual(ours.channels, 1,
+            "grayscale VarDCT must decode to a single-channel frame")
+
+        var maxDiffVsDjxl = 0
+        for y in 0..<h {
+            for x in 0..<w {
+                let djxlVal = Int(pgm[pixelStart + y * w + x])
+                let ourVal = Int(ours.getPixel(x: x, y: y, channel: 0))
+                maxDiffVsDjxl = max(maxDiffVsDjxl, abs(djxlVal - ourVal))
+            }
+        }
+        // Two independent decoders reading the same bitstream must
+        // agree to within inverse-XYB float rounding.
+        XCTAssertLessThanOrEqual(maxDiffVsDjxl, 4,
+            "grayscale: our decoder vs djxl on the same bitstream "
+            + "diverges too much (max=\(maxDiffVsDjxl))")
+    }
+
+    /// **Regression (oversized VarDCT).** A frame wider than the old
+    /// 8192-px encoder cap (8448×64 → 33 AC groups, 5 DC groups in X)
+    /// used to throw `WriterError.unsupported` and silently fall back
+    /// to lossless Modular. The cap is now a resource-safety limit
+    /// (16384 px), and the multi-group machinery encodes the frame as
+    /// VarDCT. A large-in-one-dimension shape keeps the test light
+    /// while still exercising the many-group / multi-DC-group paths.
+    func testVarDCT_OversizedWideRGB_RoutesToVarDCT() throws {
+        let w = 8448, h = 64  // w > old 8192 cap
+        var frame = ImageFrame(
+            width: w, height: h, channels: 3, colorSpace: .sRGB)
+        for y in 0..<h {
+            for x in 0..<w {
+                frame.setPixel(x: x, y: y, channel: 0,
+                    value: UInt16(x & 0xff))
+                frame.setPixel(x: x, y: y, channel: 1,
+                    value: UInt16((x >> 3) & 0xff))
+                frame.setPixel(x: x, y: y, channel: 2,
+                    value: UInt16((x + y) & 0xff))
+            }
+        }
+        let encoded = try JXLEncoder().encode(frame)
+        XCTAssertFalse(encoded.stats.wasLossless,
+            "oversized frame must still encode as lossy VarDCT")
+        let inspect = JXLDecoder().inspectFrameStructure(encoded.data)
+        XCTAssertEqual(inspect.encoding, FrameEncoding.varDCT,
+            "a >8192-px frame must route to VarDCT, not fall back")
+        XCTAssertGreaterThan(inspect.tocSizes?.count ?? 0, 1,
+            "oversized frame must be a multi-section codestream")
+        let decoded = try JXLDecoder().decode(encoded.data)
+        XCTAssertEqual(decoded.width, w)
+        XCTAssertEqual(decoded.height, h)
+        let m = ImageMetrics.compute(reference: frame, test: decoded)
+        XCTAssertGreaterThan(m.overallPSNR, 30.0,
+            "oversized VarDCT round-trip PSNR too low (\(m.overallPSNR) dB)")
+    }
+
+    /// **Regression (oversized + grayscale VarDCT).** Combines item-1
+    /// (grayscale) and item-2 (oversized): a tall grayscale frame
+    /// beyond the old cap (64×8448) must route to VarDCT and decode
+    /// back to a single luma channel.
+    func testVarDCT_OversizedTallGrayscale_RoutesToVarDCT() throws {
+        let w = 64, h = 8448  // h > old 8192 cap
+        var frame = ImageFrame(
+            width: w, height: h, channels: 1,
+            pixelType: .uint8, colorSpace: .grayscale)
+        for y in 0..<h {
+            for x in 0..<w {
+                frame.setPixel(x: x, y: y, channel: 0,
+                    value: UInt16((x + y) & 0xff))
+            }
+        }
+        let encoded = try JXLEncoder().encode(frame)
+        XCTAssertFalse(encoded.stats.wasLossless)
+        let inspect = JXLDecoder().inspectFrameStructure(encoded.data)
+        XCTAssertEqual(inspect.encoding, FrameEncoding.varDCT,
+            "oversized grayscale must route to VarDCT")
+        let decoded = try JXLDecoder().decode(encoded.data)
+        XCTAssertEqual(decoded.channels, 1)
+        XCTAssertEqual(decoded.height, h)
+        let m = ImageMetrics.compute(reference: frame, test: decoded)
+        XCTAssertGreaterThan(m.overallPSNR, 30.0,
+            "oversized grayscale round-trip PSNR too low (\(m.overallPSNR) dB)")
+    }
+
+    /// **Regression (oversized VarDCT animation).** A multi-frame
+    /// animation whose frames exceed the old cap must still produce a
+    /// VarDCT frame per frame via `encodeAnimation`, not fall back.
+    func testVarDCT_OversizedAnimation_RoutesToVarDCT() throws {
+        let w = 8448, h = 32
+        func makeFrame(_ shift: Int) -> ImageFrame {
+            var f = ImageFrame(
+                width: w, height: h, channels: 3, colorSpace: .sRGB)
+            for y in 0..<h {
+                for x in 0..<w {
+                    f.setPixel(x: x, y: y, channel: 0,
+                        value: UInt16((x + shift) & 0xff))
+                    f.setPixel(x: x, y: y, channel: 1,
+                        value: UInt16((x >> 2) & 0xff))
+                    f.setPixel(x: x, y: y, channel: 2,
+                        value: UInt16((y + shift) & 0xff))
+                }
+            }
+            return f
+        }
+        let encoded = try JXLEncoder().encode([makeFrame(0), makeFrame(20)])
+        XCTAssertFalse(encoded.stats.wasLossless)
+        let summaries = try JXLDecoder().inspectFrames(encoded.data)
+        XCTAssertEqual(summaries.count, 2)
+        for s in summaries {
+            XCTAssertEqual(s.encoding, FrameEncoding.varDCT,
+                "oversized animation frame \(s.index) must be VarDCT")
+        }
+    }
+
+    /// **Item 3 (int16 storage).** The offset-binary level shift in
+    /// `ImageFrame.getPixel`/`setPixel` for `.int16` must be an exact
+    /// involution across the full signed range, including the
+    /// extremes (−32768, 0, 32767) where two's-complement ↔
+    /// offset-binary is most likely to be off by one.
+    func testPixelType_Int16_OffsetBinaryRoundTrip() throws {
+        var frame = ImageFrame(
+            width: 5, height: 1, channels: 1, pixelType: .int16)
+        let signed: [Int] = [-32768, -1000, -1, 0, 32767]
+        for (x, s) in signed.enumerated() {
+            frame.setPixel(x: x, y: 0, channel: 0,
+                value: UInt16(s + 32768))          // offset-binary in
+        }
+        for (x, s) in signed.enumerated() {
+            let ob = Int(frame.getPixel(x: x, y: 0, channel: 0))
+            XCTAssertEqual(ob - 32768, s,
+                "int16 offset-binary round-trip wrong at x=\(x)")
+        }
+        // Reinterpret helpers must compose to the identity.
+        let asU16 = frame.levelShiftedToUnsigned16()
+        XCTAssertEqual(asU16.pixelType, .uint16)
+        let back = asU16.reinterpretedAsSignedInt16()
+        XCTAssertEqual(back.pixelType, .int16)
+        XCTAssertEqual(back.data, frame.data,
+            "int16 → uint16 → int16 must be byte-exact")
+    }
+
+    /// **Item 3 (int16 lossless, DICOM CT case).** A signed 16-bit
+    /// grayscale frame (Hounsfield-like values including negatives)
+    /// encoded losslessly (Modular) and decoded with
+    /// `signedOutput: true` must round-trip **byte-exact** — the
+    /// caller no longer needs to pre-shift into an unsigned range.
+    func testInt16_GrayscaleLossless_RoundTripExact() throws {
+        let w = 40, h = 40
+        var frame = ImageFrame(
+            width: w, height: h, channels: 1,
+            pixelType: .int16, colorSpace: .grayscale)
+        for y in 0..<h {
+            for x in 0..<w {
+                // CT Hounsfield-ish: −1024 … +3071, signed.
+                let hu = -1024 + ((x * 53 + y * 97) % 4096)
+                frame.setPixel(x: x, y: y, channel: 0,
+                    value: UInt16(hu + 32768))
+            }
+        }
+        let enc = try JXLEncoder(options: EncodingOptions(mode: .lossless))
+            .encode(frame)
+        XCTAssertTrue(enc.stats.wasLossless)
+        let decoded = try JXLDecoder().decode(enc.data, signedOutput: true)
+        XCTAssertEqual(decoded.pixelType, .int16,
+            "signedOutput must yield an .int16 frame")
+        XCTAssertEqual(decoded.channels, 1)
         XCTAssertEqual(decoded.data, frame.data,
-            "Modular fallback must round-trip bit-exact")
+            "lossless signed-16 round-trip must be byte-exact")
+    }
+
+    /// **Item 3 (int16 lossy VarDCT).** The same signed grayscale
+    /// frame encoded lossily (VarDCT) and decoded with
+    /// `signedOutput: true` must produce an `.int16` frame within a
+    /// bounded error — proving VarDCT handles signed input via the
+    /// level shift.
+    func testInt16_GrayscaleLossy_VarDCT_RoundTripBounded() throws {
+        let w = 48, h = 48
+        var frame = ImageFrame(
+            width: w, height: h, channels: 1,
+            pixelType: .int16, colorSpace: .grayscale)
+        for y in 0..<h {
+            for x in 0..<w {
+                let hu = -1000 + ((x * 8 + y * 6) % 3000)
+                frame.setPixel(x: x, y: y, channel: 0,
+                    value: UInt16(hu + 32768))
+            }
+        }
+        let enc = try JXLEncoder().encode(frame)   // default: lossy
+        XCTAssertFalse(enc.stats.wasLossless)
+        let inspect = JXLDecoder().inspectFrameStructure(enc.data)
+        XCTAssertEqual(inspect.encoding, FrameEncoding.varDCT,
+            "signed-16 grayscale must route to VarDCT")
+        let decoded = try JXLDecoder().decode(enc.data, signedOutput: true)
+        XCTAssertEqual(decoded.pixelType, .int16)
+        XCTAssertEqual(decoded.channels, 1)
+        // Compare in offset-binary (getPixel) space over the 16-bit
+        // range — both frames are .int16 so ImageMetrics matches shapes.
+        let m = ImageMetrics.compute(reference: frame, test: decoded)
+        XCTAssertGreaterThan(m.overallPSNR, 40.0,
+            "signed-16 VarDCT round-trip PSNR too low (\(m.overallPSNR) dB)")
+    }
+
+    /// **Item 3 (int16 multi-channel).** Signed 16-bit RGB routes to
+    /// VarDCT and round-trips to an `.int16` frame — proves the level
+    /// shift is applied uniformly across colour channels.
+    func testInt16_RGB_Lossy_VarDCT_RoundTrip() throws {
+        let w = 32, h = 32
+        var frame = ImageFrame(
+            width: w, height: h, channels: 3,
+            pixelType: .int16, colorSpace: .sRGB)
+        for y in 0..<h {
+            for x in 0..<w {
+                frame.setPixel(x: x, y: y, channel: 0,
+                    value: UInt16((-5000 + x * 200) + 32768))
+                frame.setPixel(x: x, y: y, channel: 1,
+                    value: UInt16((-2000 + y * 100) + 32768))
+                frame.setPixel(x: x, y: y, channel: 2,
+                    value: UInt16((3000 - (x + y) * 50) + 32768))
+            }
+        }
+        let enc = try JXLEncoder().encode(frame)
+        let inspect = JXLDecoder().inspectFrameStructure(enc.data)
+        XCTAssertEqual(inspect.encoding, FrameEncoding.varDCT)
+        let decoded = try JXLDecoder().decode(enc.data, signedOutput: true)
+        XCTAssertEqual(decoded.pixelType, .int16)
+        XCTAssertEqual(decoded.channels, 3)
+        let m = ImageMetrics.compute(reference: frame, test: decoded)
+        XCTAssertGreaterThan(m.overallPSNR, 35.0,
+            "signed-16 RGB VarDCT round-trip PSNR too low (\(m.overallPSNR) dB)")
+    }
+
+    /// **Item 3 (unsigned unchanged).** Adding `.int16` must not
+    /// perturb the existing unsigned path: a `.uint16` frame decodes
+    /// to `.uint16` as before, and `decode(_:signedOutput:)` with the
+    /// flag *off* is identical to `decode(_:)`.
+    func testInt16_UnsignedBehaviorUnchanged() throws {
+        let w = 24, h = 24
+        var frame = ImageFrame(
+            width: w, height: h, channels: 1,
+            pixelType: .uint16, colorSpace: .grayscale)
+        for y in 0..<h {
+            for x in 0..<w {
+                frame.setPixel(x: x, y: y, channel: 0,
+                    value: UInt16((x * 24 + y) * 100))
+            }
+        }
+        let enc = try JXLEncoder(options: EncodingOptions(mode: .lossless))
+            .encode(frame)
+        let plain = try JXLDecoder().decode(enc.data)
+        let flagOff = try JXLDecoder().decode(enc.data, signedOutput: false)
+        XCTAssertEqual(plain.pixelType, .uint16,
+            "unsigned decode must stay .uint16")
+        XCTAssertEqual(plain.data, frame.data,
+            "unsigned lossless round-trip must stay byte-exact")
+        XCTAssertEqual(flagOff.pixelType, .uint16)
+        XCTAssertEqual(flagOff.data, plain.data,
+            "signedOutput:false must equal plain decode")
     }
 
     /// Multi-group RGB at 1024×1024 → 2×2 = 4 groups. Validates the
