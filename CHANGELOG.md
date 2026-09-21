@@ -9,6 +9,50 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ---
 
+
+## [1.5.0-rc.1] — 2026-09-21 (release candidate)
+
+### Added
+
+- **Shared-contract image layer.** A validated `ImageDescriptor`, leased read-only
+  and writable storage with an explicit one-shot lifecycle, `Image`,
+  `ImageDestination`, `ResourceLimits`, `CopyPolicy` and an operation report,
+  wired to the existing codec. Implements the suite's common memory and
+  ownership contract at revision 0.7.0.
+- Under `CopyPolicy.requireSharedStorage` samples stay in the caller's own
+  allocation in both directions, honouring the caller's row stride and plane
+  offset. Padding between the row payload and `rowBytes` is never read or
+  written, so it cannot reach the codestream and caller sentinels survive.
+
+### Changed
+
+- The encode and decode sample stages are now each a single function called by
+  both the ordinary path and the shared-storage path, so the two cannot drift.
+  Output is unchanged: the contract surface encodes byte-identically to the established encoder.
+
+### Notes
+
+The existing public API is untouched and the deployment floor is unchanged;
+this release adds a surface beside it rather than replacing it. The shared
+surface covers the initial shared layout only — one plane, one component,
+unsigned 16-bit, little-endian, even `rowBytes >= width * 2`, no subsampling,
+lossless. Anything else is reported as an incompatibility rather than silently
+converted.
+
+**This is a release candidate, not a stable release.** The suite's release
+gates have not been executed: there is no continuous-integration verification
+(the organisation's Actions billing is locked, so every job reports zero steps
+run), no fuzz campaign, and no benchmark evidence from controlled hardware.
+Everything recorded below was measured on a single developer machine.
+
+The surface lives in a separate `JXLSwiftContract` module, because
+`CompressionMode`, `EncodedImage` and `ImageMetadata` are already public API
+here with different meanings.
+
+**Verified locally:** 717 existing tests pass (23 skipped, 0 failures) plus 14
+new. Byte-identical codestreams at three sizes and three row paddings and with
+a non-zero plane offset. Clean under the address and thread sanitizers.
+
 ## [1.4.0] — 2026-07-06 (release)
 
 **VarDCT coverage (grayscale, oversized, signed 16-bit) + broader JPEG decode.**
