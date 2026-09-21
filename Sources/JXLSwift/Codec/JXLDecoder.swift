@@ -3910,28 +3910,22 @@ extension JXLDecoder {
         }
         // Whole-buffer per-channel loops (split per byte width) —
         // each sample clamps to [0, sampleMax] and lands LSB-first.
+        // The shared output path, given the frame's own buffer and a packed
+        // row layout. `decodeGreyscale16` calls the same function with the
+        // caller's plane and their row stride, so the two cannot drift and
+        // the shared path cannot become a copy of a second frame.
         frame.data.withUnsafeMutableBufferPointer { dst in
+            let raw = UnsafeMutableRawBufferPointer(dst)
             for (channel, byteOffset) in planes {
                 modular.channels[channel].pixels
                     .withUnsafeBufferPointer { src in
-                        if bytesPerSample == 1 {
-                            var d = byteOffset
-                            for i in 0..<pixelCount {
-                                let clamped = min(
-                                    UInt32(max(0, src[i])), sampleMax)
-                                dst[d] = UInt8(clamped)
-                                d &+= stride
-                            }
-                        } else {
-                            var d = byteOffset
-                            for i in 0..<pixelCount {
-                                let clamped = min(
-                                    UInt32(max(0, src[i])), sampleMax)
-                                dst[d] = UInt8(clamped & 0xff)
-                                dst[d + 1] = UInt8((clamped >> 8) & 0xff)
-                                d &+= stride
-                            }
-                        }
+                        jxlWriteChannelSamples(
+                            from: src, into: raw,
+                            layout: .flat(sampleCount: pixelCount),
+                            byteOffsetInPixel: byteOffset,
+                            pixelStrideBytes: stride,
+                            bytesPerSample: bytesPerSample,
+                            sampleMax: sampleMax)
                     }
             }
         }
