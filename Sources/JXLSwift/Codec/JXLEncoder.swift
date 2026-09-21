@@ -662,12 +662,11 @@ private func unpackUInt16ToInt32(
     var out = [Int32](repeating: 0, count: n)
     frame.data.withUnsafeBytes { raw in
         out.withUnsafeMutableBufferPointer { dst in
-            for i in 0..<n {
-                let base = (i * channelCount + channel) * 2
-                let lo = Int32(raw[base])
-                let hi = Int32(raw[base + 1])
-                dst[i] = (hi << 8) | lo
-            }
+            // The shared input path, given the frame's own packed bytes.
+            // `encodeGreyscale16` calls the same function with the caller's
+            // plane and their row stride, so the two cannot drift.
+            jxlReadUInt16Samples(from: raw, into: dst, layout: .flat(sampleCount: n),
+                                 channelCount: channelCount, channel: channel)
         }
     }
     return out

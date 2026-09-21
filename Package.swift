@@ -36,6 +36,12 @@ let package = Package(
     ],
     products: [
         .library(name: "JXLSwift", targets: ["JXLSwift"]),
+        // The shared-contract surface lives in its own module because three
+        // of the contract's names — CompressionMode, EncodedImage and
+        // ImageMetadata — are already public API here with different
+        // meanings. POL-03 anticipates this: "Identically named types from
+        // different modules are distinct Swift types."
+        .library(name: "JXLSwiftContract", targets: ["JXLSwiftContract"]),
         .executable(name: "jxl-tool", targets: ["JXLTool"]),
         // Family-parity alias: `jxl` (matches J2KSwift's `j2k`).
         // Same target as `jxl-tool`; SwiftPM produces two binaries
@@ -61,6 +67,13 @@ let package = Package(
                 .enableExperimentalFeature("StrictConcurrency"),
             ]
         ),
+        .target(
+            name: "JXLSwiftContract",
+            dependencies: ["JXLSwift"],
+            swiftSettings: [
+                .enableExperimentalFeature("StrictConcurrency"),
+            ]
+        ),
         .executableTarget(
             name: "JXLTool",
             dependencies: [
@@ -74,6 +87,10 @@ let package = Package(
                 "JXLSwift",
                 "JXLPerfC",
             ]
+        ),
+        .testTarget(
+            name: "JXLSwiftContractTests",
+            dependencies: ["JXLSwiftContract", "JXLSwift"]
         ),
     ]
 )
